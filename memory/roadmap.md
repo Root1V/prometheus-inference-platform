@@ -352,25 +352,28 @@ that stack would be pure overhead.
 
 **Phase 1 (this pass) — lifecycle control + manual registration**:
 - `runtime/manager/api`: new `backend-registry:write` scope (`auth.py`); new `control.py`
-  router — `POST /v1/backends` (register), `DELETE /v1/backends/{id}` (deregister, stops
-  first if running), `POST /v1/backends/{id}/start|stop|restart` — all thin wrappers
+  router — `POST /v1/backends` (register), `PATCH /v1/backends/{id}` (update fields —
+  added after the user tried the dashboard and noticed there was no way to fix a typo'd
+  field after registering; re-validates the *resulting* merged entry, e.g. switching
+  `backend` still re-checks `path` against it), `DELETE /v1/backends/{id}` (deregister,
+  stops first if running), `POST /v1/backends/{id}/start|stop|restart` — all thin wrappers
   around the same `prometheus_manager_core.lifecycle`/`registry` functions `pmgr` already
   calls locally. `GET /v1/backends` gained `?include_hidden=true` (operator view — also
   see non-`discovery`-exposed entries; the default stays filtered since this endpoint also
-  feeds the gateway's routing sync). 23 new manager-api tests.
+  feeds the gateway's routing sync). 30 manager-api tests.
 - `gateway`: new `admin_dashboard_enabled` flag (default off, same pattern as
   `ui_enabled`); new `gateway/src/prometheus_gateway/admin/` package — `client.py`
   (OAuth2 token mgmt + HTTP calls to a manager node, deliberately separate from
   `manager_sync.py`'s working token logic rather than refactoring it) and `router.py`
   (`POST /admin/api/auth/login`, `/admin/api/nodes`, `/admin/api/instances` aggregated
-  across all `MANAGER_NODES`, `/admin/api/nodes/{node}/models` register/deregister,
+  across all `MANAGER_NODES`, `/admin/api/nodes/{node}/models` register/deregister/update,
   `/admin/api/nodes/{node}/instances/{id}/{start,stop,restart}`) — all except `auth/login`
   require `admin:read`/`admin:write`, proxying to the right node, flattening manager-api's
   nested error shape to match the gateway's own RFC 9457 format. `auth/middleware.py`'s
   exempt-path logic now distinguishes the public SPA shell (`/admin/*`) from the protected
   JSON API (`/admin/api/*`) instead of a flat prefix, plus a specific exemption for the
-  login route itself (no token exists yet at login time by definition). 21 new gateway
-  tests. Two new fixed scopes added to auth-service's `VALID_SCOPES`: `admin:write`,
+  login route itself (no token exists yet at login time by definition). 24 gateway tests.
+  Two new fixed scopes added to auth-service's `VALID_SCOPES`: `admin:write`,
   `backend-registry:write` — existing service accounts need a scope grant to use the new
   write paths, see [auth-model.md](../wiki/auth-model.md#admin-dashboard-rm-10) migration
   note.
@@ -392,17 +395,20 @@ that stack would be pure overhead.
 **Verified for real, not just unit-tested**: stood up all three services locally (RSA
 keypair + auth-service on SQLite + manager-api + gateway, no Podman) and drove the actual
 built SPA in a real browser end-to-end — logged in, registered a model (confirmed written
-to `registry.yaml` on disk), watched the stat cards and table update live, deleted it
-(confirmed removed from disk), logged out. Caught and fixed two real bugs this way that no
-unit test would have: the CORS issue above, and a login-time 401 that turned out to be the
-*local test environment* picking up a real `gateway/.env`'s Redis revocation settings
-(unrelated to RM-10 — noted as a testing-setup pitfall, not a product bug).
+to `registry.yaml` on disk), watched the stat cards and table update live, edited a field
+and confirmed the change landed on disk, deleted it (confirmed removed from disk), logged
+out. Caught and fixed three real bugs this way that no unit test would have: the CORS issue
+above, a login-time 401 that turned out to be the *local test environment* picking up a
+real `gateway/.env`'s Redis revocation settings (unrelated to RM-10 — a testing-setup
+pitfall, not a product bug), and — after the user tried the dashboard themselves — a
+missing edit action, plus (while adding it) a reminder that a multi-process local stack
+needs *every* affected process restarted, not just the one you last edited (manager-api's
+new route 405'd until its own process was restarted, not just the gateway's).
 
-**Found in passing, not fixed (pre-existing, unrelated to RM-10)**: the auth-service admin
-API examples in this README are stale against the current schema —
-`POST /admin/clients` needs `client_name`/`role` fields (not `name`/`scope` as the
-Quick-Start curl example shows), and the token endpoint is `/oauth2/token`, not `/token`.
-Worth a follow-up doc fix.
+**Found in passing while verifying, since fixed by the user in a separate session**: the
+auth-service admin API examples in the README's Quick Start were stale against the current
+schema (`client_name`/`role`/`allowed_scopes`, not `name`/`scope`; `/oauth2/token`, not
+`/token`).
 
 **Phase 2 (not yet started)** — HuggingFace search/browse + trigger-download-from-web with
 live progress, matching the TUI's Discovery/Downloads tabs. Deferred because today's

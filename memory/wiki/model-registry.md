@@ -279,6 +279,13 @@ POST   /v1/backends                    → register (body: id, port required; pa
                                           quantization/backend/modality/mmproj_path/
                                           discovery/hf_repo/hf_filename/hf_sha256 optional)
                                           → 201 with the created entry, 400 on validation error
+PATCH  /v1/backends/{model_id}         → update fields (any subset of the optional register
+                                          fields above; id is not patchable — that's a
+                                          remove+re-add, not an in-place edit) → 200 with
+                                          the updated entry, 400 on validation error. The
+                                          *resulting* merged entry is re-validated, so e.g.
+                                          changing only `backend` still re-checks the
+                                          existing `path` against the new backend.
 DELETE /v1/backends/{model_id}         → deregister (stops it first if running) → 204
 POST   /v1/backends/{model_id}/start   → 200 with merged live state, 409 if already running
 POST   /v1/backends/{model_id}/stop    → 200, 409 if not running
@@ -301,7 +308,7 @@ GET  /v1/backends        → admin endpoint — requires admin:read scope
 `GET /admin` (when `ADMIN_DASHBOARD_ENABLED=true`) serves a static React SPA — built from
 `gateway/admin-ui/`, output copied to `gateway/src/prometheus_gateway/admin/static/` — that
 lets an operator see and control every node's instances from one page: start/stop/restart,
-register, and deregister, without SSH access to any individual host. It calls
+register, edit, and deregister, without SSH access to any individual host. It calls
 `/admin/api/*` (JSON, `admin:read`/`admin:write` scopes), which the gateway proxies to the
 right node's manager-api using the `MANAGER_NODES` config from RM-08 phase 2. Full auth
 flow and scope-grant commands: [auth-model.md](auth-model.md#admin-dashboard-rm-10).
