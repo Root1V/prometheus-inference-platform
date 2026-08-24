@@ -6,12 +6,47 @@ Only explicitly declared fields are forwarded to llama.cpp — unknown fields ar
 
 from __future__ import annotations
 
+from typing import Annotated, Literal, Union
+
 from pydantic import BaseModel, Field, field_validator
+
+
+class TextContentPart(BaseModel):
+    type: Literal["text"]
+    text: str
+
+
+class ImageUrl(BaseModel):
+    url: str
+
+    @field_validator("url")
+    @classmethod
+    def url_must_be_data_uri(cls, v: str) -> str:
+        """RM-09: only inline base64 images are accepted.
+
+        Allowing the backend to fetch an operator-unknown http(s) URL would turn
+        /v1/chat/completions into an SSRF proxy for whatever the backend process
+        can reach. Callers must inline the image as a data: URI instead.
+        """
+        if not v.startswith("data:image/"):
+            raise ValueError(
+                "image_url.url must be a data: URI (e.g. 'data:image/png;base64,...') — "
+                "remote http(s) URLs are not allowed"
+            )
+        return v
+
+
+class ImageContentPart(BaseModel):
+    type: Literal["image_url"]
+    image_url: ImageUrl
+
+
+ContentPart = Annotated[Union[TextContentPart, ImageContentPart], Field(discriminator="type")]
 
 
 class ChatMessage(BaseModel):
     role: str
-    content: str
+    content: str | list[ContentPart]
 
     @field_validator("role")
     @classmethod
@@ -52,3 +87,17 @@ class ChatCompletionRequest(BaseModel):
         if self.stop is not None:
             payload["stop"] = self.stop
         return payload
+
+
+class EmbeddingsRequest(BaseModel):
+    """Allowlist schema for /v1/embeddings — RM-09.
+
+    Mirrors OpenAI's embeddings request shape (model + input only; the
+    dimensions/encoding_format options some providers add are not supported).
+    """
+
+    model: str
+    input: str | list[str]
+
+    def to_llama_payload(self) -> dict[str, object]:
+        return {"model": self.model, "input": self.input}

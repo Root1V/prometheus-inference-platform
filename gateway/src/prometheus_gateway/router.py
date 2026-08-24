@@ -19,7 +19,7 @@ from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 
 from .models.registry import ModelRegistry
-from .models.schemas import ChatCompletionRequest
+from .models.schemas import ChatCompletionRequest, EmbeddingsRequest
 from .telemetry import get_logger, get_tracer, metrics_store
 
 if TYPE_CHECKING:
@@ -32,6 +32,10 @@ _BASE_URL = "https://prometheus.internal/errors"
 # Token approximation ratio — 4 chars ≈ 1 token (AC-12)
 _CHARS_PER_TOKEN = 4
 _USAGE_TTL = 25 * 3600  # 25 hours
+# RM-09: rough per-image token cost for context-budget estimation (AC-12 predates
+# vision content parts). Matches common VLM low/mid-resolution tile estimates —
+# not exact, just enough to keep the existing context-exceeded guard meaningful.
+_IMAGE_TOKEN_ESTIMATE = 512
 
 
 def _problem(
@@ -72,9 +76,23 @@ def _estimate_tokens(messages: list[dict[str, Any]]) -> int:
     """Estimate total tokens in a messages list using 4 chars ≈ 1 token.
 
     Implements: memory/specs/007-rate-limiting-and-throughput.md — AC-12
+    RM-09: list-content messages (vision) add each image as a flat token
+    estimate instead of stringifying the content-part dicts.
     """
-    total_chars = sum(len(str(m.get("content", ""))) for m in messages)
-    return max(1, total_chars // _CHARS_PER_TOKEN)
+    total_tokens = 0
+    for m in messages:
+        content = m.get("content", "")
+        if isinstance(content, list):
+            for part in content:
+                if not isinstance(part, dict):
+                    continue
+                if part.get("type") == "image_url":
+                    total_tokens += _IMAGE_TOKEN_ESTIMATE
+                else:
+                    total_tokens += len(str(part.get("text", ""))) // _CHARS_PER_TOKEN
+        else:
+            total_tokens += len(str(content)) // _CHARS_PER_TOKEN
+    return max(1, total_tokens)
 
 
 def _sanitise_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -115,6 +133,7 @@ def create_router(registry: ModelRegistry, pool: "BackendPool") -> APIRouter:
                         "context_length": m.context_length,
                         "family": m.family,
                         "quantization": m.quantization,
+                        "modality": m.modality,
                     }
                     for m in models
                 ],
@@ -151,6 +170,7 @@ def create_router(registry: ModelRegistry, pool: "BackendPool") -> APIRouter:
                     "id": m.id,
                     "backend_url": m.backend_url,
                     "status": m.backend_status,
+                    "modality": m.modality,
                 }
 
                 # AC-20: circuit breaker state per backend
@@ -356,6 +376,24 @@ def create_router(registry: ModelRegistry, pool: "BackendPool") -> APIRouter:
                     "Forbidden",
                     f"This client is not authorized to use model {body.model!r}. "
                     "Contact the platform operator to request access.",
+                )
+
+            # RM-09: reject image content parts against a non-vision model. Placed
+            # with the other request-shape validation (400s), after the auth checks
+            # above since it's about the request, not who's allowed to send it.
+            has_image = any(
+                isinstance(m.content, list) and any(part.type == "image_url" for part in m.content)
+                for m in body.messages
+            )
+            if has_image and entry.modality != "vision":
+                inf_span.set_attribute("http.status_code", 400)
+                return _problem(
+                    request,
+                    400,
+                    "modality-mismatch",
+                    "Modality Mismatch",
+                    f"Model {body.model!r} does not support image input "
+                    f"(modality={entry.modality!r}). Use a vision-capable model.",
                 )
 
             # AC-6 (007): enforce max_tokens ≤ context_length
@@ -624,6 +662,144 @@ def create_router(registry: ModelRegistry, pool: "BackendPool") -> APIRouter:
                     "Upstream Error",
                     "The inference backend returned an unrecoverable error after retries.",
                 )
+
+    # ── POST /v1/embeddings ─────────────────────────────────────────────────
+    # Implements: memory/roadmap.md — RM-09 (VLM + embeddings)
+    @router.post("/v1/embeddings")
+    async def embeddings(body: EmbeddingsRequest, request: Request) -> Any:
+        """Proxy embeddings requests to an embedding-capable backend.
+
+        Mirrors the validation order used by /v1/chat/completions: unknown
+        model (400) -> wrong modality (400) -> auth (403) -> backend
+        availability (503) -> forward.
+        """
+        claims = getattr(getattr(request, "state", None), "claims", None)
+        request_id = getattr(getattr(request, "state", None), "request_id", "unknown")
+
+        entry = registry.get(body.model)
+        if entry is None:
+            return _problem(
+                request,
+                400,
+                "unknown-model",
+                "Unknown Model",
+                f"Model {body.model!r} is not registered. "
+                f"Use GET /v1/models for the list of available models.",
+            )
+
+        if entry.modality != "embedding":
+            return _problem(
+                request,
+                400,
+                "modality-mismatch",
+                "Modality Mismatch",
+                f"Model {body.model!r} is not an embedding model (modality={entry.modality!r}). "
+                f"Use GET /v1/models to find an embedding-capable model.",
+            )
+
+        if claims is None or not claims.has_scope("inference:read"):
+            return _problem(
+                request,
+                403,
+                "forbidden",
+                "Forbidden",
+                "This endpoint requires inference:read scope.",
+            )
+
+        if not claims.has_model_scope(body.model):
+            return _problem(
+                request,
+                403,
+                "forbidden",
+                "Forbidden",
+                f"This client is not authorized to use model {body.model!r}. "
+                "Contact the platform operator to request access.",
+            )
+
+        if entry.backend_url is None:
+            return _problem(
+                request,
+                503,
+                "model-not-loaded",
+                "Model Not Loaded",
+                f"Model {body.model!r} is registered but has no active backend. "
+                "Contact the platform operator.",
+            )
+
+        cb = pool.get_circuit_breaker(entry.id)
+        if cb is not None:
+            try:
+                if not await cb.allow_request():
+                    cb_state = await cb.get_state()
+                    retry_after = max(1, int((cb_state.recovery_at or 0) - time.time()))
+                    return _problem(
+                        request,
+                        503,
+                        "backend-unavailable",
+                        "Backend Unavailable",
+                        f"Backend '{entry.id}' circuit is {cb_state.state}.",
+                        extra_headers={"Retry-After": str(retry_after)},
+                    )
+            except Exception as exc:
+                logger.warning("circuit_breaker.check_error", backend_id=entry.id, error=str(exc))
+
+        target_url = f"{entry.backend_url.rstrip('/')}/v1/embeddings"
+        trace_id = getattr(getattr(request, "state", None), "trace_id", None)
+        if trace_id is None:
+            trace_id = structlog.contextvars.get_contextvars().get("trace_id", "none")
+
+        logger.info(
+            "embeddings.forwarding",
+            model=body.model,
+            backend_url=entry.backend_url,
+            request_id=request_id,
+        )
+
+        client = pool.get(entry.backend_url)
+        try:
+            resp = await pool.forward(
+                entry.id,
+                client,
+                target_url,
+                body.to_llama_payload(),
+                extra_headers={"X-Trace-ID": trace_id},
+            )
+        except (httpx.ConnectError, httpx.ConnectTimeout, httpx.RemoteProtocolError) as exc:
+            logger.error(
+                "embeddings.unreachable",
+                model=body.model,
+                backend_url=entry.backend_url,
+                error=str(exc),
+            )
+            return _problem(
+                request,
+                503,
+                "backend-unavailable",
+                "Backend Unavailable",
+                "The inference backend is currently unreachable. Please try again later.",
+            )
+        except Exception as exc:
+            logger.error(
+                "embeddings.upstream_error",
+                model=body.model,
+                backend_url=entry.backend_url,
+                error=str(exc),
+            )
+            return _problem(
+                request,
+                502,
+                "upstream-error",
+                "Upstream Error",
+                "The inference backend returned an unrecoverable error after retries.",
+            )
+
+        try:
+            resp_body: Any = resp.json()
+        except Exception:
+            resp_body = {}
+        return JSONResponse(
+            content=resp_body, status_code=resp.status_code, media_type="application/json"
+        )
 
     return router
 

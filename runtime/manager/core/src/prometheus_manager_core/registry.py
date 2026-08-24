@@ -17,6 +17,12 @@ _ID_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{1,62}[a-z0-9]$")
 # See memory/wiki/inference-engines.md (RM-06) for the comparison behind this list.
 BACKENDS = ("llama_cpp", "mlx", "vllm", "sglang")
 
+# RM-09: what kind of requests this model serves. Determines which flags
+# lifecycle.py adds to the launch command and how the gateway routes requests
+# (text -> /v1/chat/completions, embedding -> /v1/embeddings, vision -> chat
+# completions with image content parts). See memory/wiki/model-registry.md.
+MODALITIES = ("text", "embedding", "vision")
+
 
 @dataclass
 class RegistryEntry:
@@ -29,6 +35,13 @@ class RegistryEntry:
     # One of BACKENDS. Selects how lifecycle.start_instance() launches this
     # model and how the scanner recognizes its process. See RM-06/RM-08.
     backend: str = "llama_cpp"
+    # One of MODALITIES. Only "llama_cpp" acts on this today (--embedding /
+    # --mmproj flags in lifecycle.py); other backends accept it but don't yet
+    # dispatch on it — see memory/wiki/model-registry.md RM-09 section.
+    modality: str = "text"
+    # Vision projector file (.gguf), required when modality="vision" on
+    # llama_cpp — llama-server's --mmproj flag.
+    mmproj_path: str = ""
     log_level: str = "info"
     downloaded: bool = False
     discovery: bool = False  # See: memory/specs/010-registry-view-redesign.md
@@ -55,6 +68,8 @@ class RegistryEntry:
             "family",
             "quantization",
             "backend",
+            "modality",
+            "mmproj_path",
             "log_level",
             "downloaded",
             "discovery",
@@ -96,6 +111,7 @@ class Registry:
         """Validate and add entry; persist to disk."""
         _validate_id(entry.id)
         _validate_backend(entry.backend)
+        _validate_modality(entry.modality)
         _validate_path(entry.path, entry.backend)
         _validate_port(entry.port)
         self._entries[entry.id] = entry
@@ -134,6 +150,8 @@ class Registry:
                 family=raw.get("family", ""),
                 quantization=raw.get("quantization", ""),
                 backend=raw.get("backend", "llama_cpp"),
+                modality=raw.get("modality", "text"),
+                mmproj_path=raw.get("mmproj_path", ""),
                 log_level=raw.get("log_level", "info"),
                 downloaded=raw.get("downloaded", False),
                 discovery=raw.get("discovery", False),
@@ -167,6 +185,11 @@ def _validate_id(model_id: str) -> None:
 def _validate_backend(backend: str) -> None:
     if backend not in BACKENDS:
         raise ValueError(f"Unknown backend {backend!r}. Must be one of {BACKENDS}")
+
+
+def _validate_modality(modality: str) -> None:
+    if modality not in MODALITIES:
+        raise ValueError(f"Unknown modality {modality!r}. Must be one of {MODALITIES}")
 
 
 def _validate_path(path: str, backend: str = "llama_cpp") -> None:

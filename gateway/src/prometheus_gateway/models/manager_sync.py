@@ -244,6 +244,7 @@ class ManagerRegistrySync:
             backend_status=backend_status,
             discovery=True,  # manager already filtered by discovery=true
             node=node_name,
+            modality=b.get("modality", "text"),
         )
 
     async def _sync(self) -> None:

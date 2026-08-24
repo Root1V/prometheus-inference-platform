@@ -33,7 +33,7 @@ folded in here per your "muchos más que vayas encontrando."
 | [RM-06](#rm-06-research-the-best-inference-serving-stack-item-7) | Research best inference-serving stack per hardware (item 7) | done | — |
 | [RM-07](#rm-07-fine-grained-per-model-authorization-scopes-item-2) | Fine-grained per-model authorization scopes (item 2) | done | — |
 | [RM-08](#rm-08-distributed-inference-across-multiple-hosts-item-5) | Distributed inference across multiple hosts (item 5) | done | RM-05, RM-06 |
-| [RM-09](#rm-09-multi-modal-model-support-item-6) | Multi-modal model support: VLM/audio/image/video/embeddings (item 6) | todo | RM-05, RM-06 |
+| [RM-09](#rm-09-multi-modal-model-support-item-6-done-vlm--embeddings) | Multi-modal model support: VLM + embeddings (item 6, scoped) | done | RM-05, RM-06 |
 | [RM-10](#rm-10-gateway-admin-dashboard-item-3) | Gateway admin dashboard (item 3) | todo | RM-05 |
 | [RM-11](#rm-11-auth-module-dashboard-redesign-item-1) | Auth module dashboard redesign (item 1) | todo | RM-07 (do together) |
 | [RM-12](#rm-12-e2e-llm-tracing-with-langfuse-item-8) | E2E LLM tracing with Langfuse (item 8) | todo | — |
@@ -288,15 +288,52 @@ sync logic are unit-tested against mocked HTTP responses, but the actual cross-m
 machine available in this dev environment). Validate on the real fleet (Mac + DGX Spark,
 etc.) before relying on it in production.
 
-## RM-09 — Multi-modal model support (item 6)
+## RM-09 — Multi-modal model support (item 6) — `done` (VLM + embeddings)
 
 **Why**: today the platform only serves text LLMs. You want VLM, multimodal, audio,
 image-generation, video-generation, and embedding models.
 
-**Scope**: extend the manager's registry/lifecycle and the gateway's routing/API surface
-to model different modalities (not all of them expose an OpenAI-chat-shaped API) — informed
-by RM-06's engine research, since different modalities likely need different serving
-backends (e.g. diffusers/ComfyUI for image/video, whisper.cpp for audio).
+**Scope decision**: the original ask covers four distinct API surfaces (VLM, audio,
+image/video-gen, embeddings) — too much for one lightweight branch. Scoped down to VLM +
+embeddings (user-selected): both reuse the existing chat/proxy infrastructure instead of
+needing a new pipeline shape, and cover the most immediately useful cases (RAG via
+embeddings, image understanding via VLM). Audio and image/video generation are separate,
+larger follow-up items — see "What's not covered" below.
+
+**Manager (`core`)**:
+- `RegistryEntry.modality` (`text`/`vision`/`embedding`, default `text`) and
+  `RegistryEntry.mmproj_path` (vision projector file). `pmgr register --modality
+  --mmproj-path`.
+- `lifecycle.py`: `_build_llama_cpp_cmd` adds `--embedding` for `modality: embedding` and
+  `--mmproj <mmproj_path>` for `modality: vision` — both real llama-server flags. Only
+  `llama_cpp` dispatches on modality today; `mlx`/`vllm`/`sglang` accept the field but
+  don't act on it yet (documented gap, same shape as phase 1's unverified vLLM/SGLang).
+- TUI: Modality column in `pmgr list`/registry view + detail panel.
+
+**Gateway**:
+- `ChatMessage.content` now accepts either a plain string or an OpenAI-shaped content-part
+  array (`text` / `image_url`). `image_url.url` must be a `data:` URI — remote http(s)
+  URLs are rejected to prevent the backend from being used as an SSRF proxy.
+- `/v1/chat/completions` returns `400 modality-mismatch` if a request has an `image_url`
+  part but the target model's `modality != "vision"`.
+- New `POST /v1/embeddings` (OpenAI-shaped `{model, input}`) — same auth chain as chat
+  completions (`inference:read` + per-model `model:<id>` grant, RM-07), `400
+  modality-mismatch` if the model isn't `modality: embedding`.
+- `ModelEntry.modality` threaded through the static registry loader, `ManagerRegistrySync`,
+  and exposed on `GET /v1/models` / `GET /v1/backends`.
+
+**What's verified**: both llama_cpp flags were checked against a real llama-server build on
+this Mac — `--embedding` launched `second-state/All-MiniLM-L6-v2-Embedding-GGUF` and served
+a real `/v1/embeddings` response; `--mmproj` launched `ggml-org/SmolVLM-256M-Instruct-GGUF`
+and correctly answered a real image content-part chat request (both via direct curl against
+the manager-launched command, not through the full gateway auth stack — that stack is
+already covered by existing JWT/scope tests). 22 new tests (10 manager-core, 13 gateway
+minus 1 that's schema-only) — full details in `memory/wiki/model-registry.md` "Modalities
+(RM-09)".
+
+**What's not covered** (follow-up items, not RM-09): audio (whisper.cpp), image/video
+generation (diffusers/ComfyUI), and modality-specific dispatch for `mlx`/`vllm`/`sglang`
+(e.g. `mlx-vlm`/`mlx-whisper`).
 
 ## RM-10 — Gateway admin dashboard (item 3)
 

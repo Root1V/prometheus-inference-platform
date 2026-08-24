@@ -183,6 +183,51 @@ def multi_model_app(settings, multi_model_registry):
     return create_app(settings=settings, registry=multi_model_registry)
 
 
+# ── RM-09: modality registry fixture (vision + embedding models) ────────────
+
+
+@pytest.fixture
+def modality_registry(tmp_path):
+    """Registry with a text, a vision, and an embedding model — all active.
+
+    Implements: memory/roadmap.md — RM-09 (VLM + embeddings)
+    """
+    yaml_content = """models:
+  - id: llama3-8b-q4
+    path: /dev/null
+    context_length: 8192
+    family: llama3
+    quantization: Q4_0
+    backend_url: "http://127.0.0.1:18080"
+    modality: text
+  - id: vlm-model
+    path: /dev/null
+    context_length: 8192
+    family: qwen2-vl
+    quantization: Q4_0
+    backend_url: "http://127.0.0.1:18082"
+    modality: vision
+  - id: embed-model
+    path: /dev/null
+    context_length: 512
+    family: nomic-embed
+    quantization: F16
+    backend_url: "http://127.0.0.1:18083"
+    modality: embedding
+"""
+    registry_file = tmp_path / "registry.yaml"
+    registry_file.write_text(yaml_content)
+    return ModelRegistry(registry_file)
+
+
+@pytest.fixture
+def modality_app(settings, modality_registry):
+    """Full gateway app wired with the RM-09 modality registry."""
+    from prometheus_gateway.main import create_app
+
+    return create_app(settings=settings, registry=modality_registry)
+
+
 @pytest.fixture
 async def client(test_app):
     async with AsyncClient(transport=ASGITransport(app=test_app), base_url="http://test") as c:

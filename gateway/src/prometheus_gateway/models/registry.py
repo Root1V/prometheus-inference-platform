@@ -42,6 +42,10 @@ class ModelEntry:
     # RM-08 phase 2: which configured manager node this model is served from.
     # "" for the single-node case (MANAGER_URL) or the static registry.yaml fallback.
     node: str = ""
+    # RM-09: "text" (default, /v1/chat/completions), "vision" (chat completions
+    # with image content parts), or "embedding" (/v1/embeddings). Determines
+    # request routing/validation — see memory/wiki/model-registry.md.
+    modality: str = "text"
 
 
 class ModelRegistry:
@@ -87,6 +91,7 @@ class ModelRegistry:
                 backend_url=backend_url,
                 backend_status=backend_status,
                 discovery=bool(entry.get("discovery", True)),
+                modality=entry.get("modality", "text"),
             )
             self._models[model.id] = model
         logger.info("registry.loaded", extra={"count": len(self._models)})

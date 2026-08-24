@@ -95,6 +95,14 @@ def _build_llama_cpp_cmd(binary: str, entry: RegistryEntry, port: int, bind_host
                 "1024",
             ]
         )
+
+    # RM-09: modality-specific flags. Only llama_cpp dispatches on modality
+    # today — mlx/vllm/sglang accept the field but don't act on it yet.
+    if entry.modality == "embedding":
+        cmd.append("--embedding")
+    elif entry.modality == "vision" and entry.mmproj_path:
+        cmd.extend(["--mmproj", entry.mmproj_path])
+
     return cmd
 
 

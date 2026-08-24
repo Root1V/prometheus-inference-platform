@@ -79,6 +79,42 @@ class TestBackendCommandBuilders:
         assert "--served-model-name" in cmd and "test-model" in cmd
         assert "--context-length" in cmd and "8192" in cmd
 
+    def test_llama_cpp_cmd_embedding_modality_adds_embedding_flag(self):
+        """RM-09: modality="embedding" switches llama-server into embedding mode."""
+        cmd = _build_llama_cpp_cmd(
+            "llama-server", self._entry(modality="embedding"), 9090, "127.0.0.1"
+        )
+        assert "--embedding" in cmd
+
+    def test_llama_cpp_cmd_text_modality_has_no_embedding_flag(self):
+        cmd = _build_llama_cpp_cmd("llama-server", self._entry(), 9090, "127.0.0.1")
+        assert "--embedding" not in cmd
+
+    def test_llama_cpp_cmd_vision_modality_adds_mmproj_flag(self):
+        """RM-09: modality="vision" + mmproj_path passes --mmproj to llama-server."""
+        cmd = _build_llama_cpp_cmd(
+            "llama-server",
+            self._entry(modality="vision", mmproj_path="/models/mmproj.gguf"),
+            9090,
+            "127.0.0.1",
+        )
+        assert "--mmproj" in cmd
+        assert "/models/mmproj.gguf" in cmd
+
+    def test_llama_cpp_cmd_vision_modality_without_mmproj_path_omits_flag(self):
+        """No mmproj_path configured — don't pass a broken --mmproj with no value."""
+        cmd = _build_llama_cpp_cmd(
+            "llama-server", self._entry(modality="vision"), 9090, "127.0.0.1"
+        )
+        assert "--mmproj" not in cmd
+
+    def test_mlx_and_vllm_and_sglang_cmds_ignore_modality(self):
+        """Only llama_cpp dispatches on modality today — see registry.py RM-09 note."""
+        entry = self._entry(modality="embedding")
+        assert "--embedding" not in _build_mlx_cmd("mlx_lm.server", entry, 9090, "127.0.0.1")
+        assert "--embedding" not in _build_vllm_cmd("vllm", entry, 9090, "127.0.0.1")
+        assert "--embedding" not in _build_sglang_cmd("python3", entry, 9090, "127.0.0.1")
+
     def test_start_instance_dispatches_on_backend(self, default_config, populated_registry):
         """start_instance picks the command builder matching entry.backend."""
         populated_registry.update("test-model", backend="mlx", path="mlx-community/model-4bit")

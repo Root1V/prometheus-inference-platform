@@ -413,6 +413,7 @@ edge-ai-inference/
 - Per-model authorization — `model:<id>` scopes, deny-by-default (RM-07). See [memory/wiki/auth-model.md](memory/wiki/auth-model.md#per-model-scopes-rm-07).
 - Rate limiting per `user_id` + per `client_id`
 - Prompt injection defence — `system`-role messages stripped before forwarding to llama.cpp
+- Vision content parts (`image_url`) must be inline `data:` URIs — remote http(s) image URLs are rejected so the backend can't be used as an SSRF proxy (RM-09)
 - llama.cpp bound to `127.0.0.1` — never reachable from Podman network directly
 - RFC 9457 Problem Details on all errors — no stack traces exposed
 - Client secrets stored as bcrypt hashes — never logged or returned after registration

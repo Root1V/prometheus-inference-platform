@@ -35,6 +35,8 @@ Each model entry:
 models:
   - id: llama3-1b-q4-local          # unique identifier used in API requests
     backend: llama_cpp               # llama_cpp | mlx | vllm | sglang — see RM-06/RM-08
+    modality: text                   # text | vision | embedding — see RM-09 below
+    mmproj_path: ""                  # vision projector .gguf — only for modality: vision on llama_cpp
     family: llama3                   # model family — selects prompt template (llama3, mistral, phi, qwen)
     quantization: Q4_0               # GGUF quantization level
     context_length: 8192             # max tokens (prompt + completion)
@@ -107,6 +109,47 @@ Error responses by routing state:
 | Model not in registry | `400 unknown-model` |
 | Registered, no `backend_url` | `503 model-not-loaded` |
 | `backend_url` present, connection fails | `503 backend-unavailable` |
+| Vision content part on a non-vision model | `400 modality-mismatch` |
+| `/v1/embeddings` against a non-embedding model | `400 modality-mismatch` |
+
+## Modalities (RM-09)
+
+`modality` (`text` / `vision` / `embedding`) tells the gateway which endpoint and request
+shape a model accepts, and tells `lifecycle.py` which extra flags to launch it with:
+
+| modality | Gateway endpoint | llama_cpp launch flag |
+|----------|-------------------|------------------------|
+| `text` (default) | `POST /v1/chat/completions`, plain string content | — |
+| `vision` | `POST /v1/chat/completions`, `content` may be an array with `image_url` parts | `--mmproj <mmproj_path>` |
+| `embedding` | `POST /v1/embeddings` | `--embedding` |
+
+Register with `pmgr register --modality vision --mmproj-path /path/to/mmproj.gguf` or
+`--modality embedding`. `--modality` defaults to `text`, matching pre-RM-09 entries.
+
+**Vision requests**: `image_url.url` must be an inline `data:image/...;base64,...` URI —
+the gateway rejects `http(s)://` image URLs with a validation error. Letting the backend
+fetch an arbitrary client-supplied URL would turn `/v1/chat/completions` into an SSRF
+proxy for whatever the backend process can reach; inlining the image closes that off. A
+`vision`-modality model still accepts plain-text-only messages — only the `image_url`
+content-part type requires a vision model, not the array-content shape itself.
+
+**Embeddings requests**: `POST /v1/embeddings` mirrors OpenAI's shape —
+`{"model": "...", "input": "text" | ["text", ...]}` — and is proxied to the backend's own
+`/v1/embeddings` unchanged. It goes through the same auth checks as chat completions
+(`inference:read` scope + per-model `model:<id>` grant, RM-07) but is otherwise separate
+from `/v1/chat/completions` — no `max_tokens`/context-length accounting, since embedding
+requests don't generate completions.
+
+**What's verified**: both flags were checked against a real llama-server build on this Mac
+— `--embedding` launched against `second-state/All-MiniLM-L6-v2-Embedding-GGUF` and served
+a real `/v1/embeddings` response; `--mmproj` launched against
+`ggml-org/SmolVLM-256M-Instruct-GGUF` and correctly answered a real image content-part
+chat request. **What's not wired**: only `llama_cpp` dispatches on `modality` today —
+`mlx`/`vllm`/`sglang` accept the field (so it round-trips through the registry and the
+gateway) but `lifecycle.py`'s command builders for those three backends don't yet add
+modality-specific flags (e.g. `mlx-vlm`/`mlx-whisper` for MLX vision/audio — see
+[inference-engines.md](inference-engines.md)). Follow-up work, not a blocker for the
+llama_cpp path documented above.
 
 All backend URLs must resolve to loopback (`127.0.0.1`), `host.containers.internal`, or a
 node hostname explicitly configured via `MANAGER_NODES` (RM-08 phase 2, below) — never an

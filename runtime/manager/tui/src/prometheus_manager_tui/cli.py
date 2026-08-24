@@ -150,6 +150,7 @@ def cmd_list(ctx: click.Context) -> None:
     table = Table(title="Model Registry")
     table.add_column("ID", style="bold")
     table.add_column("Backend")
+    table.add_column("Modality")
     table.add_column("Port")
     table.add_column("Downloaded")
     table.add_column("Running")
@@ -159,7 +160,7 @@ def cmd_list(ctx: click.Context) -> None:
         running_mark = "[green]●[/green]" if e.id in running_aliases else "[dim]○[/dim]"
         dl_mark = "[green]✓[/green]" if e.downloaded else "[yellow]✗[/yellow]"
         location = e.path if e.path else (f"hf:{e.hf_repo}/{e.hf_filename}" if e.hf_repo else "—")
-        table.add_row(e.id, e.backend, str(e.port), dl_mark, running_mark, location)
+        table.add_row(e.id, e.backend, e.modality, str(e.port), dl_mark, running_mark, location)
 
     console.print(table)
 
@@ -336,6 +337,17 @@ def cmd_restart(ctx: click.Context, model_id: str) -> None:
 @click.option("--context-length", type=int, default=4096, prompt="Context length")
 @click.option("--family", default="", prompt="Model family (e.g. llama, mistral)")
 @click.option("--quantization", default="", prompt="Quantization (e.g. Q4_0, mlx-4bit, awq)")
+@click.option(
+    "--modality",
+    type=click.Choice(["text", "embedding", "vision"]),
+    default="text",
+    help="What this model serves — see memory/wiki/model-registry.md (RM-09).",
+)
+@click.option(
+    "--mmproj-path",
+    default="",
+    help="Vision projector .gguf file — required for --modality vision on llama_cpp.",
+)
 @click.option("--hf-repo", default="", help="HuggingFace repo id.")
 @click.option("--hf-filename", default="", help="Filename within the HF repo.")
 @click.option("--hf-sha256", default="", help="Expected SHA-256 of the GGUF.")
@@ -349,6 +361,8 @@ def cmd_register(
     context_length: int,
     family: str,
     quantization: str,
+    modality: str,
+    mmproj_path: str,
     hf_repo: str,
     hf_filename: str,
     hf_sha256: str,
@@ -357,6 +371,7 @@ def cmd_register(
 
     Implements: memory/specs/008-llama-server-manager.md — AC-3, AC-16, AC-17
     Implements: memory/wiki/inference-engines.md — RM-08 (backend selection)
+    Implements: memory/wiki/model-registry.md — RM-09 (modality)
     """
     cfg = _load(ctx.obj["config_path"])
     reg = _registry(cfg)
@@ -371,6 +386,8 @@ def cmd_register(
         context_length=context_length,
         family=family,
         quantization=quantization,
+        modality=modality,
+        mmproj_path=mmproj_path,
         hf_repo=hf_repo,
         hf_filename=hf_filename,
         hf_sha256=hf_sha256,

@@ -8,10 +8,12 @@ import pytest
 
 from prometheus_manager_core.registry import (
     BACKENDS,
+    MODALITIES,
     Registry,
     RegistryEntry,
     _validate_backend,
     _validate_id,
+    _validate_modality,
     _validate_path,
 )
 
@@ -60,6 +62,59 @@ class TestBackendField:
         )
         reloaded = Registry(registry_path)
         assert reloaded.get("mlx-model").backend == "mlx"
+
+
+# ── RM-09: modality field ────────────────────────────────────────────────────
+
+
+class TestModalityField:
+    """RM-09: modality routes VLM/embedding requests — see memory/wiki/model-registry.md."""
+
+    def test_defaults_to_text(self):
+        assert RegistryEntry(id="m", port=8080, context_length=4096).modality == "text"
+
+    def test_all_modalities_accepted(self):
+        for modality in MODALITIES:
+            _validate_modality(modality)  # no raise
+
+    def test_unknown_modality_rejected(self):
+        with pytest.raises(ValueError, match="Unknown modality"):
+            _validate_modality("audio")
+
+    def test_add_rejects_unknown_modality(self, registry_path: Path):
+        registry = Registry(registry_path)
+        with pytest.raises(ValueError, match="Unknown modality"):
+            registry.add(
+                RegistryEntry(
+                    id="test-model",
+                    port=8080,
+                    context_length=4096,
+                    path="/m.gguf",
+                    modality="audio",
+                )
+            )
+
+    def test_modality_and_mmproj_path_persisted_through_save_and_reload(self, registry_path: Path):
+        registry = Registry(registry_path)
+        registry.add(
+            RegistryEntry(
+                id="vlm-model",
+                port=8082,
+                context_length=8192,
+                path="/models/vlm-model.gguf",
+                modality="vision",
+                mmproj_path="/models/mmproj.gguf",
+            )
+        )
+        reloaded = Registry(registry_path)
+        entry = reloaded.get("vlm-model")
+        assert entry.modality == "vision"
+        assert entry.mmproj_path == "/models/mmproj.gguf"
+
+    def test_mmproj_path_omitted_from_dict_when_empty(self, registry_path: Path):
+        """to_dict() drops empty optional fields — keeps registry.yaml tidy."""
+        entry = RegistryEntry(id="m", port=8080, context_length=4096, path="/m.gguf")
+        assert "mmproj_path" not in entry.to_dict()
 
 
 # ── AC-3: Registry CRUD ────────────────────────────────────────────────────────

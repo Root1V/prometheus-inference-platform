@@ -145,6 +145,7 @@ class RegistryView(Vertical):
         table.add_columns(
             "ID",
             "Backend",
+            "Modality",
             "Family",
             "Quant",
             "Ctx",
@@ -197,6 +198,7 @@ class RegistryView(Vertical):
                 "",
                 "",
                 "",
+                "",
                 key="_sep_",
             )
             self._row_ids.append(None)
@@ -231,6 +233,7 @@ class RegistryView(Vertical):
             row = (
                 f"[dim]{e.id}[/dim]",
                 f"[dim]{e.backend}[/dim]",
+                f"[dim]{e.modality}[/dim]",
                 f"[dim]{e.family}[/dim]",
                 f"[dim]{e.quantization}[/dim]",
                 f"[dim]{ctx}[/dim]",
@@ -241,7 +244,19 @@ class RegistryView(Vertical):
                 f"[dim]{size}[/dim]",
             )
         else:
-            row = (e.id, e.backend, e.family, e.quantization, ctx, ram, dl, disc, src, size)
+            row = (
+                e.id,
+                e.backend,
+                e.modality,
+                e.family,
+                e.quantization,
+                ctx,
+                ram,
+                dl,
+                disc,
+                src,
+                size,
+            )
         table.add_row(*row, key=e.id)
         self._row_ids.append(e.id)
 
@@ -261,6 +276,7 @@ class RegistryView(Vertical):
         identity_lines = [
             f"[dim]Registry ID  [/dim]  {_esc(entry.id)}",
             f"[dim]Backend      [/dim]  {_esc(entry.backend)}",
+            f"[dim]Modality     [/dim]  {_esc(entry.modality)}",
             f"[dim]Family       [/dim]  {_esc(entry.family) or '—'}",
             f"[dim]Quantization [/dim]  {_esc(entry.quantization) or '—'}",
             f"[dim]GGUF file    [/dim]  {fname}",
