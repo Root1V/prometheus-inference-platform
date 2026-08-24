@@ -153,12 +153,12 @@ curl http://localhost:8000/v1/models
 CLIENT=$(curl -s -X POST http://localhost:9000/admin/clients \
   -H "X-Admin-Key: $AUTH_ADMIN_API_KEY" \
   -H "Content-Type: application/json" \
-  -d '{"name":"my-app","scope":"inference:read"}')
+  -d '{"client_name":"my-app","role":"app","allowed_scopes":["inference:read"]}')
 CLIENT_ID=$(echo $CLIENT | python3 -c "import sys,json; print(json.load(sys.stdin)['client_id'])")
 CLIENT_SECRET=$(echo $CLIENT | python3 -c "import sys,json; print(json.load(sys.stdin)['client_secret'])")
 
 # Obtain a JWT via client credentials
-TOKEN=$(curl -s -X POST http://localhost:9000/token \
+TOKEN=$(curl -s -X POST http://localhost:9000/oauth2/token \
   -d "grant_type=client_credentials&client_id=$CLIENT_ID&client_secret=$CLIENT_SECRET" \
   | python3 -c "import sys,json; print(json.load(sys.stdin)['access_token'])")
 
