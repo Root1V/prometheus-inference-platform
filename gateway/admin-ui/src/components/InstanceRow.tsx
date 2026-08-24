@@ -1,4 +1,4 @@
-import { Play, RotateCw, Square, Trash2 } from "lucide-react";
+import { Pencil, Play, RotateCw, Square, Trash2 } from "lucide-react";
 import { useState } from "react";
 import { useDeleteModel, useRestartInstance, useStartInstance, useStopInstance } from "../api/instances";
 import { useToast } from "../context/ToastContext";
@@ -12,7 +12,13 @@ import { StatusBadge } from "./StatusBadge";
 const actionButtonClass =
   "rounded-md p-1.5 transition-colors disabled:cursor-not-allowed disabled:opacity-30";
 
-export function InstanceRow({ instance }: { instance: InstanceEntry }) {
+export function InstanceRow({
+  instance,
+  onEdit,
+}: {
+  instance: InstanceEntry;
+  onEdit: (instance: InstanceEntry) => void;
+}) {
   const { showToast } = useToast();
   const [confirmDelete, setConfirmDelete] = useState(false);
   const start = useStartInstance();
@@ -78,6 +84,16 @@ export function InstanceRow({ instance }: { instance: InstanceEntry }) {
               className={cn(actionButtonClass, "text-blue-600 hover:bg-blue-50")}
             >
               <RotateCw size={16} />
+            </button>
+            <button
+              type="button"
+              title="Edit"
+              aria-label={`Edit ${instance.id}`}
+              disabled={isBusy}
+              onClick={() => onEdit(instance)}
+              className={cn(actionButtonClass, "text-text-muted hover:bg-background")}
+            >
+              <Pencil size={16} />
             </button>
             <button
               type="button"

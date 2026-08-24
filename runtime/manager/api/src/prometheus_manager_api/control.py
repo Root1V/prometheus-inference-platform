@@ -1,6 +1,7 @@
 """Write endpoints for the Prometheus Manager REST API — RM-10.
 
 POST   /v1/backends                  — register a model
+PATCH  /v1/backends/{model_id}       — update a registered model's fields
 DELETE /v1/backends/{model_id}       — deregister (stops it first if running)
 POST   /v1/backends/{model_id}/start
 POST   /v1/backends/{model_id}/stop
@@ -27,12 +28,40 @@ from prometheus_manager_core.lifecycle import (
     start_instance,
     stop_instance,
 )
-from prometheus_manager_core.registry import Registry, RegistryEntry
+from prometheus_manager_core.registry import (
+    Registry,
+    RegistryEntry,
+    _validate_backend,
+    _validate_modality,
+    _validate_path,
+    _validate_port,
+)
 from prometheus_manager_core.scanner import scan
 from prometheus_manager_core.telemetry import get_tracer
 
 from .auth import require_backend_registry_write
 from .routes import _merge
+
+# Fields an operator may PATCH — everything except `id` (the registry key —
+# renaming would mean remove+re-add, not an in-place update) and
+# `hf_filenames` (sharded-download internal detail, not surfaced in the
+# admin dashboard's edit form).
+_UPDATABLE_FIELDS = frozenset(
+    {
+        "path",
+        "context_length",
+        "family",
+        "quantization",
+        "backend",
+        "modality",
+        "mmproj_path",
+        "discovery",
+        "hf_repo",
+        "hf_filename",
+        "hf_sha256",
+        "port",
+    }
+)
 
 router = APIRouter()
 
@@ -97,6 +126,55 @@ async def register_backend(
 
         span.set_attribute("http.status_code", 201)
         result: dict[str, Any] = entry.to_dict()
+        return result
+
+
+@router.patch("/v1/backends/{model_id}", tags=["backends"])
+async def update_backend(
+    model_id: str,
+    body: dict[str, Any],
+    request: Request,
+    _claims: Annotated[Claims, Depends(require_backend_registry_write)],
+) -> dict[str, Any]:
+    """Update one or more fields of an already-registered model.
+
+    Partial update — only keys present in the body are changed; `id` cannot
+    be changed this way (it's the registry key). Validated with the same
+    RegistryEntry validators register_backend uses, applied to the
+    *resulting* merged values so e.g. changing only `backend` still
+    re-validates `path` against the new backend.
+
+    Implements: memory/roadmap.md — RM-10
+    """
+    with _tracer.start_as_current_span("backend.update", kind=SpanKind.INTERNAL) as span:
+        span.set_attribute("model_id", model_id)
+        registry: Registry = request.app.state.registry
+
+        entry = registry.get(model_id)
+        if entry is None:
+            span.set_attribute("http.status_code", 404)
+            raise _problem(404, "not-found", "Not Found", f"Model {model_id!r} not registered.")
+
+        updates = {k: v for k, v in body.items() if k in _UPDATABLE_FIELDS}
+        merged_backend = updates.get("backend", entry.backend)
+        merged_path = updates.get("path", entry.path)
+        merged_port = updates.get("port", entry.port)
+        merged_modality = updates.get("modality", entry.modality)
+
+        try:
+            _validate_backend(merged_backend)
+            _validate_modality(merged_modality)
+            _validate_path(merged_path, merged_backend)
+            _validate_port(int(merged_port))
+        except (ValueError, TypeError) as exc:
+            span.set_attribute("http.status_code", 400)
+            raise _problem(400, "invalid-update", "Invalid Update", str(exc)) from exc
+
+        registry.update(model_id, **updates)
+        span.set_attribute("http.status_code", 200)
+        updated = registry.get(model_id)
+        assert updated is not None  # just updated above
+        result: dict[str, Any] = updated.to_dict()
         return result
 
 

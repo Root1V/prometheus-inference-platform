@@ -1,15 +1,27 @@
 import { X } from "lucide-react";
 import { useState, type FormEvent, type ReactNode } from "react";
 import { createPortal } from "react-dom";
-import { useRegisterModel } from "../api/instances";
+import { useRegisterModel, useUpdateModel } from "../api/instances";
 import { useToast } from "../context/ToastContext";
+import { cn } from "../lib/cn";
 import { getErrorMessage } from "../lib/errors";
-import type { Backend, Modality, RegisterModelRequest } from "../types/instance";
+import type {
+  Backend,
+  InstanceEntry,
+  Modality,
+  RegisterModelRequest,
+  UpdateModelRequest,
+} from "../types/instance";
 
 interface RegisterModelModalProps {
   open: boolean;
   nodes: string[];
   onClose: () => void;
+  /** When set, the modal edits this existing instance (PATCH) instead of
+   * registering a new one (POST). Node and ID become read-only — moving a
+   * model to a different node or renaming it isn't a field edit, it's a
+   * re-registration, out of scope here. */
+  editing?: InstanceEntry | null;
 }
 
 const BACKENDS: Backend[] = ["llama_cpp", "mlx", "vllm", "sglang"];
@@ -51,6 +63,25 @@ function initialState(defaultNode: string): FormState {
   };
 }
 
+function stateFromInstance(instance: InstanceEntry): FormState {
+  return {
+    node: instance.node,
+    id: instance.id,
+    port: String(instance.port),
+    path: instance.path,
+    context_length: String(instance.context_length),
+    family: instance.family,
+    quantization: instance.quantization,
+    backend: instance.backend,
+    modality: instance.modality,
+    mmproj_path: instance.mmproj_path,
+    discovery: instance.discovery,
+    hf_repo: instance.hf_repo,
+    hf_filename: instance.hf_filename,
+    hf_sha256: instance.hf_sha256,
+  };
+}
+
 const inputClass =
   "w-full rounded-lg border border-border bg-background px-3 py-2 text-sm text-text focus:border-primary focus:outline-none";
 
@@ -66,10 +97,14 @@ function Field({ label, required, children }: { label: string; required?: boolea
   );
 }
 
-export function RegisterModelModal({ open, nodes, onClose }: RegisterModelModalProps) {
+export function RegisterModelModal({ open, nodes, onClose, editing = null }: RegisterModelModalProps) {
   const { showToast } = useToast();
   const registerModel = useRegisterModel();
-  const [form, setForm] = useState<FormState>(() => initialState(""));
+  const updateModel = useUpdateModel();
+  const isEditing = editing !== null;
+  const [form, setForm] = useState<FormState>(() =>
+    editing ? stateFromInstance(editing) : initialState(""),
+  );
 
   if (!open) return null;
 
@@ -77,6 +112,7 @@ export function RegisterModelModal({ open, nodes, onClose }: RegisterModelModalP
   // first available node until the operator picks one explicitly. Derived
   // during render rather than synced via an effect (no extra render needed).
   const selectedNode = form.node || nodes[0] || "";
+  const isPending = registerModel.isPending || updateModel.isPending;
 
   const update = <K extends keyof FormState>(key: K, value: FormState[K]) =>
     setForm((current) => ({ ...current, [key]: value }));
@@ -85,6 +121,34 @@ export function RegisterModelModal({ open, nodes, onClose }: RegisterModelModalP
     event.preventDefault();
     if (!selectedNode) {
       showToast("Select a node", "error");
+      return;
+    }
+
+    if (isEditing) {
+      const body: UpdateModelRequest = {
+        port: Number(form.port),
+        backend: form.backend,
+        modality: form.modality,
+        discovery: form.discovery,
+        path: form.path,
+        context_length: Number(form.context_length) || undefined,
+        family: form.family,
+        quantization: form.quantization,
+        mmproj_path: form.modality === "vision" ? form.mmproj_path : "",
+        hf_repo: form.hf_repo,
+        hf_filename: form.hf_filename,
+        hf_sha256: form.hf_sha256,
+      };
+      updateModel.mutate(
+        { node: selectedNode, modelId: form.id, data: body },
+        {
+          onSuccess: () => {
+            showToast(`${form.id} updated`, "success");
+            onClose();
+          },
+          onError: (error) => showToast(getErrorMessage(error), "error"),
+        },
+      );
       return;
     }
 
@@ -121,7 +185,9 @@ export function RegisterModelModal({ open, nodes, onClose }: RegisterModelModalP
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 px-4 py-8">
       <div className="max-h-full w-full max-w-lg overflow-y-auto rounded-xl bg-surface p-6 shadow-lg">
         <div className="mb-4 flex items-center justify-between">
-          <h2 className="text-lg font-semibold text-text">Register model</h2>
+          <h2 className="text-lg font-semibold text-text">
+            {isEditing ? `Edit ${form.id}` : "Register model"}
+          </h2>
           <button type="button" onClick={onClose} aria-label="Close">
             <X size={18} className="text-text-muted" />
           </button>
@@ -133,7 +199,8 @@ export function RegisterModelModal({ open, nodes, onClose }: RegisterModelModalP
                 value={selectedNode}
                 onChange={(e) => update("node", e.target.value)}
                 required
-                className={inputClass}
+                disabled={isEditing}
+                className={cn(inputClass, isEditing && "cursor-not-allowed opacity-60")}
               >
                 <option value="" disabled>
                   Select node
@@ -150,9 +217,10 @@ export function RegisterModelModal({ open, nodes, onClose }: RegisterModelModalP
                 value={form.id}
                 onChange={(e) => update("id", e.target.value)}
                 required
+                disabled={isEditing}
                 pattern="^[a-z0-9][a-z0-9_-]{1,62}[a-z0-9]$"
                 title="Lowercase letters, digits, hyphens, underscores"
-                className={inputClass}
+                className={cn(inputClass, isEditing && "cursor-not-allowed opacity-60")}
               />
             </Field>
             <Field label="Port" required>
@@ -263,10 +331,10 @@ export function RegisterModelModal({ open, nodes, onClose }: RegisterModelModalP
             </button>
             <button
               type="submit"
-              disabled={registerModel.isPending}
+              disabled={isPending}
               className="rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:opacity-90 disabled:opacity-50"
             >
-              {registerModel.isPending ? "Registering…" : "Register"}
+              {isPending ? "Saving…" : isEditing ? "Save changes" : "Register"}
             </button>
           </div>
         </form>

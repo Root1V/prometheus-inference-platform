@@ -141,6 +141,101 @@ class TestRegister:
         assert resp.status_code == 400
 
 
+# ── PATCH /v1/backends/{id} (update) ──────────────────────────────────────────
+
+
+class TestUpdate:
+    def test_update_requires_auth(self, tmp_path: Path):
+        client = _make_client(tmp_path)
+        resp = client.patch("/v1/backends/llama3-test", json={"context_length": 8192})
+        assert resp.status_code == 401
+
+    def test_update_unknown_model_returns_404(self, tmp_path: Path):
+        client = _authed(_make_client(tmp_path))
+        try:
+            resp = client.patch(
+                "/v1/backends/does-not-exist",
+                json={"context_length": 8192},
+                headers={"Authorization": "Bearer dummy"},
+            )
+        finally:
+            _clear_override()
+        assert resp.status_code == 404
+
+    def test_update_success_persists_and_returns_updated_entry(self, tmp_path: Path):
+        client = _authed(_make_client(tmp_path))
+        try:
+            resp = client.patch(
+                "/v1/backends/llama3-test",
+                json={"context_length": 16384, "family": "llama3.1", "port": 8099},
+                headers={"Authorization": "Bearer dummy"},
+            )
+        finally:
+            _clear_override()
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["context_length"] == 16384
+        assert body["family"] == "llama3.1"
+        assert body["port"] == 8099
+        # persisted, not just returned in the response
+        assert app.state.registry.get("llama3-test").context_length == 16384
+
+    def test_update_id_field_is_ignored(self, tmp_path: Path):
+        """id is the registry key — PATCH cannot rename an entry."""
+        client = _authed(_make_client(tmp_path))
+        try:
+            resp = client.patch(
+                "/v1/backends/llama3-test",
+                json={"id": "renamed", "family": "llama3.1"},
+                headers={"Authorization": "Bearer dummy"},
+            )
+        finally:
+            _clear_override()
+        assert resp.status_code == 200
+        assert resp.json()["id"] == "llama3-test"
+        assert app.state.registry.get("renamed") is None
+
+    def test_update_bad_modality_returns_400(self, tmp_path: Path):
+        client = _authed(_make_client(tmp_path))
+        try:
+            resp = client.patch(
+                "/v1/backends/llama3-test",
+                json={"modality": "audio"},
+                headers={"Authorization": "Bearer dummy"},
+            )
+        finally:
+            _clear_override()
+        assert resp.status_code == 400
+        assert resp.json()["detail"]["type"].endswith("invalid-update")
+        # rejected update must not be partially applied
+        assert app.state.registry.get("llama3-test").modality == "text"
+
+    def test_update_bad_port_returns_400(self, tmp_path: Path):
+        client = _authed(_make_client(tmp_path))
+        try:
+            resp = client.patch(
+                "/v1/backends/llama3-test",
+                json={"port": 80},
+                headers={"Authorization": "Bearer dummy"},
+            )
+        finally:
+            _clear_override()
+        assert resp.status_code == 400
+
+    def test_update_path_revalidated_against_new_backend(self, tmp_path: Path):
+        """Changing backend to llama_cpp with a non-.gguf path must fail."""
+        client = _authed(_make_client(tmp_path))
+        try:
+            resp = client.patch(
+                "/v1/backends/llama3-test",
+                json={"path": "mlx-community/some-model", "backend": "llama_cpp"},
+                headers={"Authorization": "Bearer dummy"},
+            )
+        finally:
+            _clear_override()
+        assert resp.status_code == 400
+
+
 # ── DELETE /v1/backends/{id} (deregister) ────────────────────────────────────
 
 

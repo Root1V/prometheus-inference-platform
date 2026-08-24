@@ -13,10 +13,12 @@ import type { InstanceEntry } from "../types/instance";
 const EMPTY_INSTANCES: InstanceEntry[] = [];
 const EMPTY_NODES: string[] = [];
 
+type ModalState = { mode: "create" } | { mode: "edit"; instance: InstanceEntry } | null;
+
 export default function Dashboard() {
   const instancesQuery = useInstances();
   const nodesQuery = useNodes();
-  const [modalOpen, setModalOpen] = useState(false);
+  const [modal, setModal] = useState<ModalState>(null);
 
   const instances = instancesQuery.data?.instances ?? EMPTY_INSTANCES;
   const unreachableNodes = instancesQuery.data?.unreachable_nodes ?? EMPTY_NODES;
@@ -40,7 +42,7 @@ export default function Dashboard() {
           <h1 className="text-2xl font-semibold text-text">Instances</h1>
           <button
             type="button"
-            onClick={() => setModalOpen(true)}
+            onClick={() => setModal({ mode: "create" })}
             className="flex items-center gap-2 rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:opacity-90"
           >
             <Plus size={16} />
@@ -67,12 +69,21 @@ export default function Dashboard() {
               Loading instances…
             </div>
           ) : (
-            <InstanceTable instances={instances} />
+            <InstanceTable
+              instances={instances}
+              onEdit={(instance) => setModal({ mode: "edit", instance })}
+            />
           )}
         </div>
       </main>
 
-      <RegisterModelModal open={modalOpen} nodes={nodes} onClose={() => setModalOpen(false)} />
+      <RegisterModelModal
+        key={modal?.mode === "edit" ? modal.instance.id : "create"}
+        open={modal !== null}
+        nodes={nodes}
+        editing={modal?.mode === "edit" ? modal.instance : null}
+        onClose={() => setModal(null)}
+      />
     </div>
   );
 }

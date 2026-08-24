@@ -3,7 +3,13 @@ import { InstanceRow } from "./InstanceRow";
 
 const COLUMNS = ["ID", "Node", "Backend", "Modality", "State", "Port", "CPU", "RSS", "Uptime", "Actions"];
 
-export function InstanceTable({ instances }: { instances: InstanceEntry[] }) {
+export function InstanceTable({
+  instances,
+  onEdit,
+}: {
+  instances: InstanceEntry[];
+  onEdit: (instance: InstanceEntry) => void;
+}) {
   if (instances.length === 0) {
     return (
       <div className="rounded-xl border border-border bg-surface p-12 text-center text-text-muted">
@@ -26,7 +32,7 @@ export function InstanceTable({ instances }: { instances: InstanceEntry[] }) {
         </thead>
         <tbody>
           {instances.map((instance) => (
-            <InstanceRow key={`${instance.node}-${instance.id}`} instance={instance} />
+            <InstanceRow key={`${instance.node}-${instance.id}`} instance={instance} onEdit={onEdit} />
           ))}
         </tbody>
       </table>

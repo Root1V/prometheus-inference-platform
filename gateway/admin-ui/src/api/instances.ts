@@ -1,7 +1,12 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { apiClient } from "./client";
 import type { InstancesResponse, NodesResponse } from "../types/api";
-import type { InstanceActionResult, InstanceEntry, RegisterModelRequest } from "../types/instance";
+import type {
+  InstanceActionResult,
+  InstanceEntry,
+  RegisterModelRequest,
+  UpdateModelRequest,
+} from "../types/instance";
 
 const INSTANCES_KEY = ["instances"] as const;
 const NODES_KEY = ["nodes"] as const;
@@ -46,6 +51,22 @@ export function useRegisterModel() {
   return useMutation({
     mutationFn: async ({ node, data }: { node: string; data: RegisterModelRequest }) =>
       (await apiClient.post<InstanceEntry>(`/nodes/${node}/models`, data)).data,
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: INSTANCES_KEY }),
+  });
+}
+
+export function useUpdateModel() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async ({
+      node,
+      modelId,
+      data,
+    }: {
+      node: string;
+      modelId: string;
+      data: UpdateModelRequest;
+    }) => (await apiClient.patch<InstanceEntry>(`/nodes/${node}/models/${modelId}`, data)).data,
     onSuccess: () => queryClient.invalidateQueries({ queryKey: INSTANCES_KEY }),
   });
 }

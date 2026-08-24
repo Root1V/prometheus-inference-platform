@@ -10,6 +10,7 @@ POST   /admin/api/auth/login                                — exchange client_
 GET    /admin/api/nodes                                    — configured node names
 GET    /admin/api/instances                                 — aggregated across all nodes
 POST   /admin/api/nodes/{node}/models                        — register
+PATCH  /admin/api/nodes/{node}/models/{model_id}               — update fields
 DELETE /admin/api/nodes/{node}/models/{model_id}              — deregister
 POST   /admin/api/nodes/{node}/instances/{model_id}/start
 POST   /admin/api/nodes/{node}/instances/{model_id}/stop
@@ -202,6 +203,24 @@ def create_admin_router(manager_client: ManagerApiClient) -> APIRouter:
 
         try:
             resp = await manager_client.post(node_url, "/v1/backends", json=body)
+        except Exception as exc:
+            return _proxy_error_response(request, exc)
+        return _passthrough(resp)
+
+    @router.patch("/admin/api/nodes/{node}/models/{model_id}")
+    async def update_model(
+        node: str, model_id: str, body: dict[str, Any], request: Request
+    ) -> Response:
+        if (forbidden := _require_scope(request, "admin:write")) is not None:
+            return forbidden
+        node_url = _resolve_node(request, node)
+        if node_url is None:
+            return _problem(
+                request, 400, "unknown-node", "Unknown Node", f"Node {node!r} is not configured."
+            )
+
+        try:
+            resp = await manager_client.patch(node_url, f"/v1/backends/{model_id}", json=body)
         except Exception as exc:
             return _proxy_error_response(request, exc)
         return _passthrough(resp)

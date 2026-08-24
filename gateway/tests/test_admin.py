@@ -248,6 +248,69 @@ async def test_register_node_unreachable_returns_503(gw, rsa_keys):
     assert resp.json()["type"].endswith("backend-unavailable")
 
 
+# ── PATCH /admin/api/nodes/{node}/models/{id} (update) ────────────────────────
+
+
+async def test_update_requires_admin_write(gw, rsa_keys):
+    resp = await gw.patch(
+        "/admin/api/nodes/mac/models/model-a",
+        json={"context_length": 8192},
+        headers=_headers(rsa_keys, "admin:read"),
+    )
+    assert resp.status_code == 403
+
+
+async def test_update_unknown_node_returns_400(gw, rsa_keys):
+    resp = await gw.patch(
+        "/admin/api/nodes/does-not-exist/models/model-a",
+        json={"context_length": 8192},
+        headers=_headers(rsa_keys, "admin:write"),
+    )
+    assert resp.status_code == 400
+    assert resp.json()["type"].endswith("unknown-node")
+
+
+async def test_update_success_proxies_to_node(gw, rsa_keys):
+    with respx.mock:
+        _mock_manager_token()
+        route = respx.patch(f"{NODE_URL}/v1/backends/model-a").mock(
+            return_value=Response(200, json={"id": "model-a", "context_length": 16384})
+        )
+        resp = await gw.patch(
+            "/admin/api/nodes/mac/models/model-a",
+            json={"context_length": 16384},
+            headers=_headers(rsa_keys, "admin:write"),
+        )
+    assert resp.status_code == 200
+    assert resp.json()["context_length"] == 16384
+    assert route.calls[0].request.method == "PATCH"
+
+
+async def test_update_validation_error_flattened(gw, rsa_keys):
+    with respx.mock:
+        _mock_manager_token()
+        respx.patch(f"{NODE_URL}/v1/backends/model-a").mock(
+            return_value=Response(
+                400,
+                json={
+                    "detail": {
+                        "type": "https://prometheus.local/errors/invalid-update",
+                        "title": "Invalid Update",
+                        "status": 400,
+                        "detail": "Port must be in range 1024-65535, got: 80",
+                    }
+                },
+            )
+        )
+        resp = await gw.patch(
+            "/admin/api/nodes/mac/models/model-a",
+            json={"port": 80},
+            headers=_headers(rsa_keys, "admin:write"),
+        )
+    assert resp.status_code == 400
+    assert resp.json()["type"].endswith("invalid-update")
+
+
 # ── DELETE /admin/api/nodes/{node}/models/{id} (deregister) ──────────────────
 
 

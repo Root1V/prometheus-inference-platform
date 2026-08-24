@@ -49,3 +49,6 @@ export interface RegisterModelRequest {
   hf_filename?: string;
   hf_sha256?: string;
 }
+
+/** PATCH /admin/api/nodes/{node}/models/{id} — every field optional, `id` excluded (it's the registry key, not editable in place). */
+export type UpdateModelRequest = Partial<Omit<RegisterModelRequest, "id">>;
