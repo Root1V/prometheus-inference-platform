@@ -1,0 +1,158 @@
+<!DOCTYPE html>
+<!--
+  Prometheus — Login page template
+  Implements: specs/014-login-page-ux-redesign.md
+  All user-supplied values are Jinja2 auto-escaped (no | safe filter used).
+  AC-11, AC-13 — no external CDN / font / icon dependencies.
+-->
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Prometheus — Sign in</title>
+  <!--
+    FOUC prevention — AC-4:
+    Apply the saved theme class before CSS is parsed so there is no flash
+    of the light theme when the user has chosen dark mode.
+    This script block is intentional and contains only a localStorage read
+    and a DOM class set — no eval, no external src, no user data.
+  -->
+  <script>
+    (function () {
+      try {
+        if (localStorage.getItem('prometheus-theme') === 'dark') {
+          document.documentElement.classList.add('dark');
+        }
+      } catch (_) {}
+    })();
+  </script>
+  <link rel="stylesheet" href="/ui/static/login.css">
+</head>
+<body>
+  <div class="card">
+    <div class="card-header">
+      <h1>
+        <!--
+          Flame icon — Prometheus (fire-bringer). Inline SVG, no external deps — AC-13.
+          Inherits color from h1 via fill:currentColor.
+        -->
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" aria-hidden="true">
+          <path d="M12 2c-1.5 3-2.5 5.5-2 8-.8-.8-1.3-2-1.3-3.2C7 9 6 11.5 6 14a6 6 0 0 0 12 0c0-3-1.5-5.5-3-7-.2 1.5-.8 2.8-1.8 3.7C13.5 8.5 13 5.2 12 2z"/>
+        </svg>
+        Prometheus
+      </h1>
+      <!--
+        Dark mode toggle — AC-5, AC-6
+        Two SVG icons: sun (shown in dark mode) and moon (shown in light mode).
+        Toggling adds/removes the "dark" class on <html> and persists to localStorage.
+      -->
+      <button
+        class="theme-toggle"
+        id="theme-toggle"
+        type="button"
+        aria-label="Toggle dark / light mode"
+      >
+        <!-- Moon icon — visible in light mode -->
+        <svg id="icon-moon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" aria-hidden="true">
+          <path d="M21 12.79A9 9 0 1 1 11.21 3a7 7 0 0 0 9.79 9.79z"/>
+        </svg>
+        <!-- Sun icon — visible in dark mode (hidden by default) -->
+        <svg id="icon-sun" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" aria-hidden="true" style="display:none">
+          <circle cx="12" cy="12" r="5"/>
+          <line x1="12" y1="1"  x2="12" y2="3"  stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+          <line x1="12" y1="21" x2="12" y2="23" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+          <line x1="4.22" y1="4.22"  x2="5.64" y2="5.64"  stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+          <line x1="18.36" y1="18.36" x2="19.78" y2="19.78" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+          <line x1="1"  y1="12" x2="3"  y2="12" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+          <line x1="21" y1="12" x2="23" y2="12" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+          <line x1="4.22" y1="19.78" x2="5.64" y2="18.36" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+          <line x1="18.36" y1="5.64"  x2="19.78" y2="4.22"  stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+        </svg>
+      </button>
+    </div>
+
+    {% if error %}
+    <p class="msg msg-error" role="alert">{{ error }}</p>
+    {% endif %}
+
+    {% if no_models_warning %}
+    <p class="msg msg-warn" role="status">
+      No models are currently discoverable.
+      Set <code>discovery: true</code> in the registry for at least one model.
+    </p>
+    {% endif %}
+
+    <form method="post" action="/ui/login">
+      <input type="hidden" name="next" value="{{ next_path }}">
+
+      <label for="cid">Client ID</label>
+      <input
+        id="cid"
+        name="client_id"
+        type="text"
+        autocomplete="username"
+        required
+        {% if disabled %}disabled{% endif %}
+      >
+
+      <label for="cs">Client Secret</label>
+      <input
+        id="cs"
+        name="client_secret"
+        type="password"
+        autocomplete="current-password"
+        required
+        {% if disabled %}disabled{% endif %}
+      >
+
+      <label for="mid">Model</label>
+      <select id="mid" name="model_id" {% if disabled %}disabled{% endif %}>
+        {% for model in models %}
+        <option value="{{ model.id }}">{{ model.id }}</option>
+        {% endfor %}
+      </select>
+
+      <button type="submit" class="btn-submit" {% if disabled %}disabled{% endif %}>
+        Sign in
+      </button>
+    </form>
+  </div>
+
+  <!--
+    Theme toggle script — AC-5, AC-6
+    Switches the "dark" class on <html> and persists choice to localStorage.
+    No user-controlled data is interpolated here.
+  -->
+  <script>
+    (function () {
+      var html = document.documentElement;
+      var btn  = document.getElementById('theme-toggle');
+      var moon = document.getElementById('icon-moon');
+      var sun  = document.getElementById('icon-sun');
+
+      function applyTheme(dark) {
+        if (dark) {
+          html.classList.add('dark');
+          moon.style.display = 'none';
+          sun.style.display  = '';
+        } else {
+          html.classList.remove('dark');
+          moon.style.display = '';
+          sun.style.display  = 'none';
+        }
+      }
+
+      // Sync icon state with current theme on load
+      applyTheme(html.classList.contains('dark'));
+
+      btn.addEventListener('click', function () {
+        var isDark = html.classList.contains('dark');
+        try {
+          localStorage.setItem('prometheus-theme', isDark ? 'light' : 'dark');
+        } catch (_) {}
+        applyTheme(!isDark);
+      });
+    })();
+  </script>
+</body>
+</html>

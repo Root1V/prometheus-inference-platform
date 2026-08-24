@@ -1,0 +1,159 @@
+<!DOCTYPE html>
+<!--
+  Prometheus — Credential Share View (public, one-time)
+  Implements: specs/016-credential-share-link.md — AC-8, AC-13, AC-14
+  No admin navigation. Same CSS palette as admin dashboard.
+  All user-supplied values are Jinja2 auto-escaped.
+  No external CDN dependencies.
+-->
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Prometheus — Credentials</title>
+  <!-- AC-13: X-Robots-Tag and Cache-Control headers are set in the router -->
+  <script>
+    (function () {
+      try {
+        if (localStorage.getItem('prometheus-theme') === 'dark') {
+          document.documentElement.classList.add('dark');
+        }
+      } catch (_) {}
+    })();
+  </script>
+  <link rel="stylesheet" href="/admin/ui/static/admin.css">
+</head>
+<body>
+  <!-- Minimal header — no admin nav, no logout link -->
+  <header class="site-header">
+    <div class="header-brand">
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" aria-hidden="true">
+        <path d="M12 2c-1.5 3-2.5 5.5-2 8-.8-.8-1.3-2-1.3-3.2C7 9 6 11.5 6 14a6 6 0 0 0 12 0c0-3-1.5-5.5-3-7-.2 1.5-.8 2.8-1.8 3.7C13.5 8.5 13 5.2 12 2z"/>
+      </svg>
+      Prometheus — Secure Credential Delivery
+    </div>
+    <div class="header-actions">
+      <button
+        class="theme-toggle"
+        id="theme-toggle"
+        type="button"
+        aria-label="Toggle dark / light mode"
+      >
+        <svg id="icon-moon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" aria-hidden="true">
+          <path d="M21 12.79A9 9 0 1 1 11.21 3a7 7 0 0 0 9.79 9.79z"/>
+        </svg>
+        <svg id="icon-sun" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" aria-hidden="true" style="display:none">
+          <circle cx="12" cy="12" r="5"/>
+          <line x1="12" y1="1"  x2="12" y2="3"  stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+          <line x1="12" y1="21" x2="12" y2="23" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+          <line x1="4.22"  y1="4.22"  x2="5.64"  y2="5.64"  stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+          <line x1="18.36" y1="18.36" x2="19.78" y2="19.78" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+          <line x1="1"  y1="12" x2="3"  y2="12" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+          <line x1="21" y1="12" x2="23" y2="12" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+          <line x1="4.22"  y1="19.78" x2="5.64"  y2="18.36" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+          <line x1="18.36" y1="5.64"  x2="19.78" y2="4.22"  stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+        </svg>
+      </button>
+    </div>
+  </header>
+
+  <main class="container">
+    <div class="subpage-wrap" style="margin-top: 2rem">
+
+      <!-- ── One-time warning banner — AC-14 ── -->
+      <div class="msg msg-warn" role="alert" style="margin-bottom: 1.25rem; font-size: 0.88rem">
+        <strong>⚠️ Save now — these credentials will not be shown again.</strong><br>
+        This link can only be opened once and has now been consumed.
+      </div>
+
+      <div class="panel">
+        <div class="panel-body" style="padding-top: 1rem">
+          <h2 style="color: var(--color-primary); font-size: 1.1rem; margin-bottom: 0.25rem">
+            Credentials for <em>{{ client_name }}</em>
+          </h2>
+          <p style="font-size: 0.8rem; color: var(--color-muted); margin-bottom: 1rem">
+            Copy both values and store them in your password manager or secret store.
+          </p>
+
+          <!-- Client ID -->
+          <p style="font-size: 0.76rem; font-weight: 600; color: var(--color-muted); margin: 0 0 0.3rem">
+            Client ID
+          </p>
+          <div class="secret-box" style="margin-bottom: 0.75rem">
+            <code id="cid-value">{{ client_id }}</code>
+            <button
+              type="button"
+              class="btn btn-sm"
+              onclick="copyVal('cid-value', 'copy-cid')"
+              id="copy-cid"
+              aria-label="Copy client ID"
+            >Copy</button>
+          </div>
+
+          <!-- Client Secret -->
+          <p style="font-size: 0.76rem; font-weight: 600; color: var(--color-muted); margin: 0 0 0.3rem">
+            Client Secret
+          </p>
+          <div class="secret-box">
+            <code id="secret-value">{{ client_secret }}</code>
+            <button
+              type="button"
+              class="btn btn-sm"
+              onclick="copyVal('secret-value', 'copy-secret')"
+              id="copy-secret"
+              aria-label="Copy client secret"
+            >Copy</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- ── Recipient security guidance — AC-14 ── -->
+      <div class="panel" style="margin-top: 1rem">
+        <div class="panel-body" style="padding-top: 0.75rem">
+          <p style="font-size: 0.8rem; font-weight: 600; color: var(--color-primary); margin-bottom: 0.5rem">
+            🔒 Security checklist
+          </p>
+          <ol style="font-size: 0.8rem; color: var(--color-text); line-height: 1.7; padding-left: 1.2rem; margin: 0">
+            <li>Copy <code>client_id</code> and <code>client_secret</code> now.</li>
+            <li>Store them in your team's password manager or secret store (1Password, Vault, etc.).</li>
+            <li><strong>Never</strong> paste secrets into chat, email, or version control.</li>
+            <li>Close this browser tab when done.</li>
+          </ol>
+        </div>
+      </div>
+
+      <p style="margin-top: 1rem; font-size: 0.78rem; color: var(--color-muted); text-align: center">
+        You may now close this tab.
+      </p>
+
+    </div>
+  </main>
+
+  <script>
+    // ── Theme toggle ──────────────────────────────────────────────────────
+    var btn  = document.getElementById('theme-toggle');
+    var moon = document.getElementById('icon-moon');
+    var sun  = document.getElementById('icon-sun');
+    function applyTheme(dark) {
+      document.documentElement.classList.toggle('dark', dark);
+      moon.style.display = dark ? 'none' : '';
+      sun.style.display  = dark ? ''     : 'none';
+    }
+    applyTheme(document.documentElement.classList.contains('dark'));
+    btn.addEventListener('click', function () {
+      var isDark = document.documentElement.classList.contains('dark');
+      localStorage.setItem('prometheus-theme', isDark ? 'light' : 'dark');
+      applyTheme(!isDark);
+    });
+
+    // ── Copy to clipboard ─────────────────────────────────────────────────
+    function copyVal(sourceId, btnId) {
+      var text = document.getElementById(sourceId).textContent;
+      navigator.clipboard.writeText(text).then(function () {
+        var btn = document.getElementById(btnId);
+        if (btn) { btn.textContent = '✓ Copied'; setTimeout(function () { btn.textContent = 'Copy'; }, 2000); }
+      });
+    }
+  </script>
+</body>
+</html>

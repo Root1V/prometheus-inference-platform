@@ -1,0 +1,15 @@
+# observability/grafana/provisioning/dashboards/dashboards.yaml
+# Dashboard provider — loads JSON dashboards from the same directory.
+# See: memory/specs/021-ops-observability-stack.md — AC-12
+apiVersion: 1
+
+providers:
+  - name: prometheus-ops
+    orgId: 1
+    type: file
+    disableDeletion: true
+    updateIntervalSeconds: 60
+    allowUiUpdates: false
+    options:
+      path: /etc/grafana/provisioning/dashboards
+      foldersFromFilesStructure: false

@@ -1,0 +1,110 @@
+# observability/promtail/promtail-config.yaml
+# Promtail ships logs from three sources to Loki:
+#   1. gateway         — k8s-file log driver → /mnt/container-logs/gateway.log
+#   2. auth-service    — k8s-file log driver → /mnt/container-logs/auth-service.log
+#   3. manager         — k8s-file log driver → /mnt/container-logs/manager.log
+#   4. Manager TUI     — static file → /mnt/manager-logs/manager.log
+#
+# Why k8s-file instead of Docker SD or syslog:
+#   On macOS + Podman Machine (rootless):
+#   - Docker SD: no TCP path from containers to Podman API on VM host
+#   - syslog log driver: not supported in rootless Podman
+#   - k8s-file with a custom path on the virtiofs-shared /Users/ directory
+#     is accessible from both the VM (written by Podman) and from macOS
+#     (bind-mounted by docker-compose into Promtail).
+#   CONTAINER_LOG_HOST_PATH in root .env must be an absolute macOS path.
+#
+# See: memory/specs/021-ops-observability-stack.md — AC-1, AC-2, AC-3, AC-10
+server:
+  http_listen_port: 9080
+  grpc_listen_port: 0
+
+positions:
+  filename: /tmp/positions.yaml
+
+clients:
+  - url: http://loki:3100/loki/api/v1/push
+
+scrape_configs:
+
+  # ── Gateway container logs ──────────────────────────────────────────────────
+  - job_name: gateway
+    static_configs:
+      - targets: [localhost]
+        labels:
+          service: gateway
+          __path__: /mnt/container-logs/gateway.log
+    pipeline_stages: &container_pipeline
+      # k8s-file / CRI log format: "<timestamp> <stream> F|P <json-log-line>"
+      # The built-in `cri` stage handles this natively:
+      #   - Strips the timestamp/stream/flag prefix
+      #   - Reassembles P (partial) chunks into a single complete line
+      #   - Sets the log content to the raw JSON
+      - cri: {}
+      - json:
+          expressions:
+            level: level
+            event: event
+            trace_id: trace_id
+            component: component
+      - labels:
+          level:
+      - structured_metadata:
+          trace_id:
+          event:
+          component:
+      - timestamp:
+          source: timestamp
+          format: RFC3339Nano
+          fallback_formats:
+            - RFC3339
+            - UnixMs
+
+  # ── Auth-service container logs ─────────────────────────────────────────────
+  - job_name: auth_service
+    static_configs:
+      - targets: [localhost]
+        labels:
+          service: auth-service
+          __path__: /mnt/container-logs/auth-service.log
+    pipeline_stages: *container_pipeline
+
+  # ── Manager container logs ──────────────────────────────────────────────────
+  - job_name: manager
+    static_configs:
+      - targets: [localhost]
+        labels:
+          service: manager
+          __path__: /mnt/container-logs/manager.log
+    pipeline_stages: *container_pipeline
+
+  # ── Manager TUI rotating log file ──────────────────────────────────────────
+  # The manager TUI runs bare-metal and writes structured JSON to
+  # runtime/logs/manager.log. Promtail reads this file via a bind-mount
+  # (MANAGER_LOG_HOST_PATH in root .env → /mnt/manager-logs in the container).
+  - job_name: manager_tui
+    static_configs:
+      - targets: [localhost]
+        labels:
+          job: manager_tui
+          service: manager-tui
+          __path__: /mnt/manager-logs/manager.log
+    pipeline_stages:
+      - json:
+          expressions:
+            level: level
+            event: event
+            trace_id: trace_id
+            component: component
+      - labels:
+          level:
+      - structured_metadata:
+          trace_id:
+          event:
+          component:
+      - timestamp:
+          source: timestamp
+          format: RFC3339Nano
+          fallback_formats:
+            - RFC3339
+            - UnixMs

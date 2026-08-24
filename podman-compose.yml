@@ -1,0 +1,439 @@
+# podman-compose.yml
+# Implements: memory/specs/004-podman-containerization.md — AC-4, AC-5, AC-6, AC-8
+#
+# Usage:
+#   # Copy and edit the correct env file for your platform first:
+#   cp gateway/.env.podman.example gateway/.env
+#
+#   # Build and start (from repo root):
+#   podman compose up --build -d
+#
+#   # Stop:
+#   podman compose down
+#
+# Platform notes:
+#   macOS (Podman Desktop):
+#     LLAMA_CPP_URL=http://host.docker.internal:8080
+#   RHEL 9.7 rootless Podman:
+#     LLAMA_CPP_URL=http://host.containers.internal:8080
+
+version: "3.9"
+
+services:
+
+  # ── Prometheus Gateway ──────────────────────────────────────────────────────
+  gateway:
+    # AC-1: built from gateway/Dockerfile (multi-stage)
+    build:
+      context: .
+      dockerfile: gateway/Dockerfile
+    image: prometheus-gateway:latest
+    container_name: prometheus-gateway
+    restart: unless-stopped
+
+    labels:
+      prometheus.service: gateway
+
+    ports:
+      # Gateway listens on 8000 — exposed to host for client access
+      - "8000:8000"
+
+    env_file:
+      # Contains JWT_ISSUER, JWT_PUBLIC_KEY_FILE or JWT_JWKS_URL, LLAMA_CPP_URL, etc.
+      # AC-9: no secrets baked into the image — injected here at runtime only
+      - ./gateway/.env
+
+    volumes:
+      # Mount JWT public key at runtime — never COPY into the image layer
+      # Path inside container must match JWT_PUBLIC_KEY_FILE in .env
+      - type: bind
+        source: ${JWT_PUBLIC_KEY_HOST_PATH:-./gateway/certs/jwt_public.pem}
+        target: /run/secrets/jwt_public_key.pem
+        read_only: true
+
+      # Mount model registry — used only as fallback when MANAGER_URL is not set.
+      - type: bind
+        source: ./runtime/models/registry.yaml
+        target: /app/config/registry.yaml
+        read_only: true
+
+      # TLS certificate and key — memory/specs/013-web-chat-ui-proxy.md — AC-14, AC-15
+      # Host paths come from root .env (TLS_CERT_HOST_PATH / TLS_KEY_HOST_PATH).
+      # The container always sees them at /run/secrets/gateway.crt and .key.
+      - type: bind
+        source: ${TLS_CERT_HOST_PATH:-./gateway/certs/dev.crt}
+        target: /run/secrets/gateway.crt
+        read_only: true
+      - type: bind
+        source: ${TLS_KEY_HOST_PATH:-./gateway/certs/dev.key}
+        target: /run/secrets/gateway.key
+        read_only: true
+
+    # Override TLS env vars so the entrypoint finds the certs at the container-internal paths.
+    # gateway/.env keeps the host paths (used by start.sh for bare-metal).
+    environment:
+      - TZ=America/Lima
+      - GATEWAY_TLS_CERT_FILE=/run/secrets/gateway.crt
+      - GATEWAY_TLS_KEY_FILE=/run/secrets/gateway.key
+      # UI — memory/specs/013-web-chat-ui-proxy.md
+      - UI_ENABLED=true
+      - AUTH_SERVICE_TOKEN_URL=https://auth-service:9000/oauth2/token
+      - AUTH_SERVICE_TLS_VERIFY=false
+
+    depends_on:
+      redis:
+        condition: service_healthy
+      # service_started (not service_healthy): gateway has non-fatal initial_sync_failed
+      # so it can start before manager is healthy and retry on its own poll loop.
+      manager:
+        condition: service_started
+
+    healthcheck:
+      # AC-5: health check passes within 30 s
+      test: ["CMD", "python", "-c",
+             "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+
+    # AC-7: non-root user enforced in the Dockerfile (USER prometheus)
+    # No need to set user here — Dockerfile already handles it
+
+    # Push container stdout/stderr to Promtail via UDP syslog (memory/specs/021 — AC-3)
+    logging:
+      driver: k8s-file
+      options:
+        path: ${CONTAINER_LOG_HOST_PATH:-./runtime/container-logs}/gateway.log
+
+    networks:
+      - prometheus_net
+
+  # ── Prometheus Auth Service ─────────────────────────────────────────────────
+  # Implements: memory/specs/005-auth-service.md
+  auth-service:
+    build:
+      context: .
+      dockerfile: auth-service/Dockerfile
+    image: prometheus-auth:latest
+    container_name: prometheus-auth
+    restart: unless-stopped
+
+    labels:
+      prometheus.service: auth-service
+
+    ports:
+      # AC-12: bound to loopback by default — use AUTH_BIND_HOST=0.0.0.0 only
+      # when dashboard access from another host is needed (combine with TLS).
+      # See memory/specs/017-auth-service-tls.md — AC-12, AC-20
+      - "${AUTH_BIND_HOST:-127.0.0.1}:9000:9000"
+
+    env_file:
+      - ./auth-service/.env
+
+    environment:
+      - TZ=America/Lima
+      # AC-14: container-internal paths for TLS cert/key
+      - AUTH_TLS_CERT_FILE=/run/secrets/auth_tls.crt
+      - AUTH_TLS_KEY_FILE=/run/secrets/auth_tls.key
+
+    volumes:
+      # Private key — auth-service ONLY. Never shared with gateway.
+      - type: bind
+        source: ${JWT_PRIVATE_KEY_HOST_PATH:-./keys/private.pem}
+        target: /run/secrets/jwt_private_key.pem
+        read_only: true
+      # Public key — shared with gateway via the same host file
+      - type: bind
+        source: ${JWT_PUBLIC_KEY_HOST_PATH:-./keys/public.pem}
+        target: /run/secrets/jwt_public_key.pem
+        read_only: true
+      # AC-13: TLS cert and key — defaults to self-signed dev cert
+      - type: bind
+        source: ${AUTH_TLS_CERT_HOST_PATH:-./auth-service/certs/dev.crt}
+        target: /run/secrets/auth_tls.crt
+        read_only: true
+      - type: bind
+        source: ${AUTH_TLS_KEY_HOST_PATH:-./auth-service/certs/dev.key}
+        target: /run/secrets/auth_tls.key
+        read_only: true
+      # Persistent SQLite database — survives container restarts and rebuilds
+      - type: bind
+        source: ${AUTH_DB_HOST_PATH:-./data/auth-service}
+        target: /data
+
+    # Push container stdout/stderr to Promtail via UDP syslog (memory/specs/021 — AC-3)
+    logging:
+      driver: k8s-file
+      options:
+        path: ${CONTAINER_LOG_HOST_PATH:-./runtime/container-logs}/auth-service.log
+
+    depends_on:
+      redis:
+        condition: service_healthy
+
+    healthcheck:
+      # AC-15: selects https when AUTH_TLS_CERT_FILE is set, http otherwise
+      test: ["CMD", "python", "-c",
+             "import urllib.request, ssl, os; url = ('https' if os.getenv('AUTH_TLS_CERT_FILE') else 'http') + '://localhost:9000/health'; ctx = ssl.create_default_context(); ctx.check_hostname = False; ctx.verify_mode = ssl.CERT_NONE; urllib.request.urlopen(url, context=ctx)"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+
+    networks:
+      - prometheus_net
+
+  # ── Prometheus Manager REST API ─────────────────────────────────────────────
+  # Implements: memory/specs/008-llama-server-manager.md — AC-11
+  #
+  # Runs only pmgr serve — the REST API that the gateway polls for live state.
+  # The TUI (pmgr tui) runs on bare-metal and is NOT containerised.
+  #
+  # The registry.yaml is bind-mounted from the host so TUI writes are immediately
+  # visible to the API (registry.reload() is called on every request).
+  # llama-server health is probed via http://host.containers.internal:<port>/health
+  # because psutil cannot see host processes from inside a container.
+  manager:
+    build:
+      context: .
+      dockerfile: runtime/manager/Dockerfile
+    image: prometheus-manager:latest
+    container_name: prometheus-manager
+    restart: unless-stopped
+
+    labels:
+      prometheus.service: manager
+
+    ports:
+      # Manager API on 8090 — reachable by the gateway container on the internal network
+      # and from the host for debugging (pmgr CLI / manual curl)
+      - "8090:8090"
+
+    environment:
+      - TZ=America/Lima
+      # Container mode: use HTTP health probing instead of psutil.
+      # Source of truth: root .env (PMGR_PROXY_HOST). Default: host.containers.internal.
+      - PMGR_PROXY_HOST=${PMGR_PROXY_HOST:-host.containers.internal}
+      # Auth-service JWKS on the internal network
+      - PMGR_JWKS_URL=https://auth-service:9000/.well-known/jwks.json
+      - PMGR_JWKS_TLS_VERIFY=false
+      # registry.yaml is mounted at /data/registry.yaml
+      - PMGR_REGISTRY_PATH=/data/registry.yaml
+      # Distributed tracing — OTLP/HTTP to Tempo on the internal Podman network
+      - OTEL_EXPORTER_OTLP_ENDPOINT=http://tempo:4318
+
+    volumes:
+      # Bind-mount the host registry.yaml as read-only.
+      # The TUI writes to this file on bare-metal; the API reads it via reload().
+      - type: bind
+        source: ./runtime/manager/registry.yaml
+        target: /data/registry.yaml
+        read_only: true
+
+    # Push container stdout/stderr to Promtail via UDP syslog (memory/specs/021 — AC-3)
+    logging:
+      driver: k8s-file
+      options:
+        path: ${CONTAINER_LOG_HOST_PATH:-./runtime/container-logs}/manager.log
+
+    depends_on:
+      # service_started (not service_healthy): manager validates JWTs on each request,
+      # not at startup — it can start before auth-service is fully healthy and retry.
+      auth-service:
+        condition: service_started
+
+    healthcheck:
+      test: ["CMD", "python", "-c",
+             "import urllib.request; urllib.request.urlopen('http://localhost:8090/health')"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+
+    networks:
+      - prometheus_net
+
+  redis:
+    image: docker.io/redis:7-alpine
+    container_name: prometheus-redis
+    restart: unless-stopped
+
+    # AC-8: Redis has NO host port binding — internal-only
+    # "6379:6379" is intentionally absent
+    expose:
+      - "6379"
+
+    command: redis-server --save "" --appendonly no
+
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+      start_period: 10s
+
+    networks:
+      - prometheus_net
+
+  # ── Observability: Loki ─────────────────────────────────────────────────────
+  # Log aggregation — receives structured JSON logs shipped by Promtail.
+  # Internal-only: no host port binding, auth disabled (trusted network).
+  # See: memory/specs/021-ops-observability-stack.md — AC-1, AC-2, AC-4
+  loki:
+    image: docker.io/grafana/loki:3.5.0
+    container_name: prometheus-loki
+    restart: unless-stopped
+    command: -config.file=/etc/loki/loki-config.yaml
+    volumes:
+      - type: bind
+        source: ./observability/loki/loki-config.yaml
+        target: /etc/loki/loki-config.yaml
+        read_only: true
+      - type: volume
+        source: loki_data
+        target: /loki
+    expose:
+      - "3100"
+    healthcheck:
+      test: ["CMD-SHELL", "wget --quiet --tries=1 --spider http://localhost:3100/ready || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    networks:
+      - prometheus_net
+
+  # ── Observability: Promtail ──────────────────────────────────────────────────
+  # Log collector — ships container stdout (Docker SD) and manager TUI file.
+  # PODMAN_SOCK_PATH (root .env) must point to the Podman compat socket on the host.
+  # MANAGER_LOG_HOST_PATH (root .env) path to bare-metal manager log directory.
+  # See: memory/specs/021-ops-observability-stack.md — AC-3, AC-10
+  promtail:
+    image: docker.io/grafana/promtail:3.5.0
+    container_name: prometheus-promtail
+    restart: unless-stopped
+    # Connects to Podman API via TCP (tcp://host.containers.internal:2375) —
+    # see observability/promtail/promtail-config.yaml and AGENTS.md for setup.
+    command: -config.file=/etc/promtail/promtail-config.yaml
+    volumes:
+      - type: bind
+        source: ./observability/promtail/promtail-config.yaml
+        target: /etc/promtail/promtail-config.yaml
+        read_only: true
+      # Container log files written by k8s-file driver to virtiofs-shared path
+      - type: bind
+        source: ${CONTAINER_LOG_HOST_PATH:-./runtime/container-logs}
+        target: /mnt/container-logs
+        read_only: true
+      # Manager TUI log directory — bare-metal process writes here
+      - type: bind
+        source: ${MANAGER_LOG_HOST_PATH:-./runtime/logs}
+        target: /mnt/manager-logs
+        read_only: true
+    depends_on:
+      loki:
+        condition: service_healthy
+    networks:
+      - prometheus_net
+
+  # ── Observability: Tempo ─────────────────────────────────────────────────────
+  # Distributed trace backend — OTLP gRPC (:4317) and HTTP (:4318) intake.
+  # 72 h retention on local filesystem. Internal-only.
+  # See: memory/specs/021-ops-observability-stack.md — AC-9
+  tempo:
+    image: docker.io/grafana/tempo:2.7.0
+    container_name: prometheus-tempo
+    restart: unless-stopped
+    command: -config.file=/etc/tempo/tempo-config.yaml
+    volumes:
+      - type: bind
+        source: ./observability/tempo/tempo-config.yaml
+        target: /etc/tempo/tempo-config.yaml
+        read_only: true
+      - type: volume
+        source: tempo_data
+        target: /var/tempo
+    expose:
+      - "3200"
+      - "4317"
+      - "4318"
+    healthcheck:
+      test: ["CMD-SHELL", "wget --quiet --tries=1 --spider http://localhost:3200/ready || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    networks:
+      - prometheus_net
+
+  # ── Observability: Grafana ───────────────────────────────────────────────────
+  # Dashboard — JWT-authenticated via auth-service (scope: ops:dashboard required).
+  # Datasources (Loki + Tempo) and the Prometheus-Ops dashboard are auto-provisioned.
+  # Bind host defaults to 127.0.0.1 — set GRAFANA_BIND_HOST=0.0.0.0 to expose
+  # to the LAN (combine with TLS termination upstream).
+  # Required root .env vars: GRAFANA_SECRET_KEY, GRAFANA_ADMIN_PASSWORD.
+  # See: memory/specs/021-ops-observability-stack.md — AC-6, AC-7, AC-11, AC-12
+  grafana:
+    image: docker.io/grafana/grafana:11.6.1
+    container_name: prometheus-grafana
+    restart: unless-stopped
+    ports:
+      - "${GRAFANA_BIND_HOST:-127.0.0.1}:3000:3000"
+    environment:
+      - GF_SECURITY_SECRET_KEY=${GRAFANA_SECRET_KEY:-changeme-set-GRAFANA_SECRET_KEY-in-root-dotenv}
+      - GF_SECURITY_ADMIN_USER=admin
+      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_ADMIN_PASSWORD:-admin}
+      # JWT auth via auth-service JWKS — ops:dashboard required; role_attribute_strict
+      # ensures users without that scope are denied (empty role → login rejected).
+      - GF_AUTH_JWT_ENABLED=true
+      - GF_AUTH_JWT_HEADER_NAME=X-JWT-Assertion
+      - GF_AUTH_JWT_EMAIL_CLAIM=sub
+      - GF_AUTH_JWT_USERNAME_CLAIM=sub
+      - GF_AUTH_JWT_JWK_SET_URL=https://auth-service:9000/.well-known/jwks.json
+      - GF_AUTH_JWT_TLS_SKIP_VERIFY_INSECURE=true
+      - GF_AUTH_JWT_CACHE_TTL=60m
+      - GF_AUTH_JWT_AUTO_SIGN_UP=true
+      - "GF_AUTH_JWT_ROLE_ATTRIBUTE_PATH=contains(scope, 'ops:dashboard') && 'Viewer' || ''"
+      - GF_AUTH_JWT_ROLE_ATTRIBUTE_STRICT=true
+      # Issuer must match AUTH_JWT_ISSUER in auth-service/.env
+      - 'GF_AUTH_JWT_EXPECT_CLAIMS={"iss":"${AUTH_JWT_ISSUER:-https://auth.example.com}"}'
+      - GF_AUTH_ANONYMOUS_ENABLED=false
+      - GF_USERS_ALLOW_SIGN_UP=false
+      - GF_PATHS_PROVISIONING=/etc/grafana/provisioning
+      - GF_ANALYTICS_CHECK_FOR_UPDATES=false
+      - GF_ANALYTICS_REPORTING_ENABLED=false
+      - GF_PLUGINS_ALLOW_LOADING_UNSIGNED_PLUGINS=true
+    volumes:
+      - type: bind
+        source: ./observability/grafana/provisioning
+        target: /etc/grafana/provisioning
+        read_only: true
+      - type: volume
+        source: grafana_data
+        target: /var/lib/grafana
+    depends_on:
+      loki:
+        condition: service_healthy
+      auth-service:
+        condition: service_started
+    healthcheck:
+      test: ["CMD-SHELL", "wget --quiet --tries=1 --spider http://localhost:3000/api/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    networks:
+      - prometheus_net
+
+networks:
+  prometheus_net:
+    driver: bridge
+
+volumes:
+  loki_data:
+    driver: local
+  tempo_data:
+    driver: local
+  grafana_data:
+    driver: local

@@ -1,0 +1,350 @@
+# podman-compose.yml
+# Ubuntu 24.04 / NVIDIA DGX Spark / rootless Podman compatible
+#
+# Main changes vs RHEL version:
+# - Removed obsolete top-level "version".
+# - Starts dependency services first: redis, loki, tempo.
+# - Uses project-local log directories by default to avoid rootless Podman
+#   permission issues with /var/log/prometheus.
+# - Keeps Podman-compatible container names expected by --requires.
+#
+# Before running:
+#   mkdir -p runtime/container-logs runtime/logs
+#   podman-compose -f podman-compose.yml down || true
+#   podman rm -f prometheus-redis prometheus-auth prometheus-manager prometheus-gateway prometheus-loki prometheus-promtail prometheus-tempo prometheus-grafana 2>/dev/null || true
+#   podman-compose -f podman-compose.yml up --build -d
+
+services:
+
+  # ── Redis: internal dependency ───────────────────────────────────────────────
+  redis:
+    image: docker.io/redis:7-alpine
+    container_name: prometheus-redis
+    restart: unless-stopped
+    expose:
+      - "6379"
+    command: redis-server --save "" --appendonly no
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 5s
+    networks:
+      - prometheus_net
+
+  # ── Observability: Loki ─────────────────────────────────────────────────────
+  loki:
+    image: docker.io/grafana/loki:3.5.0
+    container_name: prometheus-loki
+    restart: unless-stopped
+    command: -config.file=/etc/loki/loki-config.yaml
+    volumes:
+      - type: bind
+        source: ./observability/loki/loki-config.yaml
+        target: /etc/loki/loki-config.yaml
+        read_only: true
+      - type: volume
+        source: loki_data
+        target: /loki
+    expose:
+      - "3100"
+    healthcheck:
+      test: ["CMD-SHELL", "wget --quiet --tries=1 --spider http://localhost:3100/ready || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+    networks:
+      - prometheus_net
+
+  # ── Observability: Tempo ────────────────────────────────────────────────────
+  tempo:
+    image: docker.io/grafana/tempo:2.7.0
+    container_name: prometheus-tempo
+    restart: unless-stopped
+    command: -config.file=/etc/tempo/tempo-config.yaml
+    volumes:
+      - type: bind
+        source: ./observability/tempo/tempo-config.yaml
+        target: /etc/tempo/tempo-config.yaml
+        read_only: true
+      - type: volume
+        source: tempo_data
+        target: /var/tempo
+    expose:
+      - "3200"
+      - "4317"
+      - "4318"
+    healthcheck:
+      test: ["CMD-SHELL", "wget --quiet --tries=1 --spider http://localhost:3200/ready || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+    networks:
+      - prometheus_net
+
+  # ── Prometheus Auth Service ─────────────────────────────────────────────────
+  auth-service:
+    build:
+      context: .
+      dockerfile: auth-service/Dockerfile
+    image: prometheus-auth:latest
+    container_name: prometheus-auth
+    restart: unless-stopped
+
+    labels:
+      prometheus.service: auth-service
+
+    ports:
+      - "${AUTH_BIND_HOST:-127.0.0.1}:9000:9000"
+
+    env_file:
+      - ./auth-service/.env
+
+    environment:
+      - TZ=America/Lima
+      - AUTH_TLS_CERT_FILE=/run/secrets/auth_tls.crt
+      - AUTH_TLS_KEY_FILE=/run/secrets/auth_tls.key
+
+    volumes:
+      - type: bind
+        source: ${JWT_PRIVATE_KEY_HOST_PATH:-./keys/private.pem}
+        target: /run/secrets/jwt_private_key.pem
+        read_only: true
+      - type: bind
+        source: ${JWT_PUBLIC_KEY_HOST_PATH:-./keys/public.pem}
+        target: /run/secrets/jwt_public_key.pem
+        read_only: true
+      - type: bind
+        source: ${AUTH_TLS_CERT_HOST_PATH:-./auth-service/certs/dev.crt}
+        target: /run/secrets/auth_tls.crt
+        read_only: true
+      - type: bind
+        source: ${AUTH_TLS_KEY_HOST_PATH:-./auth-service/certs/dev.key}
+        target: /run/secrets/auth_tls.key
+        read_only: true
+      - type: bind
+        source: ${AUTH_DB_HOST_PATH:-./data/auth-service}
+        target: /data
+
+    logging:
+      driver: k8s-file
+      options:
+        path: ${PROMETHEUS_CONTAINER_LOG_HOST_PATH:-./runtime/container-logs}/auth-service.log
+
+    depends_on:
+      - redis
+
+    healthcheck:
+      test: ["CMD", "python", "-c",
+             "import urllib.request, ssl, os; url = ('https' if os.getenv('AUTH_TLS_CERT_FILE') else 'http') + '://localhost:9000/health'; ctx = ssl.create_default_context(); ctx.check_hostname = False; ctx.verify_mode = ssl.CERT_NONE; urllib.request.urlopen(url, context=ctx)"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+    networks:
+      - prometheus_net
+
+  # ── Prometheus Manager REST API ─────────────────────────────────────────────
+  manager:
+    build:
+      context: .
+      dockerfile: runtime/manager/Dockerfile
+    image: prometheus-manager:latest
+    container_name: prometheus-manager
+    restart: unless-stopped
+
+    labels:
+      prometheus.service: manager
+
+    ports:
+      - "8090:8090"
+
+    environment:
+      - TZ=America/Lima
+      - PROMETHEUS_LLAMA_BIND_HOST=${PROMETHEUS_LLAMA_BIND_HOST:-0.0.0.0}
+      - PMGR_PROXY_HOST=${PMGR_PROXY_HOST:-host.containers.internal}
+      - PMGR_JWKS_URL=https://auth-service:9000/.well-known/jwks.json
+      - PMGR_JWKS_TLS_VERIFY=false
+      - PMGR_REGISTRY_PATH=/data/registry.yaml
+      - OTEL_EXPORTER_OTLP_ENDPOINT=http://tempo:4318
+
+    volumes:
+      - type: bind
+        source: ./runtime/manager/registry.yaml
+        target: /data/registry.yaml
+        read_only: true
+
+    logging:
+      driver: k8s-file
+      options:
+        path: ${PROMETHEUS_CONTAINER_LOG_HOST_PATH:-./runtime/container-logs}/manager.log
+
+    depends_on:
+      - redis
+      - auth-service
+      - tempo
+
+    healthcheck:
+      test: ["CMD", "python", "-c",
+             "import urllib.request; urllib.request.urlopen('http://localhost:8090/health')"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+    networks:
+      - prometheus_net
+
+  # ── Prometheus Gateway ──────────────────────────────────────────────────────
+  gateway:
+    build:
+      context: .
+      dockerfile: gateway/Dockerfile
+    image: prometheus-gateway:latest
+    container_name: prometheus-gateway
+    restart: unless-stopped
+
+    labels:
+      prometheus.service: gateway
+
+    ports:
+      - "8000:8000"
+
+    env_file:
+      - ./gateway/.env
+
+    environment:
+      - TZ=America/Lima
+      - GATEWAY_TLS_CERT_FILE=/run/secrets/gateway.crt
+      - GATEWAY_TLS_KEY_FILE=/run/secrets/gateway.key
+      - UI_ENABLED=true
+      - AUTH_SERVICE_TOKEN_URL=https://auth-service:9000/oauth2/token
+      - AUTH_SERVICE_TLS_VERIFY=false
+
+    volumes:
+      - type: bind
+        source: ${JWT_PUBLIC_KEY_HOST_PATH:-./gateway/certs/jwt_public.pem}
+        target: /run/secrets/jwt_public_key.pem
+        read_only: true
+      - type: bind
+        source: ./runtime/models/registry.yaml
+        target: /app/config/registry.yaml
+        read_only: true
+      - type: bind
+        source: ${TLS_CERT_HOST_PATH:-./gateway/certs/dev.crt}
+        target: /run/secrets/gateway.crt
+        read_only: true
+      - type: bind
+        source: ${TLS_KEY_HOST_PATH:-./gateway/certs/dev.key}
+        target: /run/secrets/gateway.key
+        read_only: true
+
+    logging:
+      driver: k8s-file
+      options:
+        path: ${PROMETHEUS_CONTAINER_LOG_HOST_PATH:-./runtime/container-logs}/gateway.log
+
+    depends_on:
+      - redis
+      - auth-service
+      - manager
+
+    healthcheck:
+      test: ["CMD", "python", "-c",
+             "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 40s
+
+    networks:
+      - prometheus_net
+
+  # ── Observability: Promtail ─────────────────────────────────────────────────
+  promtail:
+    image: docker.io/grafana/promtail:3.5.0
+    container_name: prometheus-promtail
+    restart: unless-stopped
+    command: -config.file=/etc/promtail/promtail-config.yaml
+    volumes:
+      - type: bind
+        source: ./observability/promtail/promtail-config.yaml
+        target: /etc/promtail/promtail-config.yaml
+        read_only: true
+      - type: bind
+        source: ${PROMETHEUS_CONTAINER_LOG_HOST_PATH:-./runtime/container-logs}
+        target: /mnt/container-logs
+        read_only: true
+      - type: bind
+        source: ${PROMETHEUS_MANAGER_LOG_HOST_PATH:-./runtime/logs}
+        target: /mnt/manager-logs
+        read_only: true
+    depends_on:
+      - loki
+    networks:
+      - prometheus_net
+
+  # ── Observability: Grafana ──────────────────────────────────────────────────
+  grafana:
+    image: docker.io/grafana/grafana:11.6.1
+    container_name: prometheus-grafana
+    restart: unless-stopped
+    ports:
+      - "${GRAFANA_BIND_HOST:-127.0.0.1}:3000:3000"
+    environment:
+      - GF_SECURITY_SECRET_KEY=${GRAFANA_SECRET_KEY:-changeme-set-GRAFANA_SECRET_KEY-in-root-dotenv}
+      - GF_SECURITY_ADMIN_USER=admin
+      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_ADMIN_PASSWORD:-admin}
+      - GF_AUTH_JWT_ENABLED=true
+      - GF_AUTH_JWT_HEADER_NAME=X-JWT-Assertion
+      - GF_AUTH_JWT_EMAIL_CLAIM=sub
+      - GF_AUTH_JWT_USERNAME_CLAIM=sub
+      - GF_AUTH_JWT_JWK_SET_URL=https://auth-service:9000/.well-known/jwks.json
+      - GF_AUTH_JWT_TLS_SKIP_VERIFY_INSECURE=true
+      - GF_AUTH_JWT_CACHE_TTL=60m
+      - GF_AUTH_JWT_AUTO_SIGN_UP=true
+      - "GF_AUTH_JWT_ROLE_ATTRIBUTE_PATH=contains(scope, 'ops:dashboard') && 'Viewer' || ''"
+      - GF_AUTH_JWT_ROLE_ATTRIBUTE_STRICT=true
+      - 'GF_AUTH_JWT_EXPECT_CLAIMS={"iss":"${AUTH_JWT_ISSUER:-https://auth.example.com}"}'
+      - GF_AUTH_ANONYMOUS_ENABLED=false
+      - GF_USERS_ALLOW_SIGN_UP=false
+      - GF_PATHS_PROVISIONING=/etc/grafana/provisioning
+      - GF_ANALYTICS_CHECK_FOR_UPDATES=false
+      - GF_ANALYTICS_REPORTING_ENABLED=false
+      - GF_PLUGINS_ALLOW_LOADING_UNSIGNED_PLUGINS=true
+    volumes:
+      - type: bind
+        source: ./observability/grafana/provisioning
+        target: /etc/grafana/provisioning
+        read_only: true
+      - type: volume
+        source: grafana_data
+        target: /var/lib/grafana
+    depends_on:
+      - redis
+      - loki
+      - auth-service
+    healthcheck:
+      test: ["CMD-SHELL", "wget --quiet --tries=1 --spider http://localhost:3000/api/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 40s
+    networks:
+      - prometheus_net
+
+networks:
+  prometheus_net:
+    driver: bridge
+
+volumes:
+  loki_data:
+    driver: local
+  tempo_data:
+    driver: local
+  grafana_data:
+    driver: local

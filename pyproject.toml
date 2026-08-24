@@ -1,0 +1,6 @@
+# UV workspace root — not a Python package itself.
+# Declares gateway/ as a workspace member so that `uv sync` (run from the
+# repo root) installs everything into the root .venv automatically.
+
+[tool.uv.workspace]
+members = ["gateway", "auth-service", "telemetry", "runtime/manager"]

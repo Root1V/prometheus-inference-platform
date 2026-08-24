@@ -1,0 +1,44 @@
+# observability/tempo/tempo-config.yaml
+# Tempo single-binary mode — local filesystem storage, 72h trace retention.
+# OTLP gRPC (4317) and HTTP (4318) receivers enabled — spec-022 OTEL SDK
+# can send spans here without any infrastructure changes.
+# See: memory/specs/021-ops-observability-stack.md — AC-9
+server:
+  http_listen_port: 3200
+  log_level: warn
+
+distributor:
+  receivers:
+    otlp:
+      protocols:
+        grpc:
+          endpoint: 0.0.0.0:4317
+        http:
+          endpoint: 0.0.0.0:4318
+
+ingester:
+  trace_idle_period: 10s
+  max_block_bytes: 1000000
+  max_block_duration: 5m
+
+compactor:
+  compaction:
+    compaction_window: 1h
+    max_block_bytes: 100000000
+    block_retention: 72h
+    compacted_block_retention: 10m
+
+storage:
+  trace:
+    backend: local
+    local:
+      path: /var/tempo/traces
+    wal:
+      path: /var/tempo/wal
+
+query_frontend:
+  search:
+    duration_slo: 5s
+    throughput_bytes_slo: 1073741824
+  trace_by_id:
+    duration_slo: 5s

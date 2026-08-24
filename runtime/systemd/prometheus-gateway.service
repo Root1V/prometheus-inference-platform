@@ -1,0 +1,56 @@
+[Unit]
+Description=Prometheus Gateway (rootless Podman)
+Documentation=https://github.com/<your-username>/prometheus-ai-inference
+# Implements: specs/004-podman-containerization.md — AC-10, Q3 (optional)
+#
+# INSTALLATION (run as the target user, NOT root):
+#
+#   1. Enable linger so the user service survives logout:
+#        loginctl enable-linger $USER
+#
+#   2. Install the unit file:
+#        mkdir -p ~/.config/systemd/user
+#        cp runtime/systemd/prometheus-gateway.service ~/.config/systemd/user/
+#
+#   3. Reload and enable:
+#        systemctl --user daemon-reload
+#        systemctl --user enable --now prometheus-gateway.service
+#
+#   4. Check status:
+#        systemctl --user status prometheus-gateway.service
+#        podman logs prometheus-gateway
+#
+# PREREQUISITES:
+#   - Podman rootless configured for this user
+#   - podman-compose installed (pip install podman-compose)
+#   - gateway/.env configured (cp gateway/.env.podman.example gateway/.env)
+#   - JWT public key present at the path specified by JWT_PUBLIC_KEY_HOST_PATH
+#   - Image already built: podman build -f gateway/Dockerfile -t prometheus-gateway .
+
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=forking
+RemainAfterExit=yes
+
+# Working directory must be the repo root where podman-compose.yml lives
+WorkingDirectory=%h/Projects/edge-ai-inference
+
+# Start: bring up gateway + redis
+ExecStartPre=/usr/bin/podman build -f gateway/Dockerfile -t prometheus-gateway:latest .
+ExecStart=/usr/bin/podman compose --file podman-compose.yml up --detach
+
+# Stop: tear down gracefully
+ExecStop=/usr/bin/podman compose --file podman-compose.yml down
+
+# Restart on failure only — not on clean stop
+Restart=on-failure
+RestartSec=10s
+
+# Logging goes to the systemd journal (view with: journalctl --user -u prometheus-gateway)
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=default.target

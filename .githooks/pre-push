@@ -1,0 +1,53 @@
+#!/usr/bin/env bash
+# Pre-push hook — runs automatically before every `git push`.
+# Blocks the push if any check fails.
+#
+# Install once per clone:
+#   git config core.hooksPath .githooks
+#
+# See: .github/instructions/sdd.instructions.md — "Pre-push Validation"
+
+set -euo pipefail
+
+ROOT="$(git rev-parse --show-toplevel)"
+GATEWAY_DIR="$ROOT/gateway"
+AUTH_DIR="$ROOT/auth-service"
+RUNTIME_DIR="$ROOT/runtime"
+
+echo "--- Pre-push validation ---"
+
+# ── gateway ───────────────────────────────────────────────────────────────────
+echo "[gateway 1/3] Lint (ruff check)"
+uv run --project "$GATEWAY_DIR" ruff check "$GATEWAY_DIR"
+
+echo "[gateway 2/3] Format (ruff format --check)"
+uv run --project "$GATEWAY_DIR" ruff format --check "$GATEWAY_DIR"
+
+echo "[gateway 3/3] Type check (mypy)"
+uv run --project "$GATEWAY_DIR" mypy --config-file "$GATEWAY_DIR/pyproject.toml" "$GATEWAY_DIR/src"
+
+# ── auth-service ──────────────────────────────────────────────────────────────
+echo "[auth-service 1/3] Lint (ruff check)"
+uv run --project "$AUTH_DIR" ruff check "$AUTH_DIR"
+
+echo "[auth-service 2/3] Format (ruff format --check)"
+uv run --project "$AUTH_DIR" ruff format --check "$AUTH_DIR"
+
+echo "[auth-service 3/3] Type check (mypy)"
+uv run --project "$AUTH_DIR" mypy --config-file "$AUTH_DIR/pyproject.toml" "$AUTH_DIR/src"
+
+# ── tests ─────────────────────────────────────────────────────────────────────
+echo "[tests 1/3] gateway (pytest)"
+uv run --project "$GATEWAY_DIR" pytest "$GATEWAY_DIR/tests" -v --tb=short \
+  --cov="$GATEWAY_DIR/src" --cov-report=term-missing --cov-fail-under=80
+
+echo "[tests 2/3] auth-service (pytest)"
+(cd "$AUTH_DIR" && uv run pytest tests/ -v --tb=short)
+
+echo "[tests 3/3] runtime scripts (bash)"
+bash "$RUNTIME_DIR/tests/test_runtime_scripts.sh"
+
+echo "[tests 4/4] scripts/ (bash — spec 023)"
+bash "$ROOT/scripts/tests/test_scripts_023.sh"
+
+echo "--- All checks passed. Push allowed. ---"

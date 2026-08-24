@@ -1,0 +1,250 @@
+"""API routes for the Prometheus Manager.
+
+GET /health            — liveness probe (no auth)
+GET /v1/backends       — all registered models + live state (requires JWT)
+GET /v1/backends/{id}  — single model + live state (requires JWT)
+
+Implements: memory/specs/008-llama-server-manager.md — AC-11, AC-12, AC-13
+"""
+
+from __future__ import annotations
+
+import asyncio
+import os
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Annotated, Any
+
+import httpx
+from fastapi import APIRouter, Depends, HTTPException, Request
+from opentelemetry.trace import SpanKind
+
+from ..registry import Registry, RegistryEntry
+from ..scanner import ProcessState, scan
+from ..telemetry import get_tracer
+from .auth import require_backend_registry_read
+
+router = APIRouter()
+
+Claims = dict[str, Any]
+
+_HTTP_PROBE_TIMEOUT = 2.0  # seconds
+_BACKEND_PROBE_THRESHOLD = int(os.environ.get("OTEL_BACKEND_PROBE_SPAN_THRESHOLD", "10"))
+_tracer = get_tracer("manager.api")
+
+
+async def _probe_state(entry: RegistryEntry, proxy_host: str) -> str:
+    """HTTP health probe for container mode — psutil unavailable inside containers.
+
+    Replaces the backend_url host (127.0.0.1) with proxy_host so the container
+    can reach llama-server processes running on the bare-metal host.
+    """
+    url = entry.backend_url.replace("127.0.0.1", proxy_host).replace("::1", proxy_host)
+    try:
+        async with httpx.AsyncClient(timeout=_HTTP_PROBE_TIMEOUT) as client:
+            resp = await client.get(f"{url}/health")
+        return "ready" if resp.status_code == 200 else "error"
+    except Exception:
+        return "stopped"
+
+
+@router.get("/health", tags=["ops"])
+async def health() -> dict:
+    """Liveness probe — no authentication required."""
+    return {"status": "ok"}
+
+
+@router.get("/v1/backends", tags=["backends"])
+async def list_backends(
+    request: Request,
+    _claims: Annotated[Claims, Depends(require_backend_registry_read)],
+) -> dict:
+    """Return all registered backends with their live process state.
+
+    Implements: memory/specs/008-llama-server-manager.md — AC-11
+    """
+    with _tracer.start_as_current_span("backend.list", kind=SpanKind.INTERNAL) as span:
+        registry: Registry = request.app.state.registry
+        # Always reload from disk so TUI changes appear immediately without restart.
+        registry.reload()
+
+        proxy_host: str = getattr(request.app.state, "proxy_host", "")
+        # AC-18 (spec 010): only expose entries with discovery: true
+        entries = [e for e in registry.entries if e.discovery]
+        entry_ids = {e.id for e in entries}
+        use_batch = len(entries) > _BACKEND_PROBE_THRESHOLD
+
+        if proxy_host:
+            # Container mode: prefer psutil-based scan when the container shares the
+            # host PID namespace (e.g. podman `pid: "host"`). Fall back to HTTP
+            # health probing if no live processes are found.
+            pid_dir: Path = request.app.state.pid_dir
+            live_procs = await asyncio.to_thread(scan, pid_dir, entry_ids)
+            live = {proc.model_id: proc for proc in live_procs if proc.model_id}
+
+            if live:
+                # We have live ProcessState entries visible via psutil; merge them.
+                backends = [_merge(entry.__dict__, live.get(entry.id)) for entry in entries]
+            else:
+                # Fallback: HTTP probing when psutil cannot see host processes.
+                if use_batch:
+                    with _tracer.start_as_current_span("backend.probe.batch", kind=SpanKind.INTERNAL) as probe_span:
+                        probe_span.set_attribute("model_count", len(entries))
+                        backends = [
+                            _merge(entry.__dict__, await _probe_state(entry, proxy_host), proxy_host)
+                            for entry in entries
+                        ]
+                else:
+                    backends = []
+                    for entry in entries:
+                        with _tracer.start_as_current_span("backend.probe", kind=SpanKind.INTERNAL) as probe_span:
+                            probe_span.set_attribute("model_id", entry.id)
+                            state = await _probe_state(entry, proxy_host)
+                            probe_span.set_attribute("probe_result", state)
+                            backends.append(_merge(entry.__dict__, state, proxy_host))
+        else:
+            # Bare-metal mode: psutil-based process scanning.
+            pid_dir: Path = request.app.state.pid_dir
+            entry_ids = {e.id for e in entries}
+            if use_batch:
+                with _tracer.start_as_current_span("backend.probe.batch", kind=SpanKind.INTERNAL) as probe_span:
+                    probe_span.set_attribute("model_count", len(entries))
+                    live: dict[str, ProcessState] = {
+                        proc.model_id: proc
+                        for proc in await asyncio.to_thread(scan, pid_dir, entry_ids)
+                        if proc.model_id
+                    }
+            else:
+                proc_list = await asyncio.to_thread(scan, pid_dir, entry_ids)
+                live = {proc.model_id: proc for proc in proc_list if proc.model_id}
+                for entry in entries:
+                    proc = live.get(entry.id)
+                    state_str = proc.state if proc else "stopped"
+                    with _tracer.start_as_current_span("backend.probe", kind=SpanKind.INTERNAL) as probe_span:
+                        probe_span.set_attribute("model_id", entry.id)
+                        probe_span.set_attribute("probe_result", state_str)
+            backends = [_merge(entry.__dict__, live.get(entry.id)) for entry in entries]
+
+        span.set_attribute("backend_count", len(backends))
+        span.set_attribute("http.status_code", 200)
+        return {"backends": backends}
+
+
+@router.get("/v1/backends/{model_id}", tags=["backends"])
+async def get_backend(
+    model_id: str,
+    request: Request,
+    _claims: Annotated[Claims, Depends(require_backend_registry_read)],
+) -> dict:
+    """Return a single backend with its live process state.
+
+    Implements: memory/specs/008-llama-server-manager.md — AC-11
+    """
+    with _tracer.start_as_current_span("backend.get", kind=SpanKind.INTERNAL) as span:
+        span.set_attribute("model_id", model_id)
+        registry: Registry = request.app.state.registry
+        # Always reload from disk so TUI changes appear immediately without restart.
+        registry.reload()
+
+        # Validate model_id before using it in error messages to prevent log injection.
+        from ..registry import _validate_id as _vid
+
+        try:
+            _vid(model_id)
+        except ValueError:
+            span.set_attribute("http.status_code", 404)
+            raise HTTPException(
+                status_code=404,
+                detail={
+                    "type": "https://prometheus.local/errors/not-found",
+                    "title": "Not Found",
+                    "status": 404,
+                    "detail": "Backend not found.",
+                },
+            ) from None
+
+        entry = registry.get(model_id)
+        if entry is None:
+            span.set_attribute("http.status_code", 404)
+            raise HTTPException(
+                status_code=404,
+                detail={
+                    "type": "https://prometheus.local/errors/not-found",
+                    "title": "Not Found",
+                    "status": 404,
+                    "detail": f"Backend '{model_id}' not found.",
+                },
+            )
+
+        proxy_host: str = getattr(request.app.state, "proxy_host", "")
+        if proxy_host:
+            # Try psutil scan first when possible (container with host PID namespace).
+            pid_dir: Path = request.app.state.pid_dir
+            live_procs = await asyncio.to_thread(scan, pid_dir, {model_id})
+            live = {proc.model_id: proc for proc in live_procs if proc.model_id}
+            proc = live.get(model_id)
+            if proc is not None:
+                result = _merge(entry.__dict__, proc)
+            else:
+                result = _merge(entry.__dict__, await _probe_state(entry, proxy_host), proxy_host)
+        else:
+            pid_dir: Path = request.app.state.pid_dir
+            live: dict[str, ProcessState] = {
+                proc.model_id: proc
+                for proc in await asyncio.to_thread(scan, pid_dir, {model_id})
+                if proc.model_id
+            }
+            result = _merge(entry.__dict__, live.get(model_id))
+
+        span.set_attribute("backend_state", result.get("state", "unknown"))
+        span.set_attribute("http.status_code", 200)
+        return result
+
+
+def _uptime_s(ps: ProcessState) -> float:
+    now = datetime.now(tz=timezone.utc)
+    return (now - ps.started_at).total_seconds()
+
+
+def _merge(entry: dict, ps: ProcessState | str | None, proxy_host: str = "") -> dict:
+    """Merge registry entry with live process state.
+
+    Accepts either a ProcessState (bare-metal mode) or a state string
+    from HTTP health probing (container mode).
+
+    When proxy_host is set, backend_url is rewritten so that the gateway
+    container can reach llama-server on the bare-metal host:
+      http://127.0.0.1:<port>  →  http://host.containers.internal:<port>
+    """
+    result: dict = dict(entry)
+    # Rewrite backend_url for container consumers when proxy_host is set.
+    if proxy_host and result.get("backend_url"):
+        result["backend_url"] = (
+            result["backend_url"].replace("127.0.0.1", proxy_host).replace("::1", proxy_host)
+        )
+    if isinstance(ps, str):
+        # Container mode: state comes from HTTP health probe
+        result["pid"] = None
+        result["state"] = ps
+        result["cpu_percent"] = 0.0
+        result["rss_mb"] = 0.0
+        result["uptime_s"] = 0.0
+        result["gpu_percent"] = None
+        result["gpu_vram_mb"] = None
+    elif ps is not None:
+        result["pid"] = ps.pid
+        result["state"] = ps.state
+        result["cpu_percent"] = ps.cpu_percent
+        result["rss_mb"] = ps.rss_mb
+        result["uptime_s"] = _uptime_s(ps)
+        result["gpu_percent"] = ps.gpu_percent
+        result["gpu_vram_mb"] = ps.gpu_vram_mb
+    else:
+        result["pid"] = None
+        result["state"] = "stopped"
+        result["cpu_percent"] = 0.0
+        result["rss_mb"] = 0.0
+        result["uptime_s"] = 0.0
+        result["gpu_percent"] = None
+        result["gpu_vram_mb"] = None
+    return result

@@ -1,0 +1,215 @@
+/*
+ * Prometheus — Login page stylesheet
+ * Implements: specs/014-login-page-ux-redesign.md
+ *
+ * All colours are expressed exclusively as named CSS custom properties.
+ * Every hex value defined here MUST be one of the 14 approved palette entries:
+ *   #001391  #85C8FF  #060E46  #F7F8F8  #E2E6EA  #CAD1D8  #ADB8C2
+ *   #46536D  #000519  #88E783  #FFB56B  #FFE761  #8BE1E9  #9694FF
+ *
+ * AC-14, AC-16 — specs/014-login-page-ux-redesign.md
+ */
+
+/* ── Design tokens — light mode (default) ───────────────────────────── */
+:root {
+  --color-bg:             #E2E6EA; /* Grey-1  — page background          */
+  --color-surface:        #F7F8F8; /* Sand    — card background           */
+  --color-border:         #CAD1D8; /* Grey-2  — card / input border       */
+  --color-text:           #060E46; /* Midnight — body text                */
+  --color-text-muted:     #ADB8C2; /* Grey-3  — labels, hints             */
+  --color-primary:        #001391; /* Electric Blue — button bg           */
+  --color-primary-hover:  #46536D; /* Grey-4  — button hover              */
+  --color-primary-text:   #F7F8F8; /* Sand    — button label              */
+  --color-input-bg:       #F7F8F8; /* Sand    — input / select background */
+  --color-input-text:     #060E46; /* Midnight — input / select text      */
+  --color-focus-ring:     #001391; /* Electric Blue — focus outline       */
+  --color-toggle-bg:      #001391; /* Electric Blue — toggle button bg    */
+  --color-toggle-icon:    #F7F8F8; /* Sand    — toggle icon               */
+  --color-error:          #FFB56B; /* Mandarin — error message            */
+  --color-warn:           #FFB56B; /* Mandarin — warning (Canary invisible on light bg) */
+  --color-success:        #88E783; /* Lime    — success / confirmation    */
+}
+
+/* ── Design tokens — dark mode ──────────────────────────────────────── */
+html.dark {
+  --color-bg:             #000519; /* Grey-5  — page background           */
+  --color-surface:        #060E46; /* Midnight — card background          */
+  --color-border:         #46536D; /* Grey-4  — card / input border       */
+  --color-text:           #F7F8F8; /* Sand    — body text                 */
+  --color-text-muted:     #ADB8C2; /* Grey-3  — labels, hints             */
+  --color-primary:        #85C8FF; /* Serene Blue — button bg             */
+  --color-primary-hover:  #001391; /* Electric Blue — button hover        */
+  --color-primary-text:   #060E46; /* Midnight — button label             */
+  --color-input-bg:       #46536D; /* Grey-4  — input / select background */
+  --color-input-text:     #F7F8F8; /* Sand    — input / select text       */
+  --color-focus-ring:     #85C8FF; /* Serene Blue — focus outline         */
+  --color-toggle-bg:      #85C8FF; /* Serene Blue — toggle button bg      */
+  --color-toggle-icon:    #060E46; /* Midnight — toggle icon              */
+  --color-error:          #FFB56B; /* Mandarin — error message            */
+  --color-warn:           #FFE761; /* Canary  — warning message           */
+  --color-success:        #88E783; /* Lime    — success / confirmation    */
+}
+
+/* ── Reset ───────────────────────────────────────────────────────────── */
+*, *::before, *::after {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+/* ── Page ────────────────────────────────────────────────────────────── */
+body {
+  font-family: system-ui, -apple-system, sans-serif;
+  background: var(--color-bg);
+  color: var(--color-text);
+  min-height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: background 0.2s, color 0.2s;
+}
+
+/* ── Card ────────────────────────────────────────────────────────────── */
+.card {
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-top: 4px solid var(--color-primary); /* Electric Blue accent stripe */
+  border-radius: 10px;
+  padding: 2rem;
+  width: 100%;
+  max-width: 400px;
+  position: relative;
+  box-shadow: 0 4px 24px rgba(0, 0, 0, 0.12);
+  transition: background 0.2s, border-color 0.2s;
+}
+
+/* ── Card header ─────────────────────────────────────────────────────── */
+.card-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 1.75rem;
+}
+
+.card-header h1 {
+  font-size: 1.25rem;
+  font-weight: 700;
+  color: var(--color-primary); /* Electric Blue (light) / Serene Blue (dark) */
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+}
+
+.card-header h1 svg {
+  width: 1.15rem;
+  height: 1.15rem;
+  flex-shrink: 0;
+  fill: currentColor;
+}
+
+/* ── Dark mode toggle ────────────────────────────────────────────────── */
+.theme-toggle {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 2rem;
+  height: 2rem;
+  border: none;
+  border-radius: 50%;
+  background: var(--color-toggle-bg);
+  color: var(--color-toggle-icon);
+  cursor: pointer;
+  flex-shrink: 0;
+  transition: background 0.2s, color 0.2s;
+  padding: 0;
+}
+
+.theme-toggle:hover {
+  opacity: 0.85;
+}
+
+.theme-toggle svg {
+  width: 1rem;
+  height: 1rem;
+  fill: currentColor;
+}
+
+/* ── Messages ────────────────────────────────────────────────────────── */
+.msg {
+  font-size: 0.8rem;
+  margin: 0.5rem 0 0.75rem;
+  padding: 0.4rem 0.6rem;
+  border-radius: 4px;
+  border-left: 3px solid currentColor;
+}
+
+.msg-error {
+  color: var(--color-error);
+}
+
+.msg-warn {
+  color: var(--color-warn);
+}
+
+/* ── Form ────────────────────────────────────────────────────────────── */
+label {
+  display: block;
+  font-size: 0.78rem;
+  font-weight: 500;
+  color: var(--color-text-muted);
+  margin: 0.85rem 0 0.3rem;
+}
+
+input,
+select {
+  display: block;
+  width: 100%;
+  background: var(--color-input-bg);
+  border: 1px solid var(--color-border);
+  border-radius: 5px;
+  color: var(--color-input-text);
+  padding: 0.5rem 0.75rem;
+  font-size: 0.875rem;
+  transition: border-color 0.15s, background 0.2s;
+  appearance: none;
+}
+
+input:focus,
+select:focus {
+  outline: 2px solid var(--color-focus-ring);
+  outline-offset: 2px;
+  border-color: var(--color-focus-ring);
+}
+
+select {
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='8' viewBox='0 0 12 8'%3E%3Cpath fill='%23ADB8C2' d='M1 1l5 5 5-5'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 0.75rem center;
+  padding-right: 2rem;
+}
+
+/* ── Submit button ───────────────────────────────────────────────────── */
+.btn-submit {
+  display: block;
+  width: 100%;
+  margin-top: 1.5rem;
+  background: var(--color-primary);
+  color: var(--color-primary-text);
+  border: none;
+  border-radius: 5px;
+  padding: 0.65rem;
+  font-size: 0.875rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.15s;
+  letter-spacing: 0.01em;
+}
+
+.btn-submit:hover:not(:disabled) {
+  background: var(--color-primary-hover);
+}
+
+.btn-submit:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}

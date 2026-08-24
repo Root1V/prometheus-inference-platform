@@ -1,0 +1,135 @@
+from pathlib import Path
+
+from pydantic import model_validator
+from pydantic_settings import BaseSettings, SettingsConfigDict
+
+# Resolve .env relative to this file's location (gateway/src/prometheus_gateway/)
+# so the app finds it regardless of the working directory.
+_ENV_FILE = Path(__file__).parent.parent.parent / ".env"
+
+
+class Settings(BaseSettings):
+    model_config = SettingsConfigDict(
+        env_file=str(_ENV_FILE),
+        env_file_encoding="utf-8",
+        extra="ignore",
+    )
+
+    # ── JWT ──────────────────────────────────────────────────────────────────
+    # [MEDIUM fix] No default — misconfigured deployments must fail at startup,
+    # not silently accept tokens from an attacker-controlled issuer.
+    jwt_issuer: str
+    jwt_audience: str = "prometheus-gateway"
+
+    # Exactly one of these is required
+    jwt_public_key_file: str | None = None
+    jwt_jwks_url: str | None = None
+
+    jwt_clock_skew_seconds: int = 30
+
+    # Token revocation (optional — omit to disable)
+    jwt_revocation_redis_url: str | None = None
+    jwt_revocation_strict: bool = True  # fail-closed when Redis is unavailable
+
+    # ── Rate Limiting — memory/specs/007-rate-limiting-and-throughput.md ────────────
+    # AC-1, AC-2, AC-3, AC-4, AC-9, AC-13
+    rate_limit_redis_url: str | None = None  # defaults to jwt_revocation_redis_url if unset
+    rate_limit_rpm: int = 60  # global requests-per-minute per client_id / user_id
+    rate_limit_tpm: int = 40_000  # global tokens-per-minute per client_id / user_id
+    rate_limit_strict: bool = True  # fail-closed when Redis unavailable for rate limiting
+    # Per-endpoint overrides (AC-13)
+    rate_limit_rpm_chat_completions: int | None = None
+    rate_limit_tpm_chat_completions: int | None = None
+
+    # ── Circuit Breaker — memory/specs/007-rate-limiting-and-throughput.md ──────────
+    # AC-14, AC-15, AC-16
+    circuit_breaker_failure_threshold: int = 5
+    circuit_breaker_recovery_timeout: int = 30  # seconds
+    circuit_breaker_success_threshold: int = 2
+
+    # ── Backend Retry — memory/specs/007-rate-limiting-and-throughput.md ────────────
+    # AC-17
+    backend_retry_max: int = 2
+    backend_retry_backoff_base_ms: int = 200
+
+    # ── Backend ──────────────────────────────────────────────────────────────
+    # NOTE: LLAMA_CPP_URL is deprecated. Backend URLs are now configured per-model
+    # via the backend_url field in runtime/models/registry.yaml.
+    # Implements: memory/specs/006-multi-model-gateway.md — AC-10
+
+    # Path to runtime/models/registry.yaml — relative to repo root or absolute
+    # Implements: memory/specs/001-gateway-core.md — AC-5
+    model_registry_path: str | None = None
+
+    # ── Manager integration — memory/specs/008-llama-server-manager.md — AC-23 ─────
+    # When set, the gateway polls the Manager REST API for the backend registry
+    # instead of reading registry.yaml directly.
+    manager_url: str | None = None
+    manager_poll_interval_s: int = 30
+    # OAuth2 client credentials for authenticating against the Manager REST API.
+    # The gateway obtains and auto-renews a token with scope: backend-registry:read.
+    # Register once: POST /admin/clients {"allowed_scopes": ["backend-registry:read"]}
+    manager_client_id: str | None = None
+    manager_client_secret: str | None = None
+    # Deprecated: static JWT — use manager_client_id + manager_client_secret instead.
+    manager_jwt: str | None = None
+
+    # ── Web Chat UI — memory/specs/013-web-chat-ui-proxy.md ─────────────────────────
+    # AC-1: feature flag — when False all /ui/* routes return 404
+    ui_enabled: bool = False
+    # AC-4, AC-9: session cookie configuration
+    ui_session_cookie_name: str = "prometheus_session"
+    ui_session_cookie_max_age: int = 0  # 0 = follow JWT exp
+    # AC-11: login rate limiting per source IP
+    ui_login_rate_limit_rpm: int = 10
+    # Required when ui_enabled=True — auth-service token endpoint
+    auth_service_token_url: str | None = None
+    # TLS verification for internal calls to the auth-service.
+    # Set to False when using self-signed certificates (dev/Podman stack).
+    auth_service_tls_verify: bool = True
+    # AC-14, AC-15: TLS termination (both must be set together or both absent)
+    gateway_tls_cert_file: str | None = None
+    gateway_tls_key_file: str | None = None
+
+    @model_validator(mode="after")
+    def require_key_source(self) -> "Settings":
+        if not self.jwt_public_key_file and not self.jwt_jwks_url:
+            raise ValueError("Either JWT_PUBLIC_KEY_FILE or JWT_JWKS_URL must be configured.")
+        return self
+
+    @model_validator(mode="after")
+    def validate_tls_pair(self) -> "Settings":
+        """Both TLS files must be set together or both absent — AC-15."""
+        cert = bool(self.gateway_tls_cert_file)
+        key = bool(self.gateway_tls_key_file)
+        if cert != key:
+            missing = "GATEWAY_TLS_KEY_FILE" if cert else "GATEWAY_TLS_CERT_FILE"
+            raise ValueError(
+                f"{missing} must be set when the other TLS variable is configured. "
+                "Both GATEWAY_TLS_CERT_FILE and GATEWAY_TLS_KEY_FILE must be present together."
+            )
+        return self
+
+    # ── Observability — memory/specs/018-observability-telemetry.md ────────────────
+    log_level: str = "INFO"
+    log_file_path: str | None = None
+    log_max_bytes: int = 10_485_760  # 10 MB
+    log_backup_count: int = 5
+    # AC-29: prompt/response summaries are opt-in (privacy-by-default)
+    log_include_prompt_summary: bool = False
+
+    @model_validator(mode="after")
+    def validate_ui_requirements(self) -> "Settings":
+        """auth_service_token_url is required when ui_enabled=True."""
+        if self.ui_enabled and not self.auth_service_token_url:
+            raise ValueError("AUTH_SERVICE_TOKEN_URL is required when UI_ENABLED=true.")
+        return self
+
+    @property
+    def effective_rate_limit_redis_url(self) -> str | None:
+        """Return the Redis URL to use for rate limiting.
+
+        Falls back to jwt_revocation_redis_url so simple deployments only need one URL.
+        Implements: memory/specs/007-rate-limiting-and-throughput.md — Data Model
+        """
+        return self.rate_limit_redis_url or self.jwt_revocation_redis_url

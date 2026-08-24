@@ -1,0 +1,65 @@
+# Prometheus Manager configuration — manager.toml
+# Copy to manager.toml and edit. All settings have defaults.
+# Implements: specs/008-llama-server-manager.md
+
+[api]
+# Manager REST API bind address and port.
+# 0.0.0.0 allows containerised services (e.g. gateway in Podman) to reach the API via host.containers.internal.
+# JWT authentication on every endpoint is the security boundary for the REST API.
+host = "0.0.0.0"
+port = 8090
+# JWKS URL for validating JWTs issued by the Auth Service
+jwks_url = "http://localhost:9000/.well-known/jwks.json"
+
+[server]
+# Path to the llama-server binary
+binary = "~/.local/bin/llama-server"
+# Host is always forced to 127.0.0.1 regardless of this setting (AC-19)
+host = "127.0.0.1"
+# Seconds to wait for /health to return 200 before killing the process (AC-5)
+start_timeout_s = 60
+# Seconds to wait after SIGTERM before sending SIGKILL (AC-7)
+stop_timeout_s = 10
+# Log files directory
+log_dir = "runtime/logs"
+# PID files directory
+pid_dir = "runtime/run"
+
+[registry]
+# Path to the manager registry.yaml (source of truth for models)
+path = "runtime/manager/registry.yaml"
+
+[downloads]
+# Directory where GGUF files are downloaded
+dir = "runtime/models/downloads"
+# Environment variable name containing the HuggingFace token
+hf_token_env = "HF_TOKEN"
+# PEM bundle for corporate TLS interception (e.g. Zscaler or similar proxy).
+# Leave empty to let truststore use the OS native trust store (macOS Keychain,
+# Windows CAPI, Linux system certs) — correct default for most machines.
+# Only set this when your network proxy re-signs TLS AND its CA is NOT already
+# installed in the system keychain (i.e. machines with a fully managed proxy).
+# See specs/011-downloads-view-redesign.md — AC-22–AC-25
+ca_bundle = ""
+
+[dashboard]
+# TUI refresh interval in seconds (AC-26)
+refresh_interval_s = 2
+
+[tui]
+# Default theme for the TUI at startup.
+# Any Textual built-in theme name is valid. Use Ctrl+P at runtime to switch themes
+# and discover new ones. The change is live but not persisted — update this value
+# to keep your preferred theme across restarts.
+#
+# Built-in options: textual-dark, textual-light, nord, gruvbox, catppuccin-mocha,
+#   catppuccin-latte, catppuccin-frappe, catppuccin-macchiato, dracula, tokyo-night,
+#   monokai, flexoki, solarized-light, solarized-dark, rose-pine, rose-pine-moon,
+#   rose-pine-dawn, atom-one-dark, atom-one-light, github-dark (Prometheus custom)
+theme = "catppuccin-latte"
+
+# Log file for the TUI session.
+# While Textual owns the terminal stdout is silenced; logs are written here instead.
+# Follow live with: tail -f runtime/logs/manager.log
+# Set to "" to discard all logs during the TUI session.
+log_file_path = "runtime/logs/manager.log"

@@ -1,0 +1,186 @@
+# Prometheus — Roadmap / Backlog
+
+Living backlog of improvements and new features. Unlike `memory/specs/`, items here are
+**not** run through the full SDD pipeline (spec-writer → developer → test →
+security-reviewer → human-approved → docs → release) — that process is kept for
+already-shipped, security-critical work. Backlog items below are implemented directly,
+**one branch per item**, to move faster and spend fewer tokens per change.
+
+**The only non-negotiable rule carried over from SDD**: every branch that closes an item
+must update `README.md` and the relevant page(s) under `memory/wiki/` in the same PR/commit
+set — this file is not a substitute for real docs, it's a queue.
+
+Branch naming: `feat/RM-<id>-<slug>` (e.g. `feat/RM-05-manager-tui-api-split`).
+
+Status legend: `todo` · `in-progress` · `blocked` · `done`
+
+---
+
+## Priority order and rationale
+
+Ordered so that foundational/refactor work and cheap risk-reducing research come first,
+features that depend on them come after, and pure-polish items come last. Items marked
+**(added)** were not in the original request — they came out of the repo audit and are
+folded in here per your "muchos más que vayas encontrando."
+
+| # | Item | Status | Depends on |
+|---|------|--------|------------|
+| [RM-01](#rm-01-restore-ci-now-that-the-repo-is-public-added) | Restore CI on GitHub Actions (added) | todo | — |
+| [RM-02](#rm-02-extend-pre-push-hook-to-managertelemetry-added) | Extend pre-push hook to `manager`/`telemetry` (added) | todo | — |
+| [RM-03](#rm-03-pick-a-real-license-added) | Pick a real LICENSE (added) | todo | — |
+| [RM-04](#rm-04-dependency-vulnerability-scanning-added) | Dependency vulnerability scanning (added) | todo | RM-01 |
+| [RM-05](#rm-05-split-manager-tui-from-its-rest-api-item-4) | Split manager's TUI from its REST API (item 4) | todo | — |
+| [RM-06](#rm-06-research-the-best-inference-serving-stack-item-7) | Research best inference-serving stack per hardware (item 7) | todo | — |
+| [RM-07](#rm-07-fine-grained-per-model-authorization-scopes-item-2) | Fine-grained per-model authorization scopes (item 2) | todo | — |
+| [RM-08](#rm-08-distributed-inference-across-multiple-hosts-item-5) | Distributed inference across multiple hosts (item 5) | todo | RM-05, RM-06 |
+| [RM-09](#rm-09-multi-modal-model-support-item-6) | Multi-modal model support: VLM/audio/image/video/embeddings (item 6) | todo | RM-05, RM-06 |
+| [RM-10](#rm-10-gateway-admin-dashboard-item-3) | Gateway admin dashboard (item 3) | todo | RM-05 |
+| [RM-11](#rm-11-auth-module-dashboard-redesign-item-1) | Auth module dashboard redesign (item 1) | todo | RM-07 (do together) |
+| [RM-12](#rm-12-e2e-llm-tracing-with-langfuse-item-8) | E2E LLM tracing with Langfuse (item 8) | todo | — |
+
+Why this order, briefly:
+- **RM-01 to RM-04** are cheap, low-risk, and matter more now that this moved from an
+  internal GHE repo to a public one (no CI was running at all; no license; no dependency
+  scanning on security-sensitive code like the gateway/auth-service).
+- **RM-05** (manager TUI/API split) blocks RM-08, RM-09, and RM-10 — building distributed
+  support, new modalities, or a gateway dashboard on top of the current mixed
+  TUI+API module means redoing that work later.
+- **RM-06** (engine research) is cheap (mostly investigation) and should inform how RM-08
+  and RM-09 are designed, so it goes before them even though it was item 7 in your list.
+- **RM-07** (fine-grained scopes) is independent but should land before RM-11 (auth
+  dashboard redesign) so the new UI is built once against the final permission model
+  instead of twice.
+- **RM-11** (auth UI) and **RM-10** (gateway dashboard) are placed after their backend
+  dependencies so they're not rebuilt.
+- **RM-12** (Langfuse) is purely additive on top of the existing OTel/Tempo pipeline —
+  lowest urgency, do whenever.
+
+---
+
+## RM-01 — Restore CI on GitHub Actions (added)
+
+**Why**: GitHub Actions workflows existed (`ci-pr.yml`, `cd-develop.yml`, `cd-main.yml`)
+but were deleted because Actions was disabled on the old internal GHE instance this project
+originated on. That
+constraint no longer applies on the new public GitHub repo. Right now nothing runs
+server-side on a PR — only the local `.githooks/pre-push`, which is opt-in and skippable.
+
+**Scope**: recreate a minimal `ci.yml` — ruff check/format, mypy, pytest for `gateway/`,
+`auth-service/`, `runtime/manager/`, `telemetry/` — triggered on PR and push to `main`.
+Mirror what `.githooks/pre-push` already does; don't invent new checks yet.
+
+## RM-02 — Extend pre-push hook to `manager`/`telemetry` (added)
+
+**Why**: `.githooks/pre-push` only lints/type-checks/tests `gateway/` and
+`auth-service/`. `runtime/manager` has its own `pyproject.toml` and a 9-file test suite
+that nothing currently enforces — confirmed drift already exists (`ruff format --check
+runtime/manager/` currently fails on 12 test files). `telemetry/` isn't covered either.
+
+**Scope**: add the same three-step check (lint, format, mypy) plus `pytest` for both
+packages to the hook, and fix the current formatting drift as part of the same change.
+
+## RM-03 — Pick a real LICENSE (added)
+
+**Why**: README currently says `TBD` after the original internal-use notice was removed. A
+repo without a license is "all rights reserved" by default, which may not be what you want.
+
+**Scope**: pick a license (MIT/Apache-2.0 are the common defaults for this kind of infra
+project), add `LICENSE` at the repo root, update the README section to match.
+
+## RM-04 — Dependency vulnerability scanning (added)
+
+**Why**: no SCA tool runs today. `gateway`/`auth-service` sit directly in the security
+path (JWT, crypto, bcrypt) and are now publicly visible.
+
+**Scope**: add Dependabot config (`(.github/dependabot.yml`) for the `uv.lock` workspace,
+and/or a `pip-audit` step in the RM-01 CI workflow.
+
+## RM-05 — Split manager's TUI from its REST API (item 4)
+
+**Why**: `runtime/manager` currently mixes a Textual TUI and a FastAPI REST API (consumed
+by the gateway via `manager_sync.py`) in one module tree. As distributed hosts (RM-08) and
+new model modalities (RM-09) get added, the API surface needs to grow independently of the
+interactive TUI.
+
+**Scope**: restructure `runtime/manager/src/prometheus_manager/` so the API
+(`api/`), the TUI (`tui/`), and the shared core (lifecycle, registry, scanner) are
+clearly separated — the API should be runnable/testable without importing Textual, and
+vice versa. This is a structural refactor, not a behavior change — existing `pmgr`
+commands and REST endpoints should keep working identically.
+
+## RM-06 — Research the best inference-serving stack (item 7)
+
+**Why**: `llama-server` is the only backend today. It may not be the best fit for every
+hardware target (Apple Silicon vs NVIDIA DGX) or every future modality (RM-09).
+
+**Scope**: investigate llama.cpp/llama-server, vLLM, MLX (Apple Silicon), and SGLang —
+throughput, latency, quantization support, multi-modal support, ease of process
+management — and produce a written recommendation (which engine for which hardware/model
+type, whether a mixed strategy makes sense). This is a research deliverable
+(`memory/wiki/inference-engines.md` or similar), not code — but it should directly inform
+how RM-08 and RM-09 are designed.
+
+## RM-07 — Fine-grained per-model authorization scopes (item 2)
+
+**Why**: today auth-service scopes are coarse (e.g. `inference:read`) — a client can call
+any model the gateway exposes. Need per-model (and eventually per-modality: LLM/VLM/
+multimodal) access control.
+
+**Scope**: extend the client/scope model in `auth-service` (schema + JWT claims) to carry
+model-level (or model-group-level) grants, and enforce them in the gateway's routing layer
+alongside the existing scope check.
+
+## RM-08 — Distributed inference across multiple hosts (item 5)
+
+**Why**: today the manager only starts/monitors `llama-server` processes on the local
+host. You want to pool capacity across multiple machines (MacBook Pro M4 Max, NVIDIA DGX
+Spark, etc.).
+
+**Scope**: extend the manager (post RM-05 split) with a notion of remote backends/nodes —
+registration, health checks, and routing across hosts — informed by whatever RM-06
+recommends per hardware type. Likely the largest item in this backlog; may be worth
+breaking into its own sub-backlog once RM-05/RM-06 land.
+
+## RM-09 — Multi-modal model support (item 6)
+
+**Why**: today the platform only serves text LLMs. You want VLM, multimodal, audio,
+image-generation, video-generation, and embedding models.
+
+**Scope**: extend the manager's registry/lifecycle and the gateway's routing/API surface
+to model different modalities (not all of them expose an OpenAI-chat-shaped API) — informed
+by RM-06's engine research, since different modalities likely need different serving
+backends (e.g. diffusers/ComfyUI for image/video, whisper.cpp for audio).
+
+## RM-10 — Gateway admin dashboard (item 3)
+
+**Why**: no visual way today to see running instances, downloaded models, or manage
+inference lifecycle — only `pmgr` TUI (bare-metal) and raw API calls.
+
+**Scope**: a web dashboard in the gateway (or a new UI module) showing live instances,
+downloaded models, and start/stop/restart controls — consuming the manager REST API
+cleaned up in RM-05.
+
+## RM-11 — Auth module dashboard redesign (item 1)
+
+**Why**: current auth UI needs an enterprise-grade redesign.
+
+**Scope**: redesign the existing auth-service web UI. Do this together with or right after
+RM-07 so the new UI is built once against the final (fine-grained) permission model instead
+of being redone.
+
+## RM-12 — E2E LLM tracing with Langfuse (item 8)
+
+**Why**: current observability (Loki/Tempo/Grafana + OTel, specs 018/020/021/022) is
+generic request tracing, not LLM-specific (prompts, completions, token usage, evals).
+
+**Scope**: integrate Langfuse (self-hosted, matches the "open" requirement) alongside the
+existing telemetry package — fine-grained end-to-end trace of prompt → model → completion,
+without duplicating what Tempo already captures at the HTTP layer.
+
+---
+
+## Adding new items
+
+Append a new row to the table with the next `RM-NN` id and a new `## RM-NN — ...` section
+below, following the same shape (Why / Scope). Re-sort the table if the new item's
+priority isn't "last."

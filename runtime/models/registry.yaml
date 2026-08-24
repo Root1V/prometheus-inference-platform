@@ -1,0 +1,103 @@
+# Model registry — Prometheus Runtime
+# See memory/specs/001-gateway-core.md and llama-cpp.instructions.md
+#
+# Fields:
+#   id             - stable identifier used in API requests (e.g. in "model" field)
+#   path           - absolute path to the .gguf weights file on the bare-metal host
+#   context_length - maximum context window in tokens (used to validate max_tokens)
+#   family         - model family (used to select prompt template)
+#   quantization   - quantization format label (informational)
+#
+# Model weights are NOT stored in the repo. Only metadata lives here.
+# Add your models below following the same format.
+
+models:
+  # ── HPE DL380 / RHEL 9.7 (path: /srv/models/) ────────────────────────────
+  - id: "llama3-8b-q4"
+    path: "/srv/models/Meta-Llama-3-8B-Instruct.Q4_K_M.gguf"
+    context_length: 8192
+    family: llama3
+    quantization: Q4_K_M
+
+  - id: "mistral-7b-q4"
+    path: "/srv/models/Mistral-7B-Instruct-v0.3.Q4_K_M.gguf"
+    context_length: 32768
+    family: mistral
+    quantization: Q4_K_M
+
+  # ── Mac M2 — GPT4All local models ────────────────────────────────────────
+  # Implements: memory/specs/003-llama-cpp-runtime.md — AC-11
+  # Base path: ~/Library/Application Support/nomic.ai/GPT4All/
+
+  - id: "llama3-8b-q4-local"
+    path: "~/Library/Application Support/nomic.ai/GPT4All/Meta-Llama-3-8B-Instruct.Q4_0.gguf"
+    context_length: 8192
+    family: llama3
+    quantization: Q4_0
+    backend_url: ""
+    discovery: false
+
+  - id: "llama3-1b-q4-local"
+    path: "~/Library/Application Support/nomic.ai/GPT4All/Llama-3.2-1B-Instruct-Q4_0.gguf"
+    context_length: 8192
+    family: llama3
+    quantization: Q4_0
+    backend_url: ""
+    discovery: false
+
+  - id: "deepseek-r1-8b-q4-local"
+    path: "~/Library/Application Support/nomic.ai/GPT4All/DeepSeek-R1-Distill-Llama-8B-Q4_0.gguf"
+    context_length: 8192
+    family: llama3
+    quantization: Q4_0
+    backend_url: ""
+    discovery: false
+
+  - id: "mistral-7b-v01-q4-local"
+    path: "~/Library/Application Support/nomic.ai/GPT4All/mistral-7b-instruct-v0.1.Q4_0.gguf"
+    context_length: 32768
+    family: mistral
+    quantization: Q4_0
+    backend_url: ""
+    discovery: false
+
+  - id: "mistral-7b-v02-q4-local"
+    path: "~/Library/Application Support/nomic.ai/GPT4All/mistral-7b-instruct-v0.2.Q4_0.gguf"
+    context_length: 32768
+    family: mistral
+    quantization: Q4_0
+    backend_url: ""
+    discovery: false
+
+  - id: "phi3-mini-q4-local"
+    path: "~/Library/Application Support/nomic.ai/GPT4All/Phi-3-mini-4k-instruct.Q4_0.gguf"
+    context_length: 4096
+    family: phi3
+    quantization: Q4_0
+    backend_url: ""
+    discovery: false
+
+  - id: "qwen25-coder-7b-q4-local"
+    path: "~/Library/Application Support/nomic.ai/GPT4All/qwen2.5-coder-7b-instruct-q4_0.gguf"
+    context_length: 32768
+    family: qwen2.5
+    quantization: Q4_0
+    backend_url: ""
+    discovery: false
+
+
+  - id: "functionary-small-q4-local"
+    path: "~/Library/Application Support/nomic.ai/GPT4All/functionary-small-v2.4.Q4_0.gguf"
+    context_length: 4096
+    family: mistral
+    quantization: Q4_0
+    backend_url: ""
+    discovery: false
+
+  - id: "zephyr-7b-q4-local"
+    path: "~/Library/Application Support/nomic.ai/GPT4All/zephyr-7b-beta-pl.Q4_0.gguf"
+    context_length: 32768
+    family: mistral
+    quantization: Q4_0
+    backend_url: ""
+    discovery: false

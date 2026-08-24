@@ -1,0 +1,71 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "prometheus-auth"
+version = "0.1.0"
+description = "Prometheus OAuth2 Authorization Service"
+requires-python = ">=3.11"
+dependencies = [
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.29",
+    "pydantic>=2.0",
+    "pydantic-settings>=2.0",
+    "sqlalchemy>=2.0",
+    "aiosqlite>=0.20",
+    "cryptography>=42.0",
+    "python-jose[cryptography]>=3.3",
+    "bcrypt>=4.0",
+    "redis[asyncio]>=5.0",
+    "slowapi>=0.1.9",
+    "python-multipart>=0.0.9",
+    "greenlet>=3.0",
+    "itsdangerous>=2.0",
+    "jinja2>=3.0",
+    "structlog>=25.5.0",
+    "prometheus-telemetry",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.23",
+    "pytest-cov>=5.0",
+    "httpx>=0.27",
+    "anyio>=4.0",
+    "mypy>=1.10",
+    "ruff>=0.4",
+]
+
+[tool.uv.sources]
+prometheus-telemetry = { workspace = true }
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+prometheus_auth = [
+    "static/*",
+    "templates/*"
+]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+addopts = "--cov=src/prometheus_auth --cov-report=term-missing --cov-fail-under=80"
+
+[tool.coverage.run]
+concurrency = ["greenlet", "thread"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.mypy]
+python_version = "3.11"
+strict = true
+
+[[tool.mypy.overrides]]
+module = ["jose", "jose.*", "bcrypt", "slowapi", "slowapi.*", "sqlalchemy", "sqlalchemy.*", "aiosqlite", "redis", "redis.*", "cryptography", "cryptography.*"]
+ignore_missing_imports = true
