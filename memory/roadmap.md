@@ -27,7 +27,7 @@ folded in here per your "muchos más que vayas encontrando."
 |---|------|--------|------------|
 | [RM-01](#rm-01-restore-ci-now-that-the-repo-is-public-added) | Restore CI on GitHub Actions (added) | done | — |
 | [RM-02](#rm-02-extend-pre-push-hook-to-managertelemetry-added) | Extend pre-push hook to `manager`/`telemetry` (added) | done | RM-01 |
-| [RM-03](#rm-03-pick-a-real-license-added) | Pick a real LICENSE (added) | todo | — |
+| [RM-03](#rm-03-pick-a-real-license-added) | Pick a real LICENSE (added) | done | — |
 | [RM-04](#rm-04-dependency-vulnerability-scanning-added) | Dependency vulnerability scanning (added) | todo | RM-01 |
 | [RM-05](#rm-05-split-manager-tui-from-its-rest-api-item-4) | Split manager's TUI from its REST API (item 4) | todo | — |
 | [RM-06](#rm-06-research-the-best-inference-serving-stack-item-7) | Research best inference-serving stack per hardware (item 7) | todo | — |
@@ -106,13 +106,15 @@ in `cli/main.py`. Fixing that now would mean deep-editing a process-lifecycle-co
 module outside this change's scope, so it's carried forward as required scope for
 **RM-05** (which restructures these exact files) instead of being fixed twice.
 
-## RM-03 — Pick a real LICENSE (added)
+## RM-03 — Pick a real LICENSE (added) — `done`
 
 **Why**: README currently says `TBD` after the original internal-use notice was removed. A
 repo without a license is "all rights reserved" by default, which may not be what you want.
 
-**Scope**: pick a license (MIT/Apache-2.0 are the common defaults for this kind of infra
-project), add `LICENSE` at the repo root, update the README section to match.
+**Done**: Apache-2.0 (user's choice — explicit patent grant vs MIT). Added `LICENSE` at
+the repo root, updated the README section to link it. Per-package `pyproject.toml` files
+(`gateway`, `auth-service`, `telemetry`, `runtime/manager`) don't declare a `license`
+field — left alone, out of scope here; add if any of them ever get published to PyPI.
 
 ## RM-04 — Dependency vulnerability scanning (added)
 

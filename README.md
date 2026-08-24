@@ -428,4 +428,4 @@ See [memory/wiki/architecture.md](memory/wiki/architecture.md) for the full thre
 
 ## License
 
-TBD — choose a license (e.g. MIT, Apache-2.0) before publishing this repository publicly.
+[Apache License 2.0](LICENSE).
