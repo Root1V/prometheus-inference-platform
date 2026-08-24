@@ -121,7 +121,13 @@ def rl_app_ep_override(rl_settings_ep_override, small_registry, fake_redis):
 
 @pytest.fixture
 def auth_headers(rsa_keys):
-    token = make_token(rsa_keys["private"], scope="inference:read", sub="user-x", azp="client-a")
+    # model:small-model — RM-07 per-model grant, deny-by-default.
+    token = make_token(
+        rsa_keys["private"],
+        scope="inference:read inference:stream model:small-model",
+        sub="user-x",
+        azp="client-a",
+    )
     return {"Authorization": f"Bearer {token}"}
 
 
@@ -205,7 +211,12 @@ async def test_rate_limit_tpm_exceeded_AC2(
     from prometheus_gateway.main import create_app
 
     app = create_app(settings=rl_settings, registry=small_registry, redis_client=fake_redis)
-    token = make_token(rsa_keys["private"], scope="inference:read", sub="user-x", azp="client-a")
+    token = make_token(
+        rsa_keys["private"],
+        scope="inference:read inference:stream model:small-model",
+        sub="user-x",
+        azp="client-a",
+    )
     headers = {"Authorization": f"Bearer {token}"}
 
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
@@ -323,7 +334,12 @@ async def test_rate_limit_redis_down_fail_open_AC4b(
     app = create_app(
         settings=rl_settings_fail_open, registry=small_registry, redis_client=BrokenRedis()
     )
-    token = make_token(rsa_keys["private"], scope="inference:read", sub="user-x", azp="client-a")
+    token = make_token(
+        rsa_keys["private"],
+        scope="inference:read inference:stream model:small-model",
+        sub="user-x",
+        azp="client-a",
+    )
     headers = {"Authorization": f"Bearer {token}"}
 
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
@@ -421,7 +437,10 @@ async def test_rate_limit_user_rpm_AC9(
     await fake_redis.set(client_rpm_key, 0)
 
     token = make_token(
-        rsa_keys["private"], scope="inference:read", sub="shared-user", azp="client-newbie"
+        rsa_keys["private"],
+        scope="inference:read inference:stream model:small-model",
+        sub="shared-user",
+        azp="client-newbie",
     )
     headers = {"Authorization": f"Bearer {token}"}
 
@@ -465,7 +484,12 @@ async def test_rate_limit_per_endpoint_override_AC13(
     rl_app_ep_override, rsa_keys
 ):  # memory/specs/007-rate-limiting-and-throughput.md
     """With RATE_LIMIT_RPM_CHAT_COMPLETIONS=1, second request returns 429."""
-    token = make_token(rsa_keys["private"], scope="inference:read", sub="u1", azp="c1")
+    token = make_token(
+        rsa_keys["private"],
+        scope="inference:read inference:stream model:small-model",
+        sub="u1",
+        azp="c1",
+    )
     headers = {"Authorization": f"Bearer {token}"}
 
     async with AsyncClient(

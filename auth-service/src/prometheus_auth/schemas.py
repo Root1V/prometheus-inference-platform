@@ -1,6 +1,7 @@
 # See memory/specs/005-auth-service.md — Pydantic schemas
 from __future__ import annotations
 
+import re
 from datetime import datetime
 
 from pydantic import BaseModel, Field
@@ -21,6 +22,27 @@ VALID_SCOPES: frozenset[str] = frozenset(
         "ops:dashboard",  # Grafana ops dashboard — memory/specs/021-ops-observability-stack.md — AC-6
     }
 )
+
+# ── Per-model scopes (RM-07) ──────────────────────────────────────────────────
+# Fine-grained model access, additive to inference:read/inference:stream above.
+# "model:<id>" grants access to one model_id (the same identifiers used in
+# runtime/manager registry.yaml). Deny-by-default: a client with NO model:*
+# scope cannot call ANY model — see memory/roadmap.md RM-07 and
+# memory/wiki/auth-model.md for the enforcement details and migration note.
+# Not part of VALID_SCOPES (that set is a fixed enum) — matched by pattern
+# instead, since the set of model ids is open-ended and lives in the
+# manager's registry, not in auth-service.
+_MODEL_SCOPE_RE = re.compile(r"^model:[a-z0-9][a-z0-9_-]*$")
+
+
+def is_valid_scope(scope: str) -> bool:
+    """True if *scope* is a known platform scope or a well-formed `model:<id>` grant."""
+    return scope in VALID_SCOPES or bool(_MODEL_SCOPE_RE.match(scope))
+
+
+def invalid_scopes(scopes: list[str] | set[str]) -> set[str]:
+    """Return the subset of *scopes* that fail `is_valid_scope`."""
+    return {s for s in scopes if not is_valid_scope(s)}
 
 
 # ── Admin request / response schemas ─────────────────────────────────────────

@@ -71,7 +71,13 @@ def cb_app(cb_settings, small_registry, fake_redis):
 
 @pytest.fixture
 def auth_headers(rsa_keys):
-    token = make_token(rsa_keys["private"], scope="inference:read", sub="u1", azp="c1")
+    # model:small-model — RM-07 per-model grant, deny-by-default.
+    token = make_token(
+        rsa_keys["private"],
+        scope="inference:read inference:stream model:small-model",
+        sub="u1",
+        azp="c1",
+    )
     return {"Authorization": f"Bearer {token}"}
 
 
@@ -365,7 +371,7 @@ async def test_restart_uses_existing_counters_AC18(
         )
         token = make_token(
             rsa_keys["private"],
-            scope="inference:read",
+            scope="inference:read inference:stream model:small-model",
             sub="sub-123",
             azp="client-z",
             iss="https://auth.test",
@@ -459,7 +465,7 @@ async def test_redis_reconnect_AC19(
         )
         token = make_token(
             rsa_keys["private"],
-            scope="inference:read",
+            scope="inference:read inference:stream model:small-model",
             sub="u1",
             azp="c1",
             iss="https://auth.test",

@@ -315,7 +315,10 @@ def create_router(registry: ModelRegistry, pool: "BackendPool") -> APIRouter:
             inf_span.set_attribute("user_id", claims.user_id if claims else "unknown")
             inf_span.set_attribute("client_id", claims.client_id if claims else "unknown")
 
-            # AC-5 (006): validate model exists in registry
+            # AC-5 (006): validate model exists in registry. Checked before the RM-07
+            # scope checks below — GET /v1/models is public ("No auth required"), so
+            # the model catalog isn't secret and there's nothing to protect by hiding
+            # existence behind authorization.
             entry = registry.get(body.model)
             if entry is None:
                 inf_span.set_attribute("http.status_code", 400)
@@ -326,6 +329,33 @@ def create_router(registry: ModelRegistry, pool: "BackendPool") -> APIRouter:
                     "Unknown Model",
                     f"Model {body.model!r} is not registered. "
                     f"Use GET /v1/models for the list of available models.",
+                )
+
+            # RM-07: inference:read/inference:stream were documented scopes but never
+            # actually enforced here — any valid JWT could call any model.
+            # See memory/wiki/auth-model.md.
+            required_scope = "inference:stream" if body.stream else "inference:read"
+            if claims is None or not claims.has_scope(required_scope):
+                inf_span.set_attribute("http.status_code", 403)
+                return _problem(
+                    request,
+                    403,
+                    "forbidden",
+                    "Forbidden",
+                    f"This endpoint requires {required_scope} scope.",
+                )
+
+            # RM-07: per-model grant, deny-by-default — a client with no model:*
+            # scope at all has no model access, even with inference:read/stream.
+            if not claims.has_model_scope(body.model):
+                inf_span.set_attribute("http.status_code", 403)
+                return _problem(
+                    request,
+                    403,
+                    "forbidden",
+                    "Forbidden",
+                    f"This client is not authorized to use model {body.model!r}. "
+                    "Contact the platform operator to request access.",
                 )
 
             # AC-6 (007): enforce max_tokens ≤ context_length

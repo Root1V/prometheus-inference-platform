@@ -44,8 +44,16 @@ async def gw(gateway_app):
 
 @pytest.fixture
 def auth_headers(rsa_keys):
-    """Valid JWT bearer token headers — inference:read scope."""
-    token = make_token(rsa_keys["private"], scope="inference:read")
+    """Valid JWT bearer token headers — inference:read/stream + model:* (RM-07)
+    for every model this test module's fixtures reference."""
+    token = make_token(
+        rsa_keys["private"],
+        scope=(
+            "inference:read inference:stream "
+            "model:llama3-8b-q4 model:small-model model:inactive-model "
+            "model:invalid-backend-model"
+        ),
+    )
     return {"Authorization": f"Bearer {token}"}
 
 

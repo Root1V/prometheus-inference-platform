@@ -21,7 +21,7 @@ from ..schemas import (
     ReactivateResponse,
     RotateSecretResponse,
     UpdateClientRequest,
-    VALID_SCOPES,
+    invalid_scopes,
 )
 from ..telemetry import get_logger, get_tracer
 
@@ -77,7 +77,7 @@ async def create_client(
 
     with _tracer.start_as_current_span("client.create", kind=SpanKind.INTERNAL) as span:
         # Validate scopes
-        invalid = set(body.allowed_scopes) - VALID_SCOPES
+        invalid = invalid_scopes(body.allowed_scopes)
         if invalid:
             span.set_attribute("http.status_code", 422)
             raise HTTPException(
@@ -294,7 +294,7 @@ async def update_client(
         updated_fields: list[str] = []
 
         if body.allowed_scopes is not None:
-            invalid = set(body.allowed_scopes) - VALID_SCOPES
+            invalid = invalid_scopes(body.allowed_scopes)
             if invalid:
                 span.set_attribute("http.status_code", 422)
                 raise HTTPException(

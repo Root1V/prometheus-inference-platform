@@ -177,6 +177,37 @@ Fixed enum — clients receive only the scopes registered for them:
 
 Requesting a scope not in `allowed_scopes` returns `400 invalid_scope`.
 
+### Per-model scopes (RM-07)
+
+`inference:read`/`inference:stream` grant the *ability* to call the inference endpoint;
+they no longer grant access to *any specific model* by themselves. A second, additive
+scope selects which models: `model:<id>`, where `<id>` matches a `model_id` in
+`runtime/manager/registry.yaml` (e.g. `model:llama3-8b-q4-local`). Not part of the fixed
+enum above — validated by pattern (`^model:[a-z0-9][a-z0-9_-]*$`) instead, since the set
+of model ids is open-ended and lives in the manager, not in auth-service.
+
+`POST /v1/chat/completions` requires **both**:
+1. `inference:read` (or `inference:stream` if `"stream": true`), and
+2. `model:<the requested model_id>`
+
+**Deny-by-default**: a client with zero `model:*` scopes has no model access at all, even
+with `inference:read`. This is a behavior change — before RM-07, `inference:read`/
+`inference:stream` were documented but **never actually enforced** on this endpoint (any
+valid JWT could call any model), so this closes a real gap rather than just adding
+granularity.
+
+**Migration note**: any client registered before RM-07 shipped has no `model:*` scope and
+will get `403 forbidden` on every inference call until an admin grants it explicit model
+access — via the auth-service admin dashboard's "Model access" field, or
+`PATCH /admin/clients/{id}` with `model:<id>` entries added to `allowed_scopes`.
+
+Grant example:
+```bash
+curl -X PATCH https://auth-service:9000/admin/clients/<client_id> \
+  -H "X-Admin-Key: $AUTH_ADMIN_API_KEY" -H "Content-Type: application/json" \
+  -d '{"allowed_scopes": ["inference:read", "model:llama3-8b-q4-local", "model:qwen-coder-7b"]}'
+```
+
 ---
 
 ## JWT structure
@@ -189,7 +220,7 @@ Requesting a scope not in `allowed_scopes` returns `400 invalid_scope`.
   "iat": 1743000000,
   "exp": 1743000300,
   "jti": "<uuid-v4>",
-  "scope": "inference:read",
+  "scope": "inference:read model:llama3-8b-q4-local",
   "role": "app",
   "client_name": "my-app"
 }

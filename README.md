@@ -410,6 +410,7 @@ edge-ai-inference/
 
 - JWT RS256 — algorithm pinning, JWKS rotation, token revocation via Redis
 - Zero unauthenticated endpoints (except `/health`)
+- Per-model authorization — `model:<id>` scopes, deny-by-default (RM-07). See [memory/wiki/auth-model.md](memory/wiki/auth-model.md#per-model-scopes-rm-07).
 - Rate limiting per `user_id` + per `client_id`
 - Prompt injection defence — `system`-role messages stripped before forwarding to llama.cpp
 - llama.cpp bound to `127.0.0.1` — never reachable from Podman network directly

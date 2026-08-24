@@ -11,7 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..crypto import issue_token
 from ..db import OAuthClient, get_session_factory
-from ..schemas import OAuth2Error, TokenResponse, VALID_SCOPES
+from ..schemas import OAuth2Error, TokenResponse, invalid_scopes
 from ..telemetry import get_logger, get_tracer
 
 logger = get_logger(__name__)
@@ -92,7 +92,7 @@ async def token(
         # AC-4: validate requested scopes against allowed scopes
         requested = set(scope.split()) if scope else set(client.scopes)
         allowed = set(client.scopes)
-        invalid = requested - VALID_SCOPES
+        invalid = invalid_scopes(requested)
         if invalid:
             span.set_attribute("http.status_code", 400)
             return JSONResponse(

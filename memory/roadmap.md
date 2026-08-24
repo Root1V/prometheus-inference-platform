@@ -31,7 +31,7 @@ folded in here per your "muchos más que vayas encontrando."
 | [RM-04](#rm-04-dependency-vulnerability-scanning-added) | Dependency vulnerability scanning (added) | done | RM-01 |
 | [RM-05](#rm-05-split-manager-tui-from-its-rest-api-item-4) | Split manager's TUI from its REST API (item 4) | done | — |
 | [RM-06](#rm-06-research-the-best-inference-serving-stack-item-7) | Research best inference-serving stack per hardware (item 7) | done | — |
-| [RM-07](#rm-07-fine-grained-per-model-authorization-scopes-item-2) | Fine-grained per-model authorization scopes (item 2) | todo | — |
+| [RM-07](#rm-07-fine-grained-per-model-authorization-scopes-item-2) | Fine-grained per-model authorization scopes (item 2) | done | — |
 | [RM-08](#rm-08-distributed-inference-across-multiple-hosts-item-5) | Distributed inference across multiple hosts (item 5) | in-progress (phase 1 done) | RM-05, RM-06 |
 | [RM-09](#rm-09-multi-modal-model-support-item-6) | Multi-modal model support: VLM/audio/image/video/embeddings (item 6) | todo | RM-05, RM-06 |
 | [RM-10](#rm-10-gateway-admin-dashboard-item-3) | Gateway admin dashboard (item 3) | todo | RM-05 |
@@ -185,15 +185,45 @@ manager's job — a second "heavy Python server" launch shape alongside the curr
 "spawn a binary" one, and new `registry.yaml` fields (`backend`, `quant_format`) — which
 RM-08 and RM-09 should treat as their starting brief rather than re-deriving.
 
-## RM-07 — Fine-grained per-model authorization scopes (item 2)
+## RM-07 — Fine-grained per-model authorization scopes (item 2) — `done`
 
 **Why**: today auth-service scopes are coarse (e.g. `inference:read`) — a client can call
 any model the gateway exposes. Need per-model (and eventually per-modality: LLM/VLM/
 multimodal) access control.
 
-**Scope**: extend the client/scope model in `auth-service` (schema + JWT claims) to carry
-model-level (or model-group-level) grants, and enforce them in the gateway's routing layer
-alongside the existing scope check.
+**Also found while scoping this**: `inference:read`/`inference:stream` were documented
+scopes but were **never actually enforced** on `POST /v1/chat/completions` — any valid
+JWT could already call any model. User chose (via AskUserQuestion) to fix this gap in the
+same change, and to make the new per-model check **strict/deny-by-default** rather than
+backward-compatible.
+
+**Done**:
+- `auth-service`: `model:<id>` scopes, additive to the fixed `VALID_SCOPES` enum —
+  validated by pattern (`schemas.is_valid_scope`/`invalid_scopes`), not membership, since
+  model ids are open-ended and live in the manager's registry, not auth-service. Wired
+  into client registration/update (`admin.py`, `admin_ui.py` — a plain space-separated
+  "Model access" text field, not a full redesign; RM-11 owns the real dashboard UI) and
+  token issuance (`oauth2.py`). No DB migration needed — `allowed_scopes` was already a
+  free-text space-separated column.
+- `gateway`: `Claims.has_model_scope(model_id)`, enforced in `router.py`'s
+  `chat_completions` handler — checked *after* the existing model-existence lookup (not
+  before: `GET /v1/models` is already public/unauthenticated, so there's no secret to
+  protect by hiding existence behind authorization, and doing it this way keeps
+  unknown-model tests simple). Requires `inference:read`/`inference:stream` (now actually
+  enforced) **and** `model:<id>` for the specific model requested.
+- Confirmed the Web Chat UI (`ui/router.py`) is a separate proxy path that never calls
+  `chat_completions` — unaffected by this change.
+
+**⚠ Deployment/migration impact**: deny-by-default means **every client registered before
+this shipped has zero model access** until an admin adds `model:<id>` scopes to it — see
+[memory/wiki/auth-model.md](wiki/auth-model.md#per-model-scopes-rm-07) for the grant
+command. Roll this out with that in mind; it will look like a total inference outage for
+existing clients if deployed without a follow-up grant pass.
+
+19 new tests (auth-service: scope validation, registration, token issuance; gateway:
+`has_model_scope`, all-4 enforcement-order cases). All 84 auth-service + 119 gateway tests
+pass (75/110 pre-existing — every existing gateway test token needed a `model:<id>` scope
+added since the endpoint is now enforced). `mypy --strict` clean on both packages' `src/`.
 
 ## RM-08 — Distributed inference across multiple hosts (item 5) — `in-progress`
 

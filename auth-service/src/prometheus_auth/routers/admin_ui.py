@@ -17,7 +17,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..db import ClientRole, CredentialShareToken, OAuthClient, get_session_factory
-from ..schemas import VALID_SCOPES
+from ..schemas import VALID_SCOPES, invalid_scopes
 from ..share_crypto import encrypt_secret
 from opentelemetry.trace import SpanKind, StatusCode
 
@@ -144,6 +144,16 @@ async def _get_db() -> Any:
 
 def _hash_secret(plain: str) -> str:
     return bcrypt.hashpw(plain.encode(), bcrypt.gensalt(rounds=12)).decode()
+
+
+def _parse_model_scopes(raw: str) -> list[str]:
+    """ "llama3-8b qwen-coder-7b" -> ["model:llama3-8b", "model:qwen-coder-7b"]. RM-07."""
+    return [f"model:{tok}" for tok in raw.split()]
+
+
+def _model_scopes_display(scopes: list[str]) -> str:
+    """Inverse of _parse_model_scopes, for pre-filling the edit form."""
+    return " ".join(s.removeprefix("model:") for s in scopes if s.startswith("model:"))
 
 
 # ── Root redirect ─────────────────────────────────────────────────────────────
@@ -329,6 +339,7 @@ async def ui_create_client(
     role: str = Form(...),
     label: str = Form(""),
     allowed_scopes: list[str] = Form(default=[]),
+    model_scopes: str = Form(""),
     csrf_token: str = Form(...),
     db: AsyncSession = Depends(_get_db),
 ) -> Any:
@@ -342,20 +353,27 @@ async def ui_create_client(
     if not _verify_csrf(settings, csrf_token):
         return _login_redirect()
 
-    invalid = set(allowed_scopes) - VALID_SCOPES
+    all_scopes = [*allowed_scopes, *_parse_model_scopes(model_scopes)]
+    invalid = invalid_scopes(all_scopes)
+    prefill = {
+        "client_name": client_name,
+        "role": role,
+        "label": label,
+        "model_scopes": model_scopes,
+    }
     if not allowed_scopes:
         return await _render_dashboard(
             request,
             db,
             create_error="Debes seleccionar al menos un scope.",
-            prefill={"client_name": client_name, "role": role, "label": label},
+            prefill=prefill,
         )
     if invalid:
         return await _render_dashboard(
             request,
             db,
             create_error=f"Scopes no válidos: {', '.join(sorted(invalid))}",
-            prefill={"client_name": client_name, "role": role, "label": label},
+            prefill=prefill,
         )
 
     with _tracer.start_as_current_span("admin.ui.client.create", kind=SpanKind.INTERNAL) as span:
@@ -366,7 +384,7 @@ async def ui_create_client(
             client_name=client_name,
             client_secret_hash=_hash_secret(plain_secret),
             role=ClientRole(role),
-            allowed_scopes=" ".join(sorted(allowed_scopes)),
+            allowed_scopes=" ".join(sorted(all_scopes)),
             token_ttl_seconds=ttl,
             label=label.strip() or None,
         )
@@ -470,6 +488,7 @@ async def get_edit_client(
             "client": client,
             "valid_scopes": sorted(VALID_SCOPES),
             "scope_descriptions": SCOPE_DESCRIPTIONS,
+            "model_scopes": _model_scopes_display(client.scopes),
             "csrf_token": _make_csrf_token(settings),
             "error": request.query_params.get("error"),
         },
@@ -486,6 +505,7 @@ async def post_edit_client(
     client_name: str = Form(...),
     label: str = Form(""),
     allowed_scopes: list[str] = Form(default=[]),
+    model_scopes: str = Form(""),
     token_ttl_seconds: int = Form(...),
     csrf_token: str = Form(...),
     db: AsyncSession = Depends(_get_db),
@@ -498,7 +518,8 @@ async def post_edit_client(
     if not _verify_csrf(settings, csrf_token):
         return _login_redirect()
 
-    invalid = set(allowed_scopes) - VALID_SCOPES
+    all_scopes = [*allowed_scopes, *_parse_model_scopes(model_scopes)]
+    invalid = invalid_scopes(all_scopes)
     if invalid:
         return RedirectResponse(
             url=f"/admin/ui/clients/{client_id}/edit?error=Invalid+scopes", status_code=303
@@ -514,8 +535,8 @@ async def post_edit_client(
 
         client.client_name = client_name
         client.label = label.strip() or None
-        if allowed_scopes:
-            client.allowed_scopes = " ".join(sorted(allowed_scopes))
+        if all_scopes:
+            client.allowed_scopes = " ".join(sorted(all_scopes))
         client.token_ttl_seconds = token_ttl_seconds
         client.updated_at = datetime.now(timezone.utc)
         await db.commit()

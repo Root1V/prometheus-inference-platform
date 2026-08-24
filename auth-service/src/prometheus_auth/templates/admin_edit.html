@@ -131,6 +131,12 @@
               </div>
             </fieldset>
 
+            <div>
+              <label for="ec-model-scopes">Model access <span style="font-weight:400;color:var(--color-muted)">— space-separated model IDs from registry.yaml. Empty = no model access (deny-by-default, RM-07) even with inference:read.</span></label>
+              <input id="ec-model-scopes" name="model_scopes" type="text" placeholder="e.g. llama3-8b-q4-local qwen-coder-7b"
+                     value="{{ model_scopes }}">
+            </div>
+
             <div class="form-actions">
               <button type="submit" class="btn btn-primary btn-sm">Save changes</button>
               <a href="/admin/ui/dashboard" class="btn btn-sm">Cancel</a>
