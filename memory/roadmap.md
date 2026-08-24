@@ -28,7 +28,7 @@ folded in here per your "muchos más que vayas encontrando."
 | [RM-01](#rm-01-restore-ci-now-that-the-repo-is-public-added) | Restore CI on GitHub Actions (added) | done | — |
 | [RM-02](#rm-02-extend-pre-push-hook-to-managertelemetry-added) | Extend pre-push hook to `manager`/`telemetry` (added) | done | RM-01 |
 | [RM-03](#rm-03-pick-a-real-license-added) | Pick a real LICENSE (added) | done | — |
-| [RM-04](#rm-04-dependency-vulnerability-scanning-added) | Dependency vulnerability scanning (added) | todo | RM-01 |
+| [RM-04](#rm-04-dependency-vulnerability-scanning-added) | Dependency vulnerability scanning (added) | done | RM-01 |
 | [RM-05](#rm-05-split-manager-tui-from-its-rest-api-item-4) | Split manager's TUI from its REST API (item 4) | todo | — |
 | [RM-06](#rm-06-research-the-best-inference-serving-stack-item-7) | Research best inference-serving stack per hardware (item 7) | todo | — |
 | [RM-07](#rm-07-fine-grained-per-model-authorization-scopes-item-2) | Fine-grained per-model authorization scopes (item 2) | todo | — |
@@ -116,13 +116,18 @@ the repo root, updated the README section to link it. Per-package `pyproject.tom
 (`gateway`, `auth-service`, `telemetry`, `runtime/manager`) don't declare a `license`
 field — left alone, out of scope here; add if any of them ever get published to PyPI.
 
-## RM-04 — Dependency vulnerability scanning (added)
+## RM-04 — Dependency vulnerability scanning (added) — `done`
 
 **Why**: no SCA tool runs today. `gateway`/`auth-service` sit directly in the security
 path (JWT, crypto, bcrypt) and are now publicly visible.
 
-**Scope**: add Dependabot config (`(.github/dependabot.yml`) for the `uv.lock` workspace,
-and/or a `pip-audit` step in the RM-01 CI workflow.
+**Done**: both. `.github/dependabot.yml` — weekly `uv` ecosystem updates against the
+single workspace `uv.lock` (root, covers all four packages), plus weekly
+`github-actions` updates. And a `pip-audit` step in `ci.yml`, run as
+`uv run --with pip-audit pip-audit -l` (audits the already-synced workspace venv
+in place — no separate `uv export`/ephemeral-venv dance needed). Currently reports
+no known vulnerabilities. Kept out of `.githooks/pre-push` deliberately: it calls
+PyPI/OSV over the network, which shouldn't be able to block a local `git push`.
 
 ## RM-05 — Split manager's TUI from its REST API (item 4)
 

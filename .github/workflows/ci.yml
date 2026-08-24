@@ -20,3 +20,9 @@ jobs:
       # so local and CI checks never drift apart.
       - name: Run pre-push validation suite
         run: bash .githooks/pre-push
+
+      # Not part of .githooks/pre-push on purpose — it calls the PyPI/OSV
+      # vulnerability service over the network, which shouldn't block a local
+      # `git push` on a transient network failure. CI-only.
+      - name: Dependency vulnerability scan (pip-audit)
+        run: uv run --with pip-audit pip-audit -l --progress-spinner off

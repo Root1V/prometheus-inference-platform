@@ -1,0 +1,13 @@
+version: 2
+updates:
+  # Single workspace lockfile (uv.lock) covers gateway/, auth-service/,
+  # telemetry/, and runtime/manager/ — see [tool.uv.workspace] in pyproject.toml.
+  - package-ecosystem: "uv"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
