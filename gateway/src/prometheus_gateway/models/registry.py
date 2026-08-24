@@ -39,6 +39,9 @@ class ModelEntry:
     )
     backend_status: Literal["active", "inactive", "invalid"] = "inactive"
     discovery: bool = True  # Implements: memory/specs/013-web-chat-ui-proxy.md — AC-3, AC-17, AC-18
+    # RM-08 phase 2: which configured manager node this model is served from.
+    # "" for the single-node case (MANAGER_URL) or the static registry.yaml fallback.
+    node: str = ""
 
 
 class ModelRegistry:

@@ -34,10 +34,10 @@ def create_app(
         settings = Settings()  # type: ignore[call-arg]  # populated from env vars at runtime
 
     if registry is None:
-        if settings.manager_url:
+        if settings.resolved_manager_nodes:
             # Manager is the single source of truth — start with an empty registry.
             # ManagerRegistrySync will populate it on startup via the manager REST API.
-            # The static registry.yaml is ignored when MANAGER_URL is set.
+            # The static registry.yaml is ignored when MANAGER_URL/MANAGER_NODES is set.
             registry = ModelRegistry.__new__(ModelRegistry)
             registry._models = {}
         else:
@@ -99,13 +99,14 @@ def create_app(
 
             set_jwks_redis_client(_redis_instance)
 
-        # AC-23 (008): if MANAGER_URL is set, start background registry sync
+        # AC-23 (008): if MANAGER_URL/MANAGER_NODES is set, start background registry sync
+        # RM-08 phase 2: resolved_manager_nodes returns one or more (name, url) pairs.
         _manager_sync = None
-        if settings.manager_url:
+        if settings.resolved_manager_nodes:
             from .models.manager_sync import ManagerRegistrySync
 
             _manager_sync = ManagerRegistrySync(
-                manager_url=settings.manager_url,
+                nodes=settings.resolved_manager_nodes,
                 registry=registry,
                 poll_interval_s=settings.manager_poll_interval_s,
                 manager_client_id=settings.manager_client_id,

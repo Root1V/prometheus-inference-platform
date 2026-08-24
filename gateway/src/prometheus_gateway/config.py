@@ -65,14 +65,47 @@ class Settings(BaseSettings):
     # When set, the gateway polls the Manager REST API for the backend registry
     # instead of reading registry.yaml directly.
     manager_url: str | None = None
+    # RM-08 phase 2: multiple manager nodes (distributed inference across hosts).
+    # Format: "name1=http://host1:8090,name2=http://host2:8090". When set, this
+    # takes priority over manager_url (which still works unchanged for the
+    # existing single-node case — see resolved_manager_nodes). Each node's own
+    # manager-api must be configured with PMGR_PROXY_HOST set to its own
+    # network-reachable hostname/IP (not left as loopback) so its /v1/backends
+    # response reports a backend_url the gateway can actually route to — see
+    # memory/wiki/model-registry.md "Distributed nodes (RM-08 phase 2)".
+    manager_nodes: str | None = None
     manager_poll_interval_s: int = 30
     # OAuth2 client credentials for authenticating against the Manager REST API.
     # The gateway obtains and auto-renews a token with scope: backend-registry:read.
     # Register once: POST /admin/clients {"allowed_scopes": ["backend-registry:read"]}
+    # Shared across all manager_nodes — every node's manager-api validates against
+    # the same central auth-service, so one service-account token works for all.
     manager_client_id: str | None = None
     manager_client_secret: str | None = None
     # Deprecated: static JWT — use manager_client_id + manager_client_secret instead.
     manager_jwt: str | None = None
+
+    @property
+    def resolved_manager_nodes(self) -> list[tuple[str, str]]:
+        """[(node_name, manager_url), ...] — see manager_nodes docstring above.
+
+        manager_nodes (multi-node) takes priority over manager_url (single-node,
+        kept for backward compatibility with existing deployments).
+        """
+        if self.manager_nodes:
+            nodes = []
+            for part in self.manager_nodes.split(","):
+                part = part.strip()
+                if not part:
+                    continue
+                name, _, url = part.partition("=")
+                if not url:
+                    raise ValueError(f"Invalid MANAGER_NODES entry {part!r} — expected 'name=url'.")
+                nodes.append((name.strip(), url.strip()))
+            return nodes
+        if self.manager_url:
+            return [("default", self.manager_url)]
+        return []
 
     # ── Web Chat UI — memory/specs/013-web-chat-ui-proxy.md ─────────────────────────
     # AC-1: feature flag — when False all /ui/* routes return 404

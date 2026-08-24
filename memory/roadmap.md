@@ -32,7 +32,7 @@ folded in here per your "muchos más que vayas encontrando."
 | [RM-05](#rm-05-split-manager-tui-from-its-rest-api-item-4) | Split manager's TUI from its REST API (item 4) | done | — |
 | [RM-06](#rm-06-research-the-best-inference-serving-stack-item-7) | Research best inference-serving stack per hardware (item 7) | done | — |
 | [RM-07](#rm-07-fine-grained-per-model-authorization-scopes-item-2) | Fine-grained per-model authorization scopes (item 2) | done | — |
-| [RM-08](#rm-08-distributed-inference-across-multiple-hosts-item-5) | Distributed inference across multiple hosts (item 5) | in-progress (phase 1 done) | RM-05, RM-06 |
+| [RM-08](#rm-08-distributed-inference-across-multiple-hosts-item-5) | Distributed inference across multiple hosts (item 5) | done | RM-05, RM-06 |
 | [RM-09](#rm-09-multi-modal-model-support-item-6) | Multi-modal model support: VLM/audio/image/video/embeddings (item 6) | todo | RM-05, RM-06 |
 | [RM-10](#rm-10-gateway-admin-dashboard-item-3) | Gateway admin dashboard (item 3) | todo | RM-05 |
 | [RM-11](#rm-11-auth-module-dashboard-redesign-item-1) | Auth module dashboard redesign (item 1) | todo | RM-07 (do together) |
@@ -225,7 +225,7 @@ existing clients if deployed without a follow-up grant pass.
 pass (75/110 pre-existing — every existing gateway test token needed a `model:<id>` scope
 added since the endpoint is now enforced). `mypy --strict` clean on both packages' `src/`.
 
-## RM-08 — Distributed inference across multiple hosts (item 5) — `in-progress`
+## RM-08 — Distributed inference across multiple hosts (item 5) — `done`
 
 **Why**: today the manager only starts/monitors `llama-server` processes on the local
 host. You want to pool capacity across multiple machines (MacBook Pro M4 Max, NVIDIA DGX
@@ -255,10 +255,38 @@ question, and it turned out to be the more urgent gap. Implemented in `core`:
 - `pmgr register --backend`, and a Backend column in the CLI tables, the Textual Registry
   view (table + detail panel), and the Instances view table.
 
-**Phase 2 remaining — actual multi-host distribution**: registration, health checks, and
-request routing across *remote* nodes (not just multiple backends on the same box) —
-informed by RM-06's per-hardware backend recommendations. Still the largest remaining
-piece of this item.
+**Phase 2 done — multi-host distribution via the gateway**: chosen architecture is "remote
+manager + shared registry" — each host runs its own bare-metal `pmgr-api` (RM-05) with its
+own `registry.yaml`; there is no new central orchestrator process. The gateway is the only
+component aware of the whole fleet, and only as a *reader*:
+- `gateway/config.py`: new `MANAGER_NODES` setting (`"name1=url1,name2=url2,..."`),
+  resolved via `Settings.resolved_manager_nodes`. Takes priority over the existing
+  single-node `MANAGER_URL`, which keeps working unchanged for existing deployments.
+- `gateway/models/manager_sync.py`: `ManagerRegistrySync` now polls every configured
+  node's `/v1/backends` concurrently (`asyncio.gather`) instead of a single manager. The
+  SSRF-prevention host allowlist — previously a fixed loopback/container-alias list — is
+  now dynamic: base hosts ∪ the hostname of every explicitly configured `MANAGER_NODES`
+  entry, so remote routing is possible without opening the gateway up to arbitrary hosts.
+  One node being unreachable only drops *that node's* models from the registry on the next
+  poll (partial availability); a `model_id` collision across two nodes keeps the
+  first-seen entry and logs a warning rather than silently overwriting.
+- `gateway/models/registry.py`: `ModelEntry.node` field records which host serves a model
+  (observability only, not used for routing).
+- Each node's own `pmgr-api` must set `PMGR_PROXY_HOST` to its real reachable
+  hostname/IP (not loopback) so its `/v1/backends` response reports a `backend_url` the
+  gateway can actually route to. Full details and the operational setup: see
+  `memory/wiki/model-registry.md` → "Distributed nodes (RM-08 phase 2)".
+
+10 new tests (`gateway/tests/test_manager_sync.py`): node-config parsing (empty, single,
+multi, priority-over-`MANAGER_URL`, malformed), dynamic allowlist computation, multi-node
+merge, partial-availability on node failure, `model_id` collision handling, untrusted-host
+rejection. 129/129 gateway tests pass; `ruff`/`mypy --strict` clean.
+
+**What's not verified**: same caveat as phase 1's vLLM/SGLang — the config parsing and
+sync logic are unit-tested against mocked HTTP responses, but the actual cross-machine
+`PMGR_PROXY_HOST` rewrite was not exercised against two real separate hosts (no second
+machine available in this dev environment). Validate on the real fleet (Mac + DGX Spark,
+etc.) before relying on it in production.
 
 ## RM-09 — Multi-modal model support (item 6)
 

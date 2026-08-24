@@ -108,7 +108,9 @@ Error responses by routing state:
 | Registered, no `backend_url` | `503 model-not-loaded` |
 | `backend_url` present, connection fails | `503 backend-unavailable` |
 
-All backend URLs must resolve to loopback (`127.0.0.1`) or `host.containers.internal` — never a public address.
+All backend URLs must resolve to loopback (`127.0.0.1`), `host.containers.internal`, or a
+node hostname explicitly configured via `MANAGER_NODES` (RM-08 phase 2, below) — never an
+arbitrary public address.
 
 ## Allowed backend hosts
 
@@ -118,12 +120,67 @@ The gateway enforces a whitelist of allowed backend hostnames to prevent routing
 - `::1` (IPv6 loopback)
 - `host.docker.internal` (Docker / Podman alias for host)
 - `host.containers.internal` (Podman alias for host)
+- the hostname of every node configured in `MANAGER_NODES` (RM-08 phase 2 — dynamic, not in the fixed list above)
 
 Operational notes:
 - When running the Manager inside a container, set `PMGR_PROXY_HOST=host.containers.internal` so the Manager rewrites `127.0.0.1` in `backend_url` to the container-visible host alias for health probing.
 - Some runtimes resolve `host.containers.internal` to a numeric IP (e.g. `10.89.0.1`) before the gateway sees it. The gateway accepts such numeric IPs only when they correspond to one of the allowed host aliases (this prevents accidental exposure to arbitrary IPs).
-- Do not set `backend_url` to a public IP or hostname. If you need remote model hosts, use a secured tunnel or a registry entry specifically marked and reviewed for that purpose.
+- Do not set `backend_url` to a public IP or hostname manually. For remote model hosts, use the `MANAGER_NODES` mechanism below — it's the reviewed, purpose-built path; the allowlist only trusts hosts the operator explicitly configured, never arbitrary ones.
 
+## Distributed nodes (RM-08 phase 2)
+
+Each host in the fleet (a Mac, a DGX Spark, a Linux server, …) runs its own bare-metal
+`pmgr-api` (`prometheus-manager-api`, from RM-05) with its own `registry.yaml`. There is
+**no central orchestrator** — the gateway is the only thing that's aware of the whole
+fleet, and it only *reads* from each node's API; it never tells a node what to run.
+
+```
+gateway ── polls GET /v1/backends every MANAGER_POLL_INTERVAL_S ──▶  pmgr-api  (Mac, :8090)
+        ── polls GET /v1/backends every MANAGER_POLL_INTERVAL_S ──▶  pmgr-api  (DGX Spark, :8090)
+        ── polls GET /v1/backends every MANAGER_POLL_INTERVAL_S ──▶  pmgr-api  (Linux server, :8090)
+```
+
+**Gateway config** — `MANAGER_NODES` replaces `MANAGER_URL` for more than one node:
+
+```bash
+# Single node (unchanged, still works):
+MANAGER_URL=http://127.0.0.1:8090
+
+# Multiple nodes — "name1=url1,name2=url2,...":
+MANAGER_NODES=mac-m4-max=http://mac.local:8090,dgx-spark=http://dgx.local:8090
+```
+
+`MANAGER_NODES` takes priority over `MANAGER_URL` when both are set. The same
+`MANAGER_CLIENT_ID`/`MANAGER_CLIENT_SECRET` service-account credentials are used for every
+node — all nodes' `pmgr-api` instances validate JWTs against the same central
+auth-service, so one token works fleet-wide.
+
+**Per-node requirement**: each node's `pmgr-api` must set `PMGR_PROXY_HOST` to that node's
+own network-reachable hostname or IP (e.g. `PMGR_PROXY_HOST=dgx.local` on the DGX Spark),
+**not** left as loopback. Without this, the node's `/v1/backends` reports
+`backend_url: http://127.0.0.1:<port>` — meaningful only on that node's own machine — and
+the gateway, running elsewhere, would never be able to reach it. The gateway derives its
+per-node allowlist entry from the *hostname in `MANAGER_NODES`*, and expects the node's
+reported `backend_url` to use that same hostname.
+
+**model_id collisions**: model ids must be unique across the whole fleet, the same way
+they're already unique within one node's registry. If two nodes report the same
+`model_id`, the gateway keeps whichever node it saw first (stable per process lifetime)
+and logs `manager_sync.model_id_collision` — it does not silently overwrite. Avoid this by
+namespacing ids per node if collisions are likely (e.g. `llama3-8b-mac` vs. `llama3-8b-dgx`).
+
+**Partial availability**: if one node's `pmgr-api` is unreachable, only *that node's*
+models disappear from the aggregated registry on the next poll — the rest of the fleet is
+unaffected. This is a resilience property, not a routing decision: the gateway still fails
+a request the normal way (`503 model-not-loaded`) if the specific model a client asked for
+was on the unreachable node.
+
+**What's verified vs. not**: the config parsing, multi-node polling, host-allowlisting, and
+model_id-collision logic are unit-tested (`gateway/tests/test_manager_sync.py`) against
+mocked HTTP responses simulating multiple nodes. The actual cross-machine
+`PMGR_PROXY_HOST` rewrite was **not** live-verified against two real separate hosts in this
+change — there was no second machine available to test against. Validate this on your
+actual fleet (Mac + DGX Spark, etc.) before relying on it in production.
 
 ---
 
