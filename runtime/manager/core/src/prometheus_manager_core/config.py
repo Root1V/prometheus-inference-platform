@@ -225,11 +225,15 @@ class ManagerConfig:
         """Return the launch binary/command for *backend* ("llama_cpp", "mlx", ...).
 
         llama_cpp keeps using [server].binary; other backends come from
-        [backends.<name>].binary.
+        [backends.<name>].binary. subprocess.Popen doesn't expand a leading
+        "~" (that's shell syntax, not something exec() understands), so a
+        default config's `binary = "~/.local/bin/llama-server"` — the
+        documented install path — needs it expanded here or start_instance
+        fails with FileNotFoundError.
         """
         if backend == "llama_cpp":
-            return self.server.binary
-        return self._backend_config(backend).binary
+            return os.path.expanduser(self.server.binary)
+        return os.path.expanduser(self._backend_config(backend).binary)
 
     def resolved_backend_start_timeout_s(self, backend: str) -> int:
         if backend == "llama_cpp":

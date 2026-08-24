@@ -221,6 +221,18 @@ async def _control_action(action: str, model_id: str, request: Request) -> dict[
             await asyncio.to_thread(restart_instance, model_id, config, registry)
     except LifecycleError as exc:
         raise _problem(409, "lifecycle-conflict", "Lifecycle Conflict", str(exc)) from exc
+    except OSError as exc:
+        # subprocess.Popen-level failure (binary not found, permission denied,
+        # etc.) — surfaced as a raw 500 with no detail otherwise. Caught here
+        # rather than at a global handler so the admin dashboard shows the
+        # operator something actionable instead of "Request failed with
+        # status code 500".
+        raise _problem(
+            500,
+            "backend-launch-error",
+            "Backend Launch Error",
+            f"Could not {action} {model_id!r}: {exc}",
+        ) from exc
 
     registry.reload()
     entry = registry.get(model_id)

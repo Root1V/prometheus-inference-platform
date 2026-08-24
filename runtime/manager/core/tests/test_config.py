@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 import pytest
@@ -48,10 +49,26 @@ class TestBackendsConfig:
 
     def test_default_binaries(self):
         cfg = load_config(path=None)
-        assert cfg.resolved_backend_binary("llama_cpp") == cfg.server.binary
+        assert cfg.resolved_backend_binary("llama_cpp") == os.path.expanduser(cfg.server.binary)
         assert cfg.resolved_backend_binary("mlx") == "mlx_lm.server"
         assert cfg.resolved_backend_binary("vllm") == "vllm"
         assert cfg.resolved_backend_binary("sglang") == "python3"
+
+    def test_llama_cpp_binary_tilde_expanded(self):
+        """subprocess.Popen doesn't expand '~' itself — start_instance would get
+        FileNotFoundError against the documented default install path otherwise."""
+        cfg = ManagerConfig(server=ServerConfig(binary="~/.local/bin/llama-server"))
+        resolved = cfg.resolved_backend_binary("llama_cpp")
+        assert "~" not in resolved
+        assert resolved == os.path.expanduser("~/.local/bin/llama-server")
+
+    def test_backend_binary_tilde_expanded(self, tmp_path: Path):
+        toml_file = tmp_path / "manager.toml"
+        toml_file.write_text('[backends.mlx]\nbinary = "~/venvs/mlx/bin/mlx_lm.server"\n')
+        cfg = load_config(path=toml_file)
+        resolved = cfg.resolved_backend_binary("mlx")
+        assert "~" not in resolved
+        assert resolved == os.path.expanduser("~/venvs/mlx/bin/mlx_lm.server")
 
     def test_unknown_backend_raises(self):
         cfg = load_config(path=None)

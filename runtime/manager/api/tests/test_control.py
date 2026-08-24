@@ -337,6 +337,28 @@ class TestLifecycleControl:
         assert resp.status_code == 409
         assert resp.json()["detail"]["type"].endswith("lifecycle-conflict")
 
+    def test_start_binary_not_found_returns_clean_500(self, tmp_path: Path):
+        """subprocess.Popen failures (e.g. a mistyped/missing binary path,
+        including the '~' expansion bug this test guards against
+        regressing) must not leak as a raw, undetailed 500."""
+        client = _authed(_make_client(tmp_path))
+        try:
+            with patch(
+                "prometheus_manager_api.control.start_instance",
+                side_effect=FileNotFoundError(
+                    2, "No such file or directory", "~/.local/bin/llama-server"
+                ),
+            ):
+                resp = client.post(
+                    "/v1/backends/llama3-test/start", headers={"Authorization": "Bearer dummy"}
+                )
+        finally:
+            _clear_override()
+        assert resp.status_code == 500
+        body = resp.json()
+        assert body["detail"]["type"].endswith("backend-launch-error")
+        assert "llama-server" in body["detail"]["detail"]
+
     def test_stop_success(self, tmp_path: Path):
         client = _authed(_make_client(tmp_path))
         try:
