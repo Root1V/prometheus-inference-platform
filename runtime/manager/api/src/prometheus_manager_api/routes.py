@@ -16,7 +16,7 @@ from pathlib import Path
 from typing import Annotated, Any
 
 import httpx
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from opentelemetry.trace import SpanKind
 from prometheus_manager_core.registry import Registry, RegistryEntry
 from prometheus_manager_core.scanner import ProcessState, scan
@@ -58,10 +58,14 @@ async def health() -> dict[str, str]:
 async def list_backends(
     request: Request,
     _claims: Annotated[Claims, Depends(require_backend_registry_read)],
+    include_hidden: Annotated[
+        bool, Query(description="RM-10: also include discovery=false entries (operator use).")
+    ] = False,
 ) -> dict[str, Any]:
     """Return all registered backends with their live process state.
 
     Implements: memory/specs/008-llama-server-manager.md — AC-11
+    Implements: memory/roadmap.md — RM-10 (include_hidden for the admin dashboard)
     """
     with _tracer.start_as_current_span("backend.list", kind=SpanKind.INTERNAL) as span:
         registry: Registry = request.app.state.registry
@@ -69,8 +73,13 @@ async def list_backends(
         registry.reload()
 
         proxy_host: str = getattr(request.app.state, "proxy_host", "")
-        # AC-18 (spec 010): only expose entries with discovery: true
-        entries = [e for e in registry.entries if e.discovery]
+        # AC-18 (spec 010): only expose entries with discovery: true, unless the
+        # caller explicitly asked for hidden ones too (RM-10 admin dashboard —
+        # backend-registry:read is already an internal/operator credential, not
+        # exposed to end users, so this isn't a new trust boundary).
+        entries = (
+            registry.entries if include_hidden else [e for e in registry.entries if e.discovery]
+        )
         entry_ids = {e.id for e in entries}
         use_batch = len(entries) > _BACKEND_PROBE_THRESHOLD
 

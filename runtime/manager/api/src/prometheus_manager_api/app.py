@@ -15,6 +15,7 @@ from prometheus_manager_core.telemetry import (
     configure_tracing,
 )
 
+from .control import router as control_router
 from .routes import router
 
 # Configure structlog when the API module is first loaded (idempotent — AC-24)
@@ -32,6 +33,8 @@ app = FastAPI(
 app.add_middleware(TraceIDMiddleware, service="manager")
 
 app.include_router(router)
+# RM-10: register/deregister/start/stop/restart — backend-registry:write
+app.include_router(control_router)
 
 
 @app.exception_handler(404)

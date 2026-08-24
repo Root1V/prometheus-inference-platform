@@ -2,6 +2,7 @@ import os
 import uuid
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
+from pathlib import Path
 from typing import Any
 
 from fastapi import FastAPI, Request, Response
@@ -137,6 +138,8 @@ def create_app(
     app.state.backend_pool = pool
     # Expose metrics_store on app.state for route access
     app.state.metrics_store = metrics_store
+    # AC-29 (018) prompt-summary opt-in + RM-10 admin dashboard both read this.
+    app.state.settings = settings
 
     # Middleware stack — innermost added first (see gateway.instructions.md)
     # Order: [request-id+trace-id] → [auth] → [rate-limit] → router
@@ -205,5 +208,42 @@ def create_app(
         app.include_router(create_ui_router(settings, registry), prefix="/ui")
     # When ui_enabled=False, all /ui/* paths are handled by JWTAuthMiddleware's exempt logic
     # and will pass through to FastAPI's 404 handler — AC-1 satisfied.
+
+    # Implements: memory/roadmap.md — RM-10 (gateway admin dashboard, phase 1)
+    if settings.admin_dashboard_enabled:
+        from fastapi.staticfiles import StaticFiles
+
+        from .admin.client import ManagerApiClient
+        from .admin.router import create_admin_router
+
+        manager_client = ManagerApiClient(
+            manager_client_id=settings.manager_client_id,
+            manager_client_secret=settings.manager_client_secret,
+            auth_token_url=settings.auth_service_token_url,
+            auth_tls_verify=settings.auth_service_tls_verify,
+        )
+        # /admin/api/* registered before the static mount below so its routes
+        # are matched first — a StaticFiles Mount at /admin would otherwise
+        # shadow sub-paths like /admin/api/instances.
+        app.include_router(create_admin_router(manager_client))
+
+        _admin_static_dir = Path(__file__).parent / "admin" / "static"
+        if _admin_static_dir.is_dir():
+            # html=True serves index.html for /admin and /admin/ — the SPA uses
+            # hash-based routing (/admin/#/instances) so no server-side
+            # catch-all is needed for client-side routes.
+            app.mount(
+                "/admin",
+                StaticFiles(directory=str(_admin_static_dir), html=True),
+                name="admin-static",
+            )
+        else:
+            logger.warning(
+                "admin.static_missing",
+                detail=f"ADMIN_DASHBOARD_ENABLED=true but {_admin_static_dir} does not exist — "
+                "build the SPA first (see gateway/admin-ui/README.md).",
+            )
+    # When admin_dashboard_enabled=False, all /admin/* paths fall through to
+    # FastAPI's 404 handler (same as /ui/* when ui_enabled=False).
 
     return app

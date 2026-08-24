@@ -16,6 +16,14 @@ jobs:
         with:
           enable-cache: true
 
+      # RM-10: gateway/admin-ui (React/Vite/TS admin dashboard SPA)
+      - name: Install Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: "npm"
+          cache-dependency-path: gateway/admin-ui/package-lock.json
+
       # Runs the same lint/format/type/test suite as .githooks/pre-push,
       # so local and CI checks never drift apart.
       - name: Run pre-push validation suite

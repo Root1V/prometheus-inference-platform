@@ -16,9 +16,31 @@ from ..telemetry import get_logger, metrics_store
 logger = get_logger(__name__)
 
 # Implements: memory/specs/002-jwt-authentication-middleware.md — AC-7
-EXEMPT_PATHS: frozenset[str] = frozenset({"/health", "/metrics", "/v1/models"})
+# RM-10: /admin/api/auth/login has no Bearer token yet by definition — it's how
+# the admin dashboard SPA obtains one (proxied server-side to the auth-service
+# to avoid a cross-origin call the browser would otherwise block via CORS).
+EXEMPT_PATHS: frozenset[str] = frozenset(
+    {"/health", "/metrics", "/v1/models", "/admin/api/auth/login"}
+)
 # Implements: memory/specs/013-web-chat-ui-proxy.md — all /ui/* paths use cookie auth, not Bearer
 _EXEMPT_PREFIXES: tuple[str, ...] = ("/ui",)
+# RM-10: the admin SPA shell (index.html + JS/CSS bundle + client-side routes like
+# /admin/instances) is public static content — the SPA calls /admin/api/auth/login
+# (exempt above) to get a Bearer token, then attaches it to every other
+# /admin/api/* call, which stays protected by this middleware.
+_ADMIN_SPA_PREFIX = "/admin"
+_ADMIN_API_PREFIX = "/admin/api"
+
+
+def _is_exempt(path: str) -> bool:
+    if path in EXEMPT_PATHS or path.startswith(_EXEMPT_PREFIXES):
+        return True
+    if path == _ADMIN_SPA_PREFIX or (
+        path.startswith(_ADMIN_SPA_PREFIX + "/") and not path.startswith(_ADMIN_API_PREFIX)
+    ):
+        return True
+    return False
+
 
 _BEARER_RE = re.compile(r"^Bearer\s+(\S+)$", re.IGNORECASE)
 _ALLOWED_ALGORITHMS = ["RS256"]
@@ -80,7 +102,7 @@ class JWTAuthMiddleware:
         request = Request(scope)
 
         # AC-7: exempt paths pass through without auth
-        if request.url.path in EXEMPT_PATHS or request.url.path.startswith(_EXEMPT_PREFIXES):
+        if _is_exempt(request.url.path):
             await self.app(scope, receive, send)
             return
 

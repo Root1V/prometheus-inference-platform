@@ -1,0 +1,20 @@
+@import "tailwindcss";
+
+/*
+ * Centralized color palette as Tailwind v4 @theme tokens, so it's easy to
+ * retheme later without touching component classes (e.g. bg-surface,
+ * text-text-muted, bg-primary are generated from these).
+ */
+@theme {
+  --color-background: #f7f8fa;
+  --color-surface: #ffffff;
+  --color-border: #e5e7eb;
+  --color-text: #111827;
+  --color-text-muted: #6b7280;
+  --color-primary: #ea580c;
+  --color-primary-foreground: #ffffff;
+}
+
+body {
+  @apply bg-background text-text antialiased;
+}

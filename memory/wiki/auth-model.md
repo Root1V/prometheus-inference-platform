@@ -168,12 +168,16 @@ Fixed enum — clients receive only the scopes registered for them:
 
 | Scope | Permission |
 |-------|-----------|
-| `inference:read` | `POST /v1/chat/completions` (non-streaming) |
+| `inference:read` | `POST /v1/chat/completions` (non-streaming), `POST /v1/embeddings` |
 | `inference:stream` | `POST /v1/chat/completions` with `stream: true` |
-| `admin:models` | `GET /v1/backends`, model management endpoints |
+| `admin:read` | Gateway admin endpoints (`GET /v1/backends`, `GET /v1/usage`, `GET /admin/api/*`) |
+| `admin:write` | RM-10 — mutating `/admin/api/*` calls (register/deregister/start/stop/restart via the admin dashboard) |
+| `admin:models` | Model management endpoints |
 | `admin:usage` | `GET /v1/usage` |
 | `ui:chat` | Access to `/ui/*` web chat proxy |
-| `backend-registry:read` | Gateway → Manager API (internal service account) |
+| `ops:dashboard` | Grafana ops dashboard |
+| `backend-registry:read` | Gateway → Manager API (internal service account, read-only) |
+| `backend-registry:write` | RM-10 — Manager API register/deregister/start/stop/restart |
 
 Requesting a scope not in `allowed_scopes` returns `400 invalid_scope`.
 
@@ -206,6 +210,44 @@ Grant example:
 curl -X PATCH https://auth-service:9000/admin/clients/<client_id> \
   -H "X-Admin-Key: $AUTH_ADMIN_API_KEY" -H "Content-Type: application/json" \
   -d '{"allowed_scopes": ["inference:read", "model:llama3-8b-q4-local", "model:qwen-coder-7b"]}'
+```
+
+### Admin dashboard (RM-10)
+
+The gateway admin dashboard (`/admin`, gated by `ADMIN_DASHBOARD_ENABLED`) is a static SPA
+served by the gateway. Its login form collects a `client_id`/`client_secret` and POSTs them
+to the gateway's own `POST /admin/api/auth/login` — the one `/admin/api/*` route that
+doesn't require a Bearer token (obtaining one is the point of calling it). The gateway
+proxies that request server-side to its configured `AUTH_SERVICE_TOKEN_URL`
+(client_credentials grant, requesting `admin:read admin:write`, same flow as any service
+account) and returns the resulting JWT to the SPA. **The SPA never calls the auth-service
+directly** — a real cross-origin browser request to it is blocked by CORS (auth-service
+sets no CORS headers and doesn't share the gateway's origin); routing the login through the
+gateway avoids that entirely and means the SPA never needs to know the auth-service's URL.
+Every other `/admin/api/*` call carries the JWT as a normal `Authorization: Bearer` header
+— validated by the same `JWTAuthMiddleware` that protects every other gateway endpoint.
+
+`/admin/api/*` proxies to each configured `MANAGER_NODES` entry's manager-api. The
+gateway's own `manager_client_id`/`manager_client_secret` service account (already used by
+`ManagerRegistrySync` for read-only registry polling — see
+[model-registry.md](model-registry.md) RM-08 phase 2) is reused for these calls, now
+requesting both `backend-registry:read` and `backend-registry:write`. **Migration note**:
+if this service account was registered before RM-10, grant it `backend-registry:write` too
+or dashboard mutations (register/start/stop/restart) will fail with `403` even though
+read-only sync keeps working:
+
+```bash
+curl -X PATCH https://auth-service:9000/admin/clients/<gateway_service_account_id> \
+  -H "X-Admin-Key: $AUTH_ADMIN_API_KEY" -H "Content-Type: application/json" \
+  -d '{"allowed_scopes": ["backend-registry:read", "backend-registry:write"]}'
+```
+
+Register a human operator's dashboard client the normal way, granting `admin:read
+admin:write`:
+```bash
+curl -X POST https://auth-service:9000/admin/clients \
+  -H "X-Admin-Key: $AUTH_ADMIN_API_KEY" -H "Content-Type: application/json" \
+  -d '{"name":"admin-dashboard-operator","allowed_scopes":["admin:read","admin:write"]}'
 ```
 
 ---

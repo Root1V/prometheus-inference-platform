@@ -34,7 +34,7 @@ folded in here per your "muchos más que vayas encontrando."
 | [RM-07](#rm-07-fine-grained-per-model-authorization-scopes-item-2) | Fine-grained per-model authorization scopes (item 2) | done | — |
 | [RM-08](#rm-08-distributed-inference-across-multiple-hosts-item-5) | Distributed inference across multiple hosts (item 5) | done | RM-05, RM-06 |
 | [RM-09](#rm-09-multi-modal-model-support-item-6-done-vlm--embeddings) | Multi-modal model support: VLM + embeddings (item 6, scoped) | done | RM-05, RM-06 |
-| [RM-10](#rm-10-gateway-admin-dashboard-item-3) | Gateway admin dashboard (item 3) | todo | RM-05 |
+| [RM-10](#rm-10-gateway-admin-dashboard-item-3-done-phase-1) | Gateway admin dashboard (item 3) | done (phase 1) | RM-05 |
 | [RM-11](#rm-11-auth-module-dashboard-redesign-item-1) | Auth module dashboard redesign (item 1) | todo | RM-07 (do together) |
 | [RM-12](#rm-12-e2e-llm-tracing-with-langfuse-item-8) | E2E LLM tracing with Langfuse (item 8) | todo | — |
 
@@ -335,14 +335,80 @@ minus 1 that's schema-only) — full details in `memory/wiki/model-registry.md` 
 generation (diffusers/ComfyUI), and modality-specific dispatch for `mlx`/`vllm`/`sglang`
 (e.g. `mlx-vlm`/`mlx-whisper`).
 
-## RM-10 — Gateway admin dashboard (item 3)
+## RM-10 — Gateway admin dashboard (item 3) — `done` (phase 1)
 
 **Why**: no visual way today to see running instances, downloaded models, or manage
 inference lifecycle — only `pmgr` TUI (bare-metal) and raw API calls.
 
-**Scope**: a web dashboard in the gateway (or a new UI module) showing live instances,
-downloaded models, and start/stop/restart controls — consuming the manager REST API
-cleaned up in RM-05.
+**Scope, as expanded during implementation**: start/stop/restart controls plus full
+model registration (not just viewing) — a bigger surface than the original "view +
+lifecycle controls" wording, chosen deliberately over replicating the TUI's HF-search/
+download flow in the same pass (that's phase 2 — see below). Frontend stack: React 19 +
+Vite + TypeScript + Tailwind, the project's first Node/npm toolchain — chosen over a
+server-rendered Jinja2 dashboard (the pattern `gateway/ui` and `auth-service/admin_ui`
+already use) for a real SPA feel; explicitly *not* using Postgres/SQLAlchemy/Celery/Redis
+— this dashboard has no relational state to migrate and no heavy background jobs, so
+that stack would be pure overhead.
+
+**Phase 1 (this pass) — lifecycle control + manual registration**:
+- `runtime/manager/api`: new `backend-registry:write` scope (`auth.py`); new `control.py`
+  router — `POST /v1/backends` (register), `DELETE /v1/backends/{id}` (deregister, stops
+  first if running), `POST /v1/backends/{id}/start|stop|restart` — all thin wrappers
+  around the same `prometheus_manager_core.lifecycle`/`registry` functions `pmgr` already
+  calls locally. `GET /v1/backends` gained `?include_hidden=true` (operator view — also
+  see non-`discovery`-exposed entries; the default stays filtered since this endpoint also
+  feeds the gateway's routing sync). 23 new manager-api tests.
+- `gateway`: new `admin_dashboard_enabled` flag (default off, same pattern as
+  `ui_enabled`); new `gateway/src/prometheus_gateway/admin/` package — `client.py`
+  (OAuth2 token mgmt + HTTP calls to a manager node, deliberately separate from
+  `manager_sync.py`'s working token logic rather than refactoring it) and `router.py`
+  (`POST /admin/api/auth/login`, `/admin/api/nodes`, `/admin/api/instances` aggregated
+  across all `MANAGER_NODES`, `/admin/api/nodes/{node}/models` register/deregister,
+  `/admin/api/nodes/{node}/instances/{id}/{start,stop,restart}`) — all except `auth/login`
+  require `admin:read`/`admin:write`, proxying to the right node, flattening manager-api's
+  nested error shape to match the gateway's own RFC 9457 format. `auth/middleware.py`'s
+  exempt-path logic now distinguishes the public SPA shell (`/admin/*`) from the protected
+  JSON API (`/admin/api/*`) instead of a flat prefix, plus a specific exemption for the
+  login route itself (no token exists yet at login time by definition). 21 new gateway
+  tests. Two new fixed scopes added to auth-service's `VALID_SCOPES`: `admin:write`,
+  `backend-registry:write` — existing service accounts need a scope grant to use the new
+  write paths, see [auth-model.md](../wiki/auth-model.md#admin-dashboard-rm-10) migration
+  note.
+- `gateway/admin-ui/`: the SPA itself (React/Vite/TS/Tailwind, HashRouter, react-query,
+  axios). **Login goes through the gateway, not directly to auth-service** — the SPA POSTs
+  client_id/secret to `POST /admin/api/auth/login`, which the gateway proxies server-side
+  to its configured `AUTH_SERVICE_TOKEN_URL`. This wasn't the original design (the SPA
+  originally called auth-service directly) — real browser testing caught that auth-service
+  sets no CORS headers, so a direct cross-origin call from the SPA's origin is blocked
+  outright. Routing through the gateway fixed it and turned out simpler: the SPA no longer
+  needs to know the auth-service's URL at all, so the originally-planned
+  `/admin/config.json` runtime-config mechanism for prefilling that field was removed
+  entirely rather than left unused.
+- Dockerfile: new `admin-ui-builder` stage (Node 22) builds the SPA unconditionally so the
+  container image works whether or not `ADMIN_DASHBOARD_ENABLED` is set; build output is
+  gitignored (regenerated by `npm run build` or the Docker stage, never committed).
+  `.githooks/pre-push`/CI gained an `npm ci && npm run lint && npm run build` stage.
+
+**Verified for real, not just unit-tested**: stood up all three services locally (RSA
+keypair + auth-service on SQLite + manager-api + gateway, no Podman) and drove the actual
+built SPA in a real browser end-to-end — logged in, registered a model (confirmed written
+to `registry.yaml` on disk), watched the stat cards and table update live, deleted it
+(confirmed removed from disk), logged out. Caught and fixed two real bugs this way that no
+unit test would have: the CORS issue above, and a login-time 401 that turned out to be the
+*local test environment* picking up a real `gateway/.env`'s Redis revocation settings
+(unrelated to RM-10 — noted as a testing-setup pitfall, not a product bug).
+
+**Found in passing, not fixed (pre-existing, unrelated to RM-10)**: the auth-service admin
+API examples in this README are stale against the current schema —
+`POST /admin/clients` needs `client_name`/`role` fields (not `name`/`scope` as the
+Quick-Start curl example shows), and the token endpoint is `/oauth2/token`, not `/token`.
+Worth a follow-up doc fix.
+
+**Phase 2 (not yet started)** — HuggingFace search/browse + trigger-download-from-web with
+live progress, matching the TUI's Discovery/Downloads tabs. Deferred because today's
+`download_model()` (manager-core) is a blocking, TUI-process-local call with no REST
+exposure or persisted progress state — exposing it needs a small async job-tracking
+addition to manager-api, not just new routes.
 
 ## RM-11 — Auth module dashboard redesign (item 1)
 

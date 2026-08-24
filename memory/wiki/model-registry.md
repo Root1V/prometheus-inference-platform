@@ -263,18 +263,54 @@ pmgr-api                            # start Manager REST API only (no TUI)
 
 ### Via Manager REST API (`http://host:8090`)
 
+Read (scope `backend-registry:read`):
 ```
-GET  /v1/backends        → list all registered models with live state (admin, requires JWT scope: backend-registry:read)
+GET    /v1/backends                    → list registered models with live state
+                                          ?include_hidden=true also includes discovery:false
+                                          entries (RM-10 — operator use; the default omits
+                                          them since this endpoint also feeds the gateway's
+                                          routing sync, which should only see exposed models)
+GET    /v1/backends/{model_id}         → single model with live state
 ```
 
-Authentication: RS256 JWT (service account) with scope `backend-registry:read`, issued by `auth-service`. The Gateway uses this internal client to fetch the authoritative registry and then exposes a filtered, public discovery view at its own `GET /v1/models` endpoint.
+Write (scope `backend-registry:write`, RM-10 — same JWT/JWKS auth as read, separate scope):
+```
+POST   /v1/backends                    → register (body: id, port required; path/family/
+                                          quantization/backend/modality/mmproj_path/
+                                          discovery/hf_repo/hf_filename/hf_sha256 optional)
+                                          → 201 with the created entry, 400 on validation error
+DELETE /v1/backends/{model_id}         → deregister (stops it first if running) → 204
+POST   /v1/backends/{model_id}/start   → 200 with merged live state, 409 if already running
+POST   /v1/backends/{model_id}/stop    → 200, 409 if not running
+POST   /v1/backends/{model_id}/restart → 200
+```
+
+Authentication: RS256 JWT (service account) issued by `auth-service`. The Gateway's
+`ManagerRegistrySync` uses a `backend-registry:read`-only token for its periodic polling;
+the Gateway's admin dashboard (below) additionally needs `backend-registry:write`.
 
 ### Via Gateway API (`http://gateway:8000`)
 
 ```
 GET  /v1/models          → public discovery: list active models (discovery:true + backend_url set)
-GET  /v1/backends        → admin endpoint (if implemented on gateway) — requires admin scope; in normal operation the Gateway proxies discovery from Manager and exposes only `/v1/models` for clients
+GET  /v1/backends        → admin endpoint — requires admin:read scope
 ```
+
+### Admin dashboard (RM-10)
+
+`GET /admin` (when `ADMIN_DASHBOARD_ENABLED=true`) serves a static React SPA — built from
+`gateway/admin-ui/`, output copied to `gateway/src/prometheus_gateway/admin/static/` — that
+lets an operator see and control every node's instances from one page: start/stop/restart,
+register, and deregister, without SSH access to any individual host. It calls
+`/admin/api/*` (JSON, `admin:read`/`admin:write` scopes), which the gateway proxies to the
+right node's manager-api using the `MANAGER_NODES` config from RM-08 phase 2. Full auth
+flow and scope-grant commands: [auth-model.md](auth-model.md#admin-dashboard-rm-10).
+
+**Not in phase 1**: HuggingFace search/browse and triggering downloads from the dashboard
+(the register form takes an already-known local path or `hf_repo`/`hf_filename`, mirroring
+the TUI's "1. Manual edit" flow above — not its Discovery-tab HF search). That requires a
+new async download-job subsystem in manager-api (today's `download_model()` is a blocking,
+TUI-process-local call with no REST exposure) — tracked as a phase 2 follow-up.
 
 ---
 

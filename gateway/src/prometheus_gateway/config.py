@@ -124,6 +124,14 @@ class Settings(BaseSettings):
     gateway_tls_cert_file: str | None = None
     gateway_tls_key_file: str | None = None
 
+    # ── Admin dashboard — memory/roadmap.md RM-10 ───────────────────────────────
+    # Feature flag — when False, /admin/* routes return 404 (same pattern as
+    # ui_enabled). The dashboard SPA calls /admin/api/*, which proxies to the
+    # Manager REST API using the same manager_client_id/secret credentials as
+    # ManagerRegistrySync — that service account needs backend-registry:write
+    # in addition to its existing backend-registry:read grant.
+    admin_dashboard_enabled: bool = False
+
     @model_validator(mode="after")
     def require_key_source(self) -> "Settings":
         if not self.jwt_public_key_file and not self.jwt_jwks_url:

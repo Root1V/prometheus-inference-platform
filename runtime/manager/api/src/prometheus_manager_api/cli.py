@@ -56,6 +56,7 @@ def cli(config_path: str | None, host: str | None, port: int | None) -> None:
     bind_port = port or cfg.api.port
 
     app.state.registry = reg
+    app.state.config = cfg  # RM-10: needed by control.py's start/stop/restart/deregister
     app.state.pid_dir = cfg.resolved_pid_dir
     app.state.jwks_url = cfg.api.jwks_url
     app.state.jwks_tls_verify = cfg.api.jwks_tls_verify

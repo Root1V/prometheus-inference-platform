@@ -269,6 +269,7 @@ See `gateway/.env.podman.example` and `auth-service/.env.example` for full confi
 | `JWT_JWKS_URL` | One of | Auth Service JWKS endpoint URL (e.g. `http://auth-service:9000/.well-known/jwks.json`) |
 | `JWT_REVOCATION_REDIS_URL` | No | Redis URL for token revocation (omit to disable) |
 | `MODEL_REGISTRY_PATH` | No | Path to `registry.yaml` (default: `runtime/models/registry.yaml`) |
+| `ADMIN_DASHBOARD_ENABLED` | No | Serve the RM-10 admin dashboard SPA at `/admin` (default: `false`). See [memory/wiki/model-registry.md](memory/wiki/model-registry.md#admin-dashboard-rm-10). |
 
 **Auth Service** (`auth-service/.env`):
 

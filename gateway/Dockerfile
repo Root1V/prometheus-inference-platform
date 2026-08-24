@@ -2,7 +2,8 @@
 # Implements: specs/004-podman-containerization.md — AC-1, AC-2, AC-3, AC-9
 #
 # Multi-stage build:
-#   Stage 1 (builder): install uv and sync dependencies into /app/.venv
+#   Stage 0 (admin-ui-builder): build the RM-10 admin dashboard SPA (React/Vite/TS)
+#   Stage 1 (builder): install uv, sync deps into /app/.venv, fold in the built SPA
 #   Stage 2 (runtime): copy only app source + venv; run as non-root user
 #
 # Build:
@@ -10,6 +11,23 @@
 #
 # Run (standalone, for testing):
 #   podman run --rm -p 8000:8000 --env-file gateway/.env prometheus-gateway
+
+# ── Stage 0: admin-ui builder (RM-10) ───────────────────────────────────────
+# Built unconditionally so the image works whether or not the operator sets
+# ADMIN_DASHBOARD_ENABLED — the flag (config.py) gates whether main.py serves
+# these files, not whether they're present. See memory/wiki/model-registry.md
+# "Admin dashboard (RM-10)".
+FROM node:22-slim AS admin-ui-builder
+
+WORKDIR /build/gateway/admin-ui
+
+# Manifests first for layer caching.
+COPY gateway/admin-ui/package.json gateway/admin-ui/package-lock.json ./
+RUN npm ci
+
+COPY gateway/admin-ui/ ./
+# vite.config.ts's outDir writes to ../src/prometheus_gateway/admin/static
+RUN npm run build
 
 # ── Stage 1: builder ──────────────────────────────────────────────────────────
 FROM python:3.13-slim AS builder
@@ -44,6 +62,10 @@ RUN uv sync --frozen --no-dev --no-install-workspace
 COPY gateway/src ./gateway/src
 # Copy telemetry source — workspace dep of prometheus-gateway.
 COPY telemetry/src ./telemetry/src
+
+# RM-10: fold the built admin dashboard SPA into gateway/src so it's carried
+# along by the single `COPY --from=builder /build/gateway/src /app/src` below.
+COPY --from=admin-ui-builder /build/gateway/src/prometheus_gateway/admin/static ./gateway/src/prometheus_gateway/admin/static
 
 # Install only the gateway package in non-editable mode.
 # --package ensures other workspace members are not installed.
