@@ -30,7 +30,7 @@ folded in here per your "muchos más que vayas encontrando."
 | [RM-03](#rm-03-pick-a-real-license-added) | Pick a real LICENSE (added) | done | — |
 | [RM-04](#rm-04-dependency-vulnerability-scanning-added) | Dependency vulnerability scanning (added) | done | RM-01 |
 | [RM-05](#rm-05-split-manager-tui-from-its-rest-api-item-4) | Split manager's TUI from its REST API (item 4) | done | — |
-| [RM-06](#rm-06-research-the-best-inference-serving-stack-item-7) | Research best inference-serving stack per hardware (item 7) | todo | — |
+| [RM-06](#rm-06-research-the-best-inference-serving-stack-item-7) | Research best inference-serving stack per hardware (item 7) | done | — |
 | [RM-07](#rm-07-fine-grained-per-model-authorization-scopes-item-2) | Fine-grained per-model authorization scopes (item 2) | todo | — |
 | [RM-08](#rm-08-distributed-inference-across-multiple-hosts-item-5) | Distributed inference across multiple hosts (item 5) | todo | RM-05, RM-06 |
 | [RM-09](#rm-09-multi-modal-model-support-item-6) | Multi-modal model support: VLM/audio/image/video/embeddings (item 6) | todo | RM-05, RM-06 |
@@ -168,17 +168,22 @@ test commands), `memory/wiki/deployment.md` and `memory/wiki/model-registry.md`
 `scripts/validate-ubuntu-dgx.sh` (`pmgr serve` → `pmgr-api`), and the
 `scripts/tests/test_scripts_024.sh` assertions that checked the old command/path.
 
-## RM-06 — Research the best inference-serving stack (item 7)
+## RM-06 — Research the best inference-serving stack (item 7) — `done`
 
 **Why**: `llama-server` is the only backend today. It may not be the best fit for every
 hardware target (Apple Silicon vs NVIDIA DGX) or every future modality (RM-09).
 
-**Scope**: investigate llama.cpp/llama-server, vLLM, MLX (Apple Silicon), and SGLang —
-throughput, latency, quantization support, multi-modal support, ease of process
-management — and produce a written recommendation (which engine for which hardware/model
-type, whether a mixed strategy makes sense). This is a research deliverable
-(`memory/wiki/inference-engines.md` or similar), not code — but it should directly inform
-how RM-08 and RM-09 are designed.
+**Done**: [memory/wiki/inference-engines.md](wiki/inference-engines.md) — full comparison
+of llama.cpp, vLLM, MLX, and SGLang across Mac (M4 Max) / DGX Spark / generic Linux-NVIDIA,
+covering throughput, quantization format support, modality coverage, and operational
+complexity for a process-spawning manager. Bottom line: **mixed strategy, not a single
+engine** — MLX on Mac, vLLM (or SGLang) on DGX Spark and generic Linux servers, llama.cpp
+kept everywhere as the simple/single-user fallback. No engine covers every target modality
+on every piece of hardware; the real design axis for RM-08/RM-09 is per-hardware backend
+selection, not per-modality. The page also spells out concretely what this adds to the
+manager's job — a second "heavy Python server" launch shape alongside the current
+"spawn a binary" one, and new `registry.yaml` fields (`backend`, `quant_format`) — which
+RM-08 and RM-09 should treat as their starting brief rather than re-deriving.
 
 ## RM-07 — Fine-grained per-model authorization scopes (item 2)
 

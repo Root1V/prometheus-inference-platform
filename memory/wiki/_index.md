@@ -27,6 +27,7 @@ Entry point to all wiki pages. Updated by `docs-agent` when pages are added, rem
 |------|-------------|
 | [model-registry.md](model-registry.md) | registry.yaml schema · request routing · discovery flag lifecycle · capacity warnings · port assignments |
 | [rate-limiting.md](rate-limiting.md) | Sliding-window RPM/TPM limits · Redis key layout · circuit breaker · strict mode · observability fields |
+| [inference-engines.md](inference-engines.md) | llama.cpp vs vLLM vs MLX vs SGLang per hardware (Mac/DGX Spark/Linux) · recommendation for RM-08/RM-09 |
 
 ---
 
