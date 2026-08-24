@@ -26,8 +26,8 @@ try:
     truststore.inject_into_ssl()
 except ImportError:  # pragma: no cover
     pass  # truststore not installed — fall back to certifi
-from rich.console import Console
-from rich.table import Table
+from rich.console import Console  # noqa: E402 — must follow the truststore/logging setup above
+from rich.table import Table  # noqa: E402
 
 console = Console()
 err_console = Console(stderr=True, style="bold red")
@@ -549,8 +549,10 @@ def cmd_tui(ctx: click.Context) -> None:
     # Silence stdout/stderr logging before Textual takes over the terminal.
     # Any text written to stdout after this point corrupts the TUI layout.
     # See: memory/specs/008-llama-server-manager.md (fix — TUI stdout logging corruption)
-    from prometheus_manager.telemetry import configure_tracing, redirect_logging_for_tui
     import uuid as _uuid
+
+    from prometheus_manager.telemetry import configure_tracing, redirect_logging_for_tui
+
     configure_tracing(
         service="manager",
         endpoint=cfg.tracing.otlp_endpoint or None,

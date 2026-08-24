@@ -17,6 +17,7 @@ Implements: memory/specs/008-llama-server-manager.md — AC-22c, AC-22d, AC-22e,
 
 from __future__ import annotations
 
+import contextlib
 import re
 from datetime import UTC, datetime
 
@@ -72,10 +73,8 @@ def _parse_prometheus_metrics(text: str) -> dict[str, float]:
         # Strip label part e.g. llamacpp:foo{label="x"} 1.5
         m = re.match(r"^([\w:]+)(?:\{[^}]*\})?\s+([\d.eE+\-]+)", line)
         if m:
-            try:
+            with contextlib.suppress(ValueError):
                 result[m.group(1)] = float(m.group(2))
-            except ValueError:
-                pass
     return result
 
 
@@ -335,9 +334,12 @@ class InstancesView(Vertical):
             else:
                 metrics_text = "\n".join(
                     [
-                        f"[dim]Uptime          [/dim] {uptime_str:<22}  [dim]Tokens served  [/dim] [dim]fetching…[/dim]",
-                        f"[dim]Avg tokens/s    [/dim] [dim]fetching…[/dim]{'':10}  [dim]Requests active[/dim] [dim]fetching…[/dim]",
-                        f"[dim]Prompt eval     [/dim] [dim]fetching…[/dim]{'':10}  [dim]Chat template  [/dim] [dim]fetching…[/dim]",
+                        f"[dim]Uptime          [/dim] {uptime_str:<22}  "
+                        f"[dim]Tokens served  [/dim] [dim]fetching…[/dim]",
+                        f"[dim]Avg tokens/s    [/dim] [dim]fetching…[/dim]{'':10}  "
+                        f"[dim]Requests active[/dim] [dim]fetching…[/dim]",
+                        f"[dim]Prompt eval     [/dim] [dim]fetching…[/dim]{'':10}  "
+                        f"[dim]Chat template  [/dim] [dim]fetching…[/dim]",
                         f"[dim]Token eval      [/dim] [dim]fetching…[/dim]{'':10}  "
                         f"[dim]Backend URL     [/dim] http://127.0.0.1:{port}",
                     ]
@@ -450,9 +452,12 @@ class InstancesView(Vertical):
 
         metrics_text = "\n".join(
             [
-                f"[dim]Uptime          [/dim] {uptime_str:<22}  [dim]Tokens served  [/dim] {tokens_str}",
-                f"[dim]Avg tokens/s    [/dim] {gen_tps_str:<22}  [dim]Requests active[/dim] {req_active}",
-                f"[dim]Prompt eval     [/dim] {prompt_ms_str:<22}  [dim]Chat template  [/dim] {chat_format}",
+                f"[dim]Uptime          [/dim] {uptime_str:<22}  "
+                f"[dim]Tokens served  [/dim] {tokens_str}",
+                f"[dim]Avg tokens/s    [/dim] {gen_tps_str:<22}  "
+                f"[dim]Requests active[/dim] {req_active}",
+                f"[dim]Prompt eval     [/dim] {prompt_ms_str:<22}  "
+                f"[dim]Chat template  [/dim] {chat_format}",
                 f"[dim]Token eval      [/dim] {gen_ms_str:<22}  "
                 f"[dim]Backend URL     [/dim] http://127.0.0.1:{port_val}",
             ]

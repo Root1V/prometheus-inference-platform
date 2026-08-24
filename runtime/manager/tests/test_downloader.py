@@ -1,4 +1,7 @@
-"""Tests for Downloader: memory/specs/008 AC-20, AC-21 and memory/specs/011 AC-1–AC-11, AC-22–AC-24."""
+"""Tests for Downloader.
+
+memory/specs/008 AC-20, AC-21 and memory/specs/011 AC-1–AC-11, AC-22–AC-24.
+"""
 
 from __future__ import annotations
 
@@ -39,13 +42,17 @@ def _patch_hf(content: bytes, content_length: bool = True, hf_token: str | None 
     mock_req = MagicMock()
     mock_req.get.return_value = resp
     return (
-        patch("prometheus_manager.downloader.hf_hub_url", return_value=url),
-        patch(
-            "prometheus_manager.downloader.build_hf_headers",
-            return_value={"user-agent": "test/1.0"},
+        (
+            patch("prometheus_manager.downloader.hf_hub_url", return_value=url),
+            patch(
+                "prometheus_manager.downloader.build_hf_headers",
+                return_value={"user-agent": "test/1.0"},
+            ),
+            patch("prometheus_manager.downloader._requests", mock_req),
         ),
-        patch("prometheus_manager.downloader._requests", mock_req),
-    ), mock_req, resp
+        mock_req,
+        resp,
+    )
 
 
 # ── AC-1–AC-4: DownloadState model ──────────────────────────────────────────
@@ -328,21 +335,28 @@ class TestDownloaderAC20:
 
     def test_AC20_hub_url_error_raises_download_error(self, tmp_path: Path):
         """AC-20: URL resolution error is wrapped into DownloadError."""
-        with patch(
-            "prometheus_manager.downloader.hf_hub_url",
-            side_effect=RuntimeError("hub down"),
-        ), patch(
-            "prometheus_manager.downloader.build_hf_headers",
-            return_value={"user-agent": "test"},
-        ), pytest.raises(DownloadError, match="URL resolution failed"):
+        with (
+            patch(
+                "prometheus_manager.downloader.hf_hub_url",
+                side_effect=RuntimeError("hub down"),
+            ),
+            patch(
+                "prometheus_manager.downloader.build_hf_headers",
+                return_value={"user-agent": "test"},
+            ),
+            pytest.raises(DownloadError, match="URL resolution failed"),
+        ):
             download_model("m", "a/b", "m.gguf", tmp_path)
 
     def test_AC20_http_error_raises_download_error(self, tmp_path: Path):
         """AC-20: HTTP error raises DownloadError."""
         patches, mock_req, _resp = _patch_hf(b"x")
         mock_req.get.side_effect = RuntimeError("connection refused")
-        with patches[0], patches[1], patches[2], pytest.raises(
-            DownloadError, match="connection refused"
+        with (
+            patches[0],
+            patches[1],
+            patches[2],
+            pytest.raises(DownloadError, match="connection refused"),
         ):
             download_model("m", "a/b", "m.gguf", tmp_path)
 
@@ -364,8 +378,11 @@ class TestDownloaderAC21:
         """AC-21: SHA-256 mismatch deletes the downloaded file."""
         content = b"corrupt data"
         patches, _mock_req, _resp = _patch_hf(content)
-        with patches[0], patches[1], patches[2], pytest.raises(
-            DownloadError, match="SHA-256 mismatch"
+        with (
+            patches[0],
+            patches[1],
+            patches[2],
+            pytest.raises(DownloadError, match="SHA-256 mismatch"),
         ):
             download_model("m", "a/b", "m.gguf", tmp_path, expected_sha256="a" * 64)
 

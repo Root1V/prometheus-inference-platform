@@ -67,7 +67,7 @@ class ModelDetail(Widget):
 
         def _row(key: str, value: str) -> Widget:
             w = Widget(classes="kv-row")
-            w._nodes  # lazy construct
+            _ = w._nodes  # lazy construct
             return w
 
         def _section(title: str) -> Label:

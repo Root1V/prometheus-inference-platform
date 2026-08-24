@@ -13,6 +13,8 @@ Implements: memory/specs/008-llama-server-manager.md — AC-22b, AC-22c
 
 from __future__ import annotations
 
+import contextlib
+
 from textual.app import ComposeResult
 from textual.containers import Vertical
 from textual.widgets import DataTable, Static
@@ -155,7 +157,7 @@ class DashboardView(Vertical):
         n_missing = sum(
             1 for e in registry_entries.values() if not e.downloaded and e.id not in downloading_ids
         )
-        try:
+        with contextlib.suppress(Exception):
             self.query_one("#dash-summary", Static).update(
                 f"[green]●[/green] Running:[bold]{n_running}[/bold]"
                 f"  [dim]○[/dim] Stopped:[bold]{n_stopped}[/bold]"
@@ -163,8 +165,6 @@ class DashboardView(Vertical):
                 f"  [green]✓[/green] Downloaded:[bold]{n_downloaded}[/bold]"
                 f"  [red]✗[/red] Missing:[bold]{n_missing}[/bold]"
             )
-        except Exception:
-            pass
 
         # ── Instances table ────────────────────────────────────────────────
         table = self.query_one("#dash-table", DataTable)
@@ -282,7 +282,8 @@ class DashboardView(Vertical):
                     eta_str = "—"
                 status = getattr(d, "status", "queued")
                 lines.append(
-                    f"[cyan]↓[/cyan] {d.model_id}  [cyan]{bar}[/cyan]  {speed_str}  ETA {eta_str}  [{status}]"
+                    f"[cyan]↓[/cyan] {d.model_id}  [cyan]{bar}[/cyan]  {speed_str}  "
+                    f"ETA {eta_str}  [{status}]"
                 )
             dl_widget.update("\n".join(lines))
         else:

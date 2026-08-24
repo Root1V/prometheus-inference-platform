@@ -45,6 +45,7 @@ _DEFAULT_EXCLUDED_PATHS: frozenset[str] = frozenset({"/health", "/metrics"})
 
 # ── Custom structlog processors ───────────────────────────────────────────────
 
+
 def _is_valid_uuid4(value: str) -> bool:
     return bool(_UUID_RE.match(value))
 
@@ -315,4 +316,3 @@ class TraceIDMiddleware:
                 await self.app(scope, receive, _send_legacy)
             finally:
                 structlog.contextvars.clear_contextvars()
-

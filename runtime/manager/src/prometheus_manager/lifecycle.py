@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import os
 import platform
+import shutil
 import signal
 import socket
 import subprocess
@@ -17,7 +18,6 @@ from pathlib import Path
 
 import httpx
 import psutil
-import shutil
 
 from .config import ManagerConfig
 from .registry import Registry
@@ -107,24 +107,35 @@ def start_instance(
 
     cmd = [
         binary,
-        "--model", entry.path,
-        "--alias", entry.id,
-        "--port", str(port),
-        "--host", bind_host,
-        "--ctx-size", str(entry.context_length),
+        "--model",
+        entry.path,
+        "--alias",
+        entry.id,
+        "--port",
+        str(port),
+        "--host",
+        bind_host,
+        "--ctx-size",
+        str(entry.context_length),
         "--metrics",
-        "--n-gpu-layers", gpu_layers,
-        "--threads", str(os.cpu_count() or 4),
+        "--n-gpu-layers",
+        gpu_layers,
+        "--threads",
+        str(os.cpu_count() or 4),
     ]
 
     # Optimizaciones sólo para CUDA
     if has_nvidia:
-        cmd.extend([
-            "--flash-attn", "on",
-            "--batch-size", "8192",
-            "--ubatch-size", "1024",
-        ])
-
+        cmd.extend(
+            [
+                "--flash-attn",
+                "on",
+                "--batch-size",
+                "8192",
+                "--ubatch-size",
+                "1024",
+            ]
+        )
 
     # Ensure directories exist
     log_dir = config.resolved_log_dir

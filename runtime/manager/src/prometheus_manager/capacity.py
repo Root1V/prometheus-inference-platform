@@ -42,10 +42,7 @@ def check_capacity(
     """
     total_mb = psutil.virtual_memory().total / (1024 * 1024)
 
-    if rss_estimate_mb is not None:
-        new_rss = float(rss_estimate_mb)
-    else:
-        new_rss = _heuristic_estimate(path)
+    new_rss = float(rss_estimate_mb) if rss_estimate_mb is not None else _heuristic_estimate(path)
 
     projected_mb = current_rss_mb + new_rss
     pct = projected_mb / total_mb if total_mb > 0 else 0.0

@@ -1,19 +1,24 @@
 """Test fixtures for prometheus_manager tests."""
+
 from __future__ import annotations
 
-import time
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
-from unittest.mock import MagicMock, patch
 
 import pytest
-import yaml
 
-from prometheus_manager.config import ManagerConfig, ApiConfig, ServerConfig, RegistryConfig, DownloadsConfig, DashboardConfig
+from prometheus_manager.config import (
+    ApiConfig,
+    DashboardConfig,
+    DownloadsConfig,
+    ManagerConfig,
+    RegistryConfig,
+    ServerConfig,
+)
 from prometheus_manager.registry import Registry, RegistryEntry
 
-
 # ── Config fixtures ────────────────────────────────────────────────────────────
+
 
 @pytest.fixture
 def tmp_dir(tmp_path: Path) -> Path:
@@ -40,6 +45,7 @@ def default_config(tmp_path: Path) -> ManagerConfig:
 
 
 # ── Registry fixtures ──────────────────────────────────────────────────────────
+
 
 @pytest.fixture
 def registry_path(tmp_path: Path) -> Path:
@@ -71,6 +77,7 @@ def populated_registry(empty_registry: Registry, sample_entry: RegistryEntry) ->
 
 # ── Process state fixtures ─────────────────────────────────────────────────────
 
+
 @pytest.fixture
 def mock_process_state():
     from prometheus_manager.scanner import ProcessState
@@ -85,6 +92,6 @@ def mock_process_state():
         state="ready",
         cpu_percent=5.0,
         rss_mb=1024.0,
-        started_at=datetime.now(tz=timezone.utc),
+        started_at=datetime.now(tz=UTC),
         managed=True,
     )

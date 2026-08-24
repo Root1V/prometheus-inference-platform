@@ -1,11 +1,11 @@
 """Tests for Manager REST API: AC-11, AC-12, AC-13."""
+
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from unittest.mock import patch
 
-import pytest
 from fastapi import HTTPException
 from fastapi.testclient import TestClient
 
@@ -43,6 +43,7 @@ def _make_client(tmp_path: Path) -> TestClient:
 
 # ── AC-11: /health endpoint ────────────────────────────────────────────────────
 
+
 class TestHealthEndpoint:
     """AC-11: GET /health returns 200 without authentication."""
 
@@ -55,6 +56,7 @@ class TestHealthEndpoint:
 
 
 # ── AC-12: JWT validation ──────────────────────────────────────────────────────
+
 
 class TestJWTValidation:
     """AC-12: /v1/backends requires a valid RS256 JWT."""
@@ -80,6 +82,7 @@ class TestJWTValidation:
 
 
 # ── AC-13: Scope enforcement ───────────────────────────────────────────────────
+
 
 class TestScopeEnforcement:
     """AC-13: backend-registry:read scope is required."""
@@ -121,13 +124,14 @@ class TestScopeEnforcement:
             state="ready",
             cpu_percent=5.0,
             rss_mb=512.0,
-            started_at=datetime.now(tz=timezone.utc),
+            started_at=datetime.now(tz=UTC),
             managed=True,
         )
 
-        app.dependency_overrides[require_backend_registry_read] = (
-            lambda: {"sub": "gateway", "scope": "backend-registry:read"}
-        )
+        app.dependency_overrides[require_backend_registry_read] = lambda: {
+            "sub": "gateway",
+            "scope": "backend-registry:read",
+        }
         try:
             with patch("prometheus_manager.api.routes.scan", return_value=[mock_ps]):
                 resp = client.get("/v1/backends", headers={"Authorization": "Bearer valid"})
@@ -150,9 +154,10 @@ class TestScopeEnforcement:
         """AC-11: GET /v1/backends/{id} for unknown model → 404."""
         client = _make_client(tmp_path)
 
-        app.dependency_overrides[require_backend_registry_read] = (
-            lambda: {"sub": "gateway", "scope": "backend-registry:read"}
-        )
+        app.dependency_overrides[require_backend_registry_read] = lambda: {
+            "sub": "gateway",
+            "scope": "backend-registry:read",
+        }
         try:
             with patch("prometheus_manager.api.routes.scan", return_value=[]):
                 resp = client.get(
@@ -167,6 +172,7 @@ class TestScopeEnforcement:
 
 # ── spec-010 AC-18: discovery filtering ────────────────────────────────────────
 
+
 class TestDiscoveryFiltering:
     """memory/specs/010 AC-18: /v1/backends only returns entries with discovery: true."""
 
@@ -174,21 +180,24 @@ class TestDiscoveryFiltering:
         """AC-18: 2 of 4 entries with discovery=true → exactly 2 backends returned."""
         reg = Registry(tmp_path / "registry.yaml")
         for i in range(4):
-            reg.add(RegistryEntry(
-                id=f"model-{i:02d}",
-                path=f"/models/model-{i}.gguf",
-                port=8080 + i,
-                context_length=4096,
-                discovery=(i < 2),  # first two discoverable
-            ))
+            reg.add(
+                RegistryEntry(
+                    id=f"model-{i:02d}",
+                    path=f"/models/model-{i}.gguf",
+                    port=8080 + i,
+                    context_length=4096,
+                    discovery=(i < 2),  # first two discoverable
+                )
+            )
 
         app.state.registry = reg
         app.state.pid_dir = tmp_path / "run"
         client = TestClient(app, raise_server_exceptions=True)
 
-        app.dependency_overrides[require_backend_registry_read] = (
-            lambda: {"sub": "gateway", "scope": "backend-registry:read"}
-        )
+        app.dependency_overrides[require_backend_registry_read] = lambda: {
+            "sub": "gateway",
+            "scope": "backend-registry:read",
+        }
         try:
             with patch("prometheus_manager.api.routes.scan", return_value=[]):
                 resp = client.get("/v1/backends", headers={"Authorization": "Bearer valid"})
@@ -204,18 +213,24 @@ class TestDiscoveryFiltering:
     def test_AC18_no_discovery_returns_empty_list(self, tmp_path: Path):
         """AC-18: no entries with discovery=true → empty backends list."""
         reg = Registry(tmp_path / "registry.yaml")
-        reg.add(RegistryEntry(
-            id="hidden-model", path="/models/hidden.gguf",
-            port=8080, context_length=4096, discovery=False,
-        ))
+        reg.add(
+            RegistryEntry(
+                id="hidden-model",
+                path="/models/hidden.gguf",
+                port=8080,
+                context_length=4096,
+                discovery=False,
+            )
+        )
 
         app.state.registry = reg
         app.state.pid_dir = tmp_path / "run"
         client = TestClient(app, raise_server_exceptions=True)
 
-        app.dependency_overrides[require_backend_registry_read] = (
-            lambda: {"sub": "gateway", "scope": "backend-registry:read"}
-        )
+        app.dependency_overrides[require_backend_registry_read] = lambda: {
+            "sub": "gateway",
+            "scope": "backend-registry:read",
+        }
         try:
             with patch("prometheus_manager.api.routes.scan", return_value=[]):
                 resp = client.get("/v1/backends", headers={"Authorization": "Bearer valid"})

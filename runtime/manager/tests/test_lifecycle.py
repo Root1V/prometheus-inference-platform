@@ -1,10 +1,13 @@
-"""Tests for Lifecycle operations: AC-4, AC-5, AC-6, AC-6b, AC-6c, AC-6d, AC-7, AC-8, AC-9, AC-10."""
+"""Tests for Lifecycle operations.
+
+AC-4, AC-5, AC-6, AC-6b, AC-6c, AC-6d, AC-7, AC-8, AC-9, AC-10.
+"""
+
 from __future__ import annotations
 
-import os
 import signal
 from pathlib import Path
-from unittest.mock import MagicMock, call, patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -18,11 +21,9 @@ from prometheus_manager.lifecycle import (
     start_instance,
     stop_instance,
 )
-from prometheus_manager.registry import Registry, RegistryEntry
-from prometheus_manager.scanner import ProcessState
-
 
 # ── AC-9: Duplicate start ──────────────────────────────────────────────────────
+
 
 class TestACDuplicateStart:
     """AC-9: Starting an already-running instance raises LifecycleError."""
@@ -31,12 +32,15 @@ class TestACDuplicateStart:
         """AC-9: start_instance raises if model already running."""
         mock_state = MagicMock(pid=12345, alias="test-model", model_id="test-model")
 
-        with patch("prometheus_manager.lifecycle._find_running", return_value=mock_state):
-            with pytest.raises(LifecycleError, match="already running"):
-                start_instance("test-model", default_config, populated_registry)
+        with (
+            patch("prometheus_manager.lifecycle._find_running", return_value=mock_state),
+            pytest.raises(LifecycleError, match="already running"),
+        ):
+            start_instance("test-model", default_config, populated_registry)
 
 
 # ── AC-10: Unknown model ───────────────────────────────────────────────────────
+
 
 class TestACUnknownModel:
     """AC-10: Starting a model not in registry raises LifecycleError."""
@@ -48,6 +52,7 @@ class TestACUnknownModel:
 
 
 # ── AC-5: Start timeout ────────────────────────────────────────────────────────
+
 
 class TestACStartTimeout:
     """AC-5: If instance does not become healthy within timeout, it is killed."""
@@ -61,17 +66,23 @@ class TestACStartTimeout:
         with (
             patch("prometheus_manager.lifecycle._find_running", return_value=None),
             patch("prometheus_manager.lifecycle.subprocess.Popen", return_value=mock_proc),
-            patch("prometheus_manager.lifecycle.httpx.get", side_effect=Exception("connection refused")),
+            patch(
+                "prometheus_manager.lifecycle.httpx.get",
+                side_effect=Exception("connection refused"),
+            ),
             patch("prometheus_manager.lifecycle.time.sleep"),
-            patch("prometheus_manager.lifecycle.time.monotonic", side_effect=[0, 999]),  # immediately past deadline
+            patch(
+                "prometheus_manager.lifecycle.time.monotonic", side_effect=[0, 999]
+            ),  # immediately past deadline
+            pytest.raises(LifecycleError, match="Timed out"),
         ):
-            with pytest.raises(LifecycleError, match="Timed out"):
-                start_instance("test-model", default_config, populated_registry)
+            start_instance("test-model", default_config, populated_registry)
 
         mock_proc.terminate.assert_called_once()
 
 
 # ── AC-4: Successful start ────────────────────────────────────────────────────
+
 
 class TestACSuccessfulStart:
     """AC-4: start_instance spawns llama-server with correct arguments."""
@@ -86,7 +97,9 @@ class TestACSuccessfulStart:
 
         with (
             patch("prometheus_manager.lifecycle._find_running", return_value=None),
-            patch("prometheus_manager.lifecycle.subprocess.Popen", return_value=mock_proc) as mock_popen,
+            patch(
+                "prometheus_manager.lifecycle.subprocess.Popen", return_value=mock_proc
+            ) as mock_popen,
             patch("prometheus_manager.lifecycle.httpx.get") as mock_get,
             patch("prometheus_manager.lifecycle.scan", return_value=[mock_state]),
             patch("prometheus_manager.lifecycle.time.sleep"),
@@ -105,6 +118,7 @@ class TestACSuccessfulStart:
 
 
 # ── AC-6: Stop instance ────────────────────────────────────────────────────────
+
 
 class TestACStop:
     """AC-6: stop_instance sends SIGTERM, waits, then SIGKILL if needed."""
@@ -129,12 +143,15 @@ class TestACStop:
 
     def test_AC6_stop_raises_for_not_running(self, default_config, populated_registry):
         """AC-6: stop_instance raises LifecycleError when nothing is running."""
-        with patch("prometheus_manager.lifecycle._find_running", return_value=None):
-            with pytest.raises(LifecycleError, match="No running"):
-                stop_instance("test-model", default_config, populated_registry)
+        with (
+            patch("prometheus_manager.lifecycle._find_running", return_value=None),
+            pytest.raises(LifecycleError, match="No running"),
+        ):
+            stop_instance("test-model", default_config, populated_registry)
 
 
 # ── AC-7: SIGKILL fallback ─────────────────────────────────────────────────────
+
 
 class TestACSigKill:
     """AC-7: SIGKILL sent if process doesn't exit within stop_timeout_s."""
@@ -166,6 +183,7 @@ class TestACSigKill:
 
 # ── AC-6b: Pause ──────────────────────────────────────────────────────────────
 
+
 class TestACPause:
     """AC-6b: pause_instance sends SIGSTOP."""
 
@@ -182,12 +200,15 @@ class TestACPause:
 
     def test_AC6b_pause_raises_if_not_running(self, default_config):
         """AC-6b: raises LifecycleError when no instance is running."""
-        with patch("prometheus_manager.lifecycle._find_running", return_value=None):
-            with pytest.raises(LifecycleError):
-                pause_instance("test-model", default_config)
+        with (
+            patch("prometheus_manager.lifecycle._find_running", return_value=None),
+            pytest.raises(LifecycleError),
+        ):
+            pause_instance("test-model", default_config)
 
 
 # ── AC-6c: Resume ─────────────────────────────────────────────────────────────
+
 
 class TestACResume:
     """AC-6c: resume_instance sends SIGCONT."""
@@ -206,12 +227,15 @@ class TestACResume:
 
     def test_AC6c_resume_raises_if_not_found(self, default_config):
         """AC-6c: raises LifecycleError when no paused instance found."""
-        with patch("prometheus_manager.lifecycle.scan", return_value=[]):
-            with pytest.raises(LifecycleError):
-                resume_instance("test-model", default_config)
+        with (
+            patch("prometheus_manager.lifecycle.scan", return_value=[]),
+            pytest.raises(LifecycleError),
+        ):
+            resume_instance("test-model", default_config)
 
 
 # ── AC-8: Restart ─────────────────────────────────────────────────────────────
+
 
 class TestACRestart:
     """AC-8: restart_instance = stop + start."""
@@ -222,7 +246,9 @@ class TestACRestart:
 
         with (
             patch("prometheus_manager.lifecycle.stop_instance") as mock_stop,
-            patch("prometheus_manager.lifecycle.start_instance", return_value=mock_state) as mock_start,
+            patch(
+                "prometheus_manager.lifecycle.start_instance", return_value=mock_state
+            ) as mock_start,
         ):
             result = restart_instance("test-model", default_config, populated_registry)
 
@@ -232,6 +258,7 @@ class TestACRestart:
 
 
 # ── AC-6d: Deregister ─────────────────────────────────────────────────────────
+
 
 class TestACDeregister:
     """AC-6d: deregister_instance stops then removes from registry."""
@@ -246,6 +273,7 @@ class TestACDeregister:
 
 
 # ── PID integrity (security)───────────────────────────────────────────────────
+
 
 class TestPIDIntegrity:
     """Security: _verify_pid_file guards against PID reuse."""
@@ -270,6 +298,7 @@ class TestPIDIntegrity:
 
 
 # ── spec-010 AC-8 & AC-9: discovery auto-toggle ───────────────────────────────
+
 
 class TestDiscoveryAutoToggle:
     """memory/specs/010 AC-8, AC-9: start sets discovery=True, stop sets discovery=False."""

@@ -1,17 +1,17 @@
 """Tests for ProcessScanner: AC-1, AC-2, AC-14."""
+
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-import pytest
 import psutil
 
-from prometheus_manager.scanner import ProcessState, _is_managed, scan
-
+from prometheus_manager.scanner import _is_managed, scan
 
 # ── AC-1: Discover running instances ──────────────────────────────────────────
+
 
 class TestDiscovery:
     """AC-1: scan() discovers all running llama-server processes."""
@@ -31,15 +31,19 @@ class TestDiscovery:
             "name": "llama-server",
             "cmdline": [
                 "/usr/local/bin/llama-server",
-                "--model", "/models/test.gguf",
-                "--alias", "test-model",
-                "--port", "8080",
-                "--host", "127.0.0.1",
+                "--model",
+                "/models/test.gguf",
+                "--alias",
+                "test-model",
+                "--port",
+                "8080",
+                "--host",
+                "127.0.0.1",
             ],
             "cpu_percent": 15.0,
             "memory_info": MagicMock(rss=1024 * 1024 * 512),
             "status": "running",
-            "create_time": datetime.now(tz=timezone.utc).timestamp() - 120,
+            "create_time": datetime.now(tz=UTC).timestamp() - 120,
         }
 
         with (
@@ -66,7 +70,7 @@ class TestDiscovery:
             "cpu_percent": 1.0,
             "memory_info": MagicMock(rss=1024 * 1024 * 10),
             "status": "running",
-            "create_time": datetime.now(tz=timezone.utc).timestamp(),
+            "create_time": datetime.now(tz=UTC).timestamp(),
         }
 
         with patch("prometheus_manager.scanner.psutil.process_iter", return_value=[mock_proc]):
@@ -76,6 +80,7 @@ class TestDiscovery:
 
 
 # ── AC-2: State determination ─────────────────────────────────────────────────
+
 
 class TestStateProbing:
     """AC-2: scan() returns correct state (loading/ready/error/paused)."""
@@ -87,22 +92,28 @@ class TestStateProbing:
             "name": "llama-server",
             "cmdline": [
                 "llama-server",
-                "--model", "/m/test.gguf",
-                "--alias", "m1",
-                "--port", "9090",
-                "--host", "127.0.0.1",
+                "--model",
+                "/m/test.gguf",
+                "--alias",
+                "m1",
+                "--port",
+                "9090",
+                "--host",
+                "127.0.0.1",
             ],
             "cpu_percent": 0.0,
             "memory_info": MagicMock(rss=0),
             "status": status,
-            "create_time": datetime.now(tz=timezone.utc).timestamp() - 60,
+            "create_time": datetime.now(tz=UTC).timestamp() - 60,
         }
         return mock_proc
 
     def test_AC2_state_ready_when_health_200(self, tmp_path: Path):
         """AC-2: state is 'ready' when /health returns 200."""
         with (
-            patch("prometheus_manager.scanner.psutil.process_iter", return_value=[self._make_proc()]),
+            patch(
+                "prometheus_manager.scanner.psutil.process_iter", return_value=[self._make_proc()]
+            ),
             patch("prometheus_manager.scanner._probe_health", return_value="ready"),
         ):
             result = scan(tmp_path)
@@ -111,7 +122,9 @@ class TestStateProbing:
     def test_AC2_state_loading_when_young_and_not_ready(self, tmp_path: Path):
         """AC-2: state is 'loading' for young process that is not yet listening."""
         with (
-            patch("prometheus_manager.scanner.psutil.process_iter", return_value=[self._make_proc()]),
+            patch(
+                "prometheus_manager.scanner.psutil.process_iter", return_value=[self._make_proc()]
+            ),
             patch("prometheus_manager.scanner._probe_health", return_value="loading"),
         ):
             result = scan(tmp_path)
@@ -127,7 +140,9 @@ class TestStateProbing:
     def test_AC2_state_error_for_old_unreachable_process(self, tmp_path: Path):
         """AC-2: state is 'error' for old process that can't be reached."""
         with (
-            patch("prometheus_manager.scanner.psutil.process_iter", return_value=[self._make_proc()]),
+            patch(
+                "prometheus_manager.scanner.psutil.process_iter", return_value=[self._make_proc()]
+            ),
             patch("prometheus_manager.scanner._probe_health", return_value="error"),
         ):
             result = scan(tmp_path)
@@ -135,6 +150,7 @@ class TestStateProbing:
 
 
 # ── AC-14: Managed vs orphan ──────────────────────────────────────────────────
+
 
 class TestManagedFlag:
     """AC-14: scan() correctly differentiates managed vs orphan processes."""
@@ -170,15 +186,19 @@ class TestManagedFlag:
             "name": "llama-server",
             "cmdline": [
                 "llama-server",
-                "--model", "/m/test.gguf",
-                "--alias", alias,
-                "--port", "8080",
-                "--host", "127.0.0.1",
+                "--model",
+                "/m/test.gguf",
+                "--alias",
+                alias,
+                "--port",
+                "8080",
+                "--host",
+                "127.0.0.1",
             ],
             "cpu_percent": 0.0,
             "memory_info": MagicMock(rss=0),
             "status": "running",
-            "create_time": datetime.now(tz=timezone.utc).timestamp(),
+            "create_time": datetime.now(tz=UTC).timestamp(),
         }
 
         with (

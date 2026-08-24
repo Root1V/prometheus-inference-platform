@@ -5,6 +5,7 @@ Implements: memory/specs/008-llama-server-manager.md — AC-22, AC-22b–g, AC-2
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import re
 import uuid
@@ -437,32 +438,24 @@ class ManagerApp(App):
                     pass
 
         # Dashboard
-        try:
+        with contextlib.suppress(Exception):
             self.query_one("#view-dashboard", DashboardView).refresh_data(
                 states, registry_entries, self._downloads
             )
-        except Exception:
-            pass
 
         # Instances
-        try:
+        with contextlib.suppress(Exception):
             self.query_one("#view-instances", InstancesView).refresh_data(states, registry_entries)
-        except Exception:
-            pass
 
         # Registry
-        try:
+        with contextlib.suppress(Exception):
             self.query_one("#view-registry", RegistryView).refresh_data(
                 list(registry_entries.values())
             )
-        except Exception:
-            pass
 
         # Downloads
-        try:
+        with contextlib.suppress(Exception):
             self.query_one("#view-downloads", DownloadsView).refresh_data(self._downloads)
-        except Exception:
-            pass
 
         # Resource bar host metrics + summary stats (AC-22b, AC-22c)
         try:
@@ -500,10 +493,8 @@ class ManagerApp(App):
         """Switch ContentSwitcher to match the activated tab."""
         if event.tab:
             view_id = str(event.tab.id).replace("tab-", "view-")
-            try:
+            with contextlib.suppress(Exception):
                 self.query_one("#main-switcher", ContentSwitcher).current = view_id
-            except Exception:
-                pass
             # Re-focus search input when switching to Discovery tab
             if view_id == "view-discovery":
                 try:
@@ -804,8 +795,9 @@ class ManagerApp(App):
 
     @work(exclusive=False, thread=True)
     def _do_download(self, model_id: str) -> None:
-        from opentelemetry.trace import SpanKind, StatusCode
         from urllib.parse import urlparse
+
+        from opentelemetry.trace import SpanKind, StatusCode
 
         self._bind_worker_ctx("download")
         from ..downloader import DownloadError, DownloadState, download_model

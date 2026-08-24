@@ -14,10 +14,10 @@ import os
 from typing import Any
 
 from opentelemetry import trace
+from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
 from opentelemetry.sdk.resources import Resource
 from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import BatchSpanProcessor
-from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
 
 # ── Module-level idempotency guard (AC-4) ────────────────────────────────────
 _CONFIGURED = False
@@ -63,7 +63,7 @@ def configure_tracing(
 
     if _disabled:
         # AC-2: disabled → NoOpTracerProvider, no network connections
-        trace.set_tracer_provider(trace.NoOpTracerProvider())  # type: ignore[arg-type]
+        trace.set_tracer_provider(trace.NoOpTracerProvider())
         return
 
     # Build Resource (service.name + optional extras)
@@ -74,11 +74,7 @@ def configure_tracing(
     resource = Resource(attributes=attrs)
 
     # Build OTLP/HTTP exporter
-    _endpoint = (
-        endpoint
-        or os.environ.get("OTEL_EXPORTER_OTLP_ENDPOINT")
-        or _DEFAULT_ENDPOINT
-    )
+    _endpoint = endpoint or os.environ.get("OTEL_EXPORTER_OTLP_ENDPOINT") or _DEFAULT_ENDPOINT
     otlp_url = f"{_endpoint.rstrip('/')}/v1/traces"
     exporter = OTLPSpanExporter(endpoint=otlp_url)
 

@@ -2,6 +2,7 @@
 
 Implements: memory/specs/009-model-size-column.md — AC-9
 """
+
 from __future__ import annotations
 
 import os
@@ -52,7 +53,9 @@ class TestFmtSize:
         os.truncate(f, 999_999_999)
         assert fmt_size(str(f)) == "1.0 GB"
 
-    def test_permission_error_returns_dash(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_permission_error_returns_dash(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         """AC-4: OSError (e.g. permission denied) → '—'."""
         f = tmp_path / "noperm.gguf"
         f.touch()

@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import os
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Annotated, Any
 
@@ -88,16 +88,22 @@ async def list_backends(
             else:
                 # Fallback: HTTP probing when psutil cannot see host processes.
                 if use_batch:
-                    with _tracer.start_as_current_span("backend.probe.batch", kind=SpanKind.INTERNAL) as probe_span:
+                    with _tracer.start_as_current_span(
+                        "backend.probe.batch", kind=SpanKind.INTERNAL
+                    ) as probe_span:
                         probe_span.set_attribute("model_count", len(entries))
                         backends = [
-                            _merge(entry.__dict__, await _probe_state(entry, proxy_host), proxy_host)
+                            _merge(
+                                entry.__dict__, await _probe_state(entry, proxy_host), proxy_host
+                            )
                             for entry in entries
                         ]
                 else:
                     backends = []
                     for entry in entries:
-                        with _tracer.start_as_current_span("backend.probe", kind=SpanKind.INTERNAL) as probe_span:
+                        with _tracer.start_as_current_span(
+                            "backend.probe", kind=SpanKind.INTERNAL
+                        ) as probe_span:
                             probe_span.set_attribute("model_id", entry.id)
                             state = await _probe_state(entry, proxy_host)
                             probe_span.set_attribute("probe_result", state)
@@ -107,7 +113,9 @@ async def list_backends(
             pid_dir: Path = request.app.state.pid_dir
             entry_ids = {e.id for e in entries}
             if use_batch:
-                with _tracer.start_as_current_span("backend.probe.batch", kind=SpanKind.INTERNAL) as probe_span:
+                with _tracer.start_as_current_span(
+                    "backend.probe.batch", kind=SpanKind.INTERNAL
+                ) as probe_span:
                     probe_span.set_attribute("model_count", len(entries))
                     live: dict[str, ProcessState] = {
                         proc.model_id: proc
@@ -120,7 +128,9 @@ async def list_backends(
                 for entry in entries:
                     proc = live.get(entry.id)
                     state_str = proc.state if proc else "stopped"
-                    with _tracer.start_as_current_span("backend.probe", kind=SpanKind.INTERNAL) as probe_span:
+                    with _tracer.start_as_current_span(
+                        "backend.probe", kind=SpanKind.INTERNAL
+                    ) as probe_span:
                         probe_span.set_attribute("model_id", entry.id)
                         probe_span.set_attribute("probe_result", state_str)
             backends = [_merge(entry.__dict__, live.get(entry.id)) for entry in entries]
@@ -202,7 +212,7 @@ async def get_backend(
 
 
 def _uptime_s(ps: ProcessState) -> float:
-    now = datetime.now(tz=timezone.utc)
+    now = datetime.now(tz=UTC)
     return (now - ps.started_at).total_seconds()
 
 

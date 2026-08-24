@@ -18,10 +18,14 @@ from starlette.requests import Request
 from starlette.responses import PlainTextResponse
 from starlette.routing import Route
 
-import prometheus_telemetry.tracing as _tracing
-from prometheus_telemetry import TraceIDMiddleware, configure_tracing, get_tracer, trace_id_from_context
 import prometheus_telemetry.core as _core
-
+import prometheus_telemetry.tracing as _tracing
+from prometheus_telemetry import (
+    TraceIDMiddleware,
+    configure_tracing,
+    get_tracer,
+    trace_id_from_context,
+)
 
 # ── Fixtures ────────────────────────────────────────────────────────────────
 
@@ -75,7 +79,9 @@ def test_configure_tracing_registers_processor() -> None:
     # Access the internal synchronous processor list
     composite = provider._active_span_processor  # type: ignore[attr-defined]
     # SynchronousMultiSpanProcessor stores processors in _span_processors tuple/list
-    procs = getattr(composite, "_span_processors", None) or getattr(composite, "span_processors", ())
+    procs = getattr(composite, "_span_processors", None) or getattr(
+        composite, "span_processors", ()
+    )
     assert any(isinstance(p, BatchSpanProcessor) for p in procs)
 
 
@@ -119,7 +125,9 @@ def test_configure_tracing_idempotent() -> None:
     provider = trace.get_tracer_provider()
     assert isinstance(provider, TracerProvider)
     composite = provider._active_span_processor  # type: ignore[attr-defined]
-    procs = getattr(composite, "_span_processors", None) or getattr(composite, "span_processors", ())
+    procs = getattr(composite, "_span_processors", None) or getattr(
+        composite, "span_processors", ()
+    )
     assert len(procs) == 1
 
 
@@ -144,7 +152,9 @@ async def test_middleware_otel_trace_id() -> None:
 
     assert resp.status_code == 200
     trace_id_in_response = resp.headers["x-trace-id"]
-    assert _W3C_RE.match(trace_id_in_response), f"Expected 32-char hex, got {trace_id_in_response!r}"
+    assert _W3C_RE.match(trace_id_in_response), (
+        f"Expected 32-char hex, got {trace_id_in_response!r}"
+    )
 
     assert captured
     assert _W3C_RE.match(captured[0]["trace_id"]), f"structlog got {captured[0]['trace_id']!r}"

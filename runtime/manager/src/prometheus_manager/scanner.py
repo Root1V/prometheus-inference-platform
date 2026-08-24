@@ -8,13 +8,12 @@ from __future__ import annotations
 import time
 from collections import defaultdict
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Literal
 
 import httpx
 import psutil
-
 
 State = Literal["loading", "ready", "error", "stopped", "paused", "unknown"]
 
@@ -129,7 +128,7 @@ def scan(
             mem_info = info.get("memory_info")
             rss_mb = (mem_info.rss / (1024 * 1024)) if mem_info else 0.0
             create_time = info.get("create_time") or time.time()
-            started_at = datetime.fromtimestamp(create_time, tz=timezone.utc)
+            started_at = datetime.fromtimestamp(create_time, tz=UTC)
             ps_status = info.get("status", "")
 
             # Determine managed state

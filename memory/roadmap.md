@@ -26,7 +26,7 @@ folded in here per your "muchos más que vayas encontrando."
 | # | Item | Status | Depends on |
 |---|------|--------|------------|
 | [RM-01](#rm-01-restore-ci-now-that-the-repo-is-public-added) | Restore CI on GitHub Actions (added) | done | — |
-| [RM-02](#rm-02-extend-pre-push-hook-to-managertelemetry-added) | Extend pre-push hook to `manager`/`telemetry` (added) | todo | — |
+| [RM-02](#rm-02-extend-pre-push-hook-to-managertelemetry-added) | Extend pre-push hook to `manager`/`telemetry` (added) | done | RM-01 |
 | [RM-03](#rm-03-pick-a-real-license-added) | Pick a real LICENSE (added) | todo | — |
 | [RM-04](#rm-04-dependency-vulnerability-scanning-added) | Dependency vulnerability scanning (added) | todo | RM-01 |
 | [RM-05](#rm-05-split-manager-tui-from-its-rest-api-item-4) | Split manager's TUI from its REST API (item 4) | todo | — |
@@ -83,15 +83,28 @@ fixed in the same branch since they blocked CI going green:
   paths differ, and `gateway/.env.podman.example` is now a shared, not RHEL-only,
   template). Narrowed the check to `.env.redhat.example` and `auth-service/.env.example`.
 
-## RM-02 — Extend pre-push hook to `manager`/`telemetry` (added)
+## RM-02 — Extend pre-push hook to `manager`/`telemetry` (added) — `done`
 
 **Why**: `.githooks/pre-push` only lints/type-checks/tests `gateway/` and
 `auth-service/`. `runtime/manager` has its own `pyproject.toml` and a 9-file test suite
 that nothing currently enforces — confirmed drift already exists (`ruff format --check
 runtime/manager/` currently fails on 12 test files). `telemetry/` isn't covered either.
 
-**Scope**: add the same three-step check (lint, format, mypy) plus `pytest` for both
-packages to the hook, and fix the current formatting drift as part of the same change.
+**Done**: added lint + format + pytest for `runtime/manager`, and lint + format + mypy +
+pytest for `telemetry` (both to `.githooks/pre-push`; `ci.yml` inherits them for free
+since it just runs the hook). Fixed the pre-existing drift to get there: 78 ruff findings
+and 12 unformatted files in `manager` (all mechanical — unused imports, line length,
+`contextlib.suppress`, combined `with` statements, one `noqa: E402` for two imports that
+must stay after an intentional early `configure_logging()`/`truststore` setup), plus 6
+ruff findings and 1 stale `type: ignore` in `telemetry`. All 142 manager tests and 30
+telemetry tests still pass after the fixes.
+
+**Deliberately not done**: `mypy` for `runtime/manager`. Its `pyproject.toml` already
+declares `strict = true` but it was never actually enforced — running it surfaced ~86
+pre-existing errors, mostly missing type annotations on the `pmgr` CLI's click commands
+in `cli/main.py`. Fixing that now would mean deep-editing a process-lifecycle-controlling
+module outside this change's scope, so it's carried forward as required scope for
+**RM-05** (which restructures these exact files) instead of being fixed twice.
 
 ## RM-03 — Pick a real LICENSE (added)
 
@@ -121,6 +134,11 @@ interactive TUI.
 clearly separated — the API should be runnable/testable without importing Textual, and
 vice versa. This is a structural refactor, not a behavior change — existing `pmgr`
 commands and REST endpoints should keep working identically.
+
+Also pay down the ~86 pre-existing `mypy --strict` errors found while doing RM-02
+(mostly missing annotations on `cli/main.py`'s click commands) — `pyproject.toml`
+already declares `strict = true`, it was just never enforced; fix it while these files
+are already being touched instead of doing it as a separate pass.
 
 ## RM-06 — Research the best inference-serving stack (item 7)
 

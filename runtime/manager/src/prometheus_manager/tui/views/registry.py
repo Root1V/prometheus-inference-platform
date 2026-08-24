@@ -8,7 +8,6 @@ from __future__ import annotations
 from pathlib import Path
 
 from rich.markup import escape as _esc
-
 from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical

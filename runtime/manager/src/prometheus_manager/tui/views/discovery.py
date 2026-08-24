@@ -216,7 +216,8 @@ class DiscoveryView(Vertical):
                 id="search-input",
             )
             yield Static(
-                "[dim]Type and press [bold]Enter[/bold] to search • [bold]Esc[/bold] to navigate results[/dim]",
+                "[dim]Type and press [bold]Enter[/bold] to search • "
+                "[bold]Esc[/bold] to navigate results[/dim]",
                 id="search-status",
             )
         with Vertical(id="results-group") as grp:

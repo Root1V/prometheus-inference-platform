@@ -2,6 +2,7 @@
 
 Implements: memory/specs/012-discovery-view-redesign.md — AC-10, AC-11, AC-12, AC-17
 """
+
 from __future__ import annotations
 
 import pytest
@@ -16,6 +17,7 @@ from prometheus_manager.tui.views.discovery import (
 
 # ── _infer_quant (AC-12) ──────────────────────────────────────────────────────
 
+
 class TestInferQuant:
     @pytest.mark.parametrize(
         "filename, expected",
@@ -27,7 +29,7 @@ class TestInferQuant:
             ("granite-F32.gguf", "F32"),
             ("gemma-BF16.gguf", "BF16"),
             ("unknown-model.gguf", "?"),
-            ("model-q4_k_m.gguf", "Q4_K_M"),   # case-insensitive
+            ("model-q4_k_m.gguf", "Q4_K_M"),  # case-insensitive
         ],
     )
     def test_known_patterns(self, filename: str, expected: str) -> None:
@@ -35,6 +37,7 @@ class TestInferQuant:
 
 
 # ── _auto_id (AC-10) ─────────────────────────────────────────────────────────
+
 
 class TestAutoId:
     def test_basic_slug(self) -> None:
@@ -78,6 +81,7 @@ class TestAutoId:
 
 # ── _next_free_port (AC-11) ───────────────────────────────────────────────────
 
+
 class TestNextFreePort:
     def test_returns_8081_when_empty(self) -> None:
         assert _next_free_port(set()) == 8081
@@ -94,6 +98,7 @@ class TestNextFreePort:
 
 
 # ── _fmt_count ────────────────────────────────────────────────────────────────
+
 
 class TestFmtCount:
     def test_none(self) -> None:
@@ -116,6 +121,7 @@ class TestFmtCount:
 
 
 # ── _shard_filenames ──────────────────────────────────────────────────────────
+
 
 class TestShardFilenames:
     """Multi-part GGUF shard detection."""

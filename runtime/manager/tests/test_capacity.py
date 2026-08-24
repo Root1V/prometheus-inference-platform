@@ -1,4 +1,5 @@
 """Tests for Capacity checks: AC-24, AC-25."""
+
 from __future__ import annotations
 
 from pathlib import Path
@@ -6,7 +7,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from prometheus_manager.capacity import CapacityWarning, check_capacity
+from prometheus_manager.capacity import check_capacity
 
 
 class TestCapacityAC24:
@@ -67,7 +68,7 @@ class TestCapacityAC25:
     def test_AC25_blocked_when_at_or_above_95_pct(self):
         """AC-25: level=blocked when projected RAM ≥ 95%."""
         total_mb = 4 * 1024  # 4 GB
-        current_rss_mb = int(total_mb * 0.90)   # at 90%
+        current_rss_mb = int(total_mb * 0.90)  # at 90%
         estimated_new_mb = int(total_mb * 0.10)  # +10% → 100%
 
         with patch("prometheus_manager.capacity.psutil.virtual_memory") as mock_vm:

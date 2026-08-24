@@ -1,14 +1,20 @@
 """Tests for Registry: AC-3, AC-15, AC-16, AC-17, AC-18."""
+
 from __future__ import annotations
 
 from pathlib import Path
 
 import pytest
 
-from prometheus_manager.registry import Registry, RegistryEntry, _validate_id, _validate_path, _validate_port
-
+from prometheus_manager.registry import (
+    Registry,
+    RegistryEntry,
+    _validate_id,
+    _validate_path,
+)
 
 # ── AC-3: Registry CRUD ────────────────────────────────────────────────────────
+
 
 class TestRegistryCRUD:
     """AC-3: Registry loads, persists, and returns entries correctly."""
@@ -17,7 +23,9 @@ class TestRegistryCRUD:
         """AC-3: new registry returns empty list."""
         assert empty_registry.entries == []
 
-    def test_AC3_add_entry_persists_to_disk(self, registry_path: Path, empty_registry: Registry, sample_entry: RegistryEntry):
+    def test_AC3_add_entry_persists_to_disk(
+        self, registry_path: Path, empty_registry: Registry, sample_entry: RegistryEntry
+    ):
         """AC-3: add() saves to YAML and reloaded instance returns entry."""
         empty_registry.add(sample_entry)
 
@@ -40,10 +48,13 @@ class TestRegistryCRUD:
         populated_registry.update("test-model", context_length=8192)
         assert populated_registry.get("test-model").context_length == 8192
 
-    def test_AC3_reload_refreshes_from_disk(self, registry_path: Path, populated_registry: Registry):
+    def test_AC3_reload_refreshes_from_disk(
+        self, registry_path: Path, populated_registry: Registry
+    ):
         """AC-3: reload() re-reads the YAML file."""
         # Directly mutate YAML
         import yaml
+
         with open(registry_path) as f:
             data = yaml.safe_load(f)
         data["models"][0]["port"] = 9999
@@ -54,6 +65,7 @@ class TestRegistryCRUD:
 
 
 # ── AC-15: Path validation ─────────────────────────────────────────────────────
+
 
 class TestPathValidation:
     """AC-15: Only absolute .gguf paths without traversal are accepted."""
@@ -84,6 +96,7 @@ class TestPathValidation:
 
 
 # ── AC-16: ID validation ───────────────────────────────────────────────────────
+
 
 class TestIdValidation:
     """AC-16: model IDs must match ^[a-z0-9][a-z0-9_-]{1,62}[a-z0-9]$"""
@@ -119,6 +132,7 @@ class TestIdValidation:
 
 # ── AC-17: Unregister running instance ────────────────────────────────────────
 
+
 class TestUnregisterRunningBlock:
     """AC-17: unregistering a running instance must be refused."""
 
@@ -135,10 +149,13 @@ class TestUnregisterRunningBlock:
 
 # ── AC-18: Persistence ─────────────────────────────────────────────────────────
 
+
 class TestPersistence:
     """AC-18: Registry additions and deletions are written atomically."""
 
-    def test_AC18_add_then_remove_persists_correctly(self, registry_path: Path, empty_registry: Registry, sample_entry: RegistryEntry):
+    def test_AC18_add_then_remove_persists_correctly(
+        self, registry_path: Path, empty_registry: Registry, sample_entry: RegistryEntry
+    ):
         """AC-18: add then remove leaves empty YAML on disk."""
         empty_registry.add(sample_entry)
         empty_registry.remove("test-model")
@@ -163,21 +180,25 @@ class TestPersistence:
 
 # ── spec-010 AC-1 & AC-2: discovery field ─────────────────────────────────────
 
+
 class TestDiscoveryField:
     """memory/specs/010 AC-1, AC-2: discovery field persists and defaults to False."""
 
     def test_AC1_discovery_defaults_to_false(self, registry_path: Path):
         """AC-1: entries loaded from YAML without a discovery key default to False."""
         import yaml
+
         data = {
-            "models": [{
-                "id": "no-discovery-model",
-                "port": 9090,
-                "context_length": 4096,
-                "family": "llama3",
-                "quantization": "Q4_0",
-                "downloaded": False,
-            }]
+            "models": [
+                {
+                    "id": "no-discovery-model",
+                    "port": 9090,
+                    "context_length": 4096,
+                    "family": "llama3",
+                    "quantization": "Q4_0",
+                    "downloaded": False,
+                }
+            ]
         }
         registry_path.write_text(yaml.safe_dump(data))
         reg = Registry(registry_path)
@@ -185,7 +206,9 @@ class TestDiscoveryField:
         assert entry is not None
         assert entry.discovery is False
 
-    def test_AC2_update_discovery_true_persists(self, registry_path: Path, empty_registry: Registry, sample_entry: RegistryEntry):
+    def test_AC2_update_discovery_true_persists(
+        self, registry_path: Path, empty_registry: Registry, sample_entry: RegistryEntry
+    ):
         """AC-2: update(discovery=True) persists and all other fields unchanged."""
         empty_registry.add(sample_entry)
         original_port = sample_entry.port
@@ -198,7 +221,9 @@ class TestDiscoveryField:
         assert entry.discovery is True
         assert entry.port == original_port
 
-    def test_AC2_update_discovery_false_persists(self, registry_path: Path, empty_registry: Registry, sample_entry: RegistryEntry):
+    def test_AC2_update_discovery_false_persists(
+        self, registry_path: Path, empty_registry: Registry, sample_entry: RegistryEntry
+    ):
         """AC-2: update(discovery=False) persists correctly."""
         sample_disc = RegistryEntry(
             id=sample_entry.id,
@@ -216,7 +241,10 @@ class TestDiscoveryField:
     def test_discovery_serialized_in_to_dict(self, sample_entry: RegistryEntry):
         """discovery field is always included in to_dict output."""
         entry = RegistryEntry(
-            id="x-model", port=8080, context_length=4096, discovery=True,
+            id="x-model",
+            port=8080,
+            context_length=4096,
+            discovery=True,
         )
         d = entry.to_dict()
         assert "discovery" in d
