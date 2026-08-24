@@ -294,17 +294,17 @@ if [[ "${DEPLOY_MODE}" == "true" ]]; then
 
     # ── Deploy Step 4: Restart Manager API ──────────────────────────────────
     # Implements: memory/specs/024-idempotent-deploy.md — AC-11
-    _dstep "Restart Manager API (pmgr serve)"
-    PMGR_PID="$(pgrep -f 'pmgr serve' 2>/dev/null || true)"
+    _dstep "Restart Manager API (pmgr-api)"
+    PMGR_PID="$(pgrep -f 'pmgr-api' 2>/dev/null || true)"
     if [[ -n "${PMGR_PID}" ]]; then
-        _info "Sending SIGTERM to pmgr serve (PID ${PMGR_PID})..."
+        _info "Sending SIGTERM to pmgr-api (PID ${PMGR_PID})..."
         kill -TERM "${PMGR_PID}" 2>/dev/null || true
         sleep 2
-        _info "Restarting pmgr serve in background..."
-        (cd "${PROJECT_DIR}" && nohup pmgr serve >> /var/log/prometheus/manager/pmgr.log 2>&1 &)
+        _info "Restarting pmgr-api in background..."
+        (cd "${PROJECT_DIR}" && nohup pmgr-api >> /var/log/prometheus/manager/pmgr.log 2>&1 &)
         _ok "Manager API restarted"
     else
-        _ok "pmgr serve not running — skipping restart"
+        _ok "pmgr-api not running — skipping restart"
     fi
 
     # ── Deploy Step 5: Notify about llama-server ────────────────────────────
@@ -560,7 +560,7 @@ _step "Create host directories (ownership + SELinux)"
 # UID/GID constants (must match container image definitions)
 UID_GATEWAY=1000   # prometheus       (gateway/Dockerfile --uid 1000)
 UID_AUTH=1001      # prometheus-auth  (auth-service/Dockerfile --uid 1001)
-UID_MANAGER=1002   # pmgr             (runtime/manager/Dockerfile --uid 1002)
+UID_MANAGER=1002   # pmgr             (runtime/manager/api/Dockerfile --uid 1002)
 sudo mkdir -p /etc/prometheus/keys /etc/prometheus/certs
 sudo chown "${LLMOPS_USER}:${LLMOPS_USER}" /etc/prometheus/keys /etc/prometheus/certs
 sudo chmod 750 /etc/prometheus/keys /etc/prometheus/certs
@@ -835,7 +835,7 @@ echo "  4. Start llama-server:"
 echo "       source runtime/envs/<model>.env && bash runtime/scripts/start-server.sh"
 echo ""
 echo "  5. Start Manager API:"
-echo "       pmgr serve"
+echo "       pmgr-api"
 echo ""
 echo "  6. Start Podman containers:"
 echo "       podman compose -f podman-compose.yml up --build -d"

@@ -6,7 +6,9 @@ requires-python = ">=3.11"
 members = [
     "prometheus-auth",
     "prometheus-gateway",
-    "prometheus-manager",
+    "prometheus-manager-api",
+    "prometheus-manager-core",
+    "prometheus-manager-tui",
     "prometheus-telemetry",
 ]
 
@@ -1384,27 +1386,70 @@ dev = [
 ]
 
 [[package]]
-name = "prometheus-manager"
+name = "prometheus-manager-api"
 version = "0.1.0"
-source = { editable = "runtime/manager" }
+source = { editable = "runtime/manager/api" }
 dependencies = [
     { name = "click" },
     { name = "fastapi" },
     { name = "httpx" },
-    { name = "huggingface-hub" },
+    { name = "prometheus-manager-core" },
     { name = "prometheus-telemetry" },
-    { name = "psutil" },
     { name = "python-jose", extra = ["cryptography"] },
-    { name = "pyyaml" },
-    { name = "requests" },
-    { name = "rich" },
     { name = "structlog" },
-    { name = "textual" },
-    { name = "truststore" },
     { name = "uvicorn", extra = ["standard"] },
 ]
 
-[package.optional-dependencies]
+[package.dev-dependencies]
+dev = [
+    { name = "httpx" },
+    { name = "mypy" },
+    { name = "pytest" },
+    { name = "pytest-asyncio" },
+    { name = "pytest-mock" },
+    { name = "ruff" },
+    { name = "types-python-jose" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "click", specifier = ">=8.1" },
+    { name = "fastapi", specifier = ">=0.111" },
+    { name = "httpx", specifier = ">=0.27" },
+    { name = "prometheus-manager-core", editable = "runtime/manager/core" },
+    { name = "prometheus-telemetry", editable = "telemetry" },
+    { name = "python-jose", extras = ["cryptography"], specifier = ">=3.3" },
+    { name = "structlog", specifier = ">=25.5.0" },
+    { name = "uvicorn", extras = ["standard"], specifier = ">=0.29" },
+]
+
+[package.metadata.requires-dev]
+dev = [
+    { name = "httpx", specifier = ">=0.27" },
+    { name = "mypy", specifier = ">=1.10" },
+    { name = "pytest", specifier = ">=8.2" },
+    { name = "pytest-asyncio", specifier = ">=0.23" },
+    { name = "pytest-mock", specifier = ">=3.14" },
+    { name = "ruff", specifier = ">=0.4" },
+    { name = "types-python-jose", specifier = ">=3.5" },
+]
+
+[[package]]
+name = "prometheus-manager-core"
+version = "0.1.0"
+source = { editable = "runtime/manager/core" }
+dependencies = [
+    { name = "httpx" },
+    { name = "huggingface-hub" },
+    { name = "prometheus-telemetry" },
+    { name = "psutil" },
+    { name = "pyyaml" },
+    { name = "requests" },
+    { name = "structlog" },
+    { name = "truststore" },
+]
+
+[package.dev-dependencies]
 dev = [
     { name = "httpx" },
     { name = "mypy" },
@@ -1414,35 +1459,87 @@ dev = [
     { name = "ruff" },
     { name = "types-psutil" },
     { name = "types-pyyaml" },
+    { name = "types-requests" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "httpx", specifier = ">=0.27" },
+    { name = "huggingface-hub", specifier = ">=0.23" },
+    { name = "prometheus-telemetry", editable = "telemetry" },
+    { name = "psutil", specifier = ">=5.9" },
+    { name = "pyyaml", specifier = ">=6.0" },
+    { name = "requests", specifier = ">=2.33.1" },
+    { name = "structlog", specifier = ">=25.5.0" },
+    { name = "tomllib", marker = "python_full_version < '3.11'", specifier = ">=2.0.1" },
+    { name = "truststore", specifier = ">=0.10.4" },
+]
+
+[package.metadata.requires-dev]
+dev = [
+    { name = "httpx", specifier = ">=0.27" },
+    { name = "mypy", specifier = ">=1.10" },
+    { name = "pytest", specifier = ">=8.2" },
+    { name = "pytest-asyncio", specifier = ">=0.23" },
+    { name = "pytest-mock", specifier = ">=3.14" },
+    { name = "ruff", specifier = ">=0.4" },
+    { name = "types-psutil", specifier = ">=5.9" },
+    { name = "types-pyyaml", specifier = ">=6.0" },
+    { name = "types-requests", specifier = ">=2.33" },
+]
+
+[[package]]
+name = "prometheus-manager-tui"
+version = "0.1.0"
+source = { editable = "runtime/manager/tui" }
+dependencies = [
+    { name = "click" },
+    { name = "httpx" },
+    { name = "huggingface-hub" },
+    { name = "prometheus-manager-core" },
+    { name = "prometheus-telemetry" },
+    { name = "psutil" },
+    { name = "rich" },
+    { name = "structlog" },
+    { name = "textual" },
+    { name = "truststore" },
+]
+
+[package.dev-dependencies]
+dev = [
+    { name = "httpx" },
+    { name = "mypy" },
+    { name = "pytest" },
+    { name = "pytest-asyncio" },
+    { name = "pytest-mock" },
+    { name = "ruff" },
+    { name = "types-psutil" },
 ]
 
 [package.metadata]
 requires-dist = [
     { name = "click", specifier = ">=8.1" },
-    { name = "fastapi", specifier = ">=0.111" },
     { name = "httpx", specifier = ">=0.27" },
-    { name = "httpx", marker = "extra == 'dev'", specifier = ">=0.27" },
     { name = "huggingface-hub", specifier = ">=0.23" },
-    { name = "mypy", marker = "extra == 'dev'", specifier = ">=1.10" },
+    { name = "prometheus-manager-core", editable = "runtime/manager/core" },
     { name = "prometheus-telemetry", editable = "telemetry" },
     { name = "psutil", specifier = ">=5.9" },
-    { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.2" },
-    { name = "pytest-asyncio", marker = "extra == 'dev'", specifier = ">=0.23" },
-    { name = "pytest-mock", marker = "extra == 'dev'", specifier = ">=3.14" },
-    { name = "python-jose", extras = ["cryptography"], specifier = ">=3.3" },
-    { name = "pyyaml", specifier = ">=6.0" },
-    { name = "requests", specifier = ">=2.33.1" },
     { name = "rich", specifier = ">=13.7" },
-    { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.4" },
     { name = "structlog", specifier = ">=25.5.0" },
     { name = "textual", specifier = ">=0.61" },
-    { name = "tomllib", marker = "python_full_version < '3.11'", specifier = ">=2.0.1" },
     { name = "truststore", specifier = ">=0.10.4" },
-    { name = "types-psutil", marker = "extra == 'dev'", specifier = ">=5.9" },
-    { name = "types-pyyaml", marker = "extra == 'dev'", specifier = ">=6.0" },
-    { name = "uvicorn", extras = ["standard"], specifier = ">=0.29" },
 ]
-provides-extras = ["dev"]
+
+[package.metadata.requires-dev]
+dev = [
+    { name = "httpx", specifier = ">=0.27" },
+    { name = "mypy", specifier = ">=1.10" },
+    { name = "pytest", specifier = ">=8.2" },
+    { name = "pytest-asyncio", specifier = ">=0.23" },
+    { name = "pytest-mock", specifier = ">=3.14" },
+    { name = "ruff", specifier = ">=0.4" },
+    { name = "types-psutil", specifier = ">=5.9" },
+]
 
 [[package]]
 name = "prometheus-telemetry"
@@ -2177,6 +2274,18 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/7e/69/3c51b36d04da19b92f9e815be12753125bd8bc247ba0470a982e6979e71c/types_pyyaml-6.0.12.20250915.tar.gz", hash = "sha256:0f8b54a528c303f0e6f7165687dd33fafa81c807fcac23f632b63aa624ced1d3", size = 17522, upload-time = "2025-09-15T03:01:00.728Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/bd/e0/1eed384f02555dde685fff1a1ac805c1c7dcb6dd019c916fe659b1c1f9ec/types_pyyaml-6.0.12.20250915-py3-none-any.whl", hash = "sha256:e7d4d9e064e89a3b3cae120b4990cd370874d2bf12fa5f46c97018dd5d3c9ab6", size = 20338, upload-time = "2025-09-15T03:00:59.218Z" },
+]
+
+[[package]]
+name = "types-requests"
+version = "2.33.0.20260712"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "urllib3" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/db/51/703318f7b7be8bee126ec13bf615050f932d0179b8784420f3a0199cc769/types_requests-2.33.0.20260712.tar.gz", hash = "sha256:2141b67ab534a5c5cd2dac5034f2a35f42e699c5bf185eee608c5246a069d7fb", size = 25084, upload-time = "2026-07-12T05:14:20.455Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/62/e7/010c87f559e216d83f9dc51e939633fd0d0ead3377340181ab0e223cd3b5/types_requests-2.33.0.20260712-py3-none-any.whl", hash = "sha256:de027e28c171d3da529689cbfa023b0b4eab188c8dfa22fd834eebd2cee6e7bb", size = 21392, upload-time = "2026-07-12T05:14:19.616Z" },
 ]
 
 [[package]]

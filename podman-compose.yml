@@ -187,7 +187,8 @@ services:
   # ── Prometheus Manager REST API ─────────────────────────────────────────────
   # Implements: memory/specs/008-llama-server-manager.md — AC-11
   #
-  # Runs only pmgr serve — the REST API that the gateway polls for live state.
+  # Runs only pmgr-api — the REST API that the gateway polls for live state (built from the
+  # prometheus-manager-api package only, no Textual/Rich — see runtime/manager/api/Dockerfile).
   # The TUI (pmgr tui) runs on bare-metal and is NOT containerised.
   #
   # The registry.yaml is bind-mounted from the host so TUI writes are immediately
@@ -197,7 +198,7 @@ services:
   manager:
     build:
       context: .
-      dockerfile: runtime/manager/Dockerfile
+      dockerfile: runtime/manager/api/Dockerfile
     image: prometheus-manager:latest
     container_name: prometheus-manager
     restart: unless-stopped

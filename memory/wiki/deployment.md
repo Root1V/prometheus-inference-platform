@@ -13,7 +13,7 @@ How to start and stop the full Prometheus stack. Covers both environments: macOS
 ```
 bare-metal host
 ├── llama-server :808x   (one process per model, managed by pmgr)
-└── pmgr serve   :8090   (Manager REST API)
+└── pmgr-api   :8090   (Manager REST API)
 
 Podman network
 ├── gateway       :8000   (JWT validation · rate limiting · proxy)
@@ -460,11 +460,12 @@ curl http://127.0.0.1:8080/health
 # Copy and edit config once (skip if manager.toml already exists)
 cp runtime/manager/manager.toml.example runtime/manager/manager.toml
 
-# Start API only (no TUI)
-pmgr serve
+# Start the REST API (own package, prometheus-manager-api — no Textual/Rich deps)
+pmgr-api
 # Binds to 0.0.0.0:8090 — reachable from Podman containers via host.containers.internal:8090
 
-# Or start with TUI (includes the REST API)
+# Interactive TUI (own package, prometheus-manager-tui) — run alongside pmgr-api
+# in a separate terminal/session if you also want the REST API up.
 pmgr tui
 ```
 

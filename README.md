@@ -238,8 +238,10 @@ uv run pmgr stop  llama3-8b-q4-local       # stop a model
 uv run pmgr restart llama3-8b-q4-local     # stop + start
 uv run pmgr list                            # all registry entries with running status
 
-# Manager tests
-uv run pytest runtime/manager/tests/ -v
+# Manager tests (split into core / api / tui — see runtime/manager/AGENTS.md)
+uv run pytest runtime/manager/core/tests/ -v
+uv run pytest runtime/manager/api/tests/ -v
+uv run pytest runtime/manager/tui/tests/ -v
 ```
 
 ### Runtime tests
@@ -375,12 +377,10 @@ edge-ai-inference/
 │   ├── pyproject.toml
 │   └── Dockerfile
 ├── runtime/                     # llama.cpp bare-metal setup
-│   ├── manager/                 # pmgr — TUI + CLI manager (spec 008)
-│   │   ├── src/prometheus_manager/
-│   │   │   ├── tui/             # Textual TUI (Dashboard, Instances, Registry…)
-│   │   │   ├── scanner.py       # psutil process discovery
-│   │   │   ├── lifecycle.py     # start/stop/restart llama-server processes
-│   │   │   └── registry.py      # registry.yaml read/write
+│   ├── manager/                 # 3 packages — see runtime/manager/AGENTS.md (spec 008, RM-05)
+│   │   ├── core/src/prometheus_manager_core/   # shared domain: scanner, lifecycle, registry, config
+│   │   ├── api/src/prometheus_manager_api/     # FastAPI — containerized, pmgr-api
+│   │   ├── tui/src/prometheus_manager_tui/     # Textual TUI + pmgr CLI — bare-metal only
 │   │   ├── registry.yaml        # Model registry — source of truth (spec 008)
 │   │   └── manager.toml         # Manager configuration
 │   ├── models/

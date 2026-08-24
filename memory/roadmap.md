@@ -29,7 +29,7 @@ folded in here per your "muchos más que vayas encontrando."
 | [RM-02](#rm-02-extend-pre-push-hook-to-managertelemetry-added) | Extend pre-push hook to `manager`/`telemetry` (added) | done | RM-01 |
 | [RM-03](#rm-03-pick-a-real-license-added) | Pick a real LICENSE (added) | done | — |
 | [RM-04](#rm-04-dependency-vulnerability-scanning-added) | Dependency vulnerability scanning (added) | done | RM-01 |
-| [RM-05](#rm-05-split-manager-tui-from-its-rest-api-item-4) | Split manager's TUI from its REST API (item 4) | todo | — |
+| [RM-05](#rm-05-split-manager-tui-from-its-rest-api-item-4) | Split manager's TUI from its REST API (item 4) | done | — |
 | [RM-06](#rm-06-research-the-best-inference-serving-stack-item-7) | Research best inference-serving stack per hardware (item 7) | todo | — |
 | [RM-07](#rm-07-fine-grained-per-model-authorization-scopes-item-2) | Fine-grained per-model authorization scopes (item 2) | todo | — |
 | [RM-08](#rm-08-distributed-inference-across-multiple-hosts-item-5) | Distributed inference across multiple hosts (item 5) | todo | RM-05, RM-06 |
@@ -129,23 +129,44 @@ in place — no separate `uv export`/ephemeral-venv dance needed). Currently rep
 no known vulnerabilities. Kept out of `.githooks/pre-push` deliberately: it calls
 PyPI/OSV over the network, which shouldn't be able to block a local `git push`.
 
-## RM-05 — Split manager's TUI from its REST API (item 4)
+## RM-05 — Split manager's TUI from its REST API (item 4) — `done`
 
-**Why**: `runtime/manager` currently mixes a Textual TUI and a FastAPI REST API (consumed
-by the gateway via `manager_sync.py`) in one module tree. As distributed hosts (RM-08) and
-new model modalities (RM-09) get added, the API surface needs to grow independently of the
-interactive TUI.
+**Why (revised from the original write-up)**: initial code review found that module-level
+separation (`api/`, `tui/`, `cli/`) already existed and imports were already clean — the
+real problem the user meant was **packaging**: one `uv` package/`pyproject.toml` for
+everything meant the API's container image installed Textual/Rich for nothing, and there
+was no way to package the CLI+TUI as a standalone binary without also dragging in
+fastapi/uvicorn/python-jose. As distributed hosts (RM-08) and new model modalities (RM-09)
+get added, this would only get worse.
 
-**Scope**: restructure `runtime/manager/src/prometheus_manager/` so the API
-(`api/`), the TUI (`tui/`), and the shared core (lifecycle, registry, scanner) are
-clearly separated — the API should be runnable/testable without importing Textual, and
-vice versa. This is a structural refactor, not a behavior change — existing `pmgr`
-commands and REST endpoints should keep working identically.
+**Done**: split `runtime/manager` into three separate `uv` workspace members, each with
+its own `pyproject.toml` and version:
+- `runtime/manager/core` → `prometheus-manager-core` — domain layer (config, registry,
+  scanner, lifecycle, capacity, downloader, telemetry re-exports). Zero dependency on
+  fastapi, click, or textual.
+- `runtime/manager/api` → `prometheus-manager-api` — FastAPI app + routes + auth, plus a
+  new thin `pmgr-api` CLI entrypoint (moved out of the old `pmgr serve` command). This is
+  what `runtime/manager/api/Dockerfile` now builds — Textual/Rich never enter the image.
+- `runtime/manager/tui` → `prometheus-manager-tui` — the Textual app/views/widgets plus
+  the `pmgr` CLI (status/start/stop/pause/resume/restart/register/unregister/download/
+  deregister/tui). No fastapi/uvicorn dependency at all — ready to be packaged as a
+  standalone binary later without pulling in API-only deps.
 
-Also pay down the ~86 pre-existing `mypy --strict` errors found while doing RM-02
-(mostly missing annotations on `cli/main.py`'s click commands) — `pyproject.toml`
-already declares `strict = true`, it was just never enforced; fix it while these files
-are already being touched instead of doing it as a separate pass.
+All 142 pre-existing tests still pass, split 94/10/38 across core/api/tui. `.githooks/
+pre-push` and `ci.yml` (which just runs the hook) now lint/format/type-check/test all
+three independently.
+
+Also paid down the ~86 pre-existing `mypy --strict` errors surfaced during RM-02 (mostly
+missing annotations in the old `cli/main.py`, plus a handful in `config.py`/`downloader.py`/
+`auth.py`/`routes.py`/every TUI view) — `mypy --strict` now passes clean on all three
+packages, and the hook enforces it going forward.
+
+Updated: `runtime/manager/AGENTS.md`, `AGENTS.md`, `README.md` (repo layout diagrams +
+test commands), `memory/wiki/deployment.md` and `memory/wiki/model-registry.md`
+(`pmgr serve` → `pmgr-api`), `podman-compose.yml` / `podman-compose-ubuntu-dgx.yml`
+(Dockerfile path), `scripts/install-rhel.sh` / `scripts/install-ubuntu-dgx.sh` /
+`scripts/validate-ubuntu-dgx.sh` (`pmgr serve` → `pmgr-api`), and the
+`scripts/tests/test_scripts_024.sh` assertions that checked the old command/path.
 
 ## RM-06 — Research the best inference-serving stack (item 7)
 

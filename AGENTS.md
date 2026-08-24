@@ -81,13 +81,11 @@ The Gateway is the single authorised caller. All client traffic goes through the
 ├── runtime/                  # llama.cpp bare-metal inference layer
 │   ├── scripts/              # install-server.sh · start-server.sh · download-model.sh
 │   ├── models/registry.yaml  # Model registry — IDs, paths, context lengths
-│   └── manager/              # Manager sub-modules
+│   └── manager/              # 3 packages (core/api/tui) — see manager/AGENTS.md, RM-05
 │       ├── AGENTS.md         # Manager-local navigation rules
-│       ├── src/prometheus_manager/
-│       │   ├── tui/          # Textual TUI (5 views)
-│       │   ├── api/          # FastAPI REST API exposing active backends
-│       │   └── cli/          # pmgr CLI
-│       └── tests/
+│       ├── core/src/prometheus_manager_core/  # shared domain layer
+│       ├── api/src/prometheus_manager_api/    # FastAPI REST API — containerized
+│       └── tui/src/prometheus_manager_tui/    # Textual TUI (5 views) + pmgr CLI
 ├── observability/            # Loki + Tempo + Grafana + Promtail
 │   ├── AGENTS.md             # Observability-local navigation rules
 │   └── ...                   # loki/, tempo/, grafana/, promtail/ configs

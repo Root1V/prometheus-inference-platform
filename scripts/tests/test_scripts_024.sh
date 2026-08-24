@@ -106,7 +106,7 @@ EOF
 set -euo pipefail
 printf 'pgrep %s\n' "$*" >>"${MOCK_LOG}"
 case "$*" in
-    *"pmgr serve"*)
+    *"pmgr-api"*)
         if [[ -n "${MOCK_PMGRT_PID:-}" ]]; then
             printf '%s\n' "${MOCK_PMGRT_PID}"
         fi ;;
@@ -371,7 +371,7 @@ test_permission_regressions_AC1_AC6_AC7_AC8() {
        grep -Fq 'UID_GATEWAY=1000' "${INSTALL_SCRIPT}" && \
        grep -Fq 'UID_AUTH=1001' "${INSTALL_SCRIPT}" && \
        grep -Fq 'UID_MANAGER=1002' "${INSTALL_SCRIPT}" && \
-       grep -Fq 'useradd --uid 1002 --gid 1002' "${REPO_ROOT}/runtime/manager/Dockerfile" && \
+       grep -Fq 'useradd --uid 1002 --gid 1002' "${REPO_ROOT}/runtime/manager/api/Dockerfile" && \
        grep -Fq 'sudo chown "${_tls_uid}:${_tls_uid}" "${cert}" "${key}"' "${INSTALL_SCRIPT}" && \
        grep -Fq 'chmod 600 "${dst}"' "${INSTALL_SCRIPT}" && \
        grep -Fq -- "--exclude='*.env'" "${INSTALL_SCRIPT}" && \
@@ -384,9 +384,9 @@ test_permission_regressions_AC1_AC6_AC7_AC8() {
 
 test_manager_restart_source_AC11() {
     if grep -Fq 'kill -TERM "${PMGR_PID}"' "${INSTALL_SCRIPT}" && \
-       grep -Fq 'nohup pmgr serve' "${INSTALL_SCRIPT}" && \
-       grep -Fq 'pmgr serve in background' "${INSTALL_SCRIPT}"; then
-        pass "AC-11: source restarts pmgr serve with SIGTERM and nohup"
+       grep -Fq 'nohup pmgr-api' "${INSTALL_SCRIPT}" && \
+       grep -Fq 'pmgr-api in background' "${INSTALL_SCRIPT}"; then
+        pass "AC-11: source restarts pmgr-api with SIGTERM and nohup"
     else
         fail "AC-11: source is missing the pmgr restart sequence"
     fi

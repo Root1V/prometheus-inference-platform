@@ -148,7 +148,7 @@ pmgr restart <model-id>              # stop + start
 pmgr pause  <model-id>               # SIGSTOP — freeze process, keeps port reserved
 pmgr resume <model-id>               # SIGCONT — unfreeze
 pmgr deregister <model-id>           # stop + remove from registry.yaml entirely
-pmgr serve                            # start Manager REST API only (no TUI)
+pmgr-api                            # start Manager REST API only (no TUI)
 ```
 
 ### Via Manager REST API (`http://host:8090`)

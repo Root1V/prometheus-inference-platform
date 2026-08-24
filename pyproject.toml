@@ -3,4 +3,11 @@
 # repo root) installs everything into the root .venv automatically.
 
 [tool.uv.workspace]
-members = ["gateway", "auth-service", "telemetry", "runtime/manager"]
+members = [
+    "gateway",
+    "auth-service",
+    "telemetry",
+    "runtime/manager/core",
+    "runtime/manager/api",
+    "runtime/manager/tui",
+]

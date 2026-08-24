@@ -415,7 +415,7 @@ else
     _info_result "runtime/llama-process" "not running"
 fi
 
-if pgrep -f 'pmgr serve' >/dev/null 2>&1; then
+if pgrep -f 'pmgr-api' >/dev/null 2>&1; then
     _pass "runtime/pmgr-process" "running"
 else
     _info_result "runtime/pmgr-process" "not running"

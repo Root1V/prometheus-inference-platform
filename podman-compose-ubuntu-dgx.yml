@@ -152,7 +152,7 @@ services:
   manager:
     build:
       context: .
-      dockerfile: runtime/manager/Dockerfile
+      dockerfile: runtime/manager/api/Dockerfile
     image: prometheus-manager:latest
     container_name: prometheus-manager
     restart: unless-stopped
