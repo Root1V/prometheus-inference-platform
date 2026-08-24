@@ -27,6 +27,20 @@ start_timeout_s = 60
 log_dir = "runtime/logs"
 pid_dir = "runtime/run"
 
+# Per-backend launch command overrides. See memory/wiki/inference-engines.md (RM-06).
+# llama_cpp uses [server].binary above, unchanged from before this section existed.
+[backends.mlx]
+binary = "mlx_lm.server"
+start_timeout_s = 120
+
+[backends.vllm]
+binary = "vllm"
+start_timeout_s = 300
+
+[backends.sglang]
+binary = "python3"
+start_timeout_s = 300
+
 [registry]
 path = "runtime/manager/registry.yaml"
 
@@ -75,6 +89,31 @@ class ServerConfig:
 
 
 @dataclass
+class BackendConfig:
+    """Launch command override for one non-llama_cpp backend.
+
+    llama_cpp keeps using [server].binary — it predates this section and
+    changing it would be an unrelated behavior change.
+    """
+
+    binary: str = ""
+    start_timeout_s: int = 120
+
+
+@dataclass
+class BackendsConfig:
+    mlx: BackendConfig = field(
+        default_factory=lambda: BackendConfig(binary="mlx_lm.server", start_timeout_s=120)
+    )
+    vllm: BackendConfig = field(
+        default_factory=lambda: BackendConfig(binary="vllm", start_timeout_s=300)
+    )
+    sglang: BackendConfig = field(
+        default_factory=lambda: BackendConfig(binary="python3", start_timeout_s=300)
+    )
+
+
+@dataclass
 class RegistryConfig:
     path: str = "runtime/manager/registry.yaml"
 
@@ -119,6 +158,7 @@ class TracingConfig:
 class ManagerConfig:
     api: ApiConfig = field(default_factory=ApiConfig)
     server: ServerConfig = field(default_factory=ServerConfig)
+    backends: BackendsConfig = field(default_factory=BackendsConfig)
     registry: RegistryConfig = field(default_factory=RegistryConfig)
     downloads: DownloadsConfig = field(default_factory=DownloadsConfig)
     dashboard: DashboardConfig = field(default_factory=DashboardConfig)
@@ -170,6 +210,32 @@ class ManagerConfig:
     def hf_token(self) -> str | None:
         return os.environ.get(self.downloads.hf_token_env)
 
+    def _backend_config(self, backend: str) -> BackendConfig:
+        by_name: dict[str, BackendConfig] = {
+            "mlx": self.backends.mlx,
+            "vllm": self.backends.vllm,
+            "sglang": self.backends.sglang,
+        }
+        cfg = by_name.get(backend)
+        if cfg is None:
+            raise ValueError(f"No [backends.{backend}] config found")
+        return cfg
+
+    def resolved_backend_binary(self, backend: str) -> str:
+        """Return the launch binary/command for *backend* ("llama_cpp", "mlx", ...).
+
+        llama_cpp keeps using [server].binary; other backends come from
+        [backends.<name>].binary.
+        """
+        if backend == "llama_cpp":
+            return self.server.binary
+        return self._backend_config(backend).binary
+
+    def resolved_backend_start_timeout_s(self, backend: str) -> int:
+        if backend == "llama_cpp":
+            return self.server.start_timeout_s
+        return self._backend_config(backend).start_timeout_s
+
 
 def load_config(path: Path | None = None) -> ManagerConfig:
     """Load manager.toml; fall back to defaults if the file is absent."""
@@ -179,9 +245,15 @@ def load_config(path: Path | None = None) -> ManagerConfig:
             override = tomllib.load(fh)
         _deep_merge(raw, override)
 
+    backends_raw = raw.get("backends", {})
     cfg = ManagerConfig(
         api=ApiConfig(**raw.get("api", {})),
         server=ServerConfig(**raw.get("server", {})),
+        backends=BackendsConfig(
+            mlx=BackendConfig(**backends_raw.get("mlx", {})),
+            vllm=BackendConfig(**backends_raw.get("vllm", {})),
+            sglang=BackendConfig(**backends_raw.get("sglang", {})),
+        ),
         registry=RegistryConfig(**raw.get("registry", {})),
         downloads=DownloadsConfig(**raw.get("downloads", {})),
         dashboard=DashboardConfig(**raw.get("dashboard", {})),

@@ -32,7 +32,7 @@ folded in here per your "muchos más que vayas encontrando."
 | [RM-05](#rm-05-split-manager-tui-from-its-rest-api-item-4) | Split manager's TUI from its REST API (item 4) | done | — |
 | [RM-06](#rm-06-research-the-best-inference-serving-stack-item-7) | Research best inference-serving stack per hardware (item 7) | done | — |
 | [RM-07](#rm-07-fine-grained-per-model-authorization-scopes-item-2) | Fine-grained per-model authorization scopes (item 2) | todo | — |
-| [RM-08](#rm-08-distributed-inference-across-multiple-hosts-item-5) | Distributed inference across multiple hosts (item 5) | todo | RM-05, RM-06 |
+| [RM-08](#rm-08-distributed-inference-across-multiple-hosts-item-5) | Distributed inference across multiple hosts (item 5) | in-progress (phase 1 done) | RM-05, RM-06 |
 | [RM-09](#rm-09-multi-modal-model-support-item-6) | Multi-modal model support: VLM/audio/image/video/embeddings (item 6) | todo | RM-05, RM-06 |
 | [RM-10](#rm-10-gateway-admin-dashboard-item-3) | Gateway admin dashboard (item 3) | todo | RM-05 |
 | [RM-11](#rm-11-auth-module-dashboard-redesign-item-1) | Auth module dashboard redesign (item 1) | todo | RM-07 (do together) |
@@ -195,16 +195,40 @@ multimodal) access control.
 model-level (or model-group-level) grants, and enforce them in the gateway's routing layer
 alongside the existing scope check.
 
-## RM-08 — Distributed inference across multiple hosts (item 5)
+## RM-08 — Distributed inference across multiple hosts (item 5) — `in-progress`
 
 **Why**: today the manager only starts/monitors `llama-server` processes on the local
 host. You want to pool capacity across multiple machines (MacBook Pro M4 Max, NVIDIA DGX
 Spark, etc.).
 
-**Scope**: extend the manager (post RM-05 split) with a notion of remote backends/nodes —
-registration, health checks, and routing across hosts — informed by whatever RM-06
-recommends per hardware type. Likely the largest item in this backlog; may be worth
-breaking into its own sub-backlog once RM-05/RM-06 land.
+**Phase 1 done — multi-backend lifecycle (single host)**: before hosts can be distributed,
+the manager needed to know how to launch more than one *kind* of server — this is the
+"per-hardware backend selection" axis RM-06 called out as the harder, more foundational
+question, and it turned out to be the more urgent gap. Implemented in `core`:
+- `RegistryEntry.backend` (`llama_cpp`/`mlx`/`vllm`/`sglang`), with `path` validation
+  relaxed for the three new backends (they commonly load a HF repo id directly, not a
+  local `.gguf` file).
+- `lifecycle.py`: one command-builder function per backend, dispatched on `entry.backend`.
+  `llama_cpp` and `mlx` are verified against real binaries (`mlx_lm.server --help`, and a
+  full live `register` → `start` → `status` → `stop` run against
+  `mlx-community/SmolLM2-135M-Instruct` on this Mac). `vllm`/`sglang` command construction
+  follows their documented CLIs but is **not verified against real installs** — both need
+  CUDA, unavailable in this dev environment. Validate on the DGX Spark/Linux target before
+  relying on them.
+- `scanner.py`: process recognition generalized to all four backends. Alias resolution now
+  comes primarily from the PID file the manager already writes (`{pid_dir}/{model_id}.pid`)
+  rather than backend-specific cmdline flags — necessary because `mlx_lm.server` has no
+  `--alias`/`--served-model-name` equivalent at all.
+- `config.py`: new `[backends.mlx/vllm/sglang]` sections for per-backend binary path and
+  start timeout (vLLM/SGLang default to 300s vs. llama.cpp's 60s — heavier startup per
+  RM-06's findings).
+- `pmgr register --backend`, and a Backend column in the CLI tables, the Textual Registry
+  view (table + detail panel), and the Instances view table.
+
+**Phase 2 remaining — actual multi-host distribution**: registration, health checks, and
+request routing across *remote* nodes (not just multiple backends on the same box) —
+informed by RM-06's per-hardware backend recommendations. Still the largest remaining
+piece of this item.
 
 ## RM-09 — Multi-modal model support (item 6)
 

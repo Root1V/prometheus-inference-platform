@@ -238,6 +238,10 @@ uv run pmgr stop  llama3-8b-q4-local       # stop a model
 uv run pmgr restart llama3-8b-q4-local     # stop + start
 uv run pmgr list                            # all registry entries with running status
 
+# Backends beyond llama.cpp — mlx (Apple Silicon), vllm, sglang (both need CUDA)
+# See memory/wiki/inference-engines.md for the comparison behind this list.
+uv run pmgr register --backend mlx --id my-mlx-model --path mlx-community/<repo>
+
 # Manager tests (split into core / api / tui — see runtime/manager/AGENTS.md)
 uv run pytest runtime/manager/core/tests/ -v
 uv run pytest runtime/manager/api/tests/ -v

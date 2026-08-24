@@ -143,7 +143,16 @@ class RegistryView(Vertical):
         table = self.query_one("#registry-table", DataTable)
         table.cursor_type = "row"
         table.add_columns(
-            "ID", "Family", "Quant", "Ctx", "Est.RAM", "Dl", "Discovery", "Source", "Size"
+            "ID",
+            "Backend",
+            "Family",
+            "Quant",
+            "Ctx",
+            "Est.RAM",
+            "Dl",
+            "Discovery",
+            "Source",
+            "Size",
         )
 
     def on_data_table_row_highlighted(self, event: DataTable.RowHighlighted) -> None:
@@ -187,6 +196,7 @@ class RegistryView(Vertical):
                 "",
                 "",
                 "",
+                "",
                 key="_sep_",
             )
             self._row_ids.append(None)
@@ -220,6 +230,7 @@ class RegistryView(Vertical):
         if dim:
             row = (
                 f"[dim]{e.id}[/dim]",
+                f"[dim]{e.backend}[/dim]",
                 f"[dim]{e.family}[/dim]",
                 f"[dim]{e.quantization}[/dim]",
                 f"[dim]{ctx}[/dim]",
@@ -230,7 +241,7 @@ class RegistryView(Vertical):
                 f"[dim]{size}[/dim]",
             )
         else:
-            row = (e.id, e.family, e.quantization, ctx, ram, dl, disc, src, size)
+            row = (e.id, e.backend, e.family, e.quantization, ctx, ram, dl, disc, src, size)
         table.add_row(*row, key=e.id)
         self._row_ids.append(e.id)
 
@@ -249,6 +260,7 @@ class RegistryView(Vertical):
         fname = _esc(fname)
         identity_lines = [
             f"[dim]Registry ID  [/dim]  {_esc(entry.id)}",
+            f"[dim]Backend      [/dim]  {_esc(entry.backend)}",
             f"[dim]Family       [/dim]  {_esc(entry.family) or '—'}",
             f"[dim]Quantization [/dim]  {_esc(entry.quantization) or '—'}",
             f"[dim]GGUF file    [/dim]  {fname}",

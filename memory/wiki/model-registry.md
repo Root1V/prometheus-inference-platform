@@ -34,6 +34,7 @@ Each model entry:
 ```yaml
 models:
   - id: llama3-1b-q4-local          # unique identifier used in API requests
+    backend: llama_cpp               # llama_cpp | mlx | vllm | sglang — see RM-06/RM-08
     family: llama3                   # model family — selects prompt template (llama3, mistral, phi, qwen)
     quantization: Q4_0               # GGUF quantization level
     context_length: 8192             # max tokens (prompt + completion)
@@ -56,6 +57,15 @@ models:
 **`discovery`** controls visibility:
 - `true` → included in `GET /v1/models` and accessible via the gateway
 - `false` → registered but not externally accessible (default for new entries)
+
+**`backend`** selects the launch command and how the scanner recognizes the
+process — see [inference-engines.md](inference-engines.md) for the comparison
+behind this. `path` means different things per backend: a local `.gguf` file
+for `llama_cpp`, or commonly a HuggingFace repo id (e.g.
+`mlx-community/Llama-3.2-3B-Instruct-4bit`) for `mlx`/`vllm`/`sglang`, which
+load directly from the Hub. `pmgr register --backend <name>` sets it;
+`register` defaults to `llama_cpp` for backward compatibility with existing
+entries that predate this field.
 
 ---
 

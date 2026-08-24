@@ -13,6 +13,10 @@ import pytest
 
 from prometheus_manager_core.lifecycle import (
     LifecycleError,
+    _build_llama_cpp_cmd,
+    _build_mlx_cmd,
+    _build_sglang_cmd,
+    _build_vllm_cmd,
     _verify_pid_file,
     deregister_instance,
     pause_instance,
@@ -21,6 +25,89 @@ from prometheus_manager_core.lifecycle import (
     start_instance,
     stop_instance,
 )
+from prometheus_manager_core.registry import RegistryEntry
+
+# ── RM-08: per-backend command builders ─────────────────────────────────────────
+
+
+class TestBackendCommandBuilders:
+    """One builder per backend — see memory/wiki/inference-engines.md (RM-06)."""
+
+    def _entry(self, **overrides):
+        defaults = dict(
+            id="test-model",
+            path="/models/test-model",
+            context_length=8192,
+            port=9090,
+        )
+        defaults.update(overrides)
+        return RegistryEntry(**defaults)
+
+    def test_llama_cpp_cmd_uses_alias_and_ctx_size(self):
+        cmd = _build_llama_cpp_cmd("llama-server", self._entry(), 9090, "127.0.0.1")
+        assert cmd[0] == "llama-server"
+        assert "--model" in cmd and "/models/test-model" in cmd
+        assert "--alias" in cmd and "test-model" in cmd
+        assert "--ctx-size" in cmd and "8192" in cmd
+        assert "--port" in cmd and "9090" in cmd
+
+    def test_mlx_cmd_has_no_alias_or_ctx_size_flags(self):
+        """mlx_lm.server (verified via --help) has neither flag."""
+        cmd = _build_mlx_cmd("mlx_lm.server", self._entry(), 9090, "127.0.0.1")
+        assert cmd == [
+            "mlx_lm.server",
+            "--model",
+            "/models/test-model",
+            "--host",
+            "127.0.0.1",
+            "--port",
+            "9090",
+        ]
+        assert "--alias" not in cmd
+        assert "--ctx-size" not in cmd
+
+    def test_vllm_cmd_uses_positional_model_and_served_model_name(self):
+        cmd = _build_vllm_cmd("vllm", self._entry(), 9090, "127.0.0.1")
+        assert cmd[0:3] == ["vllm", "serve", "/models/test-model"]
+        assert "--served-model-name" in cmd and "test-model" in cmd
+        assert "--max-model-len" in cmd and "8192" in cmd
+
+    def test_sglang_cmd_uses_module_and_model_path_flag(self):
+        cmd = _build_sglang_cmd("python3", self._entry(), 9090, "127.0.0.1")
+        assert cmd[0:3] == ["python3", "-m", "sglang.launch_server"]
+        assert "--model-path" in cmd and "/models/test-model" in cmd
+        assert "--served-model-name" in cmd and "test-model" in cmd
+        assert "--context-length" in cmd and "8192" in cmd
+
+    def test_start_instance_dispatches_on_backend(self, default_config, populated_registry):
+        """start_instance picks the command builder matching entry.backend."""
+        populated_registry.update("test-model", backend="mlx", path="mlx-community/model-4bit")
+        mock_state = MagicMock(pid=42, port=9090, alias="test-model", model_id="test-model")
+
+        with (
+            patch("prometheus_manager_core.lifecycle._find_running", return_value=None),
+            patch("prometheus_manager_core.lifecycle._find_free_port", return_value=9090),
+            patch("prometheus_manager_core.lifecycle.subprocess.Popen") as mock_popen,
+            patch("prometheus_manager_core.lifecycle.httpx.get") as mock_get,
+            patch("prometheus_manager_core.lifecycle.scan", return_value=[mock_state]),
+        ):
+            mock_proc = MagicMock()
+            mock_proc.pid = 42
+            mock_proc.poll.return_value = None
+            mock_popen.return_value = mock_proc
+            mock_get.return_value = MagicMock(status_code=200)
+
+            start_instance("test-model", default_config, populated_registry)
+
+            cmd = mock_popen.call_args[0][0]
+            assert cmd[0] == "mlx_lm.server"
+            assert "mlx-community/model-4bit" in cmd
+
+    def test_start_instance_rejects_unknown_backend(self, default_config, populated_registry):
+        populated_registry.update("test-model", backend="does-not-exist")
+        with pytest.raises(LifecycleError, match="Unknown backend"):
+            start_instance("test-model", default_config, populated_registry)
+
 
 # ── AC-9: Duplicate start ──────────────────────────────────────────────────────
 

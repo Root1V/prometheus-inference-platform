@@ -91,12 +91,13 @@ def cmd_status(ctx: click.Context) -> None:
     states = scan(cfg.resolved_pid_dir, proxy_host=cfg.api.proxy_host)
 
     if not states:
-        console.print("[dim]No running llama-server instances found.[/dim]")
+        console.print("[dim]No running inference server instances found.[/dim]")
         return
 
-    table = Table(title="Running llama-server instances")
+    table = Table(title="Running inference server instances")
     table.add_column("PID", style="cyan")
     table.add_column("Alias / ID", style="bold")
+    table.add_column("Backend")
     table.add_column("Port")
     table.add_column("State")
     table.add_column("CPU %")
@@ -113,6 +114,7 @@ def cmd_status(ctx: click.Context) -> None:
         table.add_row(
             str(s.pid),
             s.alias or s.model_id or "?",
+            s.backend,
             str(s.port),
             f"[{state_style}]{s.state}[/{state_style}]",
             f"{s.cpu_percent:.1f}",
@@ -147,6 +149,7 @@ def cmd_list(ctx: click.Context) -> None:
 
     table = Table(title="Model Registry")
     table.add_column("ID", style="bold")
+    table.add_column("Backend")
     table.add_column("Port")
     table.add_column("Downloaded")
     table.add_column("Running")
@@ -156,7 +159,7 @@ def cmd_list(ctx: click.Context) -> None:
         running_mark = "[green]●[/green]" if e.id in running_aliases else "[dim]○[/dim]"
         dl_mark = "[green]✓[/green]" if e.downloaded else "[yellow]✗[/yellow]"
         location = e.path if e.path else (f"hf:{e.hf_repo}/{e.hf_filename}" if e.hf_repo else "—")
-        table.add_row(e.id, str(e.port), dl_mark, running_mark, location)
+        table.add_row(e.id, e.backend, str(e.port), dl_mark, running_mark, location)
 
     console.print(table)
 
@@ -316,11 +319,23 @@ def cmd_restart(ctx: click.Context, model_id: str) -> None:
 
 @cli.command("register")
 @click.option("--id", "model_id", prompt="Model ID", help="Unique model identifier.")
-@click.option("--path", "model_path", default="", prompt="GGUF path (leave blank if downloading)")
-@click.option("--port", type=int, prompt="Port", help="TCP port for llama-server.")
+@click.option(
+    "--backend",
+    type=click.Choice(["llama_cpp", "mlx", "vllm", "sglang"]),
+    default="llama_cpp",
+    prompt="Backend",
+    help="Inference engine — see memory/wiki/inference-engines.md (RM-06).",
+)
+@click.option(
+    "--path",
+    "model_path",
+    default="",
+    prompt="Model path (GGUF file, or HF repo id for mlx/vllm/sglang)",
+)
+@click.option("--port", type=int, prompt="Port", help="TCP port for the backend server.")
 @click.option("--context-length", type=int, default=4096, prompt="Context length")
 @click.option("--family", default="", prompt="Model family (e.g. llama, mistral)")
-@click.option("--quantization", default="", prompt="Quantization (e.g. Q4_0)")
+@click.option("--quantization", default="", prompt="Quantization (e.g. Q4_0, mlx-4bit, awq)")
 @click.option("--hf-repo", default="", help="HuggingFace repo id.")
 @click.option("--hf-filename", default="", help="Filename within the HF repo.")
 @click.option("--hf-sha256", default="", help="Expected SHA-256 of the GGUF.")
@@ -328,6 +343,7 @@ def cmd_restart(ctx: click.Context, model_id: str) -> None:
 def cmd_register(
     ctx: click.Context,
     model_id: str,
+    backend: str,
     model_path: str,
     port: int,
     context_length: int,
@@ -340,6 +356,7 @@ def cmd_register(
     """Register a model in the registry.
 
     Implements: memory/specs/008-llama-server-manager.md — AC-3, AC-16, AC-17
+    Implements: memory/wiki/inference-engines.md — RM-08 (backend selection)
     """
     cfg = _load(ctx.obj["config_path"])
     reg = _registry(cfg)
@@ -348,6 +365,7 @@ def cmd_register(
 
     entry = RegistryEntry(
         id=model_id,
+        backend=backend,
         path=model_path,
         port=port,
         context_length=context_length,

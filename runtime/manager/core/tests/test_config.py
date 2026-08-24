@@ -43,6 +43,36 @@ class TestConfigAC19:
             load_config(path=toml_file)
 
 
+class TestBackendsConfig:
+    """RM-08: per-backend launch command config — see memory/wiki/inference-engines.md."""
+
+    def test_default_binaries(self):
+        cfg = load_config(path=None)
+        assert cfg.resolved_backend_binary("llama_cpp") == cfg.server.binary
+        assert cfg.resolved_backend_binary("mlx") == "mlx_lm.server"
+        assert cfg.resolved_backend_binary("vllm") == "vllm"
+        assert cfg.resolved_backend_binary("sglang") == "python3"
+
+    def test_unknown_backend_raises(self):
+        cfg = load_config(path=None)
+        with pytest.raises(ValueError, match="backends"):
+            cfg.resolved_backend_binary("does-not-exist")
+
+    def test_backend_start_timeouts_longer_than_llama_cpp(self):
+        """vLLM/SGLang have heavier startup (model compile/warm-up) — RM-06."""
+        cfg = load_config(path=None)
+        assert cfg.resolved_backend_start_timeout_s("vllm") > cfg.server.start_timeout_s
+        assert cfg.resolved_backend_start_timeout_s("sglang") > cfg.server.start_timeout_s
+
+    def test_toml_override_for_mlx_binary(self, tmp_path: Path):
+        toml_file = tmp_path / "manager.toml"
+        toml_file.write_text('[backends.mlx]\nbinary = "/opt/venv/bin/mlx_lm.server"\n')
+        cfg = load_config(path=toml_file)
+        assert cfg.resolved_backend_binary("mlx") == "/opt/venv/bin/mlx_lm.server"
+        # Unrelated backends keep their defaults.
+        assert cfg.resolved_backend_binary("vllm") == "vllm"
+
+
 class TestCABundleConfig:
     """memory/specs/011 — AC-25: resolved_ca_bundle property."""
 

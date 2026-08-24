@@ -7,11 +7,60 @@ from pathlib import Path
 import pytest
 
 from prometheus_manager_core.registry import (
+    BACKENDS,
     Registry,
     RegistryEntry,
+    _validate_backend,
     _validate_id,
     _validate_path,
 )
+
+# ── RM-08: backend field ─────────────────────────────────────────────────────
+
+
+class TestBackendField:
+    """RM-08: backend selects the launch/scan strategy — see RM-06 for the comparison."""
+
+    def test_defaults_to_llama_cpp(self):
+        assert RegistryEntry(id="m", port=8080, context_length=4096).backend == "llama_cpp"
+
+    def test_all_backends_accepted(self):
+        for backend in BACKENDS:
+            _validate_backend(backend)  # no raise
+
+    def test_unknown_backend_rejected(self):
+        with pytest.raises(ValueError, match="Unknown backend"):
+            _validate_backend("tensorrt-llm")
+
+    def test_non_gguf_path_rejected_for_llama_cpp(self):
+        with pytest.raises(ValueError, match=r"\.gguf"):
+            _validate_path("mlx-community/some-model", "llama_cpp")
+
+    def test_hf_repo_id_accepted_for_mlx(self):
+        """mlx_lm.server loads directly from a HF repo id — not a .gguf file."""
+        _validate_path("mlx-community/Llama-3.2-3B-Instruct-4bit", "mlx")  # no raise
+
+    def test_hf_repo_id_accepted_for_vllm(self):
+        _validate_path("meta-llama/Llama-3.1-8B-Instruct", "vllm")  # no raise
+
+    def test_path_traversal_still_rejected_for_non_llama_cpp_backends(self):
+        with pytest.raises(ValueError, match="[Tt]raversal"):
+            _validate_path("../../etc/passwd", "mlx")
+
+    def test_backend_persisted_through_save_and_reload(self, registry_path: Path):
+        registry = Registry(registry_path)
+        registry.add(
+            RegistryEntry(
+                id="mlx-model",
+                port=8081,
+                context_length=8192,
+                backend="mlx",
+                path="mlx-community/m-4bit",
+            )
+        )
+        reloaded = Registry(registry_path)
+        assert reloaded.get("mlx-model").backend == "mlx"
+
 
 # ── AC-3: Registry CRUD ────────────────────────────────────────────────────────
 

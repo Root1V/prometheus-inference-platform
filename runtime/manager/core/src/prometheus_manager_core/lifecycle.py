@@ -20,7 +20,7 @@ import httpx
 import psutil
 
 from .config import ManagerConfig
-from .registry import Registry
+from .registry import Registry, RegistryEntry
 from .scanner import ProcessState, _normalize_probe_host, scan
 from .telemetry import get_logger
 
@@ -53,48 +53,7 @@ def _find_free_port(preferred: int) -> int:
     )
 
 
-def start_instance(
-    model_id: str,
-    config: ManagerConfig,
-    registry: Registry,
-) -> ProcessState:
-    """Spawn a new llama-server instance.
-
-    Implements: memory/specs/008-llama-server-manager.md — AC-4, AC-5, AC-9, AC-10, AC-19
-    """
-    # AC-19: host enforcement
-    config.validate()
-
-    # AC-10: model must be in registry
-    entry = registry.get(model_id)
-    if entry is None:
-        raise LifecycleError(f"Model '{model_id}' not found in registry")
-
-    # AC-9: already running?
-    existing = _find_running(model_id, config)
-    if existing is not None:
-        raise LifecycleError(f"Instance already running for {model_id} (PID {existing.pid})")
-
-    # Find a free port, starting from the registry's preferred port (AC-19)
-    port = _find_free_port(entry.port)
-    if port != entry.port:
-        logger.info(
-            "lifecycle.port_remap",
-            model_id=model_id,
-            preferred=entry.port,
-            assigned=port,
-        )
-    # Persist the chosen port back to the registry so the next start uses it
-    # as the preferred value and so the gateway can discover the correct address.
-    registry.update(model_id, port=port, backend_url=f"http://127.0.0.1:{port}")
-
-    # Build command
-    binary = str(config.resolved_binary)
-    # Allow overriding the bind host for llama-server (default: 127.0.0.1).
-    # In some Podman/VM networking setups the container needs the instance
-    # to bind on 0.0.0.0 so `host.containers.internal` can reach it.
-    bind_host = os.getenv("PROMETHEUS_LLAMA_BIND_HOST", "127.0.0.1")
-
+def _build_llama_cpp_cmd(binary: str, entry: RegistryEntry, port: int, bind_host: str) -> list[str]:
     system = platform.system()
     has_nvidia = shutil.which("nvidia-smi") is not None
 
@@ -124,7 +83,7 @@ def start_instance(
         str(os.cpu_count() or 4),
     ]
 
-    # Optimizaciones sólo para CUDA
+    # CUDA-only tuning.
     if has_nvidia:
         cmd.extend(
             [
@@ -136,6 +95,123 @@ def start_instance(
                 "1024",
             ]
         )
+    return cmd
+
+
+def _build_mlx_cmd(binary: str, entry: RegistryEntry, port: int, bind_host: str) -> list[str]:
+    """mlx_lm.server — verified against `mlx_lm.server --help` (mlx-lm on PyPI).
+
+    No --alias or --ctx-size equivalent: mlx_lm.server derives context length
+    from the model's own config.json and has no served-name concept — the
+    manager tracks identity via the PID file instead (see scanner.py).
+    """
+    return [binary, "--model", entry.path, "--host", bind_host, "--port", str(port)]
+
+
+def _build_vllm_cmd(binary: str, entry: RegistryEntry, port: int, bind_host: str) -> list[str]:
+    """vllm serve — NOT verified against a real vllm install (needs CUDA; see
+    memory/wiki/inference-engines.md RM-06). Flags per vLLM's documented CLI:
+    model is a positional arg to the `serve` subcommand, --served-model-name
+    registers entry.id as the OpenAI-API model name (llama.cpp's --alias
+    equivalent), --max-model-len caps context length.
+    """
+    return [
+        binary,
+        "serve",
+        entry.path,
+        "--served-model-name",
+        entry.id,
+        "--host",
+        bind_host,
+        "--port",
+        str(port),
+        "--max-model-len",
+        str(entry.context_length),
+    ]
+
+
+def _build_sglang_cmd(binary: str, entry: RegistryEntry, port: int, bind_host: str) -> list[str]:
+    """python3 -m sglang.launch_server — NOT verified against a real sglang
+    install (needs CUDA; see memory/wiki/inference-engines.md RM-06). Flags
+    per SGLang's documented CLI: --model-path (not --model), --served-model-name
+    for the OpenAI-API name, --context-length for max context.
+    """
+    return [
+        binary,
+        "-m",
+        "sglang.launch_server",
+        "--model-path",
+        entry.path,
+        "--served-model-name",
+        entry.id,
+        "--host",
+        bind_host,
+        "--port",
+        str(port),
+        "--context-length",
+        str(entry.context_length),
+    ]
+
+
+_COMMAND_BUILDERS = {
+    "llama_cpp": _build_llama_cpp_cmd,
+    "mlx": _build_mlx_cmd,
+    "vllm": _build_vllm_cmd,
+    "sglang": _build_sglang_cmd,
+}
+
+
+def start_instance(
+    model_id: str,
+    config: ManagerConfig,
+    registry: Registry,
+) -> ProcessState:
+    """Spawn a new inference server instance for the given model.
+
+    Dispatches to the launch command for entry.backend (llama_cpp/mlx/vllm/
+    sglang) — see memory/wiki/inference-engines.md (RM-06).
+
+    Implements: memory/specs/008-llama-server-manager.md — AC-4, AC-5, AC-9, AC-10, AC-19
+    """
+    # AC-19: host enforcement
+    config.validate()
+
+    # AC-10: model must be in registry
+    entry = registry.get(model_id)
+    if entry is None:
+        raise LifecycleError(f"Model '{model_id}' not found in registry")
+
+    builder = _COMMAND_BUILDERS.get(entry.backend)
+    if builder is None:
+        raise LifecycleError(f"Unknown backend {entry.backend!r} for model '{model_id}'")
+
+    # AC-9: already running?
+    existing = _find_running(model_id, config)
+    if existing is not None:
+        raise LifecycleError(f"Instance already running for {model_id} (PID {existing.pid})")
+
+    # Find a free port, starting from the registry's preferred port (AC-19)
+    port = _find_free_port(entry.port)
+    if port != entry.port:
+        logger.info(
+            "lifecycle.port_remap",
+            model_id=model_id,
+            preferred=entry.port,
+            assigned=port,
+        )
+    # Persist the chosen port back to the registry so the next start uses it
+    # as the preferred value and so the gateway can discover the correct address.
+    registry.update(model_id, port=port, backend_url=f"http://127.0.0.1:{port}")
+
+    # Build command
+    binary = config.resolved_backend_binary(entry.backend)
+    start_timeout_s = config.resolved_backend_start_timeout_s(entry.backend)
+    # Allow overriding the bind host (default: 127.0.0.1).
+    # In some Podman/VM networking setups the container needs the instance
+    # to bind on 0.0.0.0 so `host.containers.internal` can reach it.
+    bind_host = os.getenv("PROMETHEUS_LLAMA_BIND_HOST", "127.0.0.1")
+
+    cmd = builder(binary, entry, port, bind_host)
 
     # Ensure directories exist
     log_dir = config.resolved_log_dir
@@ -159,7 +235,7 @@ def start_instance(
     pid_path.write_text(str(proc.pid))
 
     # AC-5: wait for /health to return 200 within start_timeout_s
-    deadline = time.monotonic() + config.server.start_timeout_s
+    deadline = time.monotonic() + start_timeout_s
     # Resolve probe host using the same logic as the scanner so both paths
     # behave identically: proxy_host (PMGR_PROXY_HOST / manager.toml [api])
     # takes priority; otherwise bind_host is normalised to a connectable address.
@@ -200,7 +276,7 @@ def start_instance(
         pid_path.unlink(missing_ok=True)
 
     raise LifecycleError(
-        f"Timed out waiting for {model_id} to become healthy after {config.server.start_timeout_s}s"
+        f"Timed out waiting for {model_id} to become healthy after {start_timeout_s}s"
     )
 
 

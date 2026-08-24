@@ -14,6 +14,9 @@ import yaml
 
 _ID_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{1,62}[a-z0-9]$")
 
+# See memory/wiki/inference-engines.md (RM-06) for the comparison behind this list.
+BACKENDS = ("llama_cpp", "mlx", "vllm", "sglang")
+
 
 @dataclass
 class RegistryEntry:
@@ -23,6 +26,9 @@ class RegistryEntry:
     path: str = ""
     family: str = ""
     quantization: str = ""
+    # One of BACKENDS. Selects how lifecycle.start_instance() launches this
+    # model and how the scanner recognizes its process. See RM-06/RM-08.
+    backend: str = "llama_cpp"
     log_level: str = "info"
     downloaded: bool = False
     discovery: bool = False  # See: memory/specs/010-registry-view-redesign.md
@@ -48,6 +54,7 @@ class RegistryEntry:
             "path",
             "family",
             "quantization",
+            "backend",
             "log_level",
             "downloaded",
             "discovery",
@@ -88,7 +95,8 @@ class Registry:
     def add(self, entry: RegistryEntry) -> None:
         """Validate and add entry; persist to disk."""
         _validate_id(entry.id)
-        _validate_path(entry.path)
+        _validate_backend(entry.backend)
+        _validate_path(entry.path, entry.backend)
         _validate_port(entry.port)
         self._entries[entry.id] = entry
         self._save()
@@ -125,6 +133,7 @@ class Registry:
                 port=raw.get("port", 8080),
                 family=raw.get("family", ""),
                 quantization=raw.get("quantization", ""),
+                backend=raw.get("backend", "llama_cpp"),
                 log_level=raw.get("log_level", "info"),
                 downloaded=raw.get("downloaded", False),
                 discovery=raw.get("discovery", False),
@@ -155,14 +164,23 @@ def _validate_id(model_id: str) -> None:
         )
 
 
-def _validate_path(path: str) -> None:
-    """Implements: memory/specs/008-llama-server-manager.md — AC-15"""
+def _validate_backend(backend: str) -> None:
+    if backend not in BACKENDS:
+        raise ValueError(f"Unknown backend {backend!r}. Must be one of {BACKENDS}")
+
+
+def _validate_path(path: str, backend: str = "llama_cpp") -> None:
+    """Implements: memory/specs/008-llama-server-manager.md — AC-15
+
+    Only llama_cpp requires a local .gguf file. mlx/vllm/sglang commonly load
+    directly from a HuggingFace repo id (e.g. "mlx-community/..."), which is
+    not a filesystem path, so only path-traversal safety is enforced for them.
+    """
     if not path:
         return  # path may be empty before download
-    resolved = Path(path).resolve()
     if ".." in Path(path).parts:
         raise ValueError(f"Path traversal detected in model path: {path!r}")
-    if resolved.suffix.lower() != ".gguf":
+    if backend == "llama_cpp" and Path(path).resolve().suffix.lower() != ".gguf":
         raise ValueError(f"Model path must point to a .gguf file, got: {path!r}")
 
 

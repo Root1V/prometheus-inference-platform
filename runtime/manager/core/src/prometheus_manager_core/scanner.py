@@ -39,6 +39,9 @@ class ProcessState:
     rss_mb: float
     started_at: datetime
     managed: bool
+    # One of registry.BACKENDS ("llama_cpp", "mlx", "vllm", "sglang"). Defaults
+    # to llama_cpp for unrecognized processes — see RM-06/RM-08.
+    backend: str = "llama_cpp"
     gpu_percent: float | None = None
     gpu_vram_mb: float | None = None
     cpu_history: list[float] = field(default_factory=list)
@@ -55,6 +58,74 @@ _HISTORY_LEN = 10
 # the baseline CPU times first).  By caching our own Process objects we ensure
 # the second and later scan() calls return the real inter-scan delta.
 _proc_cache: dict[int, psutil.Process] = {}
+
+
+@dataclass(frozen=True)
+class _BackendSignature:
+    """How to recognize and parse the cmdline of one backend's process.
+
+    port/host use --port/--host for all four backends (verified for
+    llama.cpp and mlx_lm.server; documented convention for vllm/sglang —
+    see memory/wiki/inference-engines.md RM-06). Only the model-path flag
+    (or lack of one, for vLLM's positional arg) differs.
+    """
+
+    backend: str
+    name_hints: tuple[str, ...]
+    model_flag: str | None  # None means positional (vLLM: `vllm serve <model>`)
+
+
+_BACKEND_SIGNATURES: tuple[_BackendSignature, ...] = (
+    _BackendSignature("llama_cpp", ("llama-server",), "--model"),
+    _BackendSignature("mlx", ("mlx_lm.server", "mlx_lm/server"), "--model"),
+    _BackendSignature("sglang", ("sglang.launch_server",), "--model-path"),
+    # vLLM's own name is broad ("vllm") — matching also requires the `serve`
+    # subcommand token to avoid false positives on unrelated processes.
+    _BackendSignature("vllm", ("vllm",), None),
+)
+
+
+def _match_backend(name: str, cmdline: list[str]) -> _BackendSignature | None:
+    haystack = [name, *cmdline]
+    for sig in _BACKEND_SIGNATURES:
+        if not any(hint in part for hint in sig.name_hints for part in haystack):
+            continue
+        if sig.backend == "vllm" and "serve" not in cmdline:
+            continue
+        return sig
+    return None
+
+
+def _extract_model_path(cmdline: list[str], sig: _BackendSignature) -> str:
+    if sig.model_flag is not None:
+        return _extract_arg(cmdline, sig.model_flag)
+    # Positional (vLLM): first non-flag token after the "serve" subcommand.
+    if "serve" in cmdline:
+        idx = cmdline.index("serve")
+        for tok in cmdline[idx + 1 :]:
+            if not tok.startswith("-"):
+                return tok
+    return ""
+
+
+def _pid_file_map(pid_dir: Path) -> dict[int, str]:
+    """Map PID → model_id from every `{pid_dir}/*.pid` file.
+
+    This is the authoritative source for `alias` on manager-started
+    instances — it works identically across all backends since the manager
+    writes this file itself (lifecycle.start_instance), unlike cmdline flags
+    which differ per backend (some have no --alias/--served-model-name
+    equivalent at all, e.g. mlx_lm.server).
+    """
+    mapping: dict[int, str] = {}
+    if not pid_dir.exists():
+        return mapping
+    for pid_file in pid_dir.glob("*.pid"):
+        try:
+            mapping[int(pid_file.read_text().strip())] = pid_file.stem
+        except (ValueError, OSError):
+            continue
+    return mapping
 
 
 def _normalize_probe_host(bind_host: str, proxy_host: str = "") -> str:
@@ -83,7 +154,8 @@ def scan(
     registry_ids: set[str] | None = None,
     proxy_host: str = "",
 ) -> list[ProcessState]:
-    """Return ProcessState for every running llama-server process.
+    """Return ProcessState for every running inference server process
+    (llama.cpp, mlx, vllm, or sglang — see RM-06/RM-08).
 
     proxy_host — pass config.api.proxy_host so the health probe uses the
     correct address when Manager runs inside a container.
@@ -93,6 +165,7 @@ def scan(
     """
     states: list[ProcessState] = []
     seen_pids: set[int] = set()
+    pid_to_model_id = _pid_file_map(pid_dir)
 
     for proc in psutil.process_iter(
         ["pid", "name", "cmdline", "memory_info", "status", "create_time"]
@@ -100,14 +173,25 @@ def scan(
         try:
             info = proc.info
             cmdline: list[str] = info.get("cmdline") or []
-            if not _is_llama_server(info.get("name", ""), cmdline):
+            sig = _match_backend(info.get("name", ""), cmdline)
+            if sig is None:
                 continue
 
             pid: int = info["pid"]
-            alias = _extract_arg(cmdline, "--alias")
+            # The PID file (written by lifecycle.start_instance) is the
+            # authoritative alias source — it works the same for every
+            # backend, unlike cmdline flags (mlx_lm.server has no
+            # --alias/--served-model-name equivalent at all). Fall back to
+            # cmdline parsing only for orphan processes the manager didn't
+            # start (no matching PID file).
+            alias = (
+                pid_to_model_id.get(pid)
+                or _extract_arg(cmdline, "--alias")
+                or _extract_arg(cmdline, "--served-model-name")
+            )
             port_str = _extract_arg(cmdline, "--port")
             port = int(port_str) if port_str.isdigit() else 0
-            model_path = _extract_arg(cmdline, "--model")
+            model_path = _extract_model_path(cmdline, sig)
             host = _extract_arg(cmdline, "--host") or "127.0.0.1"
 
             # cpu_percent(interval=None) returns 0.0 on the first call for a
@@ -167,6 +251,7 @@ def scan(
                     rss_mb=rss_mb,
                     started_at=started_at,
                     managed=managed,
+                    backend=sig.backend,
                     cpu_history=list(_history[pid]["cpu"]),
                     rss_history=list(_history[pid]["rss"]),
                 )
@@ -180,14 +265,6 @@ def scan(
             del _proc_cache[stale_pid]
 
     return states
-
-
-def _is_llama_server(name: str, cmdline: list[str]) -> bool:
-    if "llama-server" in name:
-        return True
-    return any("llama-server" in part for part in cmdline) and any(
-        "--port" in part for part in cmdline
-    )
 
 
 def _extract_arg(cmdline: list[str], flag: str) -> str:

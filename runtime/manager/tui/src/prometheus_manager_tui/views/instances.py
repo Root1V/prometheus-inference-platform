@@ -222,6 +222,7 @@ class InstancesView(Vertical):
         table.cursor_type = "row"
         table.add_columns(
             "ID",
+            "Backend",
             "PID",
             "Port",
             "State",
@@ -557,6 +558,7 @@ class InstancesView(Vertical):
                 size_cell = fmt_size(entry.path) if entry and entry.downloaded else "—"
                 table.add_row(
                     entry_id,
+                    s.backend,
                     str(s.pid),
                     str(s.port),
                     f"[{state_style}]● {s.state}[/{state_style}]",
@@ -572,6 +574,7 @@ class InstancesView(Vertical):
                 size_cell = fmt_size(entry.path) if entry and entry.downloaded else "—"
                 table.add_row(
                     entry_id,
+                    entry.backend,
                     "—",
                     str(entry.port) if entry.port else "—",
                     "[dim]○ stopped[/dim]",
@@ -602,6 +605,7 @@ class InstancesView(Vertical):
                 "",
                 "",
                 "",
+                "",
             )
         for s in orphans:
             mid = s.alias or s.model_id or "?"
@@ -609,6 +613,7 @@ class InstancesView(Vertical):
             gpu_cell = f"{s.gpu_percent:.0f}%" if s.gpu_percent is not None else "—"
             table.add_row(
                 mid,
+                s.backend,
                 str(s.pid),
                 str(s.port),
                 f"[yellow]⚠ {s.state}[/yellow]",
