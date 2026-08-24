@@ -1,0 +1,22 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v3
+        with:
+          enable-cache: true
+
+      # Runs the same lint/format/type/test suite as .githooks/pre-push,
+      # so local and CI checks never drift apart.
+      - name: Run pre-push validation suite
+        run: bash .githooks/pre-push

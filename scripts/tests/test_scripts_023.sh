@@ -68,8 +68,11 @@ _make_project_dir() {
 echo ""
 echo "=== AC-1: RHEL .env templates — required keys and values ==="
 
-# Every template must have active REQUESTS_CA_BUNDLE (not commented)
-for template in ".env.redhat.example" "gateway/.env.podman.example" "auth-service/.env.example"; do
+# RHEL-specific templates must have active REQUESTS_CA_BUNDLE (not commented).
+# gateway/.env.podman.example is shared across install targets (RHEL, Ubuntu/DGX —
+# see scripts/install-ubuntu-dgx.sh) whose CA bundle path differs, so it's commented
+# out there by design and excluded from this check.
+for template in ".env.redhat.example" "auth-service/.env.example"; do
     file="${REPO_ROOT}/${template}"
     if grep -q "^REQUESTS_CA_BUNDLE=/etc/pki/tls/certs/ca-bundle.crt" "${file}"; then
         pass "AC-1: ${template} has active REQUESTS_CA_BUNDLE"

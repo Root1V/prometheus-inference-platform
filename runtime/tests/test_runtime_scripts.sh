@@ -110,7 +110,9 @@ echo "=== registry.yaml (AC-11) ==="
 REQUIRED_FIELDS=("id" "path" "context_length" "family" "quantization")
 
 # AC-11: YAML parses without error
-if python3 -c "
+# Uses `uv run --with pyyaml` so this doesn't depend on the system python3
+# having pyyaml installed (this script has no uv project of its own).
+if uv run --with pyyaml python3 -c "
 import yaml, sys
 data = yaml.safe_load(open('${REGISTRY}'))
 models = data.get('models', [])

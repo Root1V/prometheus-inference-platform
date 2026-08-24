@@ -25,7 +25,7 @@ folded in here per your "muchos más que vayas encontrando."
 
 | # | Item | Status | Depends on |
 |---|------|--------|------------|
-| [RM-01](#rm-01-restore-ci-now-that-the-repo-is-public-added) | Restore CI on GitHub Actions (added) | todo | — |
+| [RM-01](#rm-01-restore-ci-now-that-the-repo-is-public-added) | Restore CI on GitHub Actions (added) | done | — |
 | [RM-02](#rm-02-extend-pre-push-hook-to-managertelemetry-added) | Extend pre-push hook to `manager`/`telemetry` (added) | todo | — |
 | [RM-03](#rm-03-pick-a-real-license-added) | Pick a real LICENSE (added) | todo | — |
 | [RM-04](#rm-04-dependency-vulnerability-scanning-added) | Dependency vulnerability scanning (added) | todo | RM-01 |
@@ -57,7 +57,7 @@ Why this order, briefly:
 
 ---
 
-## RM-01 — Restore CI on GitHub Actions (added)
+## RM-01 — Restore CI on GitHub Actions (added) — `done`
 
 **Why**: GitHub Actions workflows existed (`ci-pr.yml`, `cd-develop.yml`, `cd-main.yml`)
 but were deleted because Actions was disabled on the old internal GHE instance this project
@@ -65,9 +65,23 @@ originated on. That
 constraint no longer applies on the new public GitHub repo. Right now nothing runs
 server-side on a PR — only the local `.githooks/pre-push`, which is opt-in and skippable.
 
-**Scope**: recreate a minimal `ci.yml` — ruff check/format, mypy, pytest for `gateway/`,
-`auth-service/`, `runtime/manager/`, `telemetry/` — triggered on PR and push to `main`.
-Mirror what `.githooks/pre-push` already does; don't invent new checks yet.
+**Done**: added `.github/workflows/ci.yml` — it runs `bash .githooks/pre-push` on every
+PR and on push to `main`, so local and CI checks can't drift apart (single source of
+truth, no duplicated step list). Scope intentionally kept to exactly what the hook
+already does — gateway + auth-service (lint/format/mypy/pytest) + the two bash test
+suites. Extending it to `runtime/manager`/`telemetry` is RM-02, on purpose, so that
+change and the formatting fixes it needs land together.
+
+Running the hook end-to-end to validate this surfaced two pre-existing, unrelated bugs,
+fixed in the same branch since they blocked CI going green:
+- `runtime/tests/test_runtime_scripts.sh` AC-11 called bare `python3 -c "import yaml..."`
+  — fails on any machine/runner without a global `pyyaml` (this repo has no top-level
+  Python env, only per-package `uv` venvs). Fixed to `uv run --with pyyaml python3 ...`.
+- `scripts/tests/test_scripts_023.sh` AC-1 asserted `gateway/.env.podman.example` must
+  have an active (uncommented) RHEL-path `REQUESTS_CA_BUNDLE` — stale since the earlier
+  Ubuntu/DGX work correctly commented it out there (RHEL and Debian/Ubuntu CA bundle
+  paths differ, and `gateway/.env.podman.example` is now a shared, not RHEL-only,
+  template). Narrowed the check to `.env.redhat.example` and `auth-service/.env.example`.
 
 ## RM-02 — Extend pre-push hook to `manager`/`telemetry` (added)
 
