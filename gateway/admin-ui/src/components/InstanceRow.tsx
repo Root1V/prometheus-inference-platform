@@ -47,7 +47,7 @@ export function InstanceRow({
         <td className="px-4 py-3 text-text-muted">{instance.backend}</td>
         <td className="px-4 py-3 text-text-muted capitalize">{instance.modality}</td>
         <td className="px-4 py-3">
-          <StatusBadge state={instance.state} />
+          <StatusBadge state={instance.state} message={instance.error_message} />
         </td>
         <td className="px-4 py-3 text-text-muted">{instance.port}</td>
         <td className="px-4 py-3 text-text-muted">{instance.cpu_percent.toFixed(1)}%</td>

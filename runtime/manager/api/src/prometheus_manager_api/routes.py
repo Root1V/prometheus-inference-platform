@@ -93,7 +93,9 @@ async def list_backends(
 
             if live:
                 # We have live ProcessState entries visible via psutil; merge them.
-                backends = [_merge(entry.__dict__, live.get(entry.id)) for entry in entries]
+                backends = [
+                    _merge(entry.__dict__, live.get(entry.id), pid_dir=pid_dir) for entry in entries
+                ]
             else:
                 # Fallback: HTTP probing when psutil cannot see host processes.
                 if use_batch:
@@ -142,7 +144,9 @@ async def list_backends(
                     ) as probe_span:
                         probe_span.set_attribute("model_id", entry.id)
                         probe_span.set_attribute("probe_result", state_str)
-            backends = [_merge(entry.__dict__, live.get(entry.id)) for entry in entries]
+            backends = [
+                _merge(entry.__dict__, live.get(entry.id), pid_dir=pid_dir) for entry in entries
+            ]
 
         span.set_attribute("backend_count", len(backends))
         span.set_attribute("http.status_code", 200)
@@ -203,7 +207,7 @@ async def get_backend(
             live = {proc.model_id: proc for proc in live_procs if proc.model_id}
             proc = live.get(model_id)
             if proc is not None:
-                result = _merge(entry.__dict__, proc)
+                result = _merge(entry.__dict__, proc, pid_dir=pid_dir)
             else:
                 result = _merge(entry.__dict__, await _probe_state(entry, proxy_host), proxy_host)
         else:
@@ -213,7 +217,7 @@ async def get_backend(
                 for proc in await asyncio.to_thread(scan, pid_dir, {model_id})
                 if proc.model_id
             }
-            result = _merge(entry.__dict__, live.get(model_id))
+            result = _merge(entry.__dict__, live.get(model_id), pid_dir=pid_dir)
 
         span.set_attribute("backend_state", result.get("state", "unknown"))
         span.set_attribute("http.status_code", 200)
@@ -226,7 +230,10 @@ def _uptime_s(ps: ProcessState) -> float:
 
 
 def _merge(
-    entry: dict[str, Any], ps: ProcessState | str | None, proxy_host: str = ""
+    entry: dict[str, Any],
+    ps: ProcessState | str | None,
+    proxy_host: str = "",
+    pid_dir: Path | None = None,
 ) -> dict[str, Any]:
     """Merge registry entry with live process state.
 
@@ -236,6 +243,11 @@ def _merge(
     When proxy_host is set, backend_url is rewritten so that the gateway
     container can reach llama-server on the bare-metal host:
       http://127.0.0.1:<port>  →  http://host.containers.internal:<port>
+
+    RM-10: when there's no live process and pid_dir is given, checks for a
+    "{model_id}.error" marker written by lifecycle.py on a failed start —
+    without it, a crashed-on-start model is indistinguishable from one
+    that's simply never been started ("stopped" either way).
     """
     result: dict[str, Any] = dict(entry)
     # Rewrite backend_url for container consumers when proxy_host is set.
@@ -252,6 +264,7 @@ def _merge(
         result["uptime_s"] = 0.0
         result["gpu_percent"] = None
         result["gpu_vram_mb"] = None
+        result["error_message"] = None
     elif ps is not None:
         result["pid"] = ps.pid
         result["state"] = ps.state
@@ -260,6 +273,7 @@ def _merge(
         result["uptime_s"] = _uptime_s(ps)
         result["gpu_percent"] = ps.gpu_percent
         result["gpu_vram_mb"] = ps.gpu_vram_mb
+        result["error_message"] = None
     else:
         result["pid"] = None
         result["state"] = "stopped"
@@ -268,4 +282,10 @@ def _merge(
         result["uptime_s"] = 0.0
         result["gpu_percent"] = None
         result["gpu_vram_mb"] = None
+        result["error_message"] = None
+        if pid_dir is not None:
+            error_marker = pid_dir / f"{entry['id']}.error"
+            if error_marker.exists():
+                result["state"] = "error"
+                result["error_message"] = error_marker.read_text()
     return result

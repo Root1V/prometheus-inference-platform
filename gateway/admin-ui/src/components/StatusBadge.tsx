@@ -9,11 +9,20 @@ const STATE_STYLES: Record<InstanceState, string> = {
   error: "bg-red-100 text-red-700",
 };
 
-export function StatusBadge({ state }: { state: InstanceState }) {
+export function StatusBadge({
+  state,
+  message,
+}: {
+  state: InstanceState;
+  /** Shown as a tooltip — e.g. why a model is in the "error" state. */
+  message?: string | null;
+}) {
   return (
     <span
+      title={message ?? undefined}
       className={cn(
         "inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium capitalize",
+        state === "error" && message && "cursor-help",
         STATE_STYLES[state],
       )}
     >

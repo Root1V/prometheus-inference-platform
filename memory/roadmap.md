@@ -37,6 +37,7 @@ folded in here per your "muchos más que vayas encontrando."
 | [RM-10](#rm-10-gateway-admin-dashboard-item-3-done-phase-1) | Gateway admin dashboard (item 3) | done (phase 1) | RM-05 |
 | [RM-11](#rm-11-auth-module-dashboard-redesign-item-1) | Auth module dashboard redesign (item 1) | todo | RM-07 (do together) |
 | [RM-12](#rm-12-e2e-llm-tracing-with-langfuse-item-8) | E2E LLM tracing with Langfuse (item 8) | todo | — |
+| [RM-13](#rm-13-admin-dashboard-live-log-viewer-added) | Admin dashboard: live log viewer per instance (added) | todo | RM-10 |
 
 Why this order, briefly:
 - **RM-01 to RM-04** are cheap, low-risk, and matter more now that this moved from an
@@ -410,6 +411,16 @@ auth-service admin API examples in the README's Quick Start were stale against t
 schema (`client_name`/`role`/`allowed_scopes`, not `name`/`scope`; `/oauth2/token`, not
 `/token`).
 
+**Found by the user trying the dashboard — a crashed instance showed as "Stopped", not
+"Error"**: once a model's process dies (crash, or the manager kills it after a start
+timeout), `scanner.py`'s `scan()` — which only reports processes it can currently see —
+has nothing left to report, so it looked identical to a model that was simply never
+started. Fixed by having `lifecycle.py` persist a `{model_id}.error` marker (the failure
+message) on a failed start, cleared on the next successful start or explicit stop;
+`routes.py`'s `_merge()` now reports `state: "error"` + `error_message` when a model has no
+live process but does have a marker. Surfaced in the dashboard as a red "Error" badge with
+the message as a tooltip. 7 new tests (5 manager-core, 2 manager-api).
+
 **Phase 2 (not yet started)** — HuggingFace search/browse + trigger-download-from-web with
 live progress, matching the TUI's Discovery/Downloads tabs. Deferred because today's
 `download_model()` (manager-core) is a blocking, TUI-process-local call with no REST
@@ -434,6 +445,34 @@ existing telemetry package — fine-grained end-to-end trace of prompt → model
 without duplicating what Tempo already captures at the HTTP layer.
 
 ---
+
+## RM-13 — Admin dashboard: live log viewer (added)
+
+**Why**: requested by the user after trying RM-10's dashboard — when an instance is in the
+`error` state (or any state), there's currently no way to see *why* without SSH access to
+the node and manually finding `{log_dir}/{model_id}.log`. The error-state work in RM-10
+surfaces a one-line `error_message` in the instances table already, but that's only the
+last-known-failure summary, not the actual server output (startup logs, request logs,
+crash stack traces).
+
+**Scope (not yet designed in detail)**: clicking an instance row in the dashboard table
+expands it inline to show that instance's live log tail. Needs, roughly:
+- manager-api: a new read endpoint to tail `{log_dir}/{model_id}.log` (e.g.
+  `GET /v1/backends/{model_id}/logs?tail=N`), scope `backend-registry:read` (read-only,
+  no new write surface). "Live" (auto-updating while the row is expanded) likely means
+  either polling this endpoint on an interval or a streaming response (SSE/chunked) —
+  worth comparing both against the existing `refetchInterval` polling pattern the
+  dashboard already uses elsewhere before picking one.
+- gateway: a proxying `/admin/api/nodes/{node}/instances/{id}/logs` route, same
+  `admin:read` scope as the rest of the read side.
+- frontend: expandable table row (or a side panel) rendering the tail, ideally
+  auto-scrolling and only fetching while expanded (not for every row on every poll cycle
+  — that would multiply request volume by the number of registered models for no reason).
+
+**Not scoped yet**: log retention/rotation policy, whether historical (not just live-tail)
+logs are needed, and whether this should also cover manager-api's/gateway's own logs (this
+item is specifically about *inference backend instance* logs, matching what `{log_dir}/
+{model_id}.log` already captures via `lifecycle.py`'s `subprocess.Popen(..., stdout=log_fh)`).
 
 ## Adding new items
 

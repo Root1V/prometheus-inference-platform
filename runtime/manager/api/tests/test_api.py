@@ -239,3 +239,75 @@ class TestDiscoveryFiltering:
 
         assert resp.status_code == 200
         assert resp.json()["backends"] == []
+
+
+class TestErrorState:
+    """RM-10: a model whose last start attempt crashed reports state="error"
+    (not "stopped") once the dead process is gone, via a {id}.error marker
+    lifecycle.py writes — see routes.py's _merge()."""
+
+    def test_crashed_model_reports_error_state_with_message(self, tmp_path: Path):
+        reg = Registry(tmp_path / "registry.yaml")
+        reg.add(
+            RegistryEntry(
+                id="crashed-model",
+                path="/models/crashed.gguf",
+                port=8080,
+                context_length=4096,
+                discovery=True,
+            )
+        )
+        pid_dir = tmp_path / "run"
+        pid_dir.mkdir(parents=True)
+        (pid_dir / "crashed-model.error").write_text(
+            "Process for crashed-model exited unexpectedly (code 1)"
+        )
+
+        app.state.registry = reg
+        app.state.pid_dir = pid_dir
+        client = TestClient(app, raise_server_exceptions=True)
+
+        app.dependency_overrides[require_backend_registry_read] = lambda: {
+            "sub": "gateway",
+            "scope": "backend-registry:read",
+        }
+        try:
+            with patch("prometheus_manager_api.routes.scan", return_value=[]):
+                resp = client.get("/v1/backends", headers={"Authorization": "Bearer valid"})
+        finally:
+            app.dependency_overrides.pop(require_backend_registry_read, None)
+
+        assert resp.status_code == 200
+        backend = resp.json()["backends"][0]
+        assert backend["state"] == "error"
+        assert "exited unexpectedly" in backend["error_message"]
+
+    def test_model_never_started_reports_stopped_not_error(self, tmp_path: Path):
+        """No .error marker at all — must not be misreported as "error"."""
+        reg = Registry(tmp_path / "registry.yaml")
+        reg.add(
+            RegistryEntry(
+                id="fresh-model",
+                path="/models/fresh.gguf",
+                port=8080,
+                context_length=4096,
+                discovery=True,
+            )
+        )
+        app.state.registry = reg
+        app.state.pid_dir = tmp_path / "run"
+        client = TestClient(app, raise_server_exceptions=True)
+
+        app.dependency_overrides[require_backend_registry_read] = lambda: {
+            "sub": "gateway",
+            "scope": "backend-registry:read",
+        }
+        try:
+            with patch("prometheus_manager_api.routes.scan", return_value=[]):
+                resp = client.get("/v1/backends", headers={"Authorization": "Bearer valid"})
+        finally:
+            app.dependency_overrides.pop(require_backend_registry_read, None)
+
+        backend = resp.json()["backends"][0]
+        assert backend["state"] == "stopped"
+        assert backend["error_message"] is None

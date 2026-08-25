@@ -242,7 +242,7 @@ async def _control_action(action: str, model_id: str, request: Request) -> dict[
         if proc.model_id
     }
     assert entry is not None  # just validated above
-    return _merge(entry.__dict__, live.get(model_id), proxy_host)
+    return _merge(entry.__dict__, live.get(model_id), proxy_host, pid_dir=pid_dir)
 
 
 @router.post("/v1/backends/{model_id}/start", tags=["backends"])

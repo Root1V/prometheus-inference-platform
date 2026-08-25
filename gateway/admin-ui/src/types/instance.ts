@@ -23,6 +23,8 @@ export interface InstanceEntry {
   hf_filenames: string[];
   pid: number | null;
   state: InstanceState;
+  /** Why the last start attempt failed — set only when state is "error". */
+  error_message: string | null;
   cpu_percent: number;
   rss_mb: number;
   uptime_s: number;

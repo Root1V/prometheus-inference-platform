@@ -30,6 +30,24 @@ _HEALTH_TIMEOUT = 2.0
 _PORT_SCAN_RANGE = 100  # ports to probe above the preferred port
 
 
+def _error_marker_path(pid_dir: Path, model_id: str) -> Path:
+    return pid_dir / f"{model_id}.error"
+
+
+def _write_error_marker(pid_dir: Path, model_id: str, message: str) -> None:
+    """Persist why the last start attempt failed, so the dashboard/CLI can
+    show "error" instead of indistinguishable-from-never-started "stopped"
+    once the crashed process is gone. Cleared on the next successful start
+    or explicit stop — see _clear_error_marker.
+    """
+    pid_dir.mkdir(parents=True, exist_ok=True)
+    _error_marker_path(pid_dir, model_id).write_text(message)
+
+
+def _clear_error_marker(pid_dir: Path, model_id: str) -> None:
+    _error_marker_path(pid_dir, model_id).unlink(missing_ok=True)
+
+
 class LifecycleError(Exception):
     """Raised when a lifecycle operation cannot be completed safely."""
 
@@ -253,9 +271,10 @@ def start_instance(
         time.sleep(1.0)
         # Check process is still alive
         if proc.poll() is not None:
-            raise LifecycleError(
-                f"Process for {model_id} exited unexpectedly (code {proc.returncode})"
-            )
+            pid_path.unlink(missing_ok=True)
+            message = f"Process for {model_id} exited unexpectedly (code {proc.returncode})"
+            _write_error_marker(pid_dir, model_id, message)
+            raise LifecycleError(message)
         try:
             resp = httpx.get(
                 f"http://{probe_host}:{port}/health",
@@ -265,6 +284,7 @@ def start_instance(
                 logger.info("lifecycle.ready", model_id=model_id, pid=proc.pid)
                 # AC-8 (spec 010): mark model as discoverable when healthy
                 registry.update(model_id, discovery=True)
+                _clear_error_marker(pid_dir, model_id)
                 # Return the live state
                 states = scan(pid_dir, {model_id}, config.api.proxy_host)
                 for s in states:
@@ -283,9 +303,9 @@ def start_instance(
     finally:
         pid_path.unlink(missing_ok=True)
 
-    raise LifecycleError(
-        f"Timed out waiting for {model_id} to become healthy after {start_timeout_s}s"
-    )
+    message = f"Timed out waiting for {model_id} to become healthy after {start_timeout_s}s"
+    _write_error_marker(pid_dir, model_id, message)
+    raise LifecycleError(message)
 
 
 def stop_instance(
@@ -301,6 +321,11 @@ def stop_instance(
     """
     existing = _find_running(model_id, config)
     if existing is None:
+        # A stop request — even a noop one from restart/deregister — is a
+        # deliberate operator action, so it clears any stale "error" status
+        # from a previous failed start (matches the success-path clear in
+        # start_instance).
+        _clear_error_marker(config.resolved_pid_dir, model_id)
         if _require_running:
             raise LifecycleError(f"No running instance found for {model_id}")
         return  # already stopped — noop
@@ -315,6 +340,7 @@ def stop_instance(
         proc = psutil.Process(pid)
     except psutil.NoSuchProcess:
         pid_path.unlink(missing_ok=True)
+        _clear_error_marker(config.resolved_pid_dir, model_id)
         return
 
     logger.info("lifecycle.stop", model_id=model_id, pid=pid)
@@ -327,6 +353,7 @@ def stop_instance(
         proc.wait(timeout=5)
 
     pid_path.unlink(missing_ok=True)
+    _clear_error_marker(config.resolved_pid_dir, model_id)
     # AC-9 (spec 010): remove from discovery when stopped
     import contextlib
 

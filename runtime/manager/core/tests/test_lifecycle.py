@@ -203,6 +203,87 @@ class TestACStartTimeout:
 
         mock_proc.terminate.assert_called_once()
 
+    def test_AC5_timeout_writes_error_marker(self, default_config, populated_registry):
+        """RM-10: a timed-out start must leave an error marker so the dashboard
+        can show "error" instead of indistinguishable-from-never-started
+        "stopped" once the killed process is gone."""
+        mock_proc = MagicMock()
+        mock_proc.poll.return_value = None
+        mock_proc.pid = 99999
+
+        with (
+            patch("prometheus_manager_core.lifecycle._find_running", return_value=None),
+            patch("prometheus_manager_core.lifecycle.subprocess.Popen", return_value=mock_proc),
+            patch(
+                "prometheus_manager_core.lifecycle.httpx.get",
+                side_effect=Exception("connection refused"),
+            ),
+            patch("prometheus_manager_core.lifecycle.time.sleep"),
+            patch("prometheus_manager_core.lifecycle.time.monotonic", side_effect=[0, 999]),
+            pytest.raises(LifecycleError),
+        ):
+            start_instance("test-model", default_config, populated_registry)
+
+        marker = default_config.resolved_pid_dir / "test-model.error"
+        assert marker.exists()
+        assert "Timed out" in marker.read_text()
+
+
+class TestErrorMarker:
+    """RM-10: persisted "why did the last start fail" — see lifecycle.py's
+    _write_error_marker/_clear_error_marker and manager-api's routes.py
+    _merge(), which surfaces it as state="error" once the crashed process
+    is gone (otherwise indistinguishable from a model that was just never
+    started)."""
+
+    def test_process_exits_mid_startup_writes_error_marker(
+        self, default_config, populated_registry
+    ):
+        mock_proc = MagicMock()
+        mock_proc.poll.return_value = 1  # exited immediately, code 1
+        mock_proc.returncode = 1
+        mock_proc.pid = 12345
+
+        with (
+            patch("prometheus_manager_core.lifecycle._find_running", return_value=None),
+            patch("prometheus_manager_core.lifecycle.subprocess.Popen", return_value=mock_proc),
+            patch("prometheus_manager_core.lifecycle.time.sleep"),
+            patch("prometheus_manager_core.lifecycle.time.monotonic", side_effect=[0, 1]),
+            pytest.raises(LifecycleError, match="exited unexpectedly"),
+        ):
+            start_instance("test-model", default_config, populated_registry)
+
+        marker = default_config.resolved_pid_dir / "test-model.error"
+        assert marker.exists()
+        assert "code 1" in marker.read_text()
+        # the stale PID file for the dead process shouldn't linger either
+        assert not (default_config.resolved_pid_dir / "test-model.pid").exists()
+
+    def test_successful_start_clears_stale_error_marker(self, default_config, populated_registry):
+        """A model that failed last time but starts fine now shouldn't keep
+        showing a stale "error" state."""
+        default_config.resolved_pid_dir.mkdir(parents=True, exist_ok=True)
+        marker = default_config.resolved_pid_dir / "test-model.error"
+        marker.write_text("previous failure")
+
+        mock_proc = MagicMock()
+        mock_proc.pid = 12345
+        mock_proc.poll.return_value = None
+        mock_state = MagicMock(pid=12345, port=9090)
+
+        with (
+            patch("prometheus_manager_core.lifecycle._find_running", return_value=None),
+            patch("prometheus_manager_core.lifecycle.subprocess.Popen", return_value=mock_proc),
+            patch("prometheus_manager_core.lifecycle.httpx.get") as mock_get,
+            patch("prometheus_manager_core.lifecycle.scan", return_value=[mock_state]),
+            patch("prometheus_manager_core.lifecycle.time.sleep"),
+            patch("prometheus_manager_core.lifecycle.time.monotonic", side_effect=[0, 1, 999]),
+        ):
+            mock_get.return_value = MagicMock(status_code=200)
+            start_instance("test-model", default_config, populated_registry)
+
+        assert not marker.exists()
+
 
 # ── AC-4: Successful start ────────────────────────────────────────────────────
 
@@ -273,6 +354,41 @@ class TestACStop:
             pytest.raises(LifecycleError, match="No running"),
         ):
             stop_instance("test-model", default_config, populated_registry)
+
+    def test_stop_clears_error_marker(self, default_config, populated_registry):
+        """RM-10: an explicit stop is a deliberate operator action — it should
+        clear a stale "error" status from a previous failed start."""
+        default_config.resolved_pid_dir.mkdir(parents=True, exist_ok=True)
+        marker = default_config.resolved_pid_dir / "test-model.error"
+        marker.write_text("previous failure")
+
+        mock_ps = MagicMock(pid=12345, alias="test-model")
+        mock_psutil_proc = MagicMock()
+        mock_psutil_proc.wait.return_value = None
+        (default_config.resolved_pid_dir / "test-model.pid").write_text("12345")
+
+        with (
+            patch("prometheus_manager_core.lifecycle._find_running", return_value=mock_ps),
+            patch(
+                "prometheus_manager_core.lifecycle.psutil.Process", return_value=mock_psutil_proc
+            ),
+        ):
+            stop_instance("test-model", default_config, populated_registry)
+
+        assert not marker.exists()
+
+    def test_stop_noop_still_clears_error_marker(self, default_config, populated_registry):
+        """restart_instance/deregister_instance call stop with
+        _require_running=False even when nothing is running — that noop path
+        must still clear a stale error marker."""
+        default_config.resolved_pid_dir.mkdir(parents=True, exist_ok=True)
+        marker = default_config.resolved_pid_dir / "test-model.error"
+        marker.write_text("previous failure")
+
+        with patch("prometheus_manager_core.lifecycle._find_running", return_value=None):
+            stop_instance("test-model", default_config, populated_registry, _require_running=False)
+
+        assert not marker.exists()
 
 
 # ── AC-7: SIGKILL fallback ─────────────────────────────────────────────────────

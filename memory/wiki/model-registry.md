@@ -317,7 +317,14 @@ flow and scope-grant commands: [auth-model.md](auth-model.md#admin-dashboard-rm-
 (the register form takes an already-known local path or `hf_repo`/`hf_filename`, mirroring
 the TUI's "1. Manual edit" flow above — not its Discovery-tab HF search). That requires a
 new async download-job subsystem in manager-api (today's `download_model()` is a blocking,
-TUI-process-local call with no REST exposure) — tracked as a phase 2 follow-up.
+TUI-process-local call with no REST exposure) — tracked as a phase 2 follow-up. Also
+tracked, added after phase 1 shipped: a live log viewer per instance (RM-13).
+
+**`error` state**: a model whose last start attempt crashed or timed out reports
+`state: "error"` (with an `error_message` field explaining why) instead of the
+indistinguishable-from-never-started `"stopped"` — `lifecycle.py` persists a
+`{model_id}.error` marker file on failure, read by `routes.py`'s `_merge()` when no live
+process is found. Cleared automatically on the next successful start or explicit stop.
 
 ---
 
