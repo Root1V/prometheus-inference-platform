@@ -22,7 +22,7 @@ dev = [
     "httpx>=0.27",
     "ruff>=0.4",
     "mypy>=1.10",
-    "types-python-jose>=3.5",
+    "types-python-jose>=3.5.0.20260408",
 ]
 
 [tool.uv.sources]
