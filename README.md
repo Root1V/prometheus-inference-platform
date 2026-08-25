@@ -430,6 +430,7 @@ See [memory/wiki/architecture.md](memory/wiki/architecture.md) for the full thre
 |---------|------|------------|
 | v0.1.0 | 2026-03-28 | Gateway core, JWT auth, llama.cpp runtime scripts |
 | v0.2.0 | 2026-03-28 | Auth Service (OAuth2 client credentials + JWKS), full E2E stack via Podman Compose |
+| v1.3.0 | 2026-08-24 | Multi-backend model manager (llama.cpp/MLX/vLLM/SGLang), distributed inference across hosts, fine-grained per-model auth scopes, VLM + embeddings support, and a new React admin dashboard for lifecycle management |
 
 ---
 
