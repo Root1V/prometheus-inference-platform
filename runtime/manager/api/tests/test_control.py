@@ -1,6 +1,6 @@
 """Tests for RM-10 write endpoints: register/deregister/start/stop/restart.
 
-See memory/roadmap.md RM-10 (gateway admin dashboard, phase 1) and
+See docs/roadmap.md RM-10 (gateway admin dashboard, phase 1) and
 memory/wiki/model-registry.md.
 """
 

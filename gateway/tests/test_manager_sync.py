@@ -1,6 +1,6 @@
 """Tests for ManagerRegistrySync — RM-08 phase 2 (distributed inference across hosts).
 
-See memory/roadmap.md RM-08 and memory/wiki/model-registry.md.
+See docs/roadmap.md RM-08 and memory/wiki/model-registry.md.
 """
 
 from __future__ import annotations

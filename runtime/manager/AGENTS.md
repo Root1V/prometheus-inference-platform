@@ -3,7 +3,7 @@
 ## What lives here
 
 The Prometheus Manager — bare-metal inference layer, split into three independently
-packaged `uv` workspace members (memory/roadmap.md — RM-05). This split exists so the
+packaged `uv` workspace members (docs/roadmap.md — RM-05). This split exists so the
 API can be built into a small container image with no Textual/Rich, and the CLI+TUI can
 eventually be packaged as a standalone binary for any machine, with no fastapi/uvicorn.
 

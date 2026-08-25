@@ -124,7 +124,7 @@ class Settings(BaseSettings):
     gateway_tls_cert_file: str | None = None
     gateway_tls_key_file: str | None = None
 
-    # ── Admin dashboard — memory/roadmap.md RM-10 ───────────────────────────────
+    # ── Admin dashboard — docs/roadmap.md RM-10 ───────────────────────────────
     # Feature flag — when False, /admin/* routes return 404 (same pattern as
     # ui_enabled). The dashboard SPA calls /admin/api/*, which proxies to the
     # Manager REST API using the same manager_client_id/secret credentials as

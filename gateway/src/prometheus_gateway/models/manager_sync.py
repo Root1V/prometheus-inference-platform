@@ -13,7 +13,7 @@ automatically on startup and renewed when it is within 60 seconds of expiry.
 
 Implements: memory/specs/008-llama-server-manager.md — AC-23
 Implements: memory/specs/018-observability-telemetry.md — AC-28 (X-Trace-ID propagation)
-Implements: memory/roadmap.md — RM-08 phase 2 (distributed inference)
+Implements: docs/roadmap.md — RM-08 phase 2 (distributed inference)
 """
 
 from __future__ import annotations
@@ -51,7 +51,7 @@ class ManagerRegistrySync:
       2. Static JWT: manager_jwt (for testing / manual bootstrap only).
 
     Implements: memory/specs/008-llama-server-manager.md — AC-23
-    Implements: memory/roadmap.md — RM-08 phase 2
+    Implements: docs/roadmap.md — RM-08 phase 2
     """
 
     def __init__(

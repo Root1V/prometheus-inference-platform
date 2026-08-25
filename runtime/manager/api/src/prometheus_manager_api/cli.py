@@ -6,7 +6,7 @@ built into the container image — doesn't need click/rich for anything except
 this one command, and pmgr (bare-metal) doesn't need fastapi/uvicorn at all.
 
 Implements: memory/specs/008-llama-server-manager.md — AC-11
-See: memory/roadmap.md — RM-05
+See: docs/roadmap.md — RM-05
 """
 
 from __future__ import annotations

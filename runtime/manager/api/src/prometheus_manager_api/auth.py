@@ -4,7 +4,7 @@ Validates RS256 JWTs issued by the Auth Service and enforces
 the `backend-registry:read` / `backend-registry:write` scopes.
 
 Implements: memory/specs/008-llama-server-manager.md — AC-12, AC-13
-Implements: memory/roadmap.md — RM-10 (backend-registry:write)
+Implements: docs/roadmap.md — RM-10 (backend-registry:write)
 """
 
 from __future__ import annotations
@@ -125,7 +125,7 @@ async def require_backend_registry_write(
 ) -> dict[str, Any]:
     """FastAPI dependency: validate JWT and assert `backend-registry:write` scope.
 
-    Implements: memory/roadmap.md — RM-10 (register/unregister/start/stop/restart via REST)
+    Implements: docs/roadmap.md — RM-10 (register/unregister/start/stop/restart via REST)
     Returns the validated JWT claims dict.
     """
     claims = await _validate_token(request, credentials)

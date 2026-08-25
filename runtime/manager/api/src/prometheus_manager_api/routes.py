@@ -65,7 +65,7 @@ async def list_backends(
     """Return all registered backends with their live process state.
 
     Implements: memory/specs/008-llama-server-manager.md — AC-11
-    Implements: memory/roadmap.md — RM-10 (include_hidden for the admin dashboard)
+    Implements: docs/roadmap.md — RM-10 (include_hidden for the admin dashboard)
     """
     with _tracer.start_as_current_span("backend.list", kind=SpanKind.INTERNAL) as span:
         registry: Registry = request.app.state.registry

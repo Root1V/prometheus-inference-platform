@@ -209,7 +209,7 @@ def create_app(
     # When ui_enabled=False, all /ui/* paths are handled by JWTAuthMiddleware's exempt logic
     # and will pass through to FastAPI's 404 handler — AC-1 satisfied.
 
-    # Implements: memory/roadmap.md — RM-10 (gateway admin dashboard, phase 1)
+    # Implements: docs/roadmap.md — RM-10 (gateway admin dashboard, phase 1)
     if settings.admin_dashboard_enabled:
         from fastapi.staticfiles import StaticFiles
 

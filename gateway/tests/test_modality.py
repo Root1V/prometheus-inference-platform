@@ -2,7 +2,7 @@
 
 Uses the modality_app/modality_registry fixtures from conftest.py:
 llama3-8b-q4 (text), vlm-model (vision), embed-model (embedding).
-See memory/roadmap.md RM-09 and memory/wiki/model-registry.md.
+See docs/roadmap.md RM-09 and memory/wiki/model-registry.md.
 """
 
 from __future__ import annotations

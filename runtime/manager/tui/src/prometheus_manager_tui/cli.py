@@ -534,7 +534,7 @@ def cmd_deregister(ctx: click.Context, model_id: str, yes: bool) -> None:
 # NOTE: the "serve" command (Manager REST API) moved to the prometheus-manager-api
 # package — run it with `pmgr-api serve`. Kept out of this package on purpose so
 # pmgr (bare-metal CLI + TUI) doesn't need fastapi/uvicorn as a dependency.
-# See memory/roadmap.md RM-05.
+# See docs/roadmap.md RM-05.
 
 # ── tui ───────────────────────────────────────────────────────────────────────
 

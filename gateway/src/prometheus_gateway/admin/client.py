@@ -6,7 +6,7 @@ client is for on-demand reads and writes triggered by the admin dashboard —
 keeping it separate avoids touching a tested, already-merged module for an
 unrelated feature.
 
-Implements: memory/roadmap.md — RM-10 (gateway admin dashboard, phase 1)
+Implements: docs/roadmap.md — RM-10 (gateway admin dashboard, phase 1)
 """
 
 from __future__ import annotations

@@ -16,7 +16,7 @@ POST   /admin/api/nodes/{node}/instances/{model_id}/start
 POST   /admin/api/nodes/{node}/instances/{model_id}/stop
 POST   /admin/api/nodes/{node}/instances/{model_id}/restart
 
-Implements: memory/roadmap.md — RM-10 (gateway admin dashboard, phase 1)
+Implements: docs/roadmap.md — RM-10 (gateway admin dashboard, phase 1)
 """
 
 from __future__ import annotations

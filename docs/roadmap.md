@@ -38,6 +38,11 @@ folded in here per your "muchos más que vayas encontrando."
 | [RM-11](#rm-11-auth-module-dashboard-redesign-item-1) | Auth module dashboard redesign (item 1) | todo | RM-07 (do together) |
 | [RM-12](#rm-12-e2e-llm-tracing-with-langfuse-item-8) | E2E LLM tracing with Langfuse (item 8) | todo | — |
 | [RM-13](#rm-13-admin-dashboard-live-log-viewer-added) | Admin dashboard: live log viewer per instance (added) | todo | RM-10 |
+| [RM-14](#rm-14-model-playground-added) | Model playground (added) | todo | RM-10 |
+| [RM-15](#rm-15-usage--spend-analytics-added) | Usage & spend analytics (added) | todo | RM-10, informed by RM-12 |
+| [RM-16](#rm-16-routing--rate-limit-visibility-added) | Routing & rate-limit visibility (added) | todo | RM-10 |
+| [RM-17](#rm-17-guardrails--content-filtering-added-speculative) | Guardrails / content filtering (added, speculative) | todo | — |
+| [RM-18](#rm-18-teams--multi-user-rbac-added-speculative) | Teams / multi-user RBAC (added, speculative) | todo | — |
 
 Why this order, briefly:
 - **RM-01 to RM-04** are cheap, low-risk, and matter more now that this moved from an
@@ -55,6 +60,13 @@ Why this order, briefly:
   dependencies so they're not rebuilt.
 - **RM-12** (Langfuse) is purely additive on top of the existing OTel/Tempo pipeline —
   lowest urgency, do whenever.
+- **RM-14 to RM-18** came out of a 2026-08-25 discussion about whether the admin dashboard
+  should stay split by backend service (gateway vs auth-service) or become one consolidated
+  platform dashboard — researching comparable products (LiteLLM Proxy, Portkey, Helicone,
+  OpenRouter) surfaced the sections they all converge on. RM-14 to RM-16 are real gaps for
+  this project; RM-17 and RM-18 are flagged as speculative — they showed up in the research
+  but nothing about Prometheus's actual (single-operator) use case has asked for them yet,
+  so they're recorded rather than prioritized.
 
 ---
 
@@ -473,6 +485,62 @@ expands it inline to show that instance's live log tail. Needs, roughly:
 logs are needed, and whether this should also cover manager-api's/gateway's own logs (this
 item is specifically about *inference backend instance* logs, matching what `{log_dir}/
 {model_id}.log` already captures via `lifecycle.py`'s `subprocess.Popen(..., stdout=log_fh)`).
+
+## RM-14 — Model playground (added)
+
+**Why**: every comparable platform researched (LiteLLM Proxy, Portkey, Helicone) ships an
+in-dashboard playground — a way to send a test prompt to a running model and see the
+response without curl/Postman. Prometheus has none today; you have to hit the gateway's
+inference API directly to sanity-check a model you just started.
+
+**Scope (not yet designed)**: a dashboard page where you pick a running instance and send
+a request through the gateway's existing `/v1/chat/completions` (or `/v1/embeddings` for
+embedding models) using your own admin session — showing the raw request/response, ideally
+with streaming. Should reuse the gateway's existing inference API as-is; no new backend
+inference surface, just a UI in front of what already exists.
+
+## RM-15 — Usage & spend analytics (added)
+
+**Why**: LiteLLM's Usage page, Portkey, and Helicone all treat per-model/per-client token
+and request usage as a first-class dashboard page. Today the only way to see usage in
+Prometheus is going directly to Grafana/Tempo — there's no aggregated view in the admin
+dashboard itself.
+
+**Scope (not yet designed)**: needs a source of truth first. Two options worth comparing
+before building: aggregate from the existing OTel/Tempo traces (specs 018/020/021/022), or
+lean on RM-12's Langfuse integration if that lands first (Langfuse already tracks
+prompt/completion/token data, which may make a separate aggregation redundant). Decide the
+data source before designing the page.
+
+## RM-16 — Routing & rate-limit visibility (added)
+
+**Why**: the gateway already enforces rate limiting and circuit breakers (spec 007), but
+that state is invisible today outside reading `.env` files or logs. Comparable platforms
+expose current rate-limit/circuit-breaker state and routing rules directly in their
+dashboards.
+
+**Scope (not yet designed)**: start read-only — show current limits and per-backend
+circuit-breaker state in the dashboard. Whether the dashboard should also let you *change*
+that config live (vs. `.env` staying the single source of truth) is a bigger, separate
+question — don't scope that in without deciding it deliberately, to avoid ending up with
+two conflicting config sources.
+
+## RM-17 — Guardrails / content filtering (added, speculative)
+
+**Why**: PII redaction and content filtering are common in comparable platforms (Portkey),
+but nothing about Prometheus's actual use case has asked for this yet. Recorded because it
+came up in the dashboard-feature research, not because there's a known need.
+
+**Scope**: undefined. Revisit only if a real need shows up.
+
+## RM-18 — Teams / multi-user RBAC (added, speculative)
+
+**Why**: comparable platforms (LiteLLM Teams, Portkey RBAC) assume multiple humans
+administer the platform. Prometheus today is single-operator. Only relevant if that
+changes.
+
+**Scope**: undefined. Revisit only if multiple people need independent dashboard access —
+possibly never needed for this project.
 
 ## Adding new items
 

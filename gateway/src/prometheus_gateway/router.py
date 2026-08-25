@@ -664,7 +664,7 @@ def create_router(registry: ModelRegistry, pool: "BackendPool") -> APIRouter:
                 )
 
     # ── POST /v1/embeddings ─────────────────────────────────────────────────
-    # Implements: memory/roadmap.md — RM-09 (VLM + embeddings)
+    # Implements: docs/roadmap.md — RM-09 (VLM + embeddings)
     @router.post("/v1/embeddings")
     async def embeddings(body: EmbeddingsRequest, request: Request) -> Any:
         """Proxy embeddings requests to an embedding-capable backend.

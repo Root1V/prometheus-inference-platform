@@ -1,7 +1,7 @@
 """Tests for the RM-10 admin dashboard JSON API (/admin/api/*) and the
 _is_exempt() split between the public SPA shell and the protected API.
 
-See memory/roadmap.md RM-10 and memory/wiki/model-registry.md.
+See docs/roadmap.md RM-10 and memory/wiki/model-registry.md.
 """
 
 from __future__ import annotations

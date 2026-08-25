@@ -190,7 +190,7 @@ def multi_model_app(settings, multi_model_registry):
 def modality_registry(tmp_path):
     """Registry with a text, a vision, and an embedding model — all active.
 
-    Implements: memory/roadmap.md — RM-09 (VLM + embeddings)
+    Implements: docs/roadmap.md — RM-09 (VLM + embeddings)
     """
     yaml_content = """models:
   - id: llama3-8b-q4

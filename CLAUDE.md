@@ -60,3 +60,29 @@ For multi-step tasks, state a brief plan:
 
 Strong success criteria let you loop independently. Weak criteria ("make it work") require constant clarification.
 
+## 5. Roadmap: Two-File Pattern
+
+**Index and detail live in separate files. Never merge them.**
+
+A single roadmap file with full detail on every item forces reading the whole thing for
+even a simple "what's the status of X?" Splitting it keeps most lookups cheap (read the
+index) and only pays the cost of full detail when actually working on that one item.
+
+- **`roadmap.md`** (repo root) — the index. One table, one line per item: `#`, Feature,
+  Status, one-sentence description. ID prefix `RM-NN`, also used in branch names and
+  commit messages. Status: `done` / `todo` (add `in-progress`/`blocked` only if actually
+  needed). This file never grows beyond a table — no exceptions.
+- **`docs/roadmap.md`** — the detail. One section per item, capped at **Why** (1-3
+  sentences) and **Scope** (what's in/out, a few bullets). Not a changelog — history of
+  *what happened* lives in commits/PRs; this file holds *what was decided and why*.
+
+Maintenance rules:
+- Never duplicate text between the two files — the index links, it doesn't restate.
+- Once an item is `done` and stable, trim its detail section to 2-3 lines + a link to the
+  commit/PR — don't preserve full reasoning forever once the code and git history are the
+  real record.
+- Before adding anything to either file, ask: is this needed to decide or act, or is it
+  just history? History doesn't go in the roadmap.
+- Big architectural decisions don't live here — reference `memory/decisions/` instead of
+  inlining them.
+

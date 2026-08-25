@@ -10,7 +10,7 @@ POST   /v1/backends/{model_id}/restart
 All require `backend-registry:write`. Read-only /v1/backends[/{id}] in
 routes.py is unaffected — this only adds mutation endpoints.
 
-Implements: memory/roadmap.md — RM-10 (gateway admin dashboard, phase 1)
+Implements: docs/roadmap.md — RM-10 (gateway admin dashboard, phase 1)
 """
 
 from __future__ import annotations
@@ -95,7 +95,7 @@ async def register_backend(
     _validate_port) below — avoids a second, drifting Pydantic schema.
 
     Implements: memory/specs/008-llama-server-manager.md — AC-3, AC-16, AC-17
-    Implements: memory/roadmap.md — RM-10
+    Implements: docs/roadmap.md — RM-10
     """
     with _tracer.start_as_current_span("backend.register", kind=SpanKind.INTERNAL) as span:
         registry: Registry = request.app.state.registry
@@ -144,7 +144,7 @@ async def update_backend(
     *resulting* merged values so e.g. changing only `backend` still
     re-validates `path` against the new backend.
 
-    Implements: memory/roadmap.md — RM-10
+    Implements: docs/roadmap.md — RM-10
     """
     with _tracer.start_as_current_span("backend.update", kind=SpanKind.INTERNAL) as span:
         span.set_attribute("model_id", model_id)
@@ -187,7 +187,7 @@ async def deregister_backend(
     """Stop (if running) and remove a model from the registry.
 
     Implements: memory/specs/008-llama-server-manager.md — AC-6d
-    Implements: memory/roadmap.md — RM-10
+    Implements: docs/roadmap.md — RM-10
     """
     with _tracer.start_as_current_span("backend.deregister", kind=SpanKind.INTERNAL) as span:
         span.set_attribute("model_id", model_id)

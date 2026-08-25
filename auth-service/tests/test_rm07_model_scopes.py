@@ -1,6 +1,6 @@
 """Tests for RM-07 — fine-grained per-model authorization scopes.
 
-See memory/roadmap.md RM-07 and memory/wiki/auth-model.md.
+See docs/roadmap.md RM-07 and memory/wiki/auth-model.md.
 """
 
 from jose import jwt

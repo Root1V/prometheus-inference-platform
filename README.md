@@ -290,7 +290,7 @@ See `gateway/.env.podman.example` and `auth-service/.env.example` for full confi
 
 ## Roadmap
 
-See [memory/roadmap.md](memory/roadmap.md) for the prioritized backlog of upcoming
+See [docs/roadmap.md](docs/roadmap.md) for the prioritized backlog of upcoming
 improvements and features. Those items skip the full SDD pipeline below (one branch per
 item instead) — see the roadmap file for the reasoning.
 

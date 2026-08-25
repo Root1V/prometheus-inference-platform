@@ -1,6 +1,6 @@
 # runtime/manager/api/Dockerfile
 # Implements: specs/008-llama-server-manager.md — AC-11 (Manager REST API)
-# See: memory/roadmap.md — RM-05 (split from the single prometheus-manager package)
+# See: docs/roadmap.md — RM-05 (split from the single prometheus-manager package)
 #
 # Runs ONLY the Manager REST API (pmgr-api). No Textual/Rich/click-TUI deps —
 # those live in the separate prometheus-manager-tui package, installed on
