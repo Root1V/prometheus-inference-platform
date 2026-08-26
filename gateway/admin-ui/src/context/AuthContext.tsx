@@ -1,10 +1,17 @@
 import { createContext, useCallback, useContext, useEffect, useState, type ReactNode } from "react";
-import { clearStoredToken, fetchAccessToken, getStoredToken, storeToken } from "../api/auth";
+import {
+  clearStoredToken,
+  fetchAccessToken,
+  fetchAccessTokenWithPassword,
+  getStoredToken,
+  storeToken,
+} from "../api/auth";
 import { AUTH_EXPIRED_EVENT } from "../api/client";
 
 interface AuthContextValue {
   isAuthenticated: boolean;
   login: (clientId: string, clientSecret: string) => Promise<void>;
+  loginWithPassword: (email: string, password: string) => Promise<void>;
   logout: () => void;
 }
 
@@ -30,8 +37,14 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setToken(access_token);
   }, []);
 
+  const loginWithPassword = useCallback(async (email: string, password: string) => {
+    const { access_token } = await fetchAccessTokenWithPassword(email, password);
+    storeToken(access_token);
+    setToken(access_token);
+  }, []);
+
   return (
-    <AuthContext.Provider value={{ isAuthenticated: token !== null, login, logout }}>
+    <AuthContext.Provider value={{ isAuthenticated: token !== null, login, loginWithPassword, logout }}>
       {children}
     </AuthContext.Provider>
   );

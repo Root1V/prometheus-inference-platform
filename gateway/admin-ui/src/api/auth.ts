@@ -8,24 +8,28 @@ interface TokenResponse {
 }
 
 /**
- * Exchanges client_id/secret for a JWT via the gateway's own
- * POST /admin/api/auth/login, which proxies to the auth-service server-side.
- * The SPA never calls the auth-service directly — cross-origin browser
- * requests to it are blocked by CORS (auth-service doesn't run on the
- * gateway's origin), and routing through the gateway also means the SPA
- * never needs to know the auth-service's URL at all. Uses a bare axios call
- * (not ./client's apiClient) to avoid a circular import — client.ts imports
- * getStoredToken/clearStoredToken from this module.
+ * Exchanges credentials for a JWT via the gateway's own
+ * POST /admin/api/auth/login, which proxies to the auth-service server-side
+ * (client_credentials or password grant, depending on which fields are sent —
+ * see gateway's admin/router.py). The SPA never calls the auth-service
+ * directly — cross-origin browser requests to it are blocked by CORS
+ * (auth-service doesn't run on the gateway's origin), and routing through the
+ * gateway also means the SPA never needs to know the auth-service's URL at
+ * all. Uses a bare axios call (not ./client's apiClient) to avoid a circular
+ * import — client.ts imports getStoredToken/clearStoredToken from this
+ * module.
  */
-export async function fetchAccessToken(
-  clientId: string,
-  clientSecret: string,
-): Promise<TokenResponse> {
-  const response = await axios.post<TokenResponse>(
-    `${import.meta.env.BASE_URL}api/auth/login`,
-    { client_id: clientId, client_secret: clientSecret },
-  );
+async function postLogin(body: Record<string, string>): Promise<TokenResponse> {
+  const response = await axios.post<TokenResponse>(`${import.meta.env.BASE_URL}api/auth/login`, body);
   return response.data;
+}
+
+export function fetchAccessToken(clientId: string, clientSecret: string): Promise<TokenResponse> {
+  return postLogin({ client_id: clientId, client_secret: clientSecret });
+}
+
+export function fetchAccessTokenWithPassword(email: string, password: string): Promise<TokenResponse> {
+  return postLogin({ email, password });
 }
 
 export function storeToken(token: string): void {

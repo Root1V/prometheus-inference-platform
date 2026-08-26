@@ -17,7 +17,7 @@ Status: `done` · `todo`
 | RM-08 | Distributed inference across hosts | done | Gateway aggregates model availability across manager nodes |
 | RM-09 | VLM + embeddings support | done | Vision content parts + `/v1/embeddings` |
 | RM-10 | Gateway admin dashboard (phase 1) | done | React SPA — register/edit/start/stop/restart instances |
-| RM-11 | Auth & Users dashboard | todo | Users section with roles; login via OAuth2 client_id/secret or email+password (default) |
+| RM-11 | Auth & Users dashboard | done | Users section with roles; login via OAuth2 client_id/secret or email+password (default) |
 | RM-12 | E2E LLM tracing with Langfuse | todo | Prompt/completion/token-level tracing, alongside existing OTel/Tempo |
 | RM-13 | Live log viewer per instance | todo | Expand a dashboard row to tail that instance's log |
 | RM-14 | Model playground | todo | Send test prompts to a running instance from the dashboard |
