@@ -13,17 +13,20 @@ from fastapi.security import APIKeyHeader
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from ..db import CredentialShareToken, Principal, PrincipalRole, get_session_factory
+from ..db import CredentialShareToken, Node, NodeType, Principal, PrincipalRole, get_session_factory
 from ..schemas import (
+    CreateNodeRequest,
     CreatePrincipalRequest,
     CreatePrincipalResponse,
     GenerateShareLinkRequest,
+    NodeListItem,
     PrincipalListItem,
     ReactivateResponse,
     ResetPasswordResponse,
     RevokeShareLinkResponse,
     RotateSecretResponse,
     ShareLinkResponse,
+    UpdateNodeRequest,
     UpdatePrincipalRequest,
     invalid_scopes,
 )
@@ -597,3 +600,112 @@ async def revoke_share_link(
         )
         span.set_attribute("http.status_code", 200)
         return RevokeShareLinkResponse(token_id=token_id, revoked=True)
+
+
+# ── Node registry (RM-20 — replaces the gateway's static MANAGER_NODES) ───────
+
+
+@router.post(
+    "/nodes", response_model=NodeListItem, status_code=201, dependencies=[Depends(_require_admin)]
+)
+async def create_node(
+    body: CreateNodeRequest,
+    db: AsyncSession = Depends(_get_db),
+) -> Any:
+    """Register a new manager node. Implements: docs/roadmap.md — RM-20."""
+    existing = await db.execute(select(Node).where(Node.name == body.name))
+    if existing.scalar_one_or_none() is not None:
+        raise HTTPException(status_code=409, detail=f"Node {body.name!r} already exists.")
+
+    node = Node(
+        id=str(uuid.uuid4()),
+        name=body.name,
+        manager_url=body.manager_url,
+        node_type=NodeType(body.node_type),
+        tag=body.tag,
+    )
+    db.add(node)
+    await db.commit()
+    await db.refresh(node)
+
+    logger.info("auth.node_created", node_id=node.id, name=node.name)
+    return NodeListItem(
+        id=node.id,
+        name=node.name,
+        manager_url=node.manager_url,
+        node_type=node.node_type.value,
+        tag=node.tag,
+        created_at=node.created_at,
+        updated_at=node.updated_at,
+    )
+
+
+@router.get("/nodes", response_model=list[NodeListItem], dependencies=[Depends(_require_admin)])
+async def list_nodes(db: AsyncSession = Depends(_get_db)) -> Any:
+    """List all registered nodes. Implements: docs/roadmap.md — RM-20."""
+    result = await db.execute(select(Node).order_by(Node.created_at.desc()))
+    return [
+        NodeListItem(
+            id=n.id,
+            name=n.name,
+            manager_url=n.manager_url,
+            node_type=n.node_type.value,
+            tag=n.tag,
+            created_at=n.created_at,
+            updated_at=n.updated_at,
+        )
+        for n in result.scalars().all()
+    ]
+
+
+@router.patch(
+    "/nodes/{node_id}", response_model=NodeListItem, dependencies=[Depends(_require_admin)]
+)
+async def update_node(
+    node_id: str,
+    body: UpdateNodeRequest,
+    db: AsyncSession = Depends(_get_db),
+) -> Any:
+    """Partially update a node's manager_url / node_type / tag. Implements: RM-20."""
+    result = await db.execute(select(Node).where(Node.id == node_id))
+    node = result.scalar_one_or_none()
+    if node is None:
+        raise HTTPException(status_code=404, detail="Node not found.")
+
+    if body.manager_url is not None:
+        node.manager_url = body.manager_url
+    if body.node_type is not None:
+        node.node_type = NodeType(body.node_type)
+    if "tag" in body.model_fields_set:
+        node.tag = body.tag
+
+    node.updated_at = datetime.now(timezone.utc)
+    await db.commit()
+    await db.refresh(node)
+
+    logger.info("auth.node_updated", node_id=node.id)
+    return NodeListItem(
+        id=node.id,
+        name=node.name,
+        manager_url=node.manager_url,
+        node_type=node.node_type.value,
+        tag=node.tag,
+        created_at=node.created_at,
+        updated_at=node.updated_at,
+    )
+
+
+@router.delete("/nodes/{node_id}", status_code=204, dependencies=[Depends(_require_admin)])
+async def delete_node(
+    node_id: str,
+    db: AsyncSession = Depends(_get_db),
+) -> None:
+    """Remove a node. Implements: docs/roadmap.md — RM-20."""
+    result = await db.execute(select(Node).where(Node.id == node_id))
+    node = result.scalar_one_or_none()
+    if node is None:
+        raise HTTPException(status_code=404, detail="Node not found.")
+
+    await db.delete(node)
+    await db.commit()
+    logger.info("auth.node_deleted", node_id=node_id)

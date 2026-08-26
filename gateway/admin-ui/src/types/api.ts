@@ -1,9 +1,5 @@
 import type { InstanceEntry } from "./instance";
 
-export interface NodesResponse {
-  nodes: string[];
-}
-
 export interface InstancesResponse {
   instances: InstanceEntry[];
   unreachable_nodes: string[];

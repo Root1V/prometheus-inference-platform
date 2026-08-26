@@ -7,7 +7,10 @@ gateway's global JWTAuthMiddleware, same as /v1/backends) plus admin:read
 static files — see main.py and auth/middleware.py's _is_exempt().
 
 POST   /admin/api/auth/login                                — exchange client_id/secret for a JWT
-GET    /admin/api/nodes                                    — configured node names
+GET    /admin/api/nodes                                    — list registered nodes (RM-20)
+POST   /admin/api/nodes                                    — register a node
+PATCH  /admin/api/nodes/{node_id}                            — update a node
+DELETE /admin/api/nodes/{node_id}                            — remove a node
 GET    /admin/api/instances                                 — aggregated across all nodes
 POST   /admin/api/nodes/{node}/models                        — register
 PATCH  /admin/api/nodes/{node}/models/{model_id}               — update fields
@@ -27,6 +30,7 @@ POST   /admin/api/users/share/{token_id}/revoke
 
 Implements: docs/roadmap.md — RM-10 (gateway admin dashboard, phase 1)
 Implements: docs/roadmap.md — RM-11 (Users section, dual login modes)
+Implements: docs/roadmap.md — RM-20 (Nodes section, replaces static MANAGER_NODES)
 """
 
 from __future__ import annotations
@@ -41,6 +45,7 @@ from ..config import Settings
 from ..router import _problem
 from ..telemetry import get_logger
 from .client import ManagerApiClient
+from .nodes_client import fetch_nodes
 
 logger = get_logger(__name__)
 
@@ -58,10 +63,19 @@ def _require_scope(request: Request, scope: str) -> JSONResponse | None:
     return None
 
 
-def _resolve_node(request: Request, node: str) -> str | None:
-    """Return the configured manager_url for *node*, or None if unknown."""
+async def _resolve_node(request: Request, node: str) -> str | None:
+    """Return the registered manager_url for *node*, or None if unknown.
+
+    RM-20: node topology lives in auth-service's node registry, fetched fresh on
+    every call (admin-only, low-QPS path — not the hot inference request path).
+    """
     settings: Settings = request.app.state.settings
-    for name, url in settings.resolved_manager_nodes:
+    nodes = await fetch_nodes(
+        settings.auth_service_admin_url,  # type: ignore[arg-type]
+        settings.auth_service_admin_api_key,  # type: ignore[arg-type]
+        tls_verify=settings.auth_service_tls_verify,
+    )
+    for name, url in nodes:
         if name == node:
             return url
     return None
@@ -173,13 +187,6 @@ def create_admin_router(manager_client: ManagerApiClient) -> APIRouter:
             }
         )
 
-    @router.get("/admin/api/nodes")
-    async def list_nodes(request: Request) -> Any:
-        if (forbidden := _require_scope(request, "admin:read")) is not None:
-            return forbidden
-        settings: Settings = request.app.state.settings
-        return {"nodes": [name for name, _ in settings.resolved_manager_nodes]}
-
     @router.get("/admin/api/instances")
     async def list_instances(request: Request) -> Any:
         if (forbidden := _require_scope(request, "admin:read")) is not None:
@@ -189,7 +196,12 @@ def create_admin_router(manager_client: ManagerApiClient) -> APIRouter:
         instances: list[dict[str, Any]] = []
         unreachable_nodes: list[str] = []
 
-        for name, url in settings.resolved_manager_nodes:
+        nodes = await fetch_nodes(
+            settings.auth_service_admin_url,  # type: ignore[arg-type]
+            settings.auth_service_admin_api_key,  # type: ignore[arg-type]
+            tls_verify=settings.auth_service_tls_verify,
+        )
+        for name, url in nodes:
             try:
                 resp = await manager_client.get(
                     url, "/v1/backends", params={"include_hidden": "true"}
@@ -209,7 +221,7 @@ def create_admin_router(manager_client: ManagerApiClient) -> APIRouter:
     async def register_model(node: str, body: dict[str, Any], request: Request) -> Response:
         if (forbidden := _require_scope(request, "admin:write")) is not None:
             return forbidden
-        node_url = _resolve_node(request, node)
+        node_url = await _resolve_node(request, node)
         if node_url is None:
             return _problem(
                 request, 400, "unknown-node", "Unknown Node", f"Node {node!r} is not configured."
@@ -227,7 +239,7 @@ def create_admin_router(manager_client: ManagerApiClient) -> APIRouter:
     ) -> Response:
         if (forbidden := _require_scope(request, "admin:write")) is not None:
             return forbidden
-        node_url = _resolve_node(request, node)
+        node_url = await _resolve_node(request, node)
         if node_url is None:
             return _problem(
                 request, 400, "unknown-node", "Unknown Node", f"Node {node!r} is not configured."
@@ -243,7 +255,7 @@ def create_admin_router(manager_client: ManagerApiClient) -> APIRouter:
     async def deregister_model(node: str, model_id: str, request: Request) -> Response:
         if (forbidden := _require_scope(request, "admin:write")) is not None:
             return forbidden
-        node_url = _resolve_node(request, node)
+        node_url = await _resolve_node(request, node)
         if node_url is None:
             return _problem(
                 request, 400, "unknown-node", "Unknown Node", f"Node {node!r} is not configured."
@@ -261,7 +273,7 @@ def create_admin_router(manager_client: ManagerApiClient) -> APIRouter:
             return _problem(request, 404, "not-found", "Not Found", f"Unknown action {action!r}.")
         if (forbidden := _require_scope(request, "admin:write")) is not None:
             return forbidden
-        node_url = _resolve_node(request, node)
+        node_url = await _resolve_node(request, node)
         if node_url is None:
             return _problem(
                 request, 400, "unknown-node", "Unknown Node", f"Node {node!r} is not configured."
@@ -353,6 +365,33 @@ def create_admin_router(manager_client: ManagerApiClient) -> APIRouter:
         if (forbidden := _require_scope(request, "admin:write")) is not None:
             return forbidden
         return await _auth_admin_request(request, "POST", f"/clients/{client_id}/share", json=body)
+
+    # ── Nodes — docs/roadmap.md RM-20 ─────────────────────────────────────────
+    # Proxies to auth-service's /admin/nodes/* — same X-Admin-Key pattern as Users.
+
+    @router.get("/admin/api/nodes")
+    async def list_nodes(request: Request) -> Response:
+        if (forbidden := _require_scope(request, "admin:read")) is not None:
+            return forbidden
+        return await _auth_admin_request(request, "GET", "/nodes")
+
+    @router.post("/admin/api/nodes")
+    async def create_node(body: dict[str, Any], request: Request) -> Response:
+        if (forbidden := _require_scope(request, "admin:write")) is not None:
+            return forbidden
+        return await _auth_admin_request(request, "POST", "/nodes", json=body)
+
+    @router.patch("/admin/api/nodes/{node_id}")
+    async def update_node(node_id: str, body: dict[str, Any], request: Request) -> Response:
+        if (forbidden := _require_scope(request, "admin:write")) is not None:
+            return forbidden
+        return await _auth_admin_request(request, "PATCH", f"/nodes/{node_id}", json=body)
+
+    @router.delete("/admin/api/nodes/{node_id}")
+    async def delete_node(node_id: str, request: Request) -> Response:
+        if (forbidden := _require_scope(request, "admin:write")) is not None:
+            return forbidden
+        return await _auth_admin_request(request, "DELETE", f"/nodes/{node_id}")
 
     @router.post("/admin/api/users/share/{token_id}/revoke")
     async def revoke_user_share(token_id: str, request: Request) -> Response:

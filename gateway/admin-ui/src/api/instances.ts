@@ -1,6 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { apiClient } from "./client";
-import type { InstancesResponse, NodesResponse } from "../types/api";
+import type { InstancesResponse } from "../types/api";
+import type { Node } from "../types/node";
 import type {
   InstanceActionResult,
   InstanceEntry,
@@ -9,7 +10,7 @@ import type {
 } from "../types/instance";
 
 const INSTANCES_KEY = ["instances"] as const;
-const NODES_KEY = ["nodes"] as const;
+const NODE_NAMES_KEY = ["node-names"] as const;
 const POLL_INTERVAL_MS = 5000;
 
 export function useInstances() {
@@ -20,10 +21,12 @@ export function useInstances() {
   });
 }
 
+/** Just the node names, for the instance-creation node picker (RM-20 full CRUD
+ * lives in api/nodes.ts's useNodeRegistry, used by the Nodes admin page). */
 export function useNodes() {
   return useQuery({
-    queryKey: NODES_KEY,
-    queryFn: async () => (await apiClient.get<NodesResponse>("/nodes")).data,
+    queryKey: NODE_NAMES_KEY,
+    queryFn: async () => (await apiClient.get<Node[]>("/nodes")).data.map((n) => n.name),
     refetchInterval: POLL_INTERVAL_MS,
   });
 }

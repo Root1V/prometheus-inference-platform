@@ -7,7 +7,7 @@ from typing import Literal
 
 from pydantic import BaseModel, Field, model_validator
 
-from .db import PrincipalRole
+from .db import NodeType, PrincipalRole
 
 # ── Platform scopes (fixed enum) ─────────────────────────────────────────────
 # Implements: memory/specs/005-auth-service.md — Q3 (resolved)
@@ -150,6 +150,38 @@ class ShareLinkResponse(BaseModel):
 class RevokeShareLinkResponse(BaseModel):
     token_id: str
     revoked: bool
+
+
+# ── Node registry (RM-20) ──────────────────────────────────────────────────────
+
+
+class CreateNodeRequest(BaseModel):
+    name: str = Field(..., min_length=1, max_length=64)
+    manager_url: str = Field(..., min_length=1, max_length=512)
+    node_type: NodeType
+    tag: str | None = Field(None, max_length=255)
+
+    model_config = {"use_enum_values": True}
+
+
+class NodeListItem(BaseModel):
+    id: str
+    name: str
+    manager_url: str
+    node_type: str
+    tag: str | None = None
+    created_at: datetime
+    updated_at: datetime | None = None
+
+
+class UpdateNodeRequest(BaseModel):
+    """Partial update — only supplied fields are changed. `name` is immutable."""
+
+    manager_url: str | None = Field(None, min_length=1, max_length=512)
+    node_type: NodeType | None = None
+    tag: str | None = Field(None, max_length=255)
+
+    model_config = {"use_enum_values": True}
 
 
 # ── OAuth2 token schemas ──────────────────────────────────────────────────────

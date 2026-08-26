@@ -104,6 +104,36 @@ class CredentialShareToken(Base):
     __table_args__ = (Index("ix_share_tokens_client_id", "client_id"),)
 
 
+class NodeType(str, enum.Enum):
+    mac = "mac"
+    nvidia = "nvidia"
+    other = "other"
+
+
+class Node(Base):
+    """Inference manager node inventory.
+
+    Implements: docs/roadmap.md — RM-20 (replaces the gateway's static MANAGER_NODES).
+    """
+
+    __tablename__ = "nodes"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    # The name used in dashboard URLs (e.g. /admin/api/nodes/{name}/models) — unique.
+    name: Mapped[str] = mapped_column(String(64), nullable=False, unique=True)
+    manager_url: Mapped[str] = mapped_column(String(512), nullable=False)
+    node_type: Mapped[NodeType] = mapped_column(Enum(NodeType), nullable=False)
+    tag: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=lambda: datetime.now(timezone.utc),
+        nullable=False,
+    )
+    updated_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True, default=None
+    )
+
+
 # ── Engine and session factory ────────────────────────────────────────────────
 
 _engine: AsyncEngine | None = None

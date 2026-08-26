@@ -4,6 +4,7 @@ import { AuthProvider, useAuth } from "./context/AuthContext";
 import { ToastProvider } from "./context/ToastContext";
 import Dashboard from "./routes/Dashboard";
 import Login from "./routes/Login";
+import Nodes from "./routes/Nodes";
 import Users from "./routes/Users";
 
 function ProtectedRoute({ children }: { children: ReactNode }) {
@@ -32,6 +33,14 @@ export default function App() {
               element={
                 <ProtectedRoute>
                   <Users />
+                </ProtectedRoute>
+              }
+            />
+            <Route
+              path="/nodes"
+              element={
+                <ProtectedRoute>
+                  <Nodes />
                 </ProtectedRoute>
               }
             />

@@ -35,10 +35,12 @@ def create_app(
         settings = Settings()  # type: ignore[call-arg]  # populated from env vars at runtime
 
     if registry is None:
-        if settings.resolved_manager_nodes:
+        if settings.admin_dashboard_enabled:
             # Manager is the single source of truth — start with an empty registry.
-            # ManagerRegistrySync will populate it on startup via the manager REST API.
-            # The static registry.yaml is ignored when MANAGER_URL/MANAGER_NODES is set.
+            # ManagerRegistrySync will populate it on startup via the manager REST
+            # API, using the node list from auth-service's registry (RM-20). The
+            # static registry.yaml is ignored whenever the admin dashboard (and
+            # therefore manager-node integration) is enabled.
             registry = ModelRegistry.__new__(ModelRegistry)
             registry._models = {}
         else:
@@ -100,14 +102,16 @@ def create_app(
 
             set_jwks_redis_client(_redis_instance)
 
-        # AC-23 (008): if MANAGER_URL/MANAGER_NODES is set, start background registry sync
-        # RM-08 phase 2: resolved_manager_nodes returns one or more (name, url) pairs.
+        # AC-23 (008): if the admin dashboard is enabled, start background registry
+        # sync. RM-20: node topology comes from auth-service's node registry,
+        # re-fetched every poll cycle — not a frozen list passed in here.
         _manager_sync = None
-        if settings.resolved_manager_nodes:
+        if settings.admin_dashboard_enabled:
             from .models.manager_sync import ManagerRegistrySync
 
             _manager_sync = ManagerRegistrySync(
-                nodes=settings.resolved_manager_nodes,
+                auth_service_admin_url=settings.auth_service_admin_url,  # type: ignore[arg-type]
+                auth_service_admin_api_key=settings.auth_service_admin_api_key,  # type: ignore[arg-type]
                 registry=registry,
                 poll_interval_s=settings.manager_poll_interval_s,
                 manager_client_id=settings.manager_client_id,

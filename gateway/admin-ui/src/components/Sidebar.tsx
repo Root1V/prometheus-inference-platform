@@ -1,10 +1,11 @@
-import { Flame, LogOut, Server, Users } from "lucide-react";
+import { Flame, HardDrive, LogOut, Server, Users } from "lucide-react";
 import { NavLink } from "react-router-dom";
 import { useAuth } from "../context/AuthContext";
 import { cn } from "../lib/cn";
 
 const NAV_ITEMS = [
   { to: "/", label: "Instances", icon: Server },
+  { to: "/nodes", label: "Nodes", icon: HardDrive },
   { to: "/users", label: "Users", icon: Users },
 ];
 

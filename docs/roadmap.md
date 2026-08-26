@@ -44,7 +44,7 @@ folded in here per your "muchos más que vayas encontrando."
 | [RM-17](#rm-17-guardrails--content-filtering-added-speculative) | Guardrails / content filtering (added, speculative) | todo | — |
 | [RM-18](#rm-18-teams--multi-user-rbac-added-speculative) | ~~Teams / multi-user RBAC~~ — merged into RM-11 | merged | — |
 | [RM-19](#rm-19-dashboard-branding-logo--favicon-added) | Dashboard branding: logo + favicon (added) | done | RM-10 |
-| [RM-20](#rm-20-node-registry-added) | Node/server registry (added) | todo | RM-08, RM-10 |
+| [RM-20](#rm-20-node-registry-added) | Node/server registry (added) | done | RM-08, RM-10 |
 | [RM-21](#rm-21-simplified-instance-creation-added) | Simplified instance creation (added) | todo | RM-20 |
 | [RM-22](#rm-22-platform-overview-home-page-added) | Platform overview / home page (added) | todo | RM-10 |
 | [RM-23](#rm-23-active-sessions--connected-users-added) | Active sessions / connected users (added) | todo | RM-10, related to RM-15 |
@@ -631,6 +631,24 @@ given RM-11's admin-proxy pattern, but a live-routing dependency on auth-service
 reachable is a new failure mode worth weighing against caching); migration path for
 existing `MANAGER_NODES` deployments (seed the registry from it once, then env var becomes
 inert / removed, or keep both and merge).
+
+**Done (2026-08-26)**: new `Node` table in auth-service (mirrors `Principal`'s
+conventions), `/admin/nodes` CRUD. `MANAGER_NODES`/`MANAGER_URL`/`resolved_manager_nodes`
+removed entirely from the gateway — `ADMIN_DASHBOARD_ENABLED` is now the single gate for
+manager-node integration (already required to pair with
+`AUTH_SERVICE_ADMIN_URL`/`AUTH_SERVICE_ADMIN_API_KEY` per RM-11). Resolved the
+caching/freshness question simply: node resolution was never on the hot inference request
+path to begin with (confirmed by exploration — `/v1/chat/completions` reads a pre-resolved
+`ModelEntry.backend_url`, baked in by `ManagerRegistrySync`'s existing 30s poll), so
+`ManagerRegistrySync._sync()` just re-fetches the node list from auth-service at the start
+of every poll cycle instead of using a frozen constructor list — a newly-added node goes
+live within one interval, no restart, no wakeup/interrupt mechanism needed.
+`admin/router.py`'s `_resolve_node`/`list_instances` do the same live fetch (admin-only,
+low-QPS, so a per-call HTTP hop to auth-service is a non-issue there). Breaking change,
+no migration bridge (matches this project's established clean-cutover pattern) — existing
+deployments must create their node(s) via the dashboard's Nodes section (or `POST
+/admin/nodes`) after upgrading; `gateway/.env.podman.example` and `podman-compose.yml`
+updated accordingly.
 
 ## RM-25 — Node SSH/remote-maintenance credentials (added, speculative)
 

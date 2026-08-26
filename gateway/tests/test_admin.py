@@ -59,7 +59,6 @@ def admin_settings(rsa_keys, tmp_path):
         jwt_revocation_redis_url=None,
         rate_limit_strict=False,
         admin_dashboard_enabled=True,
-        manager_nodes=f"mac={NODE_URL}",
         manager_client_id="gw-service",
         manager_client_secret="secret",
         auth_service_token_url=AUTH_TOKEN_URL,
@@ -88,6 +87,27 @@ async def gw(admin_app):
 def _headers(rsa_keys, scope: str) -> dict[str, str]:
     token = make_token(rsa_keys["private"], scope=scope)
     return {"Authorization": f"Bearer {token}"}
+
+
+def _mock_nodes(*nodes: tuple[str, str]) -> None:
+    """Mock auth-service's GET /admin/nodes — nodes as (name, manager_url) pairs."""
+    respx.get(f"{AUTH_ADMIN_URL}/nodes").mock(
+        return_value=Response(
+            200,
+            json=[
+                {
+                    "id": name,
+                    "name": name,
+                    "manager_url": url,
+                    "node_type": "mac",
+                    "tag": None,
+                    "created_at": "2026-01-01T00:00:00Z",
+                    "updated_at": None,
+                }
+                for name, url in nodes
+            ],
+        )
+    )
 
 
 def _mock_manager_token():
@@ -152,10 +172,45 @@ async def test_list_nodes_requires_admin_read(gw, rsa_keys):
     assert resp.status_code == 403
 
 
-async def test_list_nodes_returns_configured_names(gw, rsa_keys):
-    resp = await gw.get("/admin/api/nodes", headers=_headers(rsa_keys, "admin:read"))
+async def test_list_nodes_proxies_registry(gw, rsa_keys):
+    with respx.mock:
+        _mock_nodes(("mac", NODE_URL))
+        resp = await gw.get("/admin/api/nodes", headers=_headers(rsa_keys, "admin:read"))
     assert resp.status_code == 200
-    assert resp.json() == {"nodes": ["mac"]}
+    body = resp.json()
+    assert body[0]["name"] == "mac"
+    assert body[0]["manager_url"] == NODE_URL
+
+
+async def test_create_node_requires_admin_write(gw, rsa_keys):
+    resp = await gw.post(
+        "/admin/api/nodes",
+        json={"name": "mac", "manager_url": NODE_URL, "node_type": "mac"},
+        headers=_headers(rsa_keys, "admin:read"),
+    )
+    assert resp.status_code == 403
+
+
+async def test_create_node_proxies_to_auth_service(gw, rsa_keys):
+    with respx.mock:
+        respx.post(f"{AUTH_ADMIN_URL}/nodes").mock(
+            return_value=Response(201, json={"id": "n1", "name": "mac", "manager_url": NODE_URL})
+        )
+        resp = await gw.post(
+            "/admin/api/nodes",
+            json={"name": "mac", "manager_url": NODE_URL, "node_type": "mac"},
+            headers=_headers(rsa_keys, "admin:write"),
+        )
+    assert resp.status_code == 201
+    assert resp.json()["name"] == "mac"
+
+
+async def test_delete_node_proxies_to_auth_service(gw, rsa_keys):
+    with respx.mock:
+        route = respx.delete(f"{AUTH_ADMIN_URL}/nodes/n1").mock(return_value=Response(204))
+        resp = await gw.delete("/admin/api/nodes/n1", headers=_headers(rsa_keys, "admin:write"))
+    assert resp.status_code == 204
+    assert route.called
 
 
 # ── GET /admin/api/instances ──────────────────────────────────────────────────
@@ -163,6 +218,7 @@ async def test_list_nodes_returns_configured_names(gw, rsa_keys):
 
 async def test_list_instances_aggregates_and_tags_node(gw, rsa_keys):
     with respx.mock:
+        _mock_nodes(("mac", NODE_URL))
         _mock_manager_token()
         respx.get(f"{NODE_URL}/v1/backends").mock(
             return_value=Response(
@@ -190,6 +246,7 @@ async def test_list_instances_marks_unreachable_node(gw, rsa_keys):
     import httpx
 
     with respx.mock:
+        _mock_nodes(("mac", NODE_URL))
         _mock_manager_token()
         respx.get(f"{NODE_URL}/v1/backends").mock(side_effect=httpx.ConnectError("refused"))
         resp = await gw.get("/admin/api/instances", headers=_headers(rsa_keys, "admin:read"))
@@ -212,17 +269,20 @@ async def test_register_requires_admin_write(gw, rsa_keys):
 
 
 async def test_register_unknown_node_returns_400(gw, rsa_keys):
-    resp = await gw.post(
-        "/admin/api/nodes/does-not-exist/models",
-        json={"id": "new-model", "port": 8090},
-        headers=_headers(rsa_keys, "admin:write"),
-    )
+    with respx.mock:
+        _mock_nodes(("mac", NODE_URL))
+        resp = await gw.post(
+            "/admin/api/nodes/does-not-exist/models",
+            json={"id": "new-model", "port": 8090},
+            headers=_headers(rsa_keys, "admin:write"),
+        )
     assert resp.status_code == 400
     assert resp.json()["type"].endswith("unknown-node")
 
 
 async def test_register_success_proxies_to_node(gw, rsa_keys):
     with respx.mock:
+        _mock_nodes(("mac", NODE_URL))
         _mock_manager_token()
         respx.post(f"{NODE_URL}/v1/backends").mock(
             return_value=Response(201, json={"id": "new-model", "port": 8090})
@@ -240,6 +300,7 @@ async def test_register_node_unreachable_returns_503(gw, rsa_keys):
     import httpx
 
     with respx.mock:
+        _mock_nodes(("mac", NODE_URL))
         _mock_manager_token()
         respx.post(f"{NODE_URL}/v1/backends").mock(side_effect=httpx.ConnectError("refused"))
         resp = await gw.post(
@@ -264,17 +325,20 @@ async def test_update_requires_admin_write(gw, rsa_keys):
 
 
 async def test_update_unknown_node_returns_400(gw, rsa_keys):
-    resp = await gw.patch(
-        "/admin/api/nodes/does-not-exist/models/model-a",
-        json={"context_length": 8192},
-        headers=_headers(rsa_keys, "admin:write"),
-    )
+    with respx.mock:
+        _mock_nodes(("mac", NODE_URL))
+        resp = await gw.patch(
+            "/admin/api/nodes/does-not-exist/models/model-a",
+            json={"context_length": 8192},
+            headers=_headers(rsa_keys, "admin:write"),
+        )
     assert resp.status_code == 400
     assert resp.json()["type"].endswith("unknown-node")
 
 
 async def test_update_success_proxies_to_node(gw, rsa_keys):
     with respx.mock:
+        _mock_nodes(("mac", NODE_URL))
         _mock_manager_token()
         route = respx.patch(f"{NODE_URL}/v1/backends/model-a").mock(
             return_value=Response(200, json={"id": "model-a", "context_length": 16384})
@@ -291,6 +355,7 @@ async def test_update_success_proxies_to_node(gw, rsa_keys):
 
 async def test_update_validation_error_flattened(gw, rsa_keys):
     with respx.mock:
+        _mock_nodes(("mac", NODE_URL))
         _mock_manager_token()
         respx.patch(f"{NODE_URL}/v1/backends/model-a").mock(
             return_value=Response(
@@ -319,6 +384,7 @@ async def test_update_validation_error_flattened(gw, rsa_keys):
 
 async def test_deregister_success(gw, rsa_keys):
     with respx.mock:
+        _mock_nodes(("mac", NODE_URL))
         _mock_manager_token()
         respx.delete(f"{NODE_URL}/v1/backends/old-model").mock(return_value=Response(204))
         resp = await gw.delete(
@@ -332,6 +398,7 @@ async def test_deregister_success(gw, rsa_keys):
 
 async def test_control_instance_start_success(gw, rsa_keys):
     with respx.mock:
+        _mock_nodes(("mac", NODE_URL))
         _mock_manager_token()
         respx.post(f"{NODE_URL}/v1/backends/model-a/start").mock(
             return_value=Response(200, json={"id": "model-a", "state": "ready"})
@@ -354,6 +421,7 @@ async def test_control_instance_unknown_action_returns_404(gw, rsa_keys):
 
 async def test_control_instance_lifecycle_conflict_proxied(gw, rsa_keys):
     with respx.mock:
+        _mock_nodes(("mac", NODE_URL))
         _mock_manager_token()
         respx.post(f"{NODE_URL}/v1/backends/model-a/stop").mock(
             return_value=Response(
