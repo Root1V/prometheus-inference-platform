@@ -49,6 +49,7 @@ folded in here per your "muchos más que vayas encontrando."
 | [RM-22](#rm-22-platform-overview-home-page-added) | Platform overview / home page (added) | todo | RM-10 |
 | [RM-23](#rm-23-active-sessions--connected-users-added) | Active sessions / connected users (added) | todo | RM-10, related to RM-15 |
 | [RM-24](#rm-24-model-picker-in-create-user-added) | Model picker in Create User (added) | todo | RM-11, RM-21 |
+| [RM-25](#rm-25-node-sshremote-maintenance-credentials-added-speculative) | Node SSH/remote-maintenance credentials (added, speculative) | todo | RM-20 |
 
 Why this order, briefly:
 - **RM-01 to RM-04** are cheap, low-risk, and matter more now that this moved from an
@@ -605,18 +606,43 @@ not yet designed.
 
 **Why**: manager nodes are currently only known via the gateway's static `MANAGER_NODES`
 config (RM-08) — there's no way to see, add, or edit them from the dashboard, and no
-metadata beyond a URL (nothing recording whether a node is a Mac or an Nvidia box, or how
-to reach it for maintenance).
+metadata beyond a URL (nothing recording whether a node is a Mac or an Nvidia box).
 
-**Scope (not yet designed in detail)**: a **Nodes** section to register and manage
-inference nodes/servers — IP or DNS, hardware type (Mac / Nvidia), a user + credential to
-connect to the machine, a name, and a free-form tag/label. Feeds RM-21's node picker when
-creating an instance.
+**Update (2026-08-26)**: split from the original scope. This item is now just the node
+**inventory** — name, manager-api URL, hardware type (Mac / Nvidia), free-form tag/label.
+This is what RM-21's node picker actually depends on. The SSH/remote-maintenance
+credential piece (originally bundled here) is split out to RM-25 — it's a materially
+different, higher-risk concern (storing login credentials to a machine, not talking to its
+manager-api) with no concrete consuming feature yet.
 
-**Not scoped yet**: whether the dashboard actually opens SSH connections itself or just
-records the info for humans/future automation to use; how this interacts with the existing
-static `MANAGER_NODES` env config (replace it outright, or seed the registry from it);
-credential storage needs care (encrypted at rest at minimum, not plaintext in the DB).
+**Scope (not yet designed in detail)**: a **Nodes** admin section (CRUD) whose entries
+**replace** the static `MANAGER_NODES` env var as the gateway's live routing source — not
+just a display-only metadata table. This is the bigger, riskier part of this item: gateway
+resolves which node to hit on every inference/instance-management request today via a
+one-time `Settings.resolved_manager_nodes` read from env, so replacing that with a
+mutable, admin-editable registry needs a caching/refresh strategy (adding a node in the UI
+shouldn't require a gateway restart, and the hot request path shouldn't take on a live DB
+read per request). `gateway/src/prometheus_gateway/models/manager_sync.py` already runs a
+periodic background sync for something related (registry contents, not node topology, but
+same pattern) — check it first for a mechanism to extend rather than building a second one.
+
+**Not scoped yet**: exact storage location (auth-service's existing DB is the closest fit
+given RM-11's admin-proxy pattern, but a live-routing dependency on auth-service being
+reachable is a new failure mode worth weighing against caching); migration path for
+existing `MANAGER_NODES` deployments (seed the registry from it once, then env var becomes
+inert / removed, or keep both and merge).
+
+## RM-25 — Node SSH/remote-maintenance credentials (added, speculative)
+
+**Why**: came up while scoping RM-20 — being able to record how to reach a node's
+underlying machine (not just its manager-api) for maintenance. Split out because there's no
+concrete feature yet that would actually *use* stored SSH credentials (no "restart this
+node", no remote log viewer at the host level) — recorded here rather than built.
+
+**Scope**: undefined. If a real need shows up, this needs real security design (encrypted
+at rest at minimum — the existing `share_crypto.py` / `SHARE_TOKEN_ENCRYPTION_KEY` pattern
+from RM-11's credential-share-links is a reasonable starting point to reuse rather than
+inventing a second encryption scheme) before any implementation, not as an afterthought.
 
 ## RM-21 — Simplified instance creation (added)
 
