@@ -65,12 +65,13 @@ export default function Login() {
             <>
               <div>
                 <label className="mb-1 block text-xs font-medium text-text-muted" htmlFor="email">
-                  Email
+                  User
                 </label>
                 <input
                   id="email"
                   type="email"
                   required
+                  placeholder="you@example.com"
                   value={email}
                   onChange={(e) => setEmail(e.target.value)}
                   className={inputClass}
@@ -94,11 +95,12 @@ export default function Login() {
             <>
               <div>
                 <label className="mb-1 block text-xs font-medium text-text-muted" htmlFor="clientId">
-                  Client ID
+                  User
                 </label>
                 <input
                   id="clientId"
                   required
+                  placeholder="client-id"
                   value={clientId}
                   onChange={(e) => setClientId(e.target.value)}
                   className={inputClass}
@@ -106,7 +108,7 @@ export default function Login() {
               </div>
               <div>
                 <label className="mb-1 block text-xs font-medium text-text-muted" htmlFor="clientSecret">
-                  Client Secret
+                  Password
                 </label>
                 <input
                   id="clientSecret"
