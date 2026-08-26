@@ -37,28 +37,29 @@ auth-service/
 |--------|------|--------------|---------|
 | `GET` | `/health` | ❌ None | Liveness probe |
 | `GET` | `/.well-known/jwks.json` | ❌ None | Public JWKS — gateway fetches this to verify JWTs |
-| `POST` | `/oauth2/token` | 🔑 `client_id` + `client_secret` | Issue JWT (OAuth2 client_credentials) |
-| `POST` | `/admin/clients` | 🔒 Admin token | Register a new client |
-| `GET` | `/admin/clients` | 🔒 Admin token | List all registered clients |
-| `PATCH` | `/admin/clients/{client_id}` | 🔒 Admin token | Update client scopes / TTL |
-| `DELETE` | `/admin/clients/{client_id}` | 🔒 Admin token | Deactivate a client |
-| `POST` | `/admin/clients/{client_id}/rotate-secret` | 🔒 Admin token | Rotate client secret |
-| `GET` | `/share/{token}` | ❌ None (token is the credential) | Credential share link — memory/specs/016 |
-| `GET` | `/admin/ui/` | 🍪 Session cookie | Admin dashboard (web UI) |
-| `GET/POST` | `/admin/ui/login` | ❌ None (login form) | Admin UI login |
-| `GET` | `/admin/ui/logout` | 🍪 Session cookie | Admin UI logout |
-| `GET` | `/admin/ui/dashboard` | 🍪 Session cookie | Client list view |
-| `POST` | `/admin/ui/clients` | 🍪 Session cookie | Create client from UI |
-| `GET/POST` | `/admin/ui/clients/{client_id}/edit` | 🍪 Session cookie | Edit client from UI |
+| `POST` | `/oauth2/token` | 🔑 `client_credentials` or `password` grant | Issue JWT — docs/roadmap.md RM-11 |
+| `POST` | `/admin/clients` | 🔒 Admin token | Register a principal (oauth2 or password) |
+| `GET` | `/admin/clients` | 🔒 Admin token | List all principals |
+| `PATCH` | `/admin/clients/{client_id}` | 🔒 Admin token | Update name / label / scopes / TTL |
+| `DELETE` | `/admin/clients/{client_id}` | 🔒 Admin token | Deactivate a principal |
+| `POST` | `/admin/clients/{client_id}/reactivate` | 🔒 Admin token | Reverse a deactivation |
+| `POST` | `/admin/clients/{client_id}/rotate-secret` | 🔒 Admin token | oauth2 principals only |
+| `POST` | `/admin/clients/{client_id}/reset-password` | 🔒 Admin token | password principals only |
+| `POST` | `/admin/clients/{client_id}/share` | 🔒 Admin token | One-time credential share link — RM-11 |
+| `POST` | `/admin/clients/share/{token_id}/revoke` | 🔒 Admin token | Revoke a share link before it's opened |
+| `GET` | `/share/{token}` | ❌ None (token is the credential) | Redeem a share link — memory/specs/016 |
 
-**Unauthenticated endpoints** (no token required): `/health`, `/.well-known/jwks.json`, `/oauth2/token` (uses client credentials instead), `/admin/ui/login`, `/share/{token}`.
+**Unauthenticated endpoints** (no token required): `/health`, `/.well-known/jwks.json`, `/oauth2/token` (uses client/user credentials instead), `/share/{token}`.
+
+The old server-rendered `/admin/ui/*` Jinja2 dashboard (spec-015) was retired in RM-11 —
+superseded by the gateway's React "Users" section, which talks to the JSON endpoints above.
 
 ## OAuth2 Roles & Scopes
 
 These are the canonical values defined in `src/prometheus_auth/schemas.py` and `db.py`.
 Any change here requires updating `VALID_SCOPES` in `schemas.py`.
 
-### Client Roles (`ClientRole` enum)
+### Principal Roles (`PrincipalRole` enum)
 
 | Role | JWT TTL | Intended for |
 |------|---------|-------------|

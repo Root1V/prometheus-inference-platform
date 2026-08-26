@@ -169,6 +169,13 @@ curl -X POST http://localhost:8000/v1/chat/completions \
   -d '{"model":"llama3-8b-q4-local","messages":[{"role":"user","content":"What is AGI?"}],"max_tokens":120}'
 ```
 
+> **Human operators** (RM-11): create a `password`-auth principal instead —
+> `-d '{"client_name":"jane","role":"app","allowed_scopes":["inference:read"],"auth_method":"password","email":"jane@example.com","password":"..."}'`
+> — then obtain a token with `grant_type=password&username=<email>&password=<password>`
+> instead of `client_credentials`. The gateway's admin dashboard (`/admin`) uses this to
+> log human operators in with email + password by default, alongside the existing
+> client_id/client_secret mode for machine clients.
+
 ### 6. End-to-end integration test
 
 ```bash
@@ -269,7 +276,9 @@ See `gateway/.env.podman.example` and `auth-service/.env.example` for full confi
 | `JWT_JWKS_URL` | One of | Auth Service JWKS endpoint URL (e.g. `http://auth-service:9000/.well-known/jwks.json`) |
 | `JWT_REVOCATION_REDIS_URL` | No | Redis URL for token revocation (omit to disable) |
 | `MODEL_REGISTRY_PATH` | No | Path to `registry.yaml` (default: `runtime/models/registry.yaml`) |
-| `ADMIN_DASHBOARD_ENABLED` | No | Serve the RM-10 admin dashboard SPA at `/admin` (default: `false`) — see RM-10 in [docs/roadmap.md](docs/roadmap.md#rm-10-gateway-admin-dashboard-item-3-done-phase-1). |
+| `ADMIN_DASHBOARD_ENABLED` | No | Serve the admin dashboard SPA at `/admin` (default: `false`) — instance lifecycle (RM-10) and the Users section (RM-11). |
+| `AUTH_SERVICE_ADMIN_URL` | When admin dashboard enabled | auth-service admin base URL (e.g. `http://auth-service:9000/admin`) — backs the Users section. |
+| `AUTH_SERVICE_ADMIN_API_KEY` | When admin dashboard enabled | Must match auth-service's own `AUTH_ADMIN_API_KEY`. |
 
 **Auth Service** (`auth-service/.env`):
 

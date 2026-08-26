@@ -3,7 +3,7 @@
 # Implements: memory/specs/018-observability-telemetry.md — AC-2, AC-12, AC-13
 import secrets
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 import bcrypt
@@ -13,16 +13,21 @@ from fastapi.security import APIKeyHeader
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from ..db import OAuthClient, ClientRole, get_session_factory
+from ..db import CredentialShareToken, Principal, PrincipalRole, get_session_factory
 from ..schemas import (
-    ClientListItem,
-    CreateClientRequest,
-    CreateClientResponse,
+    CreatePrincipalRequest,
+    CreatePrincipalResponse,
+    GenerateShareLinkRequest,
+    PrincipalListItem,
     ReactivateResponse,
+    ResetPasswordResponse,
+    RevokeShareLinkResponse,
     RotateSecretResponse,
-    UpdateClientRequest,
+    ShareLinkResponse,
+    UpdatePrincipalRequest,
     invalid_scopes,
 )
+from ..share_crypto import encrypt_secret
 from ..telemetry import get_logger, get_tracer
 
 logger = get_logger(__name__)
@@ -63,15 +68,18 @@ async def _require_admin(
 
 
 @router.post(
-    "/clients", response_model=CreateClientResponse, dependencies=[Depends(_require_admin)]
+    "/clients", response_model=CreatePrincipalResponse, dependencies=[Depends(_require_admin)]
 )
 async def create_client(
-    body: CreateClientRequest,
+    body: CreatePrincipalRequest,
     request: Request,
     db: AsyncSession = Depends(_get_db),
 ) -> Any:
-    """Register a new OAuth2 client.  Implements: memory/specs/005-auth-service.md — AC-11.
+    """Register a new principal (oauth2 client or password user).
+
+    Implements: memory/specs/005-auth-service.md — AC-11.
     Implements: memory/specs/022-opentelemetry-sdk-instrumentation.md — G-12, AC-16
+    Implements: docs/roadmap.md — RM-11
     """
     from opentelemetry.trace import SpanKind
 
@@ -88,66 +96,86 @@ async def create_client(
         role_value = body.role if isinstance(body.role, str) else body.role.value
         ttl = settings.ttl_for_role(role_value)
 
-        plain_secret = f"pmt_live_{secrets.token_hex(24)}"
-        hashed = _hash_secret(plain_secret)
+        plain_secret: str | None = None
+        secret_hash: str | None = None
+        password_hash: str | None = None
+        if body.auth_method == "oauth2":
+            plain_secret = f"pmt_live_{secrets.token_hex(24)}"
+            secret_hash = _hash_secret(plain_secret)
+        else:
+            password_hash = _hash_secret(body.password)  # type: ignore[arg-type]
 
-        client = OAuthClient(
+        principal = Principal(
             client_id=str(uuid.uuid4()),
             client_name=body.client_name,
-            client_secret_hash=hashed,
-            role=ClientRole(role_value),
+            auth_method=body.auth_method,
+            client_secret_hash=secret_hash,
+            email=body.email,
+            password_hash=password_hash,
+            role=PrincipalRole(role_value),
             allowed_scopes=" ".join(sorted(body.allowed_scopes)),
             token_ttl_seconds=ttl,
             label=body.label,
         )
-        db.add(client)
+        db.add(principal)
         await db.commit()
-        await db.refresh(client)
+        await db.refresh(principal)
 
-        logger.info("auth.client_created", client_id=client.client_id, role=role_value)
+        logger.info(
+            "auth.client_created",
+            client_id=principal.client_id,
+            role=role_value,
+            auth_method=body.auth_method,
+        )
 
-        span.set_attribute("client_id", client.client_id)
+        span.set_attribute("client_id", principal.client_id)
         span.set_attribute("scopes", " ".join(sorted(body.allowed_scopes)))
         span.set_attribute("http.status_code", 201)
-        # AC-11: client_secret returned once only — hash stored, plaintext discarded
-        return CreateClientResponse(
-            client_id=client.client_id,
-            client_secret=plain_secret,
-            client_name=client.client_name,
+        # AC-11: secret/password returned once only — hash stored, plaintext discarded
+        return CreatePrincipalResponse(
+            client_id=principal.client_id,
+            client_name=principal.client_name,
             role=role_value,
-            allowed_scopes=client.scopes,
+            allowed_scopes=principal.scopes,
             token_ttl_seconds=ttl,
+            auth_method=body.auth_method,
+            email=body.email,
+            client_secret=plain_secret if body.auth_method == "oauth2" else body.password,
         )
 
 
 # ── List clients ──────────────────────────────────────────────────────────────
 
 
-@router.get("/clients", response_model=list[ClientListItem], dependencies=[Depends(_require_admin)])
+@router.get(
+    "/clients", response_model=list[PrincipalListItem], dependencies=[Depends(_require_admin)]
+)
 async def list_clients(db: AsyncSession = Depends(_get_db)) -> Any:
-    """List all clients. Implements: memory/specs/005-auth-service.md — AC-12.
+    """List all principals. Implements: memory/specs/005-auth-service.md — AC-12.
     Implements: memory/specs/022-opentelemetry-sdk-instrumentation.md — G-13, AC-17
     """
     from opentelemetry.trace import SpanKind
 
     with _tracer.start_as_current_span("client.list", kind=SpanKind.INTERNAL) as span:
-        result = await db.execute(select(OAuthClient).order_by(OAuthClient.created_at.desc()))
-        clients = result.scalars().all()
+        result = await db.execute(select(Principal).order_by(Principal.created_at.desc()))
+        principals = result.scalars().all()
         span.set_attribute("http.status_code", 200)
-        span.set_attribute("client_count", len(clients))
+        span.set_attribute("client_count", len(principals))
         return [
-            ClientListItem(
-                client_id=c.client_id,
-                client_name=c.client_name,
-                label=c.label,
-                role=c.role.value if hasattr(c.role, "value") else c.role,
-                allowed_scopes=c.scopes,
-                token_ttl_seconds=c.token_ttl_seconds,
-                is_active=c.is_active,
-                created_at=c.created_at,
-                updated_at=c.updated_at,
+            PrincipalListItem(
+                client_id=p.client_id,
+                client_name=p.client_name,
+                label=p.label,
+                role=p.role.value if hasattr(p.role, "value") else p.role,
+                allowed_scopes=p.scopes,
+                token_ttl_seconds=p.token_ttl_seconds,
+                is_active=p.is_active,
+                created_at=p.created_at,
+                updated_at=p.updated_at,
+                auth_method=p.auth_method,
+                email=p.email,
             )
-            for c in clients
+            for p in principals
         ]
 
 
@@ -172,7 +200,7 @@ async def deactivate_client(
 
     with _tracer.start_as_current_span("client.deactivate", kind=SpanKind.INTERNAL) as span:
         span.set_attribute("target_client_id", client_id)
-        result = await db.execute(select(OAuthClient).where(OAuthClient.client_id == client_id))
+        result = await db.execute(select(Principal).where(Principal.client_id == client_id))
         client = result.scalar_one_or_none()
         if client is None:
             span.set_attribute("http.status_code", 404)
@@ -242,11 +270,16 @@ async def rotate_secret(
 
     with _tracer.start_as_current_span("client.rotate_secret", kind=SpanKind.INTERNAL) as span:
         span.set_attribute("target_client_id", client_id)
-        result = await db.execute(select(OAuthClient).where(OAuthClient.client_id == client_id))
+        result = await db.execute(select(Principal).where(Principal.client_id == client_id))
         client = result.scalar_one_or_none()
         if client is None:
             span.set_attribute("http.status_code", 404)
             raise HTTPException(status_code=404, detail="Client not found.")
+        if client.auth_method != "oauth2":
+            span.set_attribute("http.status_code", 409)
+            raise HTTPException(
+                status_code=409, detail="Cannot rotate an OAuth2 secret for a password principal."
+            )
         if not client.is_active:
             span.set_attribute("http.status_code", 409)
             raise HTTPException(
@@ -264,15 +297,62 @@ async def rotate_secret(
         return RotateSecretResponse(client_id=client_id, client_secret=plain_secret)
 
 
+# ── Reset password (password principals only) ────────────────────────────────
+
+
+@router.post(
+    "/clients/{client_id}/reset-password",
+    response_model=ResetPasswordResponse,
+    dependencies=[Depends(_require_admin)],
+)
+async def reset_password(
+    client_id: str,
+    db: AsyncSession = Depends(_get_db),
+) -> Any:
+    """Generate a new password for a password-auth principal.
+
+    Implements: docs/roadmap.md — RM-11 (mirrors rotate-secret for oauth2 principals).
+    """
+    from opentelemetry.trace import SpanKind
+
+    with _tracer.start_as_current_span("client.reset_password", kind=SpanKind.INTERNAL) as span:
+        span.set_attribute("target_client_id", client_id)
+        result = await db.execute(select(Principal).where(Principal.client_id == client_id))
+        principal = result.scalar_one_or_none()
+        if principal is None:
+            span.set_attribute("http.status_code", 404)
+            raise HTTPException(status_code=404, detail="Principal not found.")
+        if principal.auth_method != "password":
+            span.set_attribute("http.status_code", 409)
+            raise HTTPException(
+                status_code=409, detail="Cannot reset a password for an OAuth2 client."
+            )
+        if not principal.is_active:
+            span.set_attribute("http.status_code", 409)
+            raise HTTPException(
+                status_code=409, detail="Cannot reset password for a deactivated principal."
+            )
+
+        new_password = secrets.token_urlsafe(16)
+        principal.password_hash = _hash_secret(new_password)
+        principal.updated_at = datetime.now(timezone.utc)
+        await db.commit()
+
+        logger.info("auth.client_rotated", client_id=client_id, action="password_reset")
+        # The new password value is NEVER stored in any span attribute (AC-20 parity)
+        span.set_attribute("http.status_code", 200)
+        return ResetPasswordResponse(client_id=client_id, password=new_password)
+
+
 # ── Update (PATCH) client ──────────────────────────────────────────────────
 
 
 @router.patch(
-    "/clients/{client_id}", response_model=ClientListItem, dependencies=[Depends(_require_admin)]
+    "/clients/{client_id}", response_model=PrincipalListItem, dependencies=[Depends(_require_admin)]
 )
 async def update_client(
     client_id: str,
-    body: UpdateClientRequest,
+    body: UpdatePrincipalRequest,
     db: AsyncSession = Depends(_get_db),
 ) -> Any:
     """Partially update a client's name, label, scopes, or TTL.
@@ -285,7 +365,7 @@ async def update_client(
 
     with _tracer.start_as_current_span("client.update", kind=SpanKind.INTERNAL) as span:
         span.set_attribute("target_client_id", client_id)
-        result = await db.execute(select(OAuthClient).where(OAuthClient.client_id == client_id))
+        result = await db.execute(select(Principal).where(Principal.client_id == client_id))
         client = result.scalar_one_or_none()
         if client is None:
             span.set_attribute("http.status_code", 404)
@@ -324,7 +404,7 @@ async def update_client(
         # Record field names only — new values are never stored in span attributes (AC-19)
         span.set_attribute("updated_fields", ",".join(updated_fields))
         span.set_attribute("http.status_code", 200)
-        return ClientListItem(
+        return PrincipalListItem(
             client_id=client.client_id,
             client_name=client.client_name,
             label=client.label,
@@ -334,6 +414,8 @@ async def update_client(
             is_active=client.is_active,
             created_at=client.created_at,
             updated_at=client.updated_at,
+            auth_method=client.auth_method,
+            email=client.email,
         )
 
 
@@ -357,7 +439,7 @@ async def reactivate_client(
 
     with _tracer.start_as_current_span("client.reactivate", kind=SpanKind.INTERNAL) as span:
         span.set_attribute("target_client_id", client_id)
-        result = await db.execute(select(OAuthClient).where(OAuthClient.client_id == client_id))
+        result = await db.execute(select(Principal).where(Principal.client_id == client_id))
         client = result.scalar_one_or_none()
         if client is None:
             span.set_attribute("http.status_code", 404)
@@ -384,3 +466,134 @@ async def reactivate_client(
         logger.info("admin.client.reactivated", client_id=client_id)
         span.set_attribute("http.status_code", 200)
         return ReactivateResponse(client_id=client_id, is_active=True)
+
+
+# ── Credential share links (RM-11 — ported from the retired admin_ui.py) ─────
+#
+# The JSON/SPA flow already holds the plaintext secret in memory from the
+# create/rotate-secret/reset-password response, so — unlike the old
+# server-rendered dashboard — there's no need for a signed flash-cookie/
+# share_intent round trip: the caller just sends the secret it already has.
+
+
+@router.post(
+    "/clients/{client_id}/share",
+    response_model=ShareLinkResponse,
+    dependencies=[Depends(_require_admin)],
+)
+async def generate_share_link(
+    client_id: str,
+    body: GenerateShareLinkRequest,
+    request: Request,
+    db: AsyncSession = Depends(_get_db),
+) -> Any:
+    """Create a single-use credential share URL.
+
+    Implements: memory/specs/016-credential-share-link.md — AC-1..AC-7, AC-26, AC-28
+    Implements: docs/roadmap.md — RM-11
+    """
+    from opentelemetry.trace import SpanKind
+
+    with _tracer.start_as_current_span("client.share.create", kind=SpanKind.INTERNAL) as span:
+        span.set_attribute("client_id", client_id)
+        result = await db.execute(select(Principal).where(Principal.client_id == client_id))
+        principal = result.scalar_one_or_none()
+        if principal is None:
+            span.set_attribute("http.status_code", 404)
+            raise HTTPException(status_code=404, detail="Principal not found.")
+
+        settings = request.app.state.settings
+        now = datetime.now(timezone.utc)
+
+        # AC-28: revoke any existing active token for this principal first
+        active_result = await db.execute(
+            select(CredentialShareToken).where(
+                CredentialShareToken.client_id == client_id,
+                CredentialShareToken.used_at.is_(None),
+                CredentialShareToken.revoked_at.is_(None),
+            )
+        )
+        for old_token in active_result.scalars().all():
+            old_expires = old_token.expires_at
+            if old_expires.tzinfo is None:
+                old_expires = old_expires.replace(tzinfo=timezone.utc)
+            if old_expires > now:
+                old_token.revoked_at = now
+                old_token.revoked_by = "admin:superseded"
+                old_token.secret_plaintext_enc = None
+
+        raw_token = secrets.token_urlsafe(32)
+        ttl_s = settings.share_token_ttl_seconds
+        enc = encrypt_secret(settings.share_token_encryption_key, body.secret)
+        expires_at = now + timedelta(seconds=ttl_s)
+
+        share = CredentialShareToken(
+            id=str(uuid.uuid4()),
+            token=raw_token,
+            client_id=client_id,
+            client_name=principal.client_name,
+            client_id_value=client_id,
+            secret_plaintext_enc=enc,
+            expires_at=expires_at,
+        )
+        db.add(share)
+        await db.commit()
+
+        logger.info(
+            "auth.share_token_created",
+            token_id=share.id,
+            token_prefix=raw_token[:8] + "…",
+            client_id=client_id,
+            expires_at=expires_at.isoformat(),
+        )
+
+        base_url = str(request.base_url).rstrip("/")
+        span.set_attribute("http.status_code", 200)
+        return ShareLinkResponse(
+            share_url=f"{base_url}/share/{raw_token}",
+            expires_at=expires_at,
+        )
+
+
+@router.post(
+    "/clients/share/{token_id}/revoke",
+    response_model=RevokeShareLinkResponse,
+    dependencies=[Depends(_require_admin)],
+)
+async def revoke_share_link(
+    token_id: str,
+    db: AsyncSession = Depends(_get_db),
+) -> Any:
+    """Revoke an active share token before it is consumed.
+
+    Implements: memory/specs/016-credential-share-link.md — AC-19, AC-20, AC-24
+    Implements: docs/roadmap.md — RM-11
+    """
+    from opentelemetry.trace import SpanKind
+
+    with _tracer.start_as_current_span("client.share.revoke", kind=SpanKind.INTERNAL) as span:
+        span.set_attribute("token_id", token_id)
+        result = await db.execute(
+            select(CredentialShareToken).where(CredentialShareToken.id == token_id)
+        )
+        share = result.scalar_one_or_none()
+        if share is None:
+            span.set_attribute("http.status_code", 404)
+            raise HTTPException(status_code=404, detail="Share token not found.")
+        if share.used_at is not None:
+            span.set_attribute("http.status_code", 409)
+            raise HTTPException(status_code=409, detail="Share token already used.")
+
+        share.revoked_at = datetime.now(timezone.utc)
+        share.revoked_by = "admin"
+        share.secret_plaintext_enc = None
+        await db.commit()
+
+        logger.info(
+            "auth.share_token_revoked",
+            token_id=share.id,
+            token_prefix=share.token[:8] + "…",
+            client_id=share.client_id,
+        )
+        span.set_attribute("http.status_code", 200)
+        return RevokeShareLinkResponse(token_id=token_id, revoked=True)

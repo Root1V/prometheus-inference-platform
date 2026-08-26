@@ -2,11 +2,9 @@
 # Implements: AC-18 (rate limiting), AC-19 (startup validation)
 # Implements: memory/specs/018-observability-telemetry.md — AC-2, AC-9
 from contextlib import asynccontextmanager
-from pathlib import Path
 from typing import Any, AsyncGenerator
 
 from fastapi import FastAPI, Request
-from fastapi.staticfiles import StaticFiles
 from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 from slowapi.util import get_remote_address
@@ -15,7 +13,6 @@ from .config import Settings
 from .crypto import build_jwks, load_private_key, load_public_key
 from .db import create_tables, init_db_engine
 from .routers.admin import router as admin_router
-from .routers.admin_ui import router as admin_ui_router
 from .routers.oauth2 import router as oauth2_router
 from .routers.share import router as share_router
 from .routers.well_known import router as well_known_router
@@ -99,15 +96,5 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     # memory/specs/016-credential-share-link.md — public one-time credential delivery
     app.include_router(share_router)
-
-    # memory/specs/015-auth-service-dashboard.md — admin web UI + static assets
-    # Mount static BEFORE the UI router so the catch-all path param doesn't intercept CSS.
-    _static_dir = Path(__file__).parent / "static"
-    app.mount(
-        "/admin/ui/static",
-        StaticFiles(directory=str(_static_dir)),
-        name="admin-static",
-    )
-    app.include_router(admin_ui_router)
 
     return app

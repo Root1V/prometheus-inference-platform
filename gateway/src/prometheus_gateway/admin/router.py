@@ -15,8 +15,18 @@ DELETE /admin/api/nodes/{node}/models/{model_id}              — deregister
 POST   /admin/api/nodes/{node}/instances/{model_id}/start
 POST   /admin/api/nodes/{node}/instances/{model_id}/stop
 POST   /admin/api/nodes/{node}/instances/{model_id}/restart
+GET    /admin/api/users                                     — list principals
+POST   /admin/api/users                                     — create (oauth2 or password)
+PATCH  /admin/api/users/{client_id}                          — update
+DELETE /admin/api/users/{client_id}                          — deactivate
+POST   /admin/api/users/{client_id}/reactivate
+POST   /admin/api/users/{client_id}/rotate-secret            — oauth2 principals
+POST   /admin/api/users/{client_id}/reset-password           — password principals
+POST   /admin/api/users/{client_id}/share                    — one-time credential link
+POST   /admin/api/users/share/{token_id}/revoke
 
 Implements: docs/roadmap.md — RM-10 (gateway admin dashboard, phase 1)
+Implements: docs/roadmap.md — RM-11 (Users section, dual login modes)
 """
 
 from __future__ import annotations
@@ -116,21 +126,25 @@ def create_admin_router(manager_client: ManagerApiClient) -> APIRouter:
                 "cannot authenticate. Contact the platform operator.",
             )
 
-        client_id = body.get("client_id", "")
-        client_secret = body.get("client_secret", "")
+        if "email" in body and "password" in body:
+            form = {
+                "grant_type": "password",
+                "username": body.get("email", ""),
+                "password": body.get("password", ""),
+                "scope": "admin:read admin:write",
+            }
+        else:
+            form = {
+                "grant_type": "client_credentials",
+                "client_id": body.get("client_id", ""),
+                "client_secret": body.get("client_secret", ""),
+                "scope": "admin:read admin:write",
+            }
         try:
             async with httpx.AsyncClient(
                 timeout=10.0, verify=settings.auth_service_tls_verify
             ) as client:
-                resp = await client.post(
-                    settings.auth_service_token_url,
-                    data={
-                        "grant_type": "client_credentials",
-                        "client_id": client_id,
-                        "client_secret": client_secret,
-                        "scope": "admin:read admin:write",
-                    },
-                )
+                resp = await client.post(settings.auth_service_token_url, data=form)
         except Exception as exc:
             return _proxy_error_response(request, exc)
 
@@ -258,5 +272,92 @@ def create_admin_router(manager_client: ManagerApiClient) -> APIRouter:
         except Exception as exc:
             return _proxy_error_response(request, exc)
         return _passthrough(resp)
+
+    # ── Users — docs/roadmap.md RM-11 ─────────────────────────────────────────
+    # Proxies to auth-service's /admin/clients/* using the static X-Admin-Key
+    # that service requires (distinct from manager_client's OAuth2 flow).
+
+    async def _auth_admin_request(
+        request: Request, method: str, path: str, json: Any = None
+    ) -> Response:
+        settings: Settings = request.app.state.settings
+        if not settings.auth_service_admin_url or not settings.auth_service_admin_api_key:
+            return _problem(
+                request,
+                500,
+                "not-configured",
+                "Not Configured",
+                "AUTH_SERVICE_ADMIN_URL / AUTH_SERVICE_ADMIN_API_KEY are not set on the "
+                "gateway — the Users section cannot reach auth-service.",
+            )
+        try:
+            async with httpx.AsyncClient(
+                timeout=10.0, verify=settings.auth_service_tls_verify
+            ) as http_client:
+                resp = await http_client.request(
+                    method,
+                    f"{settings.auth_service_admin_url}{path}",
+                    json=json,
+                    headers={"X-Admin-Key": settings.auth_service_admin_api_key},
+                )
+        except Exception as exc:
+            return _proxy_error_response(request, exc)
+        return _passthrough(resp)
+
+    @router.get("/admin/api/users")
+    async def list_users(request: Request) -> Response:
+        if (forbidden := _require_scope(request, "admin:read")) is not None:
+            return forbidden
+        return await _auth_admin_request(request, "GET", "/clients")
+
+    @router.post("/admin/api/users")
+    async def create_user(body: dict[str, Any], request: Request) -> Response:
+        if (forbidden := _require_scope(request, "admin:write")) is not None:
+            return forbidden
+        return await _auth_admin_request(request, "POST", "/clients", json=body)
+
+    @router.patch("/admin/api/users/{client_id}")
+    async def update_user(client_id: str, body: dict[str, Any], request: Request) -> Response:
+        if (forbidden := _require_scope(request, "admin:write")) is not None:
+            return forbidden
+        return await _auth_admin_request(request, "PATCH", f"/clients/{client_id}", json=body)
+
+    @router.delete("/admin/api/users/{client_id}")
+    async def deactivate_user(client_id: str, request: Request) -> Response:
+        if (forbidden := _require_scope(request, "admin:write")) is not None:
+            return forbidden
+        return await _auth_admin_request(request, "DELETE", f"/clients/{client_id}")
+
+    @router.post("/admin/api/users/{client_id}/reactivate")
+    async def reactivate_user(client_id: str, request: Request) -> Response:
+        if (forbidden := _require_scope(request, "admin:write")) is not None:
+            return forbidden
+        return await _auth_admin_request(request, "POST", f"/clients/{client_id}/reactivate")
+
+    @router.post("/admin/api/users/{client_id}/rotate-secret")
+    async def rotate_user_secret(client_id: str, request: Request) -> Response:
+        if (forbidden := _require_scope(request, "admin:write")) is not None:
+            return forbidden
+        return await _auth_admin_request(request, "POST", f"/clients/{client_id}/rotate-secret")
+
+    @router.post("/admin/api/users/{client_id}/reset-password")
+    async def reset_user_password(client_id: str, request: Request) -> Response:
+        if (forbidden := _require_scope(request, "admin:write")) is not None:
+            return forbidden
+        return await _auth_admin_request(request, "POST", f"/clients/{client_id}/reset-password")
+
+    @router.post("/admin/api/users/{client_id}/share")
+    async def share_user_credential(
+        client_id: str, body: dict[str, Any], request: Request
+    ) -> Response:
+        if (forbidden := _require_scope(request, "admin:write")) is not None:
+            return forbidden
+        return await _auth_admin_request(request, "POST", f"/clients/{client_id}/share", json=body)
+
+    @router.post("/admin/api/users/share/{token_id}/revoke")
+    async def revoke_user_share(token_id: str, request: Request) -> Response:
+        if (forbidden := _require_scope(request, "admin:write")) is not None:
+            return forbidden
+        return await _auth_admin_request(request, "POST", f"/clients/share/{token_id}/revoke")
 
     return router

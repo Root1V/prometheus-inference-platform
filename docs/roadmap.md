@@ -35,7 +35,7 @@ folded in here per your "muchos más que vayas encontrando."
 | [RM-08](#rm-08-distributed-inference-across-multiple-hosts-item-5) | Distributed inference across multiple hosts (item 5) | done | RM-05, RM-06 |
 | [RM-09](#rm-09-multi-modal-model-support-item-6-done-vlm--embeddings) | Multi-modal model support: VLM + embeddings (item 6, scoped) | done | RM-05, RM-06 |
 | [RM-10](#rm-10-gateway-admin-dashboard-item-3-done-phase-1) | Gateway admin dashboard (item 3) | done (phase 1) | RM-05 |
-| [RM-11](#rm-11-auth--users-dashboard-item-1) | Auth & Users dashboard (item 1) | todo | RM-07 |
+| [RM-11](#rm-11-auth--users-dashboard-item-1) | Auth & Users dashboard (item 1) | done | RM-07 |
 | [RM-12](#rm-12-e2e-llm-tracing-with-langfuse-item-8) | E2E LLM tracing with Langfuse (item 8) | todo | — |
 | [RM-13](#rm-13-admin-dashboard-live-log-viewer-added) | Admin dashboard: live log viewer per instance (added) | todo | RM-10 |
 | [RM-14](#rm-14-model-playground-added) | Model playground (added) | todo | RM-10 |
@@ -478,6 +478,20 @@ demands them.
 
 Do this together with or right after RM-07 so the new UI and permission model are built
 once, not redone.
+
+**Done (2026-08-26)**: `oauth_clients` unified into `principals` (`auth_method: oauth2 |
+password`), migrated automatically on startup, old table dropped. New `password` grant on
+`/oauth2/token`; same JWT/scope model for both grants — role still just picks a default
+TTL, `allowed_scopes` still the only real gate. Retired the old Jinja2 `/admin/ui/*`
+dashboard entirely (router, templates, its tests); credential share-links (spec-016)
+ported into JSON endpoints (`/admin/clients/{id}/share` + `/revoke`) instead of dropped —
+simpler than the original since the SPA already holds the plaintext secret from the
+create/rotate/reset response, no flash-cookie hand-off needed. New Users section in
+`gateway/admin-ui` (table, create/edit modal with an auth_method toggle, scope picker,
+credential-reveal + share-link dialog); Login page defaults to email+password with a
+toggle to the existing client_id/secret mode. Verified end-to-end in-browser: password
+login, scope-denial error message, edit-to-grant-scope, re-login, share-link generate +
+one-time redemption + second-visit 410.
 
 ## RM-12 — E2E LLM tracing with Langfuse (item 8)
 

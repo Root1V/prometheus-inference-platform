@@ -132,6 +132,14 @@ class Settings(BaseSettings):
     # in addition to its existing backend-registry:read grant.
     admin_dashboard_enabled: bool = False
 
+    # ── Users section — docs/roadmap.md RM-11 ─────────────────────────────────
+    # /admin/api/users/* proxies to auth-service's /admin/clients/* using the
+    # same static X-Admin-Key auth-service itself requires — distinct from the
+    # OAuth2 client_credentials manager_client uses, since auth-service's admin
+    # API predates and doesn't use the platform's own token scheme.
+    auth_service_admin_url: str | None = None
+    auth_service_admin_api_key: str | None = None
+
     @model_validator(mode="after")
     def require_key_source(self) -> "Settings":
         if not self.jwt_public_key_file and not self.jwt_jwks_url:

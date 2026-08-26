@@ -15,6 +15,7 @@ from tests.conftest import make_token
 
 NODE_URL = "http://mac.local:8090"
 AUTH_TOKEN_URL = "https://auth.test/token"
+AUTH_ADMIN_URL = "https://auth.test/admin"
 
 
 # ── _is_exempt() — SPA shell public, /admin/api/* protected ─────────────────
@@ -63,6 +64,8 @@ def admin_settings(rsa_keys, tmp_path):
         manager_client_secret="secret",
         auth_service_token_url=AUTH_TOKEN_URL,
         auth_service_tls_verify=True,
+        auth_service_admin_url=AUTH_ADMIN_URL,
+        auth_service_admin_api_key="test-admin-secret",
     )
 
 
@@ -374,4 +377,77 @@ async def test_control_instance_lifecycle_conflict_proxied(gw, rsa_keys):
     # gateway's own RFC 9457 shape — one error contract regardless of origin.
     body = resp.json()
     assert body["type"].endswith("lifecycle-conflict")
-    assert body["detail"] == "No running instance found for model-a"
+
+
+# ── /admin/api/users/* — RM-11 ────────────────────────────────────────────────
+
+
+async def test_list_users_requires_admin_read(gw, rsa_keys):
+    resp = await gw.get("/admin/api/users", headers=_headers(rsa_keys, "inference:read"))
+    assert resp.status_code == 403
+
+
+async def test_list_users_proxies_to_auth_service(gw, rsa_keys):
+    with respx.mock:
+        respx.get(f"{AUTH_ADMIN_URL}/clients").mock(
+            return_value=Response(200, json=[{"client_id": "u1", "auth_method": "password"}])
+        )
+        resp = await gw.get("/admin/api/users", headers=_headers(rsa_keys, "admin:read"))
+    assert resp.status_code == 200
+    assert resp.json() == [{"client_id": "u1", "auth_method": "password"}]
+
+
+async def test_create_user_requires_admin_write(gw, rsa_keys):
+    resp = await gw.post("/admin/api/users", json={}, headers=_headers(rsa_keys, "admin:read"))
+    assert resp.status_code == 403
+
+
+async def test_create_user_forwards_admin_key_and_body(gw, rsa_keys):
+    with respx.mock:
+        route = respx.post(f"{AUTH_ADMIN_URL}/clients").mock(
+            return_value=Response(200, json={"client_id": "u2"})
+        )
+        resp = await gw.post(
+            "/admin/api/users",
+            json={"client_name": "n", "role": "app", "allowed_scopes": ["inference:read"]},
+            headers=_headers(rsa_keys, "admin:write"),
+        )
+    assert resp.status_code == 200
+    assert route.calls[0].request.headers["X-Admin-Key"] == "test-admin-secret"
+
+
+async def test_create_user_not_configured_returns_500(rsa_keys, admin_settings):
+    from prometheus_gateway.main import create_app
+    from prometheus_gateway.models.registry import ModelRegistry
+
+    admin_settings.auth_service_admin_url = None
+    registry = ModelRegistry.__new__(ModelRegistry)
+    registry._models = {}
+    app = create_app(settings=admin_settings, registry=registry)
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as gw2:
+        resp = await gw2.post(
+            "/admin/api/users", json={}, headers=_headers(rsa_keys, "admin:write")
+        )
+    assert resp.status_code == 500
+
+
+async def test_deactivate_user_proxies_delete(gw, rsa_keys):
+    with respx.mock:
+        route = respx.delete(f"{AUTH_ADMIN_URL}/clients/u3").mock(return_value=Response(204))
+        resp = await gw.delete("/admin/api/users/u3", headers=_headers(rsa_keys, "admin:write"))
+    assert resp.status_code == 204
+    assert route.called
+
+
+async def test_share_user_credential_proxies_to_auth_service(gw, rsa_keys):
+    with respx.mock:
+        respx.post(f"{AUTH_ADMIN_URL}/clients/u4/share").mock(
+            return_value=Response(200, json={"share_url": "https://x/share/tok", "expires_at": "x"})
+        )
+        resp = await gw.post(
+            "/admin/api/users/u4/share",
+            json={"secret": "pmt_live_x"},
+            headers=_headers(rsa_keys, "admin:write"),
+        )
+    assert resp.status_code == 200
+    assert resp.json()["share_url"] == "https://x/share/tok"

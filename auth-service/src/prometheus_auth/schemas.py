@@ -3,10 +3,11 @@ from __future__ import annotations
 
 import re
 from datetime import datetime
+from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
-from .db import ClientRole
+from .db import PrincipalRole
 
 # ── Platform scopes (fixed enum) ─────────────────────────────────────────────
 # Implements: memory/specs/005-auth-service.md — Q3 (resolved)
@@ -49,27 +50,50 @@ def invalid_scopes(scopes: list[str] | set[str]) -> set[str]:
 
 # ── Admin request / response schemas ─────────────────────────────────────────
 
+_EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 
-class CreateClientRequest(BaseModel):
+
+class CreatePrincipalRequest(BaseModel):
+    """Implements: docs/roadmap.md — RM-11 (auth_method: oauth2 | password)."""
+
     client_name: str = Field(..., min_length=1, max_length=255)
-    role: ClientRole
+    role: PrincipalRole
     allowed_scopes: list[str] = Field(..., min_length=1)
     # See memory/specs/015-auth-service-dashboard.md — AC-1
     label: str | None = Field(None, max_length=255)
+    auth_method: Literal["oauth2", "password"] = "oauth2"
+    email: str | None = Field(None, max_length=255)
+    password: str | None = Field(None, min_length=8)
 
     model_config = {"use_enum_values": True}
 
+    @model_validator(mode="after")
+    def _validate_auth_method(self) -> "CreatePrincipalRequest":
+        if self.auth_method == "oauth2":
+            if self.email is not None or self.password is not None:
+                raise ValueError("email/password must not be set when auth_method is oauth2")
+        else:
+            if not self.email or not _EMAIL_RE.match(self.email):
+                raise ValueError("a valid email is required when auth_method is password")
+            if not self.password:
+                raise ValueError("password is required when auth_method is password")
+        return self
 
-class CreateClientResponse(BaseModel):
+
+class CreatePrincipalResponse(BaseModel):
     client_id: str
-    client_secret: str  # pmt_live_ prefixed — shown once only
     client_name: str
     role: str
     allowed_scopes: list[str]
     token_ttl_seconds: int
+    auth_method: str
+    email: str | None = None
+    # Shown once only: client_secret for oauth2, echoes the caller-supplied
+    # password for password principals (never re-derivable afterwards).
+    client_secret: str | None = None
 
 
-class ClientListItem(BaseModel):
+class PrincipalListItem(BaseModel):
     client_id: str
     client_name: str
     # See memory/specs/015-auth-service-dashboard.md — AC-2
@@ -81,12 +105,14 @@ class ClientListItem(BaseModel):
     created_at: datetime
     # See memory/specs/015-auth-service-dashboard.md — AC-27
     updated_at: datetime | None = None
+    auth_method: str
+    email: str | None = None
 
 
 # ── Spec-015: update / reactivate schemas ────────────────────────────────────
 
 
-class UpdateClientRequest(BaseModel):
+class UpdatePrincipalRequest(BaseModel):
     """Partial update — only supplied fields are changed. See memory/specs/015-auth-service-dashboard.md — AC-3."""
 
     client_name: str | None = Field(None, min_length=1, max_length=255)
@@ -103,6 +129,27 @@ class ReactivateResponse(BaseModel):
 class RotateSecretResponse(BaseModel):
     client_id: str
     client_secret: str  # new secret — shown once only
+
+
+class ResetPasswordResponse(BaseModel):
+    client_id: str
+    password: str  # new password — shown once only
+
+
+class GenerateShareLinkRequest(BaseModel):
+    """Implements: docs/roadmap.md — RM-11 (credential share link, ported from admin_ui.py)."""
+
+    secret: str = Field(..., min_length=1)
+
+
+class ShareLinkResponse(BaseModel):
+    share_url: str
+    expires_at: datetime
+
+
+class RevokeShareLinkResponse(BaseModel):
+    token_id: str
+    revoked: bool
 
 
 # ── OAuth2 token schemas ──────────────────────────────────────────────────────

@@ -1,11 +1,12 @@
-import { LogOut, Server } from "lucide-react";
+import { LogOut, Server, Users } from "lucide-react";
 import { NavLink } from "react-router-dom";
 import { useAuth } from "../context/AuthContext";
 import { cn } from "../lib/cn";
 
-// Only one nav item for phase 1 — structured as a list so more pages can be
-// added later without reshaping the sidebar.
-const NAV_ITEMS = [{ to: "/", label: "Instances", icon: Server }];
+const NAV_ITEMS = [
+  { to: "/", label: "Instances", icon: Server },
+  { to: "/users", label: "Users", icon: Users },
+];
 
 export function Sidebar() {
   const { logout } = useAuth();
