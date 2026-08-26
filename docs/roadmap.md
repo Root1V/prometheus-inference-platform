@@ -48,6 +48,7 @@ folded in here per your "muchos más que vayas encontrando."
 | [RM-21](#rm-21-simplified-instance-creation-added) | Simplified instance creation (added) | todo | RM-20 |
 | [RM-22](#rm-22-platform-overview-home-page-added) | Platform overview / home page (added) | todo | RM-10 |
 | [RM-23](#rm-23-active-sessions--connected-users-added) | Active sessions / connected users (added) | todo | RM-10, related to RM-15 |
+| [RM-24](#rm-24-model-picker-in-create-user-added) | Model picker in Create User (added) | todo | RM-11, RM-21 |
 
 Why this order, briefly:
 - **RM-01 to RM-04** are cheap, low-risk, and matter more now that this moved from an
@@ -657,6 +658,26 @@ SDK), and how long it's been connected. Needs a session-tracking mechanism spann
 gateway (API calls), auth-service (dashboard login sessions), and any model-facing chat UI
 — this is the least-designed item in this batch; where "active" state actually gets
 recorded needs its own scoping pass before implementation starts.
+
+## RM-24 — Model picker in Create User (added)
+
+**Why**: today, granting a user access to a model means typing a raw `model:<id>` scope
+string by hand in the Create User modal's free-text scope field (RM-11) — the operator has
+to already know the exact model id and get the `model:` prefix right. The manager already
+knows which models are actually downloaded and discoverable (`discovery: true` in the
+registry) — the same source of truth RM-21 uses to simplify instance creation.
+
+**Scope (not yet designed in detail)**: replace the free-text `model:<id>` entry in
+`ScopePicker`/`CreateUserModal` with a multi-select list of discovered models (name shown,
+`model:<id>` scope generated under the hood), so granting model access is pick-from-a-list
+instead of hand-typing scope strings. Depends on RM-21 landing first (or at least its
+"list discovered models" endpoint) — no point building a second model-listing mechanism
+just for this.
+
+**Not scoped yet**: whether this list should be scoped to models on a specific node or show
+every discovered model across all nodes regardless of where the user might call them from
+(actual model access isn't node-specific today, so likely the latter, but confirm once
+RM-21's data shape exists).
 
 ## Adding new items
 
