@@ -25,7 +25,7 @@ Status: `done` · `todo`
 | RM-16 | Routing & rate-limit visibility | todo | Surface gateway's rate-limit/circuit-breaker state in the dashboard |
 | RM-17 | Guardrails / content filtering | todo | Speculative — no known need yet |
 | RM-18 | ~~Teams / multi-user RBAC~~ | merged | Merged into RM-11 |
-| RM-19 | Dashboard branding: logo + favicon | todo | Icon next to "Prometheus" in the sidebar, reused as the page favicon |
+| RM-19 | Dashboard branding: logo + favicon | done | Icon next to "Prometheus" in the sidebar, reused as the page favicon |
 | RM-20 | Node registry | todo | Register nodes (IP/DNS, Mac/Nvidia, connection creds, name, tag) |
 | RM-21 | Simplified instance creation | todo | Pick node + model (auto-filled from discovery); port auto-assigned |
 | RM-22 | Platform overview / home page | todo | Landing page summarizing overall platform state |

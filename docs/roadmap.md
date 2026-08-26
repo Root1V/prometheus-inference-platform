@@ -43,7 +43,7 @@ folded in here per your "muchos más que vayas encontrando."
 | [RM-16](#rm-16-routing--rate-limit-visibility-added) | Routing & rate-limit visibility (added) | todo | RM-10 |
 | [RM-17](#rm-17-guardrails--content-filtering-added-speculative) | Guardrails / content filtering (added, speculative) | todo | — |
 | [RM-18](#rm-18-teams--multi-user-rbac-added-speculative) | ~~Teams / multi-user RBAC~~ — merged into RM-11 | merged | — |
-| [RM-19](#rm-19-dashboard-branding-logo--favicon-added) | Dashboard branding: logo + favicon (added) | todo | RM-10 |
+| [RM-19](#rm-19-dashboard-branding-logo--favicon-added) | Dashboard branding: logo + favicon (added) | done | RM-10 |
 | [RM-20](#rm-20-node-registry-added) | Node/server registry (added) | todo | RM-08, RM-10 |
 | [RM-21](#rm-21-simplified-instance-creation-added) | Simplified instance creation (added) | todo | RM-20 |
 | [RM-22](#rm-22-platform-overview-home-page-added) | Platform overview / home page (added) | todo | RM-10 |
