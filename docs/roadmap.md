@@ -650,6 +650,20 @@ deployments must create their node(s) via the dashboard's Nodes section (or `POS
 /admin/nodes`) after upgrading; `gateway/.env.podman.example` and `podman-compose.yml`
 updated accordingly.
 
+**Follow-up (2026-08-26)**: after using it, found two rough edges — no validation that a
+newly-registered node is actually reachable (a typo'd URL just silently breaks routing),
+and no way to see a node's health status. Added `Node.is_active`, set by an actual
+connectivity check (`GET {manager_url}/health` — manager-api's unauthenticated liveness
+probe) at creation and whenever `manager_url` changes, plus a manual `POST
+/admin/nodes/{id}/check` to re-run it (e.g. after fixing a down node). An unreachable node
+is still created — never rejected outright — just marked inactive, since it's a valid
+node the operator will likely bring up shortly. `fetch_nodes()` (used by
+`ManagerRegistrySync` and by admin's routing/instance-control endpoints) filters to
+active-only, so an inactive node is silently excluded from both the poll-driven model
+registry and node-scoped admin actions; the Nodes page itself still lists every node
+(active or not) via the unfiltered auth-service proxy, with a status badge and a recheck
+button per row.
+
 ## RM-25 — Node SSH/remote-maintenance credentials (added, speculative)
 
 **Why**: came up while scoping RM-20 — being able to record how to reach a node's

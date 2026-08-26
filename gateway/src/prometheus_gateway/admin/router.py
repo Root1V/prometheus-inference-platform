@@ -11,6 +11,7 @@ GET    /admin/api/nodes                                    — list registered n
 POST   /admin/api/nodes                                    — register a node
 PATCH  /admin/api/nodes/{node_id}                            — update a node
 DELETE /admin/api/nodes/{node_id}                            — remove a node
+POST   /admin/api/nodes/{node_id}/check                      — re-run connectivity check
 GET    /admin/api/instances                                 — aggregated across all nodes
 POST   /admin/api/nodes/{node}/models                        — register
 PATCH  /admin/api/nodes/{node}/models/{model_id}               — update fields
@@ -392,6 +393,12 @@ def create_admin_router(manager_client: ManagerApiClient) -> APIRouter:
         if (forbidden := _require_scope(request, "admin:write")) is not None:
             return forbidden
         return await _auth_admin_request(request, "DELETE", f"/nodes/{node_id}")
+
+    @router.post("/admin/api/nodes/{node_id}/check")
+    async def check_node(node_id: str, request: Request) -> Response:
+        if (forbidden := _require_scope(request, "admin:write")) is not None:
+            return forbidden
+        return await _auth_admin_request(request, "POST", f"/nodes/{node_id}/check")
 
     @router.post("/admin/api/users/share/{token_id}/revoke")
     async def revoke_user_share(token_id: str, request: Request) -> Response:

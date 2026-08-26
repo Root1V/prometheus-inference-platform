@@ -7,6 +7,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 
 import bcrypt
+import httpx
 import redis.asyncio as aioredis
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.security import APIKeyHeader
@@ -605,6 +606,29 @@ async def revoke_share_link(
 # ── Node registry (RM-20 — replaces the gateway's static MANAGER_NODES) ───────
 
 
+async def _check_node_reachable(manager_url: str) -> bool:
+    """GET {manager_url}/health — manager-api's liveness probe, no auth required."""
+    try:
+        async with httpx.AsyncClient(timeout=3.0) as client:
+            resp = await client.get(f"{manager_url.rstrip('/')}/health")
+        return resp.status_code == 200
+    except Exception:
+        return False
+
+
+def _node_to_item(node: Node) -> NodeListItem:
+    return NodeListItem(
+        id=node.id,
+        name=node.name,
+        manager_url=node.manager_url,
+        node_type=node.node_type.value,
+        tag=node.tag,
+        is_active=node.is_active,
+        created_at=node.created_at,
+        updated_at=node.updated_at,
+    )
+
+
 @router.post(
     "/nodes", response_model=NodeListItem, status_code=201, dependencies=[Depends(_require_admin)]
 )
@@ -612,10 +636,18 @@ async def create_node(
     body: CreateNodeRequest,
     db: AsyncSession = Depends(_get_db),
 ) -> Any:
-    """Register a new manager node. Implements: docs/roadmap.md — RM-20."""
+    """Register a new manager node.
+
+    Implements: docs/roadmap.md — RM-20. A connectivity check against the
+    node's manager-api runs immediately — an unreachable node is still
+    registered (so the operator doesn't lose the entry they just typed), but
+    created inactive rather than rejected outright.
+    """
     existing = await db.execute(select(Node).where(Node.name == body.name))
     if existing.scalar_one_or_none() is not None:
         raise HTTPException(status_code=409, detail=f"Node {body.name!r} already exists.")
+
+    reachable = await _check_node_reachable(body.manager_url)
 
     node = Node(
         id=str(uuid.uuid4()),
@@ -623,39 +655,21 @@ async def create_node(
         manager_url=body.manager_url,
         node_type=NodeType(body.node_type),
         tag=body.tag,
+        is_active=reachable,
     )
     db.add(node)
     await db.commit()
     await db.refresh(node)
 
-    logger.info("auth.node_created", node_id=node.id, name=node.name)
-    return NodeListItem(
-        id=node.id,
-        name=node.name,
-        manager_url=node.manager_url,
-        node_type=node.node_type.value,
-        tag=node.tag,
-        created_at=node.created_at,
-        updated_at=node.updated_at,
-    )
+    logger.info("auth.node_created", node_id=node.id, name=node.name, is_active=reachable)
+    return _node_to_item(node)
 
 
 @router.get("/nodes", response_model=list[NodeListItem], dependencies=[Depends(_require_admin)])
 async def list_nodes(db: AsyncSession = Depends(_get_db)) -> Any:
     """List all registered nodes. Implements: docs/roadmap.md — RM-20."""
     result = await db.execute(select(Node).order_by(Node.created_at.desc()))
-    return [
-        NodeListItem(
-            id=n.id,
-            name=n.name,
-            manager_url=n.manager_url,
-            node_type=n.node_type.value,
-            tag=n.tag,
-            created_at=n.created_at,
-            updated_at=n.updated_at,
-        )
-        for n in result.scalars().all()
-    ]
+    return [_node_to_item(n) for n in result.scalars().all()]
 
 
 @router.patch(
@@ -666,14 +680,19 @@ async def update_node(
     body: UpdateNodeRequest,
     db: AsyncSession = Depends(_get_db),
 ) -> Any:
-    """Partially update a node's manager_url / node_type / tag. Implements: RM-20."""
+    """Partially update a node's manager_url / node_type / tag.
+
+    Implements: docs/roadmap.md — RM-20. Changing manager_url re-runs the
+    connectivity check (a URL change invalidates whatever was last observed).
+    """
     result = await db.execute(select(Node).where(Node.id == node_id))
     node = result.scalar_one_or_none()
     if node is None:
         raise HTTPException(status_code=404, detail="Node not found.")
 
-    if body.manager_url is not None:
+    if body.manager_url is not None and body.manager_url != node.manager_url:
         node.manager_url = body.manager_url
+        node.is_active = await _check_node_reachable(body.manager_url)
     if body.node_type is not None:
         node.node_type = NodeType(body.node_type)
     if "tag" in body.model_fields_set:
@@ -684,15 +703,33 @@ async def update_node(
     await db.refresh(node)
 
     logger.info("auth.node_updated", node_id=node.id)
-    return NodeListItem(
-        id=node.id,
-        name=node.name,
-        manager_url=node.manager_url,
-        node_type=node.node_type.value,
-        tag=node.tag,
-        created_at=node.created_at,
-        updated_at=node.updated_at,
-    )
+    return _node_to_item(node)
+
+
+@router.post(
+    "/nodes/{node_id}/check", response_model=NodeListItem, dependencies=[Depends(_require_admin)]
+)
+async def check_node(
+    node_id: str,
+    db: AsyncSession = Depends(_get_db),
+) -> Any:
+    """Re-run the connectivity check and update is_active accordingly.
+
+    Implements: docs/roadmap.md — RM-20. The way a node marked inactive
+    (unreachable at creation, or since) comes back once it's actually up.
+    """
+    result = await db.execute(select(Node).where(Node.id == node_id))
+    node = result.scalar_one_or_none()
+    if node is None:
+        raise HTTPException(status_code=404, detail="Node not found.")
+
+    node.is_active = await _check_node_reachable(node.manager_url)
+    node.updated_at = datetime.now(timezone.utc)
+    await db.commit()
+    await db.refresh(node)
+
+    logger.info("auth.node_checked", node_id=node.id, is_active=node.is_active)
+    return _node_to_item(node)
 
 
 @router.delete("/nodes/{node_id}", status_code=204, dependencies=[Depends(_require_admin)])

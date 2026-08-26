@@ -39,3 +39,11 @@ export function useDeleteNode() {
     onSuccess: () => queryClient.invalidateQueries({ queryKey: NODES_KEY }),
   });
 }
+
+export function useCheckNode() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async (id: string) => (await apiClient.post<Node>(`/nodes/${id}/check`)).data,
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: NODES_KEY }),
+  });
+}

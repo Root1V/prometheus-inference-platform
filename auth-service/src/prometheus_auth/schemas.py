@@ -170,6 +170,7 @@ class NodeListItem(BaseModel):
     manager_url: str
     node_type: str
     tag: str | None = None
+    is_active: bool
     created_at: datetime
     updated_at: datetime | None = None
 

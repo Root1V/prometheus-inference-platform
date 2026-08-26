@@ -1,9 +1,27 @@
 """Tests for RM-20 — node registry (/admin/nodes).
 
 Implements: docs/roadmap.md — RM-20
+
+Connectivity checks (_check_node_reachable) hit the network — patched to a fixed
+result in most tests here so CRUD behavior doesn't depend on real reachability;
+the dedicated `test_nodes_connectivity_*` tests below exercise the check itself.
 """
 
+import pytest
+
+from prometheus_auth.routers import admin as admin_router
+
 from .conftest import ADMIN_HEADERS
+
+
+@pytest.fixture(autouse=True)
+def _reachable(monkeypatch):
+    """Default all connectivity checks to "reachable" unless a test overrides it."""
+
+    async def _fake_check(manager_url: str) -> bool:
+        return True
+
+    monkeypatch.setattr(admin_router, "_check_node_reachable", _fake_check)
 
 
 async def _create_node(
@@ -23,6 +41,7 @@ async def test_nodes_create(client):
     assert node["manager_url"] == "http://127.0.0.1:8090"
     assert node["node_type"] == "mac"
     assert node["tag"] == "primary"
+    assert node["is_active"] is True
 
 
 async def test_nodes_admin_key_required(client):
@@ -84,4 +103,48 @@ async def test_nodes_delete(client):
 
 async def test_nodes_delete_not_found(client):
     resp = await client.delete("/admin/nodes/does-not-exist", headers=ADMIN_HEADERS)
+    assert resp.status_code == 404
+
+
+async def test_nodes_create_unreachable_is_inactive(client, monkeypatch):
+    async def _fake_check(manager_url: str) -> bool:
+        return False
+
+    monkeypatch.setattr(admin_router, "_check_node_reachable", _fake_check)
+
+    node = await _create_node(client, name="unreachable-node")
+    assert node["is_active"] is False
+
+
+async def test_nodes_update_manager_url_rechecks_connectivity(client, monkeypatch):
+    node = await _create_node(client, name="recheck-on-update")
+    assert node["is_active"] is True
+
+    async def _fake_check(manager_url: str) -> bool:
+        return False
+
+    monkeypatch.setattr(admin_router, "_check_node_reachable", _fake_check)
+    resp = await client.patch(
+        f"/admin/nodes/{node['id']}",
+        json={"manager_url": "http://now-down:8090"},
+        headers=ADMIN_HEADERS,
+    )
+    assert resp.status_code == 200
+    assert resp.json()["is_active"] is False
+
+
+async def test_nodes_check_endpoint_updates_status(client, monkeypatch):
+    node = await _create_node(client, name="check-endpoint-node")
+
+    async def _fake_check(manager_url: str) -> bool:
+        return False
+
+    monkeypatch.setattr(admin_router, "_check_node_reachable", _fake_check)
+    resp = await client.post(f"/admin/nodes/{node['id']}/check", headers=ADMIN_HEADERS)
+    assert resp.status_code == 200
+    assert resp.json()["is_active"] is False
+
+
+async def test_nodes_check_endpoint_not_found(client):
+    resp = await client.post("/admin/nodes/does-not-exist/check", headers=ADMIN_HEADERS)
     assert resp.status_code == 404

@@ -1,11 +1,12 @@
-import { Pencil, Trash2 } from "lucide-react";
+import { Pencil, RefreshCw, Trash2 } from "lucide-react";
 import { useState } from "react";
-import { useDeleteNode } from "../api/nodes";
+import { useCheckNode, useDeleteNode } from "../api/nodes";
 import { useToast } from "../context/ToastContext";
 import { cn } from "../lib/cn";
 import { getErrorMessage } from "../lib/errors";
 import type { Node } from "../types/node";
 import { ConfirmDialog } from "./ConfirmDialog";
+import { UserStatusBadge } from "./UserStatusBadge";
 
 const actionButtonClass =
   "rounded-md p-1.5 transition-colors disabled:cursor-not-allowed disabled:opacity-30";
@@ -14,6 +15,7 @@ export function NodeRow({ node, onEdit }: { node: Node; onEdit: (node: Node) => 
   const { showToast } = useToast();
   const [confirmDelete, setConfirmDelete] = useState(false);
   const remove = useDeleteNode();
+  const check = useCheckNode();
 
   return (
     <>
@@ -23,7 +25,29 @@ export function NodeRow({ node, onEdit }: { node: Node; onEdit: (node: Node) => 
         <td className="px-4 py-3 text-text-muted capitalize">{node.node_type}</td>
         <td className="px-4 py-3 text-text-muted">{node.tag ?? "—"}</td>
         <td className="px-4 py-3">
+          <UserStatusBadge isActive={node.is_active} />
+        </td>
+        <td className="px-4 py-3">
           <div className="flex items-center gap-1.5">
+            <button
+              type="button"
+              title="Re-check connectivity"
+              aria-label={`Re-check connectivity for ${node.name}`}
+              disabled={check.isPending}
+              onClick={() =>
+                check.mutate(node.id, {
+                  onSuccess: (updated) =>
+                    showToast(
+                      `${node.name} is ${updated.is_active ? "reachable" : "unreachable"}`,
+                      updated.is_active ? "success" : "error",
+                    ),
+                  onError: (error) => showToast(getErrorMessage(error), "error"),
+                })
+              }
+              className={cn(actionButtonClass, "text-text-muted hover:bg-background")}
+            >
+              <RefreshCw size={16} className={check.isPending ? "animate-spin" : undefined} />
+            </button>
             <button
               type="button"
               title="Edit"

@@ -124,6 +124,10 @@ class Node(Base):
     manager_url: Mapped[str] = mapped_column(String(512), nullable=False)
     node_type: Mapped[NodeType] = mapped_column(Enum(NodeType), nullable=False)
     tag: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Reflects an actual connectivity check (GET {manager_url}/health) — set at
+    # creation, on manager_url changes, and via the explicit re-check endpoint.
+    # Never a bare admin-settable toggle divorced from real reachability.
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         default=lambda: datetime.now(timezone.utc),
@@ -210,6 +214,7 @@ async def create_tables(engine: AsyncEngine) -> None:
         "ALTER TABLE principals ADD COLUMN auth_method TEXT NOT NULL DEFAULT 'oauth2'",
         "ALTER TABLE principals ADD COLUMN email TEXT",
         "ALTER TABLE principals ADD COLUMN password_hash TEXT",
+        "ALTER TABLE nodes ADD COLUMN is_active BOOLEAN NOT NULL DEFAULT 1",
     ]
     async with engine.begin() as conn:
         for stmt in _ADDITIVE_MIGRATIONS:

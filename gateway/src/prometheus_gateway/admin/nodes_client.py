@@ -19,11 +19,19 @@ async def fetch_nodes(
     tls_verify: bool = True,
     timeout: float = 10.0,
 ) -> list[tuple[str, str]]:
-    """Return [(node_name, manager_url), ...] from auth-service's /admin/nodes."""
+    """Return [(node_name, manager_url), ...] for active nodes from auth-service's /admin/nodes.
+
+    Inactive nodes (failed their last connectivity check) are excluded — routing
+    and instance-control should never target a node known to be unreachable.
+    The raw, unfiltered list (including inactive nodes) is still available via
+    the dashboard's Nodes page, which proxies straight to auth-service.
+    """
     async with httpx.AsyncClient(timeout=timeout, verify=tls_verify) as client:
         resp = await client.get(
             f"{auth_service_admin_url}/nodes",
             headers={"X-Admin-Key": auth_service_admin_api_key},
         )
     resp.raise_for_status()
-    return [(node["name"], node["manager_url"]) for node in resp.json()]
+    return [
+        (node["name"], node["manager_url"]) for node in resp.json() if node.get("is_active", True)
+    ]
