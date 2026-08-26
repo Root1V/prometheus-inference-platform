@@ -35,14 +35,19 @@ folded in here per your "muchos más que vayas encontrando."
 | [RM-08](#rm-08-distributed-inference-across-multiple-hosts-item-5) | Distributed inference across multiple hosts (item 5) | done | RM-05, RM-06 |
 | [RM-09](#rm-09-multi-modal-model-support-item-6-done-vlm--embeddings) | Multi-modal model support: VLM + embeddings (item 6, scoped) | done | RM-05, RM-06 |
 | [RM-10](#rm-10-gateway-admin-dashboard-item-3-done-phase-1) | Gateway admin dashboard (item 3) | done (phase 1) | RM-05 |
-| [RM-11](#rm-11-auth-module-dashboard-redesign-item-1) | Auth module dashboard redesign (item 1) | todo | RM-07 (do together) |
+| [RM-11](#rm-11-auth--users-dashboard-item-1) | Auth & Users dashboard (item 1) | todo | RM-07 |
 | [RM-12](#rm-12-e2e-llm-tracing-with-langfuse-item-8) | E2E LLM tracing with Langfuse (item 8) | todo | — |
 | [RM-13](#rm-13-admin-dashboard-live-log-viewer-added) | Admin dashboard: live log viewer per instance (added) | todo | RM-10 |
 | [RM-14](#rm-14-model-playground-added) | Model playground (added) | todo | RM-10 |
 | [RM-15](#rm-15-usage--spend-analytics-added) | Usage & spend analytics (added) | todo | RM-10, informed by RM-12 |
 | [RM-16](#rm-16-routing--rate-limit-visibility-added) | Routing & rate-limit visibility (added) | todo | RM-10 |
 | [RM-17](#rm-17-guardrails--content-filtering-added-speculative) | Guardrails / content filtering (added, speculative) | todo | — |
-| [RM-18](#rm-18-teams--multi-user-rbac-added-speculative) | Teams / multi-user RBAC (added, speculative) | todo | — |
+| [RM-18](#rm-18-teams--multi-user-rbac-added-speculative) | ~~Teams / multi-user RBAC~~ — merged into RM-11 | merged | — |
+| [RM-19](#rm-19-dashboard-branding-logo--favicon-added) | Dashboard branding: logo + favicon (added) | todo | RM-10 |
+| [RM-20](#rm-20-node-registry-added) | Node/server registry (added) | todo | RM-08, RM-10 |
+| [RM-21](#rm-21-simplified-instance-creation-added) | Simplified instance creation (added) | todo | RM-20 |
+| [RM-22](#rm-22-platform-overview-home-page-added) | Platform overview / home page (added) | todo | RM-10 |
+| [RM-23](#rm-23-active-sessions--connected-users-added) | Active sessions / connected users (added) | todo | RM-10, related to RM-15 |
 
 Why this order, briefly:
 - **RM-01 to RM-04** are cheap, low-risk, and matter more now that this moved from an
@@ -64,9 +69,16 @@ Why this order, briefly:
   should stay split by backend service (gateway vs auth-service) or become one consolidated
   platform dashboard — researching comparable products (LiteLLM Proxy, Portkey, Helicone,
   OpenRouter) surfaced the sections they all converge on. RM-14 to RM-16 are real gaps for
-  this project; RM-17 and RM-18 are flagged as speculative — they showed up in the research
-  but nothing about Prometheus's actual (single-operator) use case has asked for them yet,
-  so they're recorded rather than prioritized.
+  this project; RM-17 was speculative and still is. **RM-18 is no longer speculative** — see
+  below, it was merged into RM-11 once a concrete requirement showed up.
+- **RM-19 to RM-23** came out of a 2026-08-26 requirements pass and are grouped by concern:
+  - **Auth & Users** (RM-11, expanded): dashboard user/role management with two login modes.
+  - **Nodes & instance provisioning** (RM-20, RM-21): a real node registry, and instance
+    creation that reads from it instead of manual field entry. RM-21 depends on RM-20.
+  - **Dashboard identity & orientation** (RM-19, RM-22): branding (logo/favicon) and a home
+    page — pure UX, no new backend data model.
+  - **Live platform visibility** (RM-23): who/what is connected right now, distinct from
+    RM-15's historical usage aggregates.
 
 ---
 
@@ -439,13 +451,33 @@ live progress, matching the TUI's Discovery/Downloads tabs. Deferred because tod
 exposure or persisted progress state — exposing it needs a small async job-tracking
 addition to manager-api, not just new routes.
 
-## RM-11 — Auth module dashboard redesign (item 1)
+## RM-11 — Auth & Users dashboard (item 1)
 
-**Why**: current auth UI needs an enterprise-grade redesign.
+**Why**: current auth UI needs an enterprise-grade redesign. Expanded on 2026-08-26 with a
+concrete requirement: a "Users" section to manage users and their role, and — since not
+every caller is a machine — a second login mode alongside the existing OAuth2
+client_id/client_secret flow. This absorbs what RM-18 (multi-user RBAC) had speculated
+about; RM-18 is now marked merged rather than staying a separate, speculative item.
 
-**Scope**: redesign the existing auth-service web UI. Do this together with or right after
-RM-07 so the new UI is built once against the final (fine-grained) permission model instead
-of being redone.
+**Scope (not yet designed in detail)**:
+- New **Users** section in the dashboard menu — list/create/edit users and assign roles.
+- Two configurable login modes:
+  - **OAuth2 client_credentials** (`client_id`/`client_secret`) — the existing mechanism,
+    for other systems integrating machine-to-machine.
+  - **Email + password** — for human operators at other companies using the dashboard
+    directly. This is the **default** login mode.
+- Open questions to resolve before building: how password auth is stored (bcrypt, matching
+  the existing `client_secret_hash` pattern, is the obvious default), whether email/password
+  sessions still issue the same JWTs the client-credentials flow does or need a separate
+  session mechanism, and how "role" here maps onto the existing scope model (RM-07's
+  `model:<id>` scopes plus `admin:read`/`admin:write`) rather than inventing a second,
+  parallel permission system.
+
+**Not scoped yet**: password reset, MFA, email verification — revisit if/when real usage
+demands them.
+
+Do this together with or right after RM-07 so the new UI and permission model are built
+once, not redone.
 
 ## RM-12 — E2E LLM tracing with Langfuse (item 8)
 
@@ -533,14 +565,84 @@ came up in the dashboard-feature research, not because there's a known need.
 
 **Scope**: undefined. Revisit only if a real need shows up.
 
-## RM-18 — Teams / multi-user RBAC (added, speculative)
+## RM-18 — Teams / multi-user RBAC (added, speculative) — **merged into RM-11**
 
 **Why**: comparable platforms (LiteLLM Teams, Portkey RBAC) assume multiple humans
-administer the platform. Prometheus today is single-operator. Only relevant if that
-changes.
+administer the platform. Prometheus today is single-operator. Flagged here as speculative
+since nothing had asked for it yet.
 
-**Scope**: undefined. Revisit only if multiple people need independent dashboard access —
-possibly never needed for this project.
+**Update (2026-08-26)**: no longer speculative — a concrete requirement showed up (a Users
+section, roles, email+password login for other companies). Rather than building this
+separately from RM-11's auth UI, it's folded directly into RM-11's scope. See RM-11 for
+the actual Why/Scope going forward; this entry stays only as a record of where the idea
+originated.
+
+## RM-19 — Dashboard branding: logo + favicon (added)
+
+**Why**: the dashboard currently has no visual identity — just the text "Prometheus" in the
+sidebar and the default Vite favicon in the browser tab.
+
+**Scope**: add an icon/logo next to the "Prometheus" wordmark in the sidebar header, and
+reuse that same icon as the page favicon. Needs an actual icon/logo asset chosen first —
+not yet designed.
+
+## RM-20 — Node registry (added)
+
+**Why**: manager nodes are currently only known via the gateway's static `MANAGER_NODES`
+config (RM-08) — there's no way to see, add, or edit them from the dashboard, and no
+metadata beyond a URL (nothing recording whether a node is a Mac or an Nvidia box, or how
+to reach it for maintenance).
+
+**Scope (not yet designed in detail)**: a **Nodes** section to register and manage
+inference nodes/servers — IP or DNS, hardware type (Mac / Nvidia), a user + credential to
+connect to the machine, a name, and a free-form tag/label. Feeds RM-21's node picker when
+creating an instance.
+
+**Not scoped yet**: whether the dashboard actually opens SSH connections itself or just
+records the info for humans/future automation to use; how this interacts with the existing
+static `MANAGER_NODES` env config (replace it outright, or seed the registry from it);
+credential storage needs care (encrypted at rest at minimum, not plaintext in the DB).
+
+## RM-21 — Simplified instance creation (added)
+
+**Why**: registering an instance today means typing every field by hand — backend,
+modality, family, quantization, path, port — even though almost all of it is already known:
+the manager already scans for locally-downloaded models (registry entries with
+`discovery: true`), and the port is just "the next free one." Manual entry is slow and
+error-prone (typoed paths, port collisions).
+
+**Scope (not yet designed in detail)**:
+- Port becomes optional/hidden — the system auto-assigns the next available port starting
+  from a configurable base value.
+- manager-api needs to expose (or the dashboard needs to consume an existing) list of
+  discovered/downloaded models (`discovery: true`) per node.
+- Instance creation becomes: pick a node (RM-20's registry) → pick a model from that node's
+  discovered list → backend/modality/family/quantization/path auto-fill from the discovered
+  entry → only a few real parameters stay user-editable (e.g. context window).
+
+## RM-22 — Platform overview / home page (added)
+
+**Why**: the dashboard currently opens straight to the instances table — there's no single
+page summarizing overall platform state at a glance.
+
+**Scope (not yet designed)**: a landing page with summary stat tiles — active nodes,
+running instances, models available, and (once available) usage/spend. Exact tiles depend
+on what RM-15, RM-20, and RM-23 end up exposing, so this is likely one of the last of this
+batch to actually build even though it's the first page seen.
+
+## RM-23 — Active sessions / connected users (added)
+
+**Why**: no visibility today into who or what is actively using the platform right now —
+operators logged into the dashboard web UI, end users chatting via a model's own UI, API
+callers, and (future) SDK users. RM-15 covers historical/aggregate usage; this is about
+*live* connections instead.
+
+**Scope (not yet designed)**: a page listing active sessions/connections, showing per
+entry: which model is being used, connection type (dashboard web / model UI chat / API /
+SDK), and how long it's been connected. Needs a session-tracking mechanism spanning
+gateway (API calls), auth-service (dashboard login sessions), and any model-facing chat UI
+— this is the least-designed item in this batch; where "active" state actually gets
+recorded needs its own scoping pass before implementation starts.
 
 ## Adding new items
 

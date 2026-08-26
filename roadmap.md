@@ -17,14 +17,19 @@ Status: `done` · `todo`
 | RM-08 | Distributed inference across hosts | done | Gateway aggregates model availability across manager nodes |
 | RM-09 | VLM + embeddings support | done | Vision content parts + `/v1/embeddings` |
 | RM-10 | Gateway admin dashboard (phase 1) | done | React SPA — register/edit/start/stop/restart instances |
-| RM-11 | Auth module dashboard redesign | todo | Rebuild auth-service's UI on top of RM-07 scopes; move under a consolidated admin UI |
+| RM-11 | Auth & Users dashboard | todo | Users section with roles; login via OAuth2 client_id/secret or email+password (default) |
 | RM-12 | E2E LLM tracing with Langfuse | todo | Prompt/completion/token-level tracing, alongside existing OTel/Tempo |
 | RM-13 | Live log viewer per instance | todo | Expand a dashboard row to tail that instance's log |
 | RM-14 | Model playground | todo | Send test prompts to a running instance from the dashboard |
 | RM-15 | Usage & spend analytics | todo | Per-model/per-client token & request usage in the dashboard |
 | RM-16 | Routing & rate-limit visibility | todo | Surface gateway's rate-limit/circuit-breaker state in the dashboard |
 | RM-17 | Guardrails / content filtering | todo | Speculative — no known need yet |
-| RM-18 | Teams / multi-user RBAC | todo | Speculative — Prometheus is single-operator today |
+| RM-18 | ~~Teams / multi-user RBAC~~ | merged | Merged into RM-11 |
+| RM-19 | Dashboard branding: logo + favicon | todo | Icon next to "Prometheus" in the sidebar, reused as the page favicon |
+| RM-20 | Node registry | todo | Register nodes (IP/DNS, Mac/Nvidia, connection creds, name, tag) |
+| RM-21 | Simplified instance creation | todo | Pick node + model (auto-filled from discovery); port auto-assigned |
+| RM-22 | Platform overview / home page | todo | Landing page summarizing overall platform state |
+| RM-23 | Active sessions / connected users | todo | Who's connected now (dashboard, chat UI, API, SDK) and to what model |
 
 Adding an item: append the next `RM-NN` row here with a one-liner, then add the full
 Why/Scope writeup to `docs/roadmap.md`.
