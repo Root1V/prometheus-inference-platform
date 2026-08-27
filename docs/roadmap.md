@@ -671,15 +671,76 @@ error-prone (typoed paths, port collisions).
   discovered list → backend/modality/family/quantization/path auto-fill from the discovered
   entry → only a few real parameters stay user-editable (e.g. context window).
 
-## RM-22 — Platform overview / home page (added)
+## RM-22 — Platform overview: page shell + at-a-glance strip (added)
 
 **Why**: the dashboard currently opens straight to the instances table — there's no single
 page summarizing overall platform state at a glance.
 
-**Scope (not yet designed)**: a landing page with summary stat tiles — active nodes,
-running instances, models available, and (once available) usage/spend. Exact tiles depend
-on what RM-15, RM-20, and RM-23 end up exposing, so this is likely one of the last of this
-batch to actually build even though it's the first page seen.
+**Research (2026-08-27)**: see the scoping memo published while designing this — comparable
+products (LiteLLM, Portkey/Helicone, vLLM+Grafana, Open WebUI) all converge on the same
+frame the SRE "four golden signals" (latency, traffic, errors, saturation) describe. More
+usefully: auditing this repo found the gateway already computes most of what's needed and
+never shows it anywhere — `GET /metrics` (requests/tokens/errors/latency
+p50-p95-p99/per-model circuit state, in-memory, unauthenticated) and `GET /v1/usage`
+(per-client daily token counts, Redis-backed) are both fully built and fully unused by the
+React admin-ui. Given that, this item is split into four so most of it ships with **zero
+new backend work**, rather than as one large "wait for RM-15/RM-23" page:
+
+- **RM-22** (this item): the page shell itself — new route, nav entry, and the
+  "at-a-glance" stat strip (node/instance/user counts from data the dashboard already
+  polls), plus a links-out row to the existing Grafana ops dashboard and Tempo trace
+  search rather than re-implementing log/trace search inside the React app.
+- **RM-28**: the golden-signals row, sourced from `GET /metrics`.
+- **RM-29**: the "what needs attention" row — instances joined with `/metrics`'s
+  per-backend circuit state, sorted so anything not `ready` floats to the top.
+- **RM-30**: a usage & cost row, but only as an honest "coming soon" placeholder — real
+  numbers need RM-15 (persisted usage store + a pricing table; `GET /v1/usage` alone gives
+  today-only totals with no per-model split and no dollar figure).
+
+**Scope (RM-22 itself)**: new `/` route (Instances moves to its own nav item, matching
+every comparable product's convention of a distinct overview vs. instance-list page);
+stat strip: nodes (active/total), instances (running/stopped/error breakdown), users
+(active/total), gateway uptime; a small links row to Grafana/Tempo. No new backend
+endpoints — `useNodeRegistry()`, `useInstances()`, `useUsers()` already exist.
+
+**Not scoped yet**: whether an unhealthy-model banner (reusing the Nodes page's
+"unreachable nodes" banner pattern) belongs on this page or on RM-29's row instead —
+revisit once RM-29 lands and it's clear which page an operator actually looks at first
+when something's wrong.
+
+## RM-28 — Overview: golden signals row (added)
+
+**Why**: split out of RM-22 — see above. `GET /metrics` already computes requests
+(total/active), token counts, error count, and p50/p95/p99 latency over a rolling
+1,000-request window; none of it is rendered anywhere today.
+
+**Scope (not yet designed in detail)**: a row of stat cards fed by a new `useMetrics()`
+hook against the gateway's existing `GET /metrics` (unauthenticated, so no scope-gating
+needed on the frontend side). Must visibly caveat that the counters are process-memory
+only — they reset on a gateway restart, and there's no historical trend in this phase.
+Open question carried over from the scoping memo: is a client-side rolling buffer (sample
+`/metrics` each poll, keep enough points in the browser for a small sparkline) worth doing
+now, or better deferred to whenever RM-15 lands real persistence anyway?
+
+## RM-29 — Overview: models needing attention (added)
+
+**Why**: split out of RM-22 — see above. The actual job of a home page is answering "what
+do I need to fix right now," not just restating counts already visible on the Instances
+page.
+
+**Scope (not yet designed in detail)**: a compact table merging the existing Instances
+list with `/metrics`'s per-backend circuit-breaker state (keyed by model id), sorted so
+anything not in a healthy/`ready` state sorts first. Likely reuses the sort/status-pill
+conventions already established by `NodeRow.tsx`/`UserStatusBadge`.
+
+## RM-30 — Overview: usage & cost placeholder (added)
+
+**Why**: split out of RM-22 — see above. Showing partial/misleading numbers here (e.g.
+today-only totals with no cost) would look broken rather than "coming soon"; better to
+ship an honest placeholder now and the real row once RM-15 lands.
+
+**Scope**: a single disabled-looking card on the Overview page stating usage & cost
+tracking is coming, linking to this roadmap item / RM-15's status. No backend work.
 
 ## RM-23 — Active sessions / connected users (added)
 
