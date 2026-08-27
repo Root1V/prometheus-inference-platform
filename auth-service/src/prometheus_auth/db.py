@@ -124,10 +124,12 @@ class Node(Base):
     manager_url: Mapped[str] = mapped_column(String(512), nullable=False)
     node_type: Mapped[NodeType] = mapped_column(Enum(NodeType), nullable=False)
     tag: Mapped[str | None] = mapped_column(Text, nullable=True)
-    # Set automatically by a connectivity check (GET {manager_url}/health) at
-    # creation, on manager_url changes, and via the /check endpoint — or set
-    # directly by an operator via /activate, /deactivate for on-demand overrides
-    # (e.g. taking a reachable node out of rotation for maintenance).
+    # Set by a connectivity check (GET {manager_url}/health) at creation, on
+    # manager_url changes, and via /check and /activate (activate can't just
+    # flip this to True — it re-probes and only succeeds if reachable, so the
+    # badge never lies about a node being reachable when it isn't). /deactivate
+    # is the one true manual override — no probe — for taking a reachable node
+    # out of rotation on demand (e.g. maintenance).
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),

@@ -664,6 +664,16 @@ registry and node-scoped admin actions; the Nodes page itself still lists every 
 (active or not) via the unfiltered auth-service proxy, with a status badge and a recheck
 button per row.
 
+Also added a manual `POST /admin/nodes/{id}/activate` and `/deactivate` per-row toggle for
+on-demand overrides — e.g. taking a reachable node out of rotation for maintenance.
+`/deactivate` is a pure override (no probe). `/activate` is deliberately **not**: it
+re-probes and only actually activates if the node is reachable, otherwise it stays
+inactive — an admin-settable "active" flag that ignores real reachability would show a
+green badge for a node that still can't serve traffic, which is worse than not having the
+button at all. `/activate` and `/check` end up running the identical probe-then-set logic;
+kept as separate routes because "bring this node back into service" and "just tell me its
+current status" are different operator intents worth distinct frontend messaging.
+
 ## RM-25 — Node SSH/remote-maintenance credentials (added, speculative)
 
 **Why**: came up while scoping RM-20 — being able to record how to reach a node's

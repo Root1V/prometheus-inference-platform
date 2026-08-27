@@ -739,24 +739,27 @@ async def activate_node(
     node_id: str,
     db: AsyncSession = Depends(_get_db),
 ) -> Any:
-    """Manually mark a node active — an on-demand override, independent of connectivity.
+    """Try to bring a node back into rotation — gated on an actual connectivity check.
 
-    Implements: docs/roadmap.md — RM-20. Distinct from /check: this sets is_active
-    directly rather than probing the node, so an operator can bring a node back
-    into routing immediately (or take it out for maintenance via /deactivate)
-    without waiting on or relying on the outcome of a health probe.
+    Implements: docs/roadmap.md — RM-20. Unlike /deactivate, this can't just flip
+    the flag: showing "Active" for a node that still can't be reached would be a
+    lie the operator would trust. So this re-probes the node and only marks it
+    active if the probe succeeds; otherwise it stays inactive. Functionally the
+    same probe as /check — kept as a separate route because "I want this node
+    back in service" and "just tell me the current status" are different intents
+    worth distinct responses/messaging on the frontend.
     """
     result = await db.execute(select(Node).where(Node.id == node_id))
     node = result.scalar_one_or_none()
     if node is None:
         raise HTTPException(status_code=404, detail="Node not found.")
 
-    node.is_active = True
+    node.is_active = await _check_node_reachable(node.manager_url)
     node.updated_at = datetime.now(timezone.utc)
     await db.commit()
     await db.refresh(node)
 
-    logger.info("auth.node_activated", node_id=node.id)
+    logger.info("auth.node_activate_attempted", node_id=node.id, is_active=node.is_active)
     return _node_to_item(node)
 
 

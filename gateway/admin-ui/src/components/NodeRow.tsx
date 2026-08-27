@@ -61,7 +61,13 @@ export function NodeRow({ node, onEdit }: { node: Node; onEdit: (node: Node) => 
                 node.is_active
                   ? setConfirmDeactivate(true)
                   : activate.mutate(node.id, {
-                      onSuccess: () => showToast(`${node.name} activated`, "success"),
+                      onSuccess: (updated) =>
+                        showToast(
+                          updated.is_active
+                            ? `${node.name} activated`
+                            : `${node.name} is still unreachable — not activated`,
+                          updated.is_active ? "success" : "error",
+                        ),
                       onError: (error) => showToast(getErrorMessage(error), "error"),
                     })
               }

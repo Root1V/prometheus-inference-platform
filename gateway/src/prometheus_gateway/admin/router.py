@@ -12,8 +12,8 @@ POST   /admin/api/nodes                                    — register a node
 PATCH  /admin/api/nodes/{node_id}                            — update a node
 DELETE /admin/api/nodes/{node_id}                            — remove a node
 POST   /admin/api/nodes/{node_id}/check                      — re-run connectivity check
-POST   /admin/api/nodes/{node_id}/activate                   — manually mark active (on-demand override)
-POST   /admin/api/nodes/{node_id}/deactivate                 — manually mark inactive (on-demand override)
+POST   /admin/api/nodes/{node_id}/activate                   — re-probe and activate only if reachable
+POST   /admin/api/nodes/{node_id}/deactivate                 — manually mark inactive (no probe, on-demand)
 GET    /admin/api/instances                                 — aggregated across all nodes
 POST   /admin/api/nodes/{node}/models                        — register
 PATCH  /admin/api/nodes/{node}/models/{model_id}               — update fields

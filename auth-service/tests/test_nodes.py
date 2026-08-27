@@ -160,19 +160,31 @@ async def test_nodes_deactivate_is_manual_override_independent_of_connectivity(c
     assert resp.json()["is_active"] is False
 
 
-async def test_nodes_activate_is_manual_override_independent_of_connectivity(client, monkeypatch):
-    """/activate marks a node active even though it's unreachable."""
+async def test_nodes_activate_succeeds_when_reachable(client):
+    """/activate re-probes the node — succeeds when the probe is reachable."""
+    node = await _create_node(client, name="activate-when-reachable")
+
+    # deactivate first (the reachable-by-default fixture would make this a no-op check)
+    await client.post(f"/admin/nodes/{node['id']}/deactivate", headers=ADMIN_HEADERS)
+
+    resp = await client.post(f"/admin/nodes/{node['id']}/activate", headers=ADMIN_HEADERS)
+    assert resp.status_code == 200
+    assert resp.json()["is_active"] is True
+
+
+async def test_nodes_activate_refuses_when_unreachable(client, monkeypatch):
+    """/activate can't just flip the flag — an unreachable node stays inactive."""
 
     async def _fake_check(manager_url: str) -> bool:
         return False
 
     monkeypatch.setattr(admin_router, "_check_node_reachable", _fake_check)
-    node = await _create_node(client, name="manual-activate-node")
+    node = await _create_node(client, name="activate-when-unreachable")
     assert node["is_active"] is False
 
     resp = await client.post(f"/admin/nodes/{node['id']}/activate", headers=ADMIN_HEADERS)
     assert resp.status_code == 200
-    assert resp.json()["is_active"] is True
+    assert resp.json()["is_active"] is False
 
 
 async def test_nodes_deactivate_not_found(client):
