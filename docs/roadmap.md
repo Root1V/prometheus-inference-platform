@@ -743,6 +743,24 @@ sufficient — the aggregated list already comes from one `GET /admin/api/instan
 no new backend endpoint obviously needed unless the list turns out large enough to want
 server-side paging).
 
+## RM-27 — Delete user (added)
+
+**Why**: the Users table only offers deactivate/reactivate (`UserRow.tsx`) — there's no way
+to permanently remove a principal from the dashboard. auth-service's `DELETE
+/admin/clients/{id}` already supports this (`?permanent=true` hard-deletes the row and
+writes a Redis revocation key so any outstanding token is rejected immediately — see
+`deactivate_client` in `auth-service/src/prometheus_auth/routers/admin.py`), so most of the
+work is frontend, but not all: the gateway's own proxy (`DELETE /admin/api/users/{id}` in
+`gateway/src/prometheus_gateway/admin/router.py`) currently calls `_auth_admin_request`
+with no query params, silently dropping `permanent` even if the frontend sent it — that
+proxy needs to forward the param through.
+
+**Scope (not yet designed in detail)**: forward `permanent` through the gateway's proxy;
+add a Delete action in `UserRow.tsx`'s action column (mirrors `NodeRow.tsx`'s
+delete-with-`ConfirmDialog` pattern already used for nodes) that calls it with
+`?permanent=true`. Needs clear confirmation copy distinguishing it from Deactivate
+(irreversible vs. reversible) so an operator doesn't reach for the wrong one.
+
 ## Adding new items
 
 Append a new row to the table with the next `RM-NN` id and a new `## RM-NN — ...` section

@@ -33,6 +33,7 @@ Status: `done` · `todo`
 | RM-24 | Model picker in Create User | done | Pick from the existing Instances/registry list instead of typing `model:<id>` scopes by hand |
 | RM-25 | Node SSH/remote-maintenance credentials | todo | Speculative — no consuming feature yet |
 | RM-26 | Instances list: numbered, paginated, active-first | todo | Add a row-number column, paginate when the list is long, sort running instances first |
+| RM-27 | Delete user | todo | Permanent delete action in the Users table, alongside the existing deactivate/reactivate |
 
 Adding an item: append the next `RM-NN` row here with a one-liner, then add the full
 Why/Scope writeup to `docs/roadmap.md`.
