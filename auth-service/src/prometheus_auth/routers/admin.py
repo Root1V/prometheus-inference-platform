@@ -7,23 +7,27 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 
 import bcrypt
+import httpx
 import redis.asyncio as aioredis
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.security import APIKeyHeader
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from ..db import CredentialShareToken, Principal, PrincipalRole, get_session_factory
+from ..db import CredentialShareToken, Node, NodeType, Principal, PrincipalRole, get_session_factory
 from ..schemas import (
+    CreateNodeRequest,
     CreatePrincipalRequest,
     CreatePrincipalResponse,
     GenerateShareLinkRequest,
+    NodeListItem,
     PrincipalListItem,
     ReactivateResponse,
     ResetPasswordResponse,
     RevokeShareLinkResponse,
     RotateSecretResponse,
     ShareLinkResponse,
+    UpdateNodeRequest,
     UpdatePrincipalRequest,
     invalid_scopes,
 )
@@ -597,3 +601,206 @@ async def revoke_share_link(
         )
         span.set_attribute("http.status_code", 200)
         return RevokeShareLinkResponse(token_id=token_id, revoked=True)
+
+
+# ── Node registry (RM-20 — replaces the gateway's static MANAGER_NODES) ───────
+
+
+async def _check_node_reachable(manager_url: str) -> bool:
+    """GET {manager_url}/health — manager-api's liveness probe, no auth required."""
+    try:
+        async with httpx.AsyncClient(timeout=3.0) as client:
+            resp = await client.get(f"{manager_url.rstrip('/')}/health")
+        return resp.status_code == 200
+    except Exception:
+        return False
+
+
+def _node_to_item(node: Node) -> NodeListItem:
+    return NodeListItem(
+        id=node.id,
+        name=node.name,
+        manager_url=node.manager_url,
+        node_type=node.node_type.value,
+        tag=node.tag,
+        is_active=node.is_active,
+        created_at=node.created_at,
+        updated_at=node.updated_at,
+    )
+
+
+@router.post(
+    "/nodes", response_model=NodeListItem, status_code=201, dependencies=[Depends(_require_admin)]
+)
+async def create_node(
+    body: CreateNodeRequest,
+    db: AsyncSession = Depends(_get_db),
+) -> Any:
+    """Register a new manager node.
+
+    Implements: docs/roadmap.md — RM-20. A connectivity check against the
+    node's manager-api runs immediately — an unreachable node is still
+    registered (so the operator doesn't lose the entry they just typed), but
+    created inactive rather than rejected outright.
+    """
+    existing = await db.execute(select(Node).where(Node.name == body.name))
+    if existing.scalar_one_or_none() is not None:
+        raise HTTPException(status_code=409, detail=f"Node {body.name!r} already exists.")
+
+    reachable = await _check_node_reachable(body.manager_url)
+
+    node = Node(
+        id=str(uuid.uuid4()),
+        name=body.name,
+        manager_url=body.manager_url,
+        node_type=NodeType(body.node_type),
+        tag=body.tag,
+        is_active=reachable,
+    )
+    db.add(node)
+    await db.commit()
+    await db.refresh(node)
+
+    logger.info("auth.node_created", node_id=node.id, name=node.name, is_active=reachable)
+    return _node_to_item(node)
+
+
+@router.get("/nodes", response_model=list[NodeListItem], dependencies=[Depends(_require_admin)])
+async def list_nodes(db: AsyncSession = Depends(_get_db)) -> Any:
+    """List all registered nodes. Implements: docs/roadmap.md — RM-20."""
+    result = await db.execute(select(Node).order_by(Node.created_at.desc()))
+    return [_node_to_item(n) for n in result.scalars().all()]
+
+
+@router.patch(
+    "/nodes/{node_id}", response_model=NodeListItem, dependencies=[Depends(_require_admin)]
+)
+async def update_node(
+    node_id: str,
+    body: UpdateNodeRequest,
+    db: AsyncSession = Depends(_get_db),
+) -> Any:
+    """Partially update a node's manager_url / node_type / tag.
+
+    Implements: docs/roadmap.md — RM-20. Changing manager_url re-runs the
+    connectivity check (a URL change invalidates whatever was last observed).
+    """
+    result = await db.execute(select(Node).where(Node.id == node_id))
+    node = result.scalar_one_or_none()
+    if node is None:
+        raise HTTPException(status_code=404, detail="Node not found.")
+
+    if body.manager_url is not None and body.manager_url != node.manager_url:
+        node.manager_url = body.manager_url
+        node.is_active = await _check_node_reachable(body.manager_url)
+    if body.node_type is not None:
+        node.node_type = NodeType(body.node_type)
+    if "tag" in body.model_fields_set:
+        node.tag = body.tag
+
+    node.updated_at = datetime.now(timezone.utc)
+    await db.commit()
+    await db.refresh(node)
+
+    logger.info("auth.node_updated", node_id=node.id)
+    return _node_to_item(node)
+
+
+@router.post(
+    "/nodes/{node_id}/check", response_model=NodeListItem, dependencies=[Depends(_require_admin)]
+)
+async def check_node(
+    node_id: str,
+    db: AsyncSession = Depends(_get_db),
+) -> Any:
+    """Re-run the connectivity check and update is_active accordingly.
+
+    Implements: docs/roadmap.md — RM-20. The way a node marked inactive
+    (unreachable at creation, or since) comes back once it's actually up.
+    """
+    result = await db.execute(select(Node).where(Node.id == node_id))
+    node = result.scalar_one_or_none()
+    if node is None:
+        raise HTTPException(status_code=404, detail="Node not found.")
+
+    node.is_active = await _check_node_reachable(node.manager_url)
+    node.updated_at = datetime.now(timezone.utc)
+    await db.commit()
+    await db.refresh(node)
+
+    logger.info("auth.node_checked", node_id=node.id, is_active=node.is_active)
+    return _node_to_item(node)
+
+
+@router.post(
+    "/nodes/{node_id}/activate", response_model=NodeListItem, dependencies=[Depends(_require_admin)]
+)
+async def activate_node(
+    node_id: str,
+    db: AsyncSession = Depends(_get_db),
+) -> Any:
+    """Try to bring a node back into rotation — gated on an actual connectivity check.
+
+    Implements: docs/roadmap.md — RM-20. Unlike /deactivate, this can't just flip
+    the flag: showing "Active" for a node that still can't be reached would be a
+    lie the operator would trust. So this re-probes the node and only marks it
+    active if the probe succeeds; otherwise it stays inactive. Functionally the
+    same probe as /check — kept as a separate route because "I want this node
+    back in service" and "just tell me the current status" are different intents
+    worth distinct responses/messaging on the frontend.
+    """
+    result = await db.execute(select(Node).where(Node.id == node_id))
+    node = result.scalar_one_or_none()
+    if node is None:
+        raise HTTPException(status_code=404, detail="Node not found.")
+
+    node.is_active = await _check_node_reachable(node.manager_url)
+    node.updated_at = datetime.now(timezone.utc)
+    await db.commit()
+    await db.refresh(node)
+
+    logger.info("auth.node_activate_attempted", node_id=node.id, is_active=node.is_active)
+    return _node_to_item(node)
+
+
+@router.post(
+    "/nodes/{node_id}/deactivate",
+    response_model=NodeListItem,
+    dependencies=[Depends(_require_admin)],
+)
+async def deactivate_node(
+    node_id: str,
+    db: AsyncSession = Depends(_get_db),
+) -> Any:
+    """Manually mark a node inactive — an on-demand override, e.g. for maintenance.
+
+    Implements: docs/roadmap.md — RM-20.
+    """
+    result = await db.execute(select(Node).where(Node.id == node_id))
+    node = result.scalar_one_or_none()
+    if node is None:
+        raise HTTPException(status_code=404, detail="Node not found.")
+
+    node.is_active = False
+    node.updated_at = datetime.now(timezone.utc)
+    await db.commit()
+    await db.refresh(node)
+
+    logger.info("auth.node_deactivated", node_id=node.id)
+    return _node_to_item(node)
+
+
+@router.delete("/nodes/{node_id}", status_code=204, dependencies=[Depends(_require_admin)])
+async def delete_node(
+    node_id: str,
+    db: AsyncSession = Depends(_get_db),
+) -> None:
+    """Remove a node. Implements: docs/roadmap.md — RM-20."""
+    result = await db.execute(select(Node).where(Node.id == node_id))
+    node = result.scalar_one_or_none()
+    if node is None:
+        raise HTTPException(status_code=404, detail="Node not found.")
+
+    await db.delete(node)
+    await db.commit()
+    logger.info("auth.node_deleted", node_id=node_id)

@@ -1,9 +1,12 @@
 """Manager-backed registry sync.
 
-When one or more manager nodes are configured (MANAGER_URL for a single node,
-or MANAGER_NODES for several — RM-08 phase 2), periodically polls GET
-/v1/backends from each node's Prometheus Manager API and refreshes the
-gateway's in-memory ModelRegistry with the combined results.
+When the admin dashboard is enabled (RM-20: node topology lives in auth-service's
+node registry, not a static env var), periodically polls GET /v1/backends from
+each registered node's Prometheus Manager API and refreshes the gateway's
+in-memory ModelRegistry with the combined results. The node list itself is
+re-fetched at the start of every poll cycle (see `_refresh_nodes`), so adding or
+removing a node via the dashboard takes effect within one poll interval — no
+gateway restart needed.
 
 Authentication against every node's Manager REST API uses the same OAuth2
 client_credentials service account (MANAGER_CLIENT_ID + MANAGER_CLIENT_SECRET
@@ -14,6 +17,7 @@ automatically on startup and renewed when it is within 60 seconds of expiry.
 Implements: memory/specs/008-llama-server-manager.md — AC-23
 Implements: memory/specs/018-observability-telemetry.md — AC-28 (X-Trace-ID propagation)
 Implements: docs/roadmap.md — RM-08 phase 2 (distributed inference)
+Implements: docs/roadmap.md — RM-20 (dynamic node registry)
 """
 
 from __future__ import annotations
@@ -28,6 +32,7 @@ import httpx
 import structlog
 
 from .registry import ModelEntry, ModelRegistry
+from ..admin.nodes_client import fetch_nodes
 from ..telemetry import get_logger
 
 logger = get_logger(__name__)
@@ -56,7 +61,8 @@ class ManagerRegistrySync:
 
     def __init__(
         self,
-        nodes: list[tuple[str, str]],
+        auth_service_admin_url: str,
+        auth_service_admin_api_key: str,
         registry: ModelRegistry,
         *,
         poll_interval_s: int = 30,
@@ -68,8 +74,12 @@ class ManagerRegistrySync:
         # Fallback: static JWT (deprecated)
         manager_jwt: str | None = None,
     ) -> None:
-        # (node_name, manager_url) pairs — one manager-api instance per host.
-        self._nodes = [(name, url.rstrip("/")) for name, url in nodes]
+        self._auth_service_admin_url = auth_service_admin_url
+        self._auth_service_admin_api_key = auth_service_admin_api_key
+        # (node_name, manager_url) pairs — refreshed from the node registry at
+        # the start of every sync cycle (see `_refresh_nodes`), not fixed here.
+        self._nodes: list[tuple[str, str]] = []
+        self._allowed_backend_hosts: frozenset[str] = _BASE_ALLOWED_BACKEND_HOSTS
         self._registry = registry
         self._poll_interval_s = poll_interval_s
         # Auto-renew credentials
@@ -82,17 +92,39 @@ class ManagerRegistrySync:
         self._token_expires_at: float = 0.0  # epoch seconds; 0 = unknown/expired
         self._task: asyncio.Task[None] | None = None
 
-        # RM-08 phase 2: trust the specific hostnames of configured nodes, in
+    async def _refresh_nodes(self) -> None:
+        """Re-fetch the node list from auth-service's registry (RM-20).
+
+        Called at the start of every sync cycle so an admin-added/removed node
+        takes effect within one poll interval, without a gateway restart.
+        """
+        try:
+            nodes = await fetch_nodes(
+                self._auth_service_admin_url,
+                self._auth_service_admin_api_key,
+                tls_verify=self._auth_tls_verify,
+            )
+        except Exception as exc:
+            logger.warning(
+                "manager_sync.node_registry_unreachable",
+                error=str(exc) or repr(exc),
+                exc_type=type(exc).__name__,
+            )
+            return  # keep the previous node list rather than wiping it on a blip
+
+        self._nodes = [(name, url.rstrip("/")) for name, url in nodes]
+
+        # RM-08 phase 2: trust the specific hostnames of registered nodes, in
         # addition to loopback/container aliases — not "any remote host". Each
         # node's own manager-api must set PMGR_PROXY_HOST to this same
         # reachable hostname/IP so its backend_url values match what's trusted
-        # here (see config.py Settings.manager_nodes docstring).
+        # here.
         node_hosts: set[str] = set()
         for _, url in self._nodes:
             hostname = urlparse(url).hostname
             if hostname:
                 node_hosts.add(hostname)
-        self._allowed_backend_hosts: frozenset[str] = _BASE_ALLOWED_BACKEND_HOSTS | node_hosts
+        self._allowed_backend_hosts = _BASE_ALLOWED_BACKEND_HOSTS | node_hosts
 
     # ── Token management ──────────────────────────────────────────────────────
 
@@ -248,6 +280,9 @@ class ManagerRegistrySync:
         )
 
     async def _sync(self) -> None:
+        # RM-20: pick up any node added/removed via the dashboard before polling.
+        await self._refresh_nodes()
+
         # RM-08 phase 2: poll every configured node concurrently. One
         # unreachable node degrades to "its models disappear" rather than
         # blocking the whole registry refresh.

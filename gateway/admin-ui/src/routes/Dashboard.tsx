@@ -22,7 +22,7 @@ export default function Dashboard() {
 
   const instances = instancesQuery.data?.instances ?? EMPTY_INSTANCES;
   const unreachableNodes = instancesQuery.data?.unreachable_nodes ?? EMPTY_NODES;
-  const nodes = nodesQuery.data?.nodes ?? EMPTY_NODES;
+  const nodes = nodesQuery.data ?? EMPTY_NODES;
 
   const stats = useMemo(
     () => ({

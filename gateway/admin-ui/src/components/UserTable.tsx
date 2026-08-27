@@ -1,7 +1,7 @@
 import type { Principal } from "../types/user";
 import { UserRow } from "./UserRow";
 
-const COLUMNS = ["Name", "Auth method", "Identifier", "Role", "Scopes", "Status", "Actions"];
+const COLUMNS = ["Name", "Auth method", "Identifier", "Role", "Scopes", "Models", "Status", "Actions"];
 
 export function UserTable({
   users,

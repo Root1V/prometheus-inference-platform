@@ -1,67 +1,58 @@
-"""Tests for ManagerRegistrySync — RM-08 phase 2 (distributed inference across hosts).
+"""Tests for ManagerRegistrySync — RM-08 phase 2 (distributed inference across hosts)
+and RM-20 (dynamic node registry, replacing the old static MANAGER_NODES).
 
-See docs/roadmap.md RM-08 and memory/wiki/model-registry.md.
+See docs/roadmap.md RM-08, RM-20.
 """
 
 from __future__ import annotations
 
-import pytest
+from collections.abc import Collection
+
 import respx
 from httpx import Response
 
-from prometheus_gateway.config import Settings
 from prometheus_gateway.models.manager_sync import ManagerRegistrySync
 from prometheus_gateway.models.registry import ModelRegistry
 
-# ── Settings.resolved_manager_nodes ──────────────────────────────────────────
+AUTH_ADMIN_URL = "http://auth.test/admin"
+AUTH_ADMIN_KEY = "test-admin-key"
 
 
-def _settings(**overrides) -> Settings:
-    # manager_url/manager_nodes explicitly None by default so a developer's real
-    # local gateway/.env (which may set MANAGER_URL) can't leak into these tests.
-    base = dict(
-        jwt_issuer="https://auth.test",
-        jwt_public_key_file="/dev/null",
-        manager_url=None,
-        manager_nodes=None,
+def _mock_nodes(*nodes: tuple[str, str], inactive: Collection[str] = ()) -> None:
+    """Mock auth-service's GET /admin/nodes — nodes as (name, manager_url) pairs.
+
+    `inactive` names a subset of node names to mark is_active=False, matching
+    the shape of a node that failed its connectivity check (RM-20 follow-up).
+    """
+    respx.get(f"{AUTH_ADMIN_URL}/nodes").mock(
+        return_value=Response(
+            200,
+            json=[
+                {
+                    "id": name,
+                    "name": name,
+                    "manager_url": url,
+                    "node_type": "mac",
+                    "tag": None,
+                    "is_active": name not in inactive,
+                    "created_at": "2026-01-01T00:00:00Z",
+                    "updated_at": None,
+                }
+                for name, url in nodes
+            ],
+        )
     )
-    base.update(overrides)
-    return Settings(**base)
 
 
-def test_no_nodes_configured_returns_empty_list():
-    assert _settings().resolved_manager_nodes == []
-
-
-def test_single_manager_url_backward_compat():
-    """Existing single-node deployments (MANAGER_URL only) keep working unchanged."""
-    s = _settings(manager_url="http://127.0.0.1:8090")
-    assert s.resolved_manager_nodes == [("default", "http://127.0.0.1:8090")]
-
-
-def test_manager_nodes_parses_multiple():
-    s = _settings(manager_nodes="mac=http://mac.local:8090,dgx=http://dgx.local:8090")
-    assert s.resolved_manager_nodes == [
-        ("mac", "http://mac.local:8090"),
-        ("dgx", "http://dgx.local:8090"),
-    ]
-
-
-def test_manager_nodes_takes_priority_over_manager_url():
-    s = _settings(
-        manager_url="http://127.0.0.1:8090",
-        manager_nodes="mac=http://mac.local:8090",
+def _sync(registry: ModelRegistry | None = None) -> ManagerRegistrySync:
+    if registry is None:
+        registry = ModelRegistry.__new__(ModelRegistry)
+        registry._models = {}
+    return ManagerRegistrySync(
+        auth_service_admin_url=AUTH_ADMIN_URL,
+        auth_service_admin_api_key=AUTH_ADMIN_KEY,
+        registry=registry,
     )
-    assert s.resolved_manager_nodes == [("mac", "http://mac.local:8090")]
-
-
-def test_manager_nodes_malformed_entry_raises():
-    s = _settings(manager_nodes="not-a-valid-entry")
-    with pytest.raises(ValueError, match="MANAGER_NODES"):
-        _ = s.resolved_manager_nodes
-
-
-# ── ManagerRegistrySync ───────────────────────────────────────────────────────
 
 
 def _backend(model_id: str, port: int, host: str = "127.0.0.1") -> dict:
@@ -77,27 +68,55 @@ def _backend(model_id: str, port: int, host: str = "127.0.0.1") -> dict:
     }
 
 
-def test_allowed_backend_hosts_includes_node_hostnames():
-    """Only the specific configured node hostnames are trusted, not arbitrary hosts."""
-    sync = ManagerRegistrySync(
-        nodes=[("mac", "http://mac.local:8090"), ("dgx", "http://dgx.local:8090")],
-        registry=ModelRegistry.__new__(ModelRegistry),
-    )
+async def test_refresh_nodes_populates_allowed_backend_hosts():
+    """Only the specific registered node hostnames are trusted, not arbitrary hosts."""
+    sync = _sync()
+    with respx.mock:
+        _mock_nodes(("mac", "http://mac.local:8090"), ("dgx", "http://dgx.local:8090"))
+        await sync._refresh_nodes()
+
     assert "mac.local" in sync._allowed_backend_hosts
     assert "dgx.local" in sync._allowed_backend_hosts
     assert "127.0.0.1" in sync._allowed_backend_hosts  # base loopback always trusted
     assert "some-random-host.example.com" not in sync._allowed_backend_hosts
 
 
+async def test_refresh_nodes_filters_out_inactive_nodes():
+    """A node that failed its connectivity check is excluded from routing/polling."""
+    sync = _sync()
+    with respx.mock:
+        _mock_nodes(
+            ("mac", "http://mac.local:8090"),
+            ("dgx", "http://dgx.local:8090"),
+            inactive={"dgx"},
+        )
+        await sync._refresh_nodes()
+
+    assert sync._nodes == [("mac", "http://mac.local:8090")]
+    assert "dgx.local" not in sync._allowed_backend_hosts
+
+
+async def test_refresh_nodes_unreachable_keeps_previous_list():
+    """A blip fetching the node registry doesn't wipe out the last-known node list."""
+    sync = _sync()
+    with respx.mock:
+        _mock_nodes(("mac", "http://mac.local:8090"))
+        await sync._refresh_nodes()
+    assert sync._nodes == [("mac", "http://mac.local:8090")]
+
+    with respx.mock:
+        respx.get(f"{AUTH_ADMIN_URL}/nodes").mock(side_effect=ConnectionError("down"))
+        await sync._refresh_nodes()
+    assert sync._nodes == [("mac", "http://mac.local:8090")]  # unchanged
+
+
 async def test_sync_merges_models_from_two_nodes():
     registry = ModelRegistry.__new__(ModelRegistry)
     registry._models = {}
-    sync = ManagerRegistrySync(
-        nodes=[("mac", "http://mac.local:8090"), ("dgx", "http://dgx.local:8090")],
-        registry=registry,
-    )
+    sync = _sync(registry)
 
     with respx.mock:
+        _mock_nodes(("mac", "http://mac.local:8090"), ("dgx", "http://dgx.local:8090"))
         respx.get("http://mac.local:8090/v1/backends").mock(
             return_value=Response(200, json={"backends": [_backend("model-a", 8080)]})
         )
@@ -111,7 +130,7 @@ async def test_sync_merges_models_from_two_nodes():
     assert set(registry._models.keys()) == {"model-a", "model-b"}
     assert registry._models["model-a"].node == "mac"
     assert registry._models["model-b"].node == "dgx"
-    # dgx.local is trusted (it's a configured node hostname) — backend_url stays active
+    # dgx.local is trusted (it's a registered node hostname) — backend_url stays active
     assert registry._models["model-b"].backend_status == "active"
 
 
@@ -119,12 +138,10 @@ async def test_sync_one_node_unreachable_others_still_sync():
     """Partial availability: a down node's models disappear, others are unaffected."""
     registry = ModelRegistry.__new__(ModelRegistry)
     registry._models = {}
-    sync = ManagerRegistrySync(
-        nodes=[("mac", "http://mac.local:8090"), ("dgx", "http://dgx.local:8090")],
-        registry=registry,
-    )
+    sync = _sync(registry)
 
     with respx.mock:
+        _mock_nodes(("mac", "http://mac.local:8090"), ("dgx", "http://dgx.local:8090"))
         respx.get("http://mac.local:8090/v1/backends").mock(
             return_value=Response(200, json={"backends": [_backend("model-a", 8080)]})
         )
@@ -138,12 +155,10 @@ async def test_sync_model_id_collision_keeps_first_node():
     """Same model_id on two nodes is ambiguous — keep the first, drop + warn on the rest."""
     registry = ModelRegistry.__new__(ModelRegistry)
     registry._models = {}
-    sync = ManagerRegistrySync(
-        nodes=[("mac", "http://mac.local:8090"), ("dgx", "http://dgx.local:8090")],
-        registry=registry,
-    )
+    sync = _sync(registry)
 
     with respx.mock:
+        _mock_nodes(("mac", "http://mac.local:8090"), ("dgx", "http://dgx.local:8090"))
         respx.get("http://mac.local:8090/v1/backends").mock(
             return_value=Response(200, json={"backends": [_backend("dup-model", 8080)]})
         )
@@ -159,15 +174,13 @@ async def test_sync_model_id_collision_keeps_first_node():
 
 
 async def test_untrusted_backend_host_marked_invalid():
-    """A backend_url pointing outside every configured node's host is rejected."""
+    """A backend_url pointing outside every registered node's host is rejected."""
     registry = ModelRegistry.__new__(ModelRegistry)
     registry._models = {}
-    sync = ManagerRegistrySync(
-        nodes=[("mac", "http://mac.local:8090")],
-        registry=registry,
-    )
+    sync = _sync(registry)
 
     with respx.mock:
+        _mock_nodes(("mac", "http://mac.local:8090"))
         respx.get("http://mac.local:8090/v1/backends").mock(
             return_value=Response(
                 200,
@@ -178,3 +191,15 @@ async def test_untrusted_backend_host_marked_invalid():
 
     assert registry._models["sneaky-model"].backend_status == "invalid"
     assert registry._models["sneaky-model"].backend_url is None
+
+
+async def test_sync_with_no_nodes_registered_yields_empty_registry():
+    registry = ModelRegistry.__new__(ModelRegistry)
+    registry._models = {}
+    sync = _sync(registry)
+
+    with respx.mock:
+        _mock_nodes()
+        await sync._sync()
+
+    assert registry._models == {}

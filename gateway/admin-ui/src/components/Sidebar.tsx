@@ -1,10 +1,11 @@
-import { LogOut, Server, Users } from "lucide-react";
+import { Flame, HardDrive, LogOut, Server, Users } from "lucide-react";
 import { NavLink } from "react-router-dom";
 import { useAuth } from "../context/AuthContext";
 import { cn } from "../lib/cn";
 
 const NAV_ITEMS = [
   { to: "/", label: "Instances", icon: Server },
+  { to: "/nodes", label: "Nodes", icon: HardDrive },
   { to: "/users", label: "Users", icon: Users },
 ];
 
@@ -14,7 +15,10 @@ export function Sidebar() {
   return (
     <aside className="flex h-screen w-64 shrink-0 flex-col bg-gray-900 text-gray-100">
       <div className="px-6 py-6">
-        <p className="text-lg font-semibold text-white">Prometheus</p>
+        <div className="flex items-center gap-2">
+          <Flame size={20} className="text-primary" />
+          <p className="text-lg font-semibold text-white">Prometheus</p>
+        </div>
         <p className="text-xs text-gray-400">Inference Admin</p>
       </div>
       <nav className="flex-1 space-y-1 px-3">

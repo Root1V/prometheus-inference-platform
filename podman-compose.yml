@@ -51,7 +51,9 @@ services:
         target: /run/secrets/jwt_public_key.pem
         read_only: true
 
-      # Mount model registry — used only as fallback when MANAGER_URL is not set.
+      # Mount model registry — used only as fallback when ADMIN_DASHBOARD_ENABLED
+      # is not set (RM-20: node topology otherwise lives in the dashboard's
+      # Nodes section / auth-service's node registry, not a static file).
       - type: bind
         source: ./runtime/models/registry.yaml
         target: /app/config/registry.yaml

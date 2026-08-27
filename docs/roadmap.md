@@ -18,38 +18,8 @@ Status legend: `todo` · `in-progress` · `blocked` · `done`
 
 ## Priority order and rationale
 
-Ordered so that foundational/refactor work and cheap risk-reducing research come first,
-features that depend on them come after, and pure-polish items come last. Items marked
-**(added)** were not in the original request — they came out of the repo audit and are
-folded in here per your "muchos más que vayas encontrando."
-
-| # | Item | Status | Depends on |
-|---|------|--------|------------|
-| [RM-01](#rm-01-restore-ci-now-that-the-repo-is-public-added) | Restore CI on GitHub Actions (added) | done | — |
-| [RM-02](#rm-02-extend-pre-push-hook-to-managertelemetry-added) | Extend pre-push hook to `manager`/`telemetry` (added) | done | RM-01 |
-| [RM-03](#rm-03-pick-a-real-license-added) | Pick a real LICENSE (added) | done | — |
-| [RM-04](#rm-04-dependency-vulnerability-scanning-added) | Dependency vulnerability scanning (added) | done | RM-01 |
-| [RM-05](#rm-05-split-manager-tui-from-its-rest-api-item-4) | Split manager's TUI from its REST API (item 4) | done | — |
-| [RM-06](#rm-06-research-the-best-inference-serving-stack-item-7) | Research best inference-serving stack per hardware (item 7) | done | — |
-| [RM-07](#rm-07-fine-grained-per-model-authorization-scopes-item-2) | Fine-grained per-model authorization scopes (item 2) | done | — |
-| [RM-08](#rm-08-distributed-inference-across-multiple-hosts-item-5) | Distributed inference across multiple hosts (item 5) | done | RM-05, RM-06 |
-| [RM-09](#rm-09-multi-modal-model-support-item-6-done-vlm--embeddings) | Multi-modal model support: VLM + embeddings (item 6, scoped) | done | RM-05, RM-06 |
-| [RM-10](#rm-10-gateway-admin-dashboard-item-3-done-phase-1) | Gateway admin dashboard (item 3) | done (phase 1) | RM-05 |
-| [RM-11](#rm-11-auth--users-dashboard-item-1) | Auth & Users dashboard (item 1) | done | RM-07 |
-| [RM-12](#rm-12-e2e-llm-tracing-with-langfuse-item-8) | E2E LLM tracing with Langfuse (item 8) | todo | — |
-| [RM-13](#rm-13-admin-dashboard-live-log-viewer-added) | Admin dashboard: live log viewer per instance (added) | todo | RM-10 |
-| [RM-14](#rm-14-model-playground-added) | Model playground (added) | todo | RM-10 |
-| [RM-15](#rm-15-usage--spend-analytics-added) | Usage & spend analytics (added) | todo | RM-10, informed by RM-12 |
-| [RM-16](#rm-16-routing--rate-limit-visibility-added) | Routing & rate-limit visibility (added) | todo | RM-10 |
-| [RM-17](#rm-17-guardrails--content-filtering-added-speculative) | Guardrails / content filtering (added, speculative) | todo | — |
-| [RM-18](#rm-18-teams--multi-user-rbac-added-speculative) | ~~Teams / multi-user RBAC~~ — merged into RM-11 | merged | — |
-| [RM-19](#rm-19-dashboard-branding-logo--favicon-added) | Dashboard branding: logo + favicon (added) | todo | RM-10 |
-| [RM-20](#rm-20-node-registry-added) | Node/server registry (added) | todo | RM-08, RM-10 |
-| [RM-21](#rm-21-simplified-instance-creation-added) | Simplified instance creation (added) | todo | RM-20 |
-| [RM-22](#rm-22-platform-overview-home-page-added) | Platform overview / home page (added) | todo | RM-10 |
-| [RM-23](#rm-23-active-sessions--connected-users-added) | Active sessions / connected users (added) | todo | RM-10, related to RM-15 |
-
-Why this order, briefly:
+For current status and the full item list, see the index in [`roadmap.md`](../roadmap.md).
+Sequencing rationale that isn't captured there:
 - **RM-01 to RM-04** are cheap, low-risk, and matter more now that this moved from an
   internal GHE repo to a public one (no CI was running at all; no license; no dependency
   scanning on security-sensitive code like the gateway/auth-service).
@@ -604,18 +574,85 @@ not yet designed.
 
 **Why**: manager nodes are currently only known via the gateway's static `MANAGER_NODES`
 config (RM-08) — there's no way to see, add, or edit them from the dashboard, and no
-metadata beyond a URL (nothing recording whether a node is a Mac or an Nvidia box, or how
-to reach it for maintenance).
+metadata beyond a URL (nothing recording whether a node is a Mac or an Nvidia box).
 
-**Scope (not yet designed in detail)**: a **Nodes** section to register and manage
-inference nodes/servers — IP or DNS, hardware type (Mac / Nvidia), a user + credential to
-connect to the machine, a name, and a free-form tag/label. Feeds RM-21's node picker when
-creating an instance.
+**Update (2026-08-26)**: split from the original scope. This item is now just the node
+**inventory** — name, manager-api URL, hardware type (Mac / Nvidia), free-form tag/label.
+This is what RM-21's node picker actually depends on. The SSH/remote-maintenance
+credential piece (originally bundled here) is split out to RM-25 — it's a materially
+different, higher-risk concern (storing login credentials to a machine, not talking to its
+manager-api) with no concrete consuming feature yet.
 
-**Not scoped yet**: whether the dashboard actually opens SSH connections itself or just
-records the info for humans/future automation to use; how this interacts with the existing
-static `MANAGER_NODES` env config (replace it outright, or seed the registry from it);
-credential storage needs care (encrypted at rest at minimum, not plaintext in the DB).
+**Scope (not yet designed in detail)**: a **Nodes** admin section (CRUD) whose entries
+**replace** the static `MANAGER_NODES` env var as the gateway's live routing source — not
+just a display-only metadata table. This is the bigger, riskier part of this item: gateway
+resolves which node to hit on every inference/instance-management request today via a
+one-time `Settings.resolved_manager_nodes` read from env, so replacing that with a
+mutable, admin-editable registry needs a caching/refresh strategy (adding a node in the UI
+shouldn't require a gateway restart, and the hot request path shouldn't take on a live DB
+read per request). `gateway/src/prometheus_gateway/models/manager_sync.py` already runs a
+periodic background sync for something related (registry contents, not node topology, but
+same pattern) — check it first for a mechanism to extend rather than building a second one.
+
+**Not scoped yet**: exact storage location (auth-service's existing DB is the closest fit
+given RM-11's admin-proxy pattern, but a live-routing dependency on auth-service being
+reachable is a new failure mode worth weighing against caching); migration path for
+existing `MANAGER_NODES` deployments (seed the registry from it once, then env var becomes
+inert / removed, or keep both and merge).
+
+**Done (2026-08-26)**: new `Node` table in auth-service (mirrors `Principal`'s
+conventions), `/admin/nodes` CRUD. `MANAGER_NODES`/`MANAGER_URL`/`resolved_manager_nodes`
+removed entirely from the gateway — `ADMIN_DASHBOARD_ENABLED` is now the single gate for
+manager-node integration (already required to pair with
+`AUTH_SERVICE_ADMIN_URL`/`AUTH_SERVICE_ADMIN_API_KEY` per RM-11). Resolved the
+caching/freshness question simply: node resolution was never on the hot inference request
+path to begin with (confirmed by exploration — `/v1/chat/completions` reads a pre-resolved
+`ModelEntry.backend_url`, baked in by `ManagerRegistrySync`'s existing 30s poll), so
+`ManagerRegistrySync._sync()` just re-fetches the node list from auth-service at the start
+of every poll cycle instead of using a frozen constructor list — a newly-added node goes
+live within one interval, no restart, no wakeup/interrupt mechanism needed.
+`admin/router.py`'s `_resolve_node`/`list_instances` do the same live fetch (admin-only,
+low-QPS, so a per-call HTTP hop to auth-service is a non-issue there). Breaking change,
+no migration bridge (matches this project's established clean-cutover pattern) — existing
+deployments must create their node(s) via the dashboard's Nodes section (or `POST
+/admin/nodes`) after upgrading; `gateway/.env.podman.example` and `podman-compose.yml`
+updated accordingly.
+
+**Follow-up (2026-08-26)**: after using it, found two rough edges — no validation that a
+newly-registered node is actually reachable (a typo'd URL just silently breaks routing),
+and no way to see a node's health status. Added `Node.is_active`, set by an actual
+connectivity check (`GET {manager_url}/health` — manager-api's unauthenticated liveness
+probe) at creation and whenever `manager_url` changes, plus a manual `POST
+/admin/nodes/{id}/check` to re-run it (e.g. after fixing a down node). An unreachable node
+is still created — never rejected outright — just marked inactive, since it's a valid
+node the operator will likely bring up shortly. `fetch_nodes()` (used by
+`ManagerRegistrySync` and by admin's routing/instance-control endpoints) filters to
+active-only, so an inactive node is silently excluded from both the poll-driven model
+registry and node-scoped admin actions; the Nodes page itself still lists every node
+(active or not) via the unfiltered auth-service proxy, with a status badge and a recheck
+button per row.
+
+Also added a manual `POST /admin/nodes/{id}/activate` and `/deactivate` per-row toggle for
+on-demand overrides — e.g. taking a reachable node out of rotation for maintenance.
+`/deactivate` is a pure override (no probe). `/activate` is deliberately **not**: it
+re-probes and only actually activates if the node is reachable, otherwise it stays
+inactive — an admin-settable "active" flag that ignores real reachability would show a
+green badge for a node that still can't serve traffic, which is worse than not having the
+button at all. `/activate` and `/check` end up running the identical probe-then-set logic;
+kept as separate routes because "bring this node back into service" and "just tell me its
+current status" are different operator intents worth distinct frontend messaging.
+
+## RM-25 — Node SSH/remote-maintenance credentials (added, speculative)
+
+**Why**: came up while scoping RM-20 — being able to record how to reach a node's
+underlying machine (not just its manager-api) for maintenance. Split out because there's no
+concrete feature yet that would actually *use* stored SSH credentials (no "restart this
+node", no remote log viewer at the host level) — recorded here rather than built.
+
+**Scope**: undefined. If a real need shows up, this needs real security design (encrypted
+at rest at minimum — the existing `share_crypto.py` / `SHARE_TOKEN_ENCRYPTION_KEY` pattern
+from RM-11's credential-share-links is a reasonable starting point to reuse rather than
+inventing a second encryption scheme) before any implementation, not as an afterthought.
 
 ## RM-21 — Simplified instance creation (added)
 
@@ -657,6 +694,72 @@ SDK), and how long it's been connected. Needs a session-tracking mechanism spann
 gateway (API calls), auth-service (dashboard login sessions), and any model-facing chat UI
 — this is the least-designed item in this batch; where "active" state actually gets
 recorded needs its own scoping pass before implementation starts.
+
+## RM-24 — Model picker in Create User (done)
+
+**Why**: today, granting a user access to a model means typing a raw `model:<id>` scope
+string by hand in the Create User modal's free-text scope field (RM-11) — the operator has
+to already know the exact model id and get the `model:` prefix right.
+
+**Correction during scoping**: the original note above assumed `discovery: true` meant
+"downloaded but not yet an instance," and that RM-21 needed to land first to supply a
+model list. Neither held up — `discovery` is actually a runtime health flag (true only
+while a model is running and passing health checks; RM-21's original premise needs its own
+re-scoping, unrelated to this item). More directly: every registry entry (running or not)
+already shows up as a row in the existing Instances table via `GET /admin/api/instances`
+— there's no separate "known but not yet instantiated" model concept to build a new
+endpoint for. So RM-24 needed nothing from RM-21 after all; it just reuses the
+already-existing aggregated instances list.
+
+**Done**: `ScopePicker.tsx` now renders a "Models" checkbox list sourced from
+`useInstances()`, deduplicated by model id across nodes (access isn't node-specific).
+Toggling a checkbox adds/removes the corresponding `model:<id>` scope. A model id already
+granted to the user being edited, but not currently present in the discovered list (its
+node is down, or it was deregistered), still renders — as a disabled/checked "not
+currently found" row — so editing an existing user never silently drops access to a model
+just because it's temporarily unreachable. The old free-text input is gone entirely: per
+auth-service's `is_valid_scope`, `model:<id>` and the fixed scope enum are the *only* two
+valid scope shapes, so there was no remaining case the picker didn't cover.
+
+**Known gap, not fixed here**: auth-service's `_MODEL_SCOPE_RE` (`^model:[a-z0-9][a-z0-9_-]*$`)
+rejects model ids containing a dot or uppercase letters — the picker will show a clear
+`Unknown scope(s)` error from the backend if such an id is selected. This is a pre-existing
+mismatch with manager-core's own `_ID_RE` (`^[a-z0-9][a-z0-9_-]{1,62}[a-z0-9]$`, which
+likewise forbids dots/uppercase) — any registry entry with such an id was added by
+hand-editing `registry.yaml` directly, bypassing `_validate_id`. Out of scope here since
+it's a data-hygiene issue in the registry, not something this feature introduced.
+
+## RM-26 — Instances list: numbered, paginated, active-first (added)
+
+**Why**: the Instances table on the dashboard just lists rows in whatever order the
+gateway returns them, with no row numbering and no cap — as the number of registered
+instances grows (across more nodes, more models) the table gets long and running
+instances get lost among stopped ones.
+
+**Scope (not yet designed in detail)**: add a leading row-number column; sort running
+instances before stopped ones (state order, not a separate boolean toggle); paginate the
+table once the instance count passes a threshold (client-side pagination is likely
+sufficient — the aggregated list already comes from one `GET /admin/api/instances` call,
+no new backend endpoint obviously needed unless the list turns out large enough to want
+server-side paging).
+
+## RM-27 — Delete user (added)
+
+**Why**: the Users table only offers deactivate/reactivate (`UserRow.tsx`) — there's no way
+to permanently remove a principal from the dashboard. auth-service's `DELETE
+/admin/clients/{id}` already supports this (`?permanent=true` hard-deletes the row and
+writes a Redis revocation key so any outstanding token is rejected immediately — see
+`deactivate_client` in `auth-service/src/prometheus_auth/routers/admin.py`), so most of the
+work is frontend, but not all: the gateway's own proxy (`DELETE /admin/api/users/{id}` in
+`gateway/src/prometheus_gateway/admin/router.py`) currently calls `_auth_admin_request`
+with no query params, silently dropping `permanent` even if the frontend sent it — that
+proxy needs to forward the param through.
+
+**Scope (not yet designed in detail)**: forward `permanent` through the gateway's proxy;
+add a Delete action in `UserRow.tsx`'s action column (mirrors `NodeRow.tsx`'s
+delete-with-`ConfirmDialog` pattern already used for nodes) that calls it with
+`?permanent=true`. Needs clear confirmation copy distinguishing it from Deactivate
+(irreversible vs. reversible) so an operator doesn't reach for the wrong one.
 
 ## Adding new items
 
