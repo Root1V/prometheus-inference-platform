@@ -18,40 +18,8 @@ Status legend: `todo` · `in-progress` · `blocked` · `done`
 
 ## Priority order and rationale
 
-Ordered so that foundational/refactor work and cheap risk-reducing research come first,
-features that depend on them come after, and pure-polish items come last. Items marked
-**(added)** were not in the original request — they came out of the repo audit and are
-folded in here per your "muchos más que vayas encontrando."
-
-| # | Item | Status | Depends on |
-|---|------|--------|------------|
-| [RM-01](#rm-01-restore-ci-now-that-the-repo-is-public-added) | Restore CI on GitHub Actions (added) | done | — |
-| [RM-02](#rm-02-extend-pre-push-hook-to-managertelemetry-added) | Extend pre-push hook to `manager`/`telemetry` (added) | done | RM-01 |
-| [RM-03](#rm-03-pick-a-real-license-added) | Pick a real LICENSE (added) | done | — |
-| [RM-04](#rm-04-dependency-vulnerability-scanning-added) | Dependency vulnerability scanning (added) | done | RM-01 |
-| [RM-05](#rm-05-split-manager-tui-from-its-rest-api-item-4) | Split manager's TUI from its REST API (item 4) | done | — |
-| [RM-06](#rm-06-research-the-best-inference-serving-stack-item-7) | Research best inference-serving stack per hardware (item 7) | done | — |
-| [RM-07](#rm-07-fine-grained-per-model-authorization-scopes-item-2) | Fine-grained per-model authorization scopes (item 2) | done | — |
-| [RM-08](#rm-08-distributed-inference-across-multiple-hosts-item-5) | Distributed inference across multiple hosts (item 5) | done | RM-05, RM-06 |
-| [RM-09](#rm-09-multi-modal-model-support-item-6-done-vlm--embeddings) | Multi-modal model support: VLM + embeddings (item 6, scoped) | done | RM-05, RM-06 |
-| [RM-10](#rm-10-gateway-admin-dashboard-item-3-done-phase-1) | Gateway admin dashboard (item 3) | done (phase 1) | RM-05 |
-| [RM-11](#rm-11-auth--users-dashboard-item-1) | Auth & Users dashboard (item 1) | done | RM-07 |
-| [RM-12](#rm-12-e2e-llm-tracing-with-langfuse-item-8) | E2E LLM tracing with Langfuse (item 8) | todo | — |
-| [RM-13](#rm-13-admin-dashboard-live-log-viewer-added) | Admin dashboard: live log viewer per instance (added) | todo | RM-10 |
-| [RM-14](#rm-14-model-playground-added) | Model playground (added) | todo | RM-10 |
-| [RM-15](#rm-15-usage--spend-analytics-added) | Usage & spend analytics (added) | todo | RM-10, informed by RM-12 |
-| [RM-16](#rm-16-routing--rate-limit-visibility-added) | Routing & rate-limit visibility (added) | todo | RM-10 |
-| [RM-17](#rm-17-guardrails--content-filtering-added-speculative) | Guardrails / content filtering (added, speculative) | todo | — |
-| [RM-18](#rm-18-teams--multi-user-rbac-added-speculative) | ~~Teams / multi-user RBAC~~ — merged into RM-11 | merged | — |
-| [RM-19](#rm-19-dashboard-branding-logo--favicon-added) | Dashboard branding: logo + favicon (added) | done | RM-10 |
-| [RM-20](#rm-20-node-registry-added) | Node/server registry (added) | done | RM-08, RM-10 |
-| [RM-21](#rm-21-simplified-instance-creation-added) | Simplified instance creation (added) | todo | RM-20 |
-| [RM-22](#rm-22-platform-overview-home-page-added) | Platform overview / home page (added) | todo | RM-10 |
-| [RM-23](#rm-23-active-sessions--connected-users-added) | Active sessions / connected users (added) | todo | RM-10, related to RM-15 |
-| [RM-24](#rm-24-model-picker-in-create-user-added) | Model picker in Create User (added) | done | RM-11 |
-| [RM-25](#rm-25-node-sshremote-maintenance-credentials-added-speculative) | Node SSH/remote-maintenance credentials (added, speculative) | todo | RM-20 |
-
-Why this order, briefly:
+For current status and the full item list, see the index in [`roadmap.md`](../roadmap.md).
+Sequencing rationale that isn't captured there:
 - **RM-01 to RM-04** are cheap, low-risk, and matter more now that this moved from an
   internal GHE repo to a public one (no CI was running at all; no license; no dependency
   scanning on security-sensitive code like the gateway/auth-service).
