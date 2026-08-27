@@ -13,9 +13,15 @@ import { useMetrics } from "../api/metrics";
 import { useInstances } from "../api/instances";
 import { useNodeRegistry } from "../api/nodes";
 import { useUsers } from "../api/users";
+import { AttentionTable, type AttentionEntry } from "../components/AttentionTable";
 import { Sidebar } from "../components/Sidebar";
 import { StatCard } from "../components/StatCard";
 import { formatUptime } from "../lib/format";
+
+/** Higher = more urgent. An actual crash outranks a tripped circuit. */
+function attentionScore(entry: AttentionEntry): number {
+  return (entry.instance.state === "error" ? 2 : 0) + (entry.circuitState === "open" ? 2 : entry.circuitState === "half-open" ? 1 : 0);
+}
 
 const linkChipClass =
   "rounded-full border border-border bg-surface px-3 py-1.5 text-xs font-medium text-text-muted hover:bg-background hover:text-text";
@@ -43,6 +49,15 @@ export default function Overview() {
     inference && inference.requests_total > 0
       ? `${((inference.errors_total / inference.requests_total) * 100).toFixed(1)}%`
       : "0.0%";
+
+  const backends = metricsQuery.data?.backends ?? {};
+  const attentionEntries: AttentionEntry[] = instances
+    .map((instance) => ({ instance, circuitState: backends[instance.id]?.circuit_state }))
+    .filter(
+      ({ instance, circuitState }) =>
+        instance.state === "error" || circuitState === "open" || circuitState === "half-open",
+    )
+    .sort((a, b) => attentionScore(b) - attentionScore(a));
 
   return (
     <div className="flex min-h-screen bg-background">
@@ -99,6 +114,13 @@ export default function Overview() {
           Counters are process-memory only — they reset when the gateway restarts, and reflect the
           current snapshot rather than a historical trend.
         </p>
+
+        <h2 className="mt-10 text-sm font-medium uppercase tracking-wide text-text-muted">
+          Needs attention
+        </h2>
+        <div className="mt-3">
+          <AttentionTable entries={attentionEntries} />
+        </div>
 
         <div className="mt-8 flex flex-wrap gap-2">
           <Link to="/instances" className={linkChipClass}>

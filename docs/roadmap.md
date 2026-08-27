@@ -755,6 +755,19 @@ list with `/metrics`'s per-backend circuit-breaker state (keyed by model id), so
 anything not in a healthy/`ready` state sorts first. Likely reuses the sort/status-pill
 conventions already established by `NodeRow.tsx`/`UserStatusBadge`.
 
+**Done (2026-08-27)**: refined "not in a healthy state" during implementation —
+`stopped`/`paused` are normal resting states (27 of 28 demo instances are `stopped`, which
+would swamp a "compact" table if included), so the actual filter is `state === "error"`
+OR `circuit_state` is `"open"`/`"half-open"`: the two conditions that are genuinely
+alarming rather than just idle. New `AttentionTable.tsx` (reuses the existing
+`StatusBadge` component for state, a small local `CircuitBadge` for circuit state) sorted
+by severity (crashed + open circuit ranks above either alone). Empty state reads "All
+models healthy — nothing needs attention right now." rather than an empty table. Verified
+with a real crash: registered a throwaway backend pointing at a nonexistent `.gguf` path,
+started it, confirmed manager-api marked it `error` with a message and the row rendered
+correctly (red `Error` pill, `Unknown` circuit since it never got an inference call), then
+deleted it and confirmed the healthy empty-state returned.
+
 ## RM-30 — Overview: usage & cost placeholder (added)
 
 **Why**: split out of RM-22 — see above. Showing partial/misleading numbers here (e.g.
