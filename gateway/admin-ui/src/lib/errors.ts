@@ -5,8 +5,11 @@ import type { ProblemDetails } from "../types/api";
 export function getErrorMessage(error: unknown): string {
   if (axios.isAxiosError<ProblemDetails>(error)) {
     const problem = error.response?.data;
-    if (problem?.title || problem?.detail) {
-      return [problem.title, problem.detail].filter(Boolean).join(" — ");
+    const detail = Array.isArray(problem?.detail)
+      ? problem.detail.map((d) => d.msg).join("; ")
+      : problem?.detail;
+    if (problem?.title || detail) {
+      return [problem?.title, detail].filter(Boolean).join(" — ");
     }
     return error.message;
   }
