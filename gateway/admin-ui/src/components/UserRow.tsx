@@ -11,6 +11,8 @@ import { UserStatusBadge } from "./UserStatusBadge";
 const actionButtonClass =
   "rounded-md p-1.5 transition-colors disabled:cursor-not-allowed disabled:opacity-30";
 
+const MODEL_SCOPE_PREFIX = "model:";
+
 export function UserRow({
   user,
   onEdit,
@@ -35,6 +37,11 @@ export function UserRow({
       (error: unknown) => showToast(getErrorMessage(error), "error"),
     );
   };
+
+  const platformScopes = user.allowed_scopes.filter((s) => !s.startsWith(MODEL_SCOPE_PREFIX));
+  const modelIds = user.allowed_scopes
+    .filter((s) => s.startsWith(MODEL_SCOPE_PREFIX))
+    .map((s) => s.slice(MODEL_SCOPE_PREFIX.length));
 
   const handleRotate = () => {
     if (user.auth_method === "oauth2") {
@@ -63,9 +70,18 @@ export function UserRow({
         <td className="px-4 py-3 text-text-muted capitalize">{user.role}</td>
         <td className="px-4 py-3 text-text-muted">
           <div className="flex max-w-xs flex-wrap gap-1">
-            {user.allowed_scopes.map((scope) => (
+            {platformScopes.map((scope) => (
               <span key={scope} className="rounded-full bg-background px-2 py-0.5 text-xs">
                 {scope}
+              </span>
+            ))}
+          </div>
+        </td>
+        <td className="px-4 py-3 text-text-muted">
+          <div className="flex max-w-xs flex-wrap gap-1">
+            {modelIds.map((id) => (
+              <span key={id} className="rounded-full bg-background px-2 py-0.5 text-xs">
+                {id}
               </span>
             ))}
           </div>

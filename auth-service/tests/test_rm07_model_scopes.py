@@ -24,6 +24,16 @@ def test_model_scope_requires_id_after_prefix():
     assert not is_valid_scope("model:")
 
 
+def test_model_scope_allows_dotted_version_number():
+    """Real model ids commonly carry a version number, e.g. "qwen2.5-7b-q4"."""
+    assert is_valid_scope("model:qwen2.5-7b-q4")
+
+
+def test_model_scope_allows_mixed_case():
+    """Real model ids can carry a mixed-case variant tag, e.g. "qwen3vl-32B-Q4"."""
+    assert is_valid_scope("model:qwen3vl-32B-Q4")
+
+
 def test_unknown_scope_invalid():
     assert not is_valid_scope("not:a:scope")
 

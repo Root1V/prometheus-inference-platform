@@ -34,8 +34,10 @@ VALID_SCOPES: frozenset[str] = frozenset(
 # memory/wiki/auth-model.md for the enforcement details and migration note.
 # Not part of VALID_SCOPES (that set is a fixed enum) — matched by pattern
 # instead, since the set of model ids is open-ended and lives in the
-# manager's registry, not in auth-service.
-_MODEL_SCOPE_RE = re.compile(r"^model:[a-z0-9][a-z0-9_-]*$")
+# manager's registry, not in auth-service. Case-insensitive with dots allowed
+# — real model ids commonly carry a version number (e.g. "qwen2.5-7b-q4") or a
+# mixed-case variant tag (e.g. "qwen3vl-32B-Q4").
+_MODEL_SCOPE_RE = re.compile(r"^model:[a-zA-Z0-9][a-zA-Z0-9._-]*$")
 
 
 def is_valid_scope(scope: str) -> bool:
