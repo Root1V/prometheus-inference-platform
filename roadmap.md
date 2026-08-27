@@ -27,7 +27,7 @@ Status: `done` · `todo`
 | RM-18 | ~~Teams / multi-user RBAC~~ | merged | Merged into RM-11 |
 | RM-19 | Dashboard branding: logo + favicon | done | Icon next to "Prometheus" in the sidebar, reused as the page favicon |
 | RM-20 | Node registry | done | Node inventory (name, manager-api URL, hardware type, tag) — replaces MANAGER_NODES as the live routing source |
-| RM-22 | Platform overview: page shell + at-a-glance strip | todo | New landing page: node/instance/user counts, links out to Grafana/Tempo |
+| RM-22 | Platform overview: page shell + at-a-glance strip | done | New landing page: node/instance/user counts, links to Instances/Nodes/Users |
 | RM-23 | Active sessions / connected users | todo | Who's connected now (dashboard, chat UI, API, SDK) and to what model |
 | RM-24 | Model picker in Create User | done | Pick from the existing Instances/registry list instead of typing `model:<id>` scopes by hand |
 | RM-25 | Node SSH/remote-maintenance credentials | todo | Speculative — no consuming feature yet |

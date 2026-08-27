@@ -708,6 +708,17 @@ endpoints — `useNodeRegistry()`, `useInstances()`, `useUsers()` already exist.
 revisit once RM-29 lands and it's clear which page an operator actually looks at first
 when something's wrong.
 
+**Done (2026-08-27)**: `/` now renders a new `Overview` page — stat strip (nodes
+active/total, instances total + running/stopped subtext, users active/total, gateway
+uptime from a new minimal `useMetrics()` hook against `GET /metrics`) plus a links row to
+Instances/Nodes/Users. `Instances` moved to `/instances`; `Sidebar` gained an "Overview"
+entry above it. `StatCard` gained an optional `sub` line to carry the breakdown text.
+**Scope trim**: the external Grafana/Tempo links from the memo were dropped for this
+pass — there's no `GRAFANA_URL`-shaped setting anywhere in the gateway's config to build a
+reliable link from, and guessing one client-side (assuming Grafana sits on the same host
+at :3000, per `podman-compose.yml`) would be fragile across deployments. Worth a small
+follow-up once there's an actual config surface for it; not blocking for RM-28/29/30.
+
 ## RM-28 — Overview: golden signals row (added)
 
 **Why**: split out of RM-22 — see above. `GET /metrics` already computes requests
