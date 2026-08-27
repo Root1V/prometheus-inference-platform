@@ -32,6 +32,7 @@ Status: `done` · `todo`
 | RM-23 | Active sessions / connected users | todo | Who's connected now (dashboard, chat UI, API, SDK) and to what model |
 | RM-24 | Model picker in Create User | todo | Pick from discovered models instead of typing `model:<id>` scopes by hand |
 | RM-25 | Node SSH/remote-maintenance credentials | todo | Speculative — no consuming feature yet |
+| RM-26 | Instances list: numbered, paginated, active-first | todo | Add a row-number column, paginate when the list is long, sort running instances first |
 
 Adding an item: append the next `RM-NN` row here with a one-liner, then add the full
 Why/Scope writeup to `docs/roadmap.md`.

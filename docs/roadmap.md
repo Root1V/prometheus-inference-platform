@@ -747,6 +747,20 @@ every discovered model across all nodes regardless of where the user might call 
 (actual model access isn't node-specific today, so likely the latter, but confirm once
 RM-21's data shape exists).
 
+## RM-26 — Instances list: numbered, paginated, active-first (added)
+
+**Why**: the Instances table on the dashboard just lists rows in whatever order the
+gateway returns them, with no row numbering and no cap — as the number of registered
+instances grows (across more nodes, more models) the table gets long and running
+instances get lost among stopped ones.
+
+**Scope (not yet designed in detail)**: add a leading row-number column; sort running
+instances before stopped ones (state order, not a separate boolean toggle); paginate the
+table once the instance count passes a threshold (client-side pagination is likely
+sufficient — the aggregated list already comes from one `GET /admin/api/instances` call,
+no new backend endpoint obviously needed unless the list turns out large enough to want
+server-side paging).
+
 ## Adding new items
 
 Append a new row to the table with the next `RM-NN` id and a new `## RM-NN — ...` section
