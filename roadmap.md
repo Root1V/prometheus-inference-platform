@@ -30,7 +30,7 @@ Status: `done` · `todo`
 | RM-21 | Simplified instance creation | todo | Pick node + model (auto-filled from discovery); port auto-assigned |
 | RM-22 | Platform overview / home page | todo | Landing page summarizing overall platform state |
 | RM-23 | Active sessions / connected users | todo | Who's connected now (dashboard, chat UI, API, SDK) and to what model |
-| RM-24 | Model picker in Create User | todo | Pick from discovered models instead of typing `model:<id>` scopes by hand |
+| RM-24 | Model picker in Create User | done | Pick from the existing Instances/registry list instead of typing `model:<id>` scopes by hand |
 | RM-25 | Node SSH/remote-maintenance credentials | todo | Speculative — no consuming feature yet |
 | RM-26 | Instances list: numbered, paginated, active-first | todo | Add a row-number column, paginate when the list is long, sort running instances first |
 

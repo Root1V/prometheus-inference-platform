@@ -727,25 +727,39 @@ gateway (API calls), auth-service (dashboard login sessions), and any model-faci
 — this is the least-designed item in this batch; where "active" state actually gets
 recorded needs its own scoping pass before implementation starts.
 
-## RM-24 — Model picker in Create User (added)
+## RM-24 — Model picker in Create User (done)
 
 **Why**: today, granting a user access to a model means typing a raw `model:<id>` scope
 string by hand in the Create User modal's free-text scope field (RM-11) — the operator has
-to already know the exact model id and get the `model:` prefix right. The manager already
-knows which models are actually downloaded and discoverable (`discovery: true` in the
-registry) — the same source of truth RM-21 uses to simplify instance creation.
+to already know the exact model id and get the `model:` prefix right.
 
-**Scope (not yet designed in detail)**: replace the free-text `model:<id>` entry in
-`ScopePicker`/`CreateUserModal` with a multi-select list of discovered models (name shown,
-`model:<id>` scope generated under the hood), so granting model access is pick-from-a-list
-instead of hand-typing scope strings. Depends on RM-21 landing first (or at least its
-"list discovered models" endpoint) — no point building a second model-listing mechanism
-just for this.
+**Correction during scoping**: the original note above assumed `discovery: true` meant
+"downloaded but not yet an instance," and that RM-21 needed to land first to supply a
+model list. Neither held up — `discovery` is actually a runtime health flag (true only
+while a model is running and passing health checks; RM-21's original premise needs its own
+re-scoping, unrelated to this item). More directly: every registry entry (running or not)
+already shows up as a row in the existing Instances table via `GET /admin/api/instances`
+— there's no separate "known but not yet instantiated" model concept to build a new
+endpoint for. So RM-24 needed nothing from RM-21 after all; it just reuses the
+already-existing aggregated instances list.
 
-**Not scoped yet**: whether this list should be scoped to models on a specific node or show
-every discovered model across all nodes regardless of where the user might call them from
-(actual model access isn't node-specific today, so likely the latter, but confirm once
-RM-21's data shape exists).
+**Done**: `ScopePicker.tsx` now renders a "Models" checkbox list sourced from
+`useInstances()`, deduplicated by model id across nodes (access isn't node-specific).
+Toggling a checkbox adds/removes the corresponding `model:<id>` scope. A model id already
+granted to the user being edited, but not currently present in the discovered list (its
+node is down, or it was deregistered), still renders — as a disabled/checked "not
+currently found" row — so editing an existing user never silently drops access to a model
+just because it's temporarily unreachable. The old free-text input is gone entirely: per
+auth-service's `is_valid_scope`, `model:<id>` and the fixed scope enum are the *only* two
+valid scope shapes, so there was no remaining case the picker didn't cover.
+
+**Known gap, not fixed here**: auth-service's `_MODEL_SCOPE_RE` (`^model:[a-z0-9][a-z0-9_-]*$`)
+rejects model ids containing a dot or uppercase letters — the picker will show a clear
+`Unknown scope(s)` error from the backend if such an id is selected. This is a pre-existing
+mismatch with manager-core's own `_ID_RE` (`^[a-z0-9][a-z0-9_-]{1,62}[a-z0-9]$`, which
+likewise forbids dots/uppercase) — any registry entry with such an id was added by
+hand-editing `registry.yaml` directly, bypassing `_validate_id`. Out of scope here since
+it's a data-hygiene issue in the registry, not something this feature introduced.
 
 ## RM-26 — Instances list: numbered, paginated, active-first (added)
 
