@@ -3,6 +3,7 @@ import {
   AlertOctagon,
   AlertTriangle,
   Boxes,
+  Coins,
   Gauge,
   HardDrive,
   Timer,
@@ -120,6 +121,22 @@ export default function Overview() {
         </h2>
         <div className="mt-3">
           <AttentionTable entries={attentionEntries} />
+        </div>
+
+        <h2 className="mt-10 text-sm font-medium uppercase tracking-wide text-text-muted">
+          Usage &amp; cost
+        </h2>
+        <div className="mt-3 flex items-center gap-4 rounded-xl border border-dashed border-border bg-surface p-5 opacity-70">
+          <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-primary/10 text-primary">
+            <Coins size={20} />
+          </div>
+          <div>
+            <p className="text-sm font-medium text-text">Coming soon</p>
+            <p className="text-xs text-text-muted">
+              Token usage and spend need a persisted usage store and per-model pricing, not just
+              today's per-client totals — tracked separately.
+            </p>
+          </div>
         </div>
 
         <div className="mt-8 flex flex-wrap gap-2">

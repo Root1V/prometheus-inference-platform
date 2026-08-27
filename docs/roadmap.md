@@ -777,6 +777,13 @@ ship an honest placeholder now and the real row once RM-15 lands.
 **Scope**: a single disabled-looking card on the Overview page stating usage & cost
 tracking is coming, linking to this roadmap item / RM-15's status. No backend work.
 
+**Done (2026-08-27)**: a single dashed-border, lowered-opacity card in a "Usage & cost"
+section — coin icon, "Coming soon", and a one-line reason (needs a persisted usage store
+and per-model pricing, not just today's per-client totals from `GET /v1/usage`). No literal
+link to this roadmap item — nothing in the running app is wired to expose the repo's
+roadmap docs, so a "link" would just be dead; the explanatory text carries the same
+information instead. No backend work, as scoped.
+
 ## RM-23 — Active sessions / connected users (added)
 
 **Why**: no visibility today into who or what is actively using the platform right now —
