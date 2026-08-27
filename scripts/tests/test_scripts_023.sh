@@ -60,8 +60,6 @@ _make_project_dir() {
     } > "${dir}/auth-service/.env"
     # Initialise a minimal git repo so validate.sh CHECK 0 passes
     git -C "${dir}" init -q
-    git -C "${dir}" commit --allow-empty -q -m "init" \
-        --author="test <test@test>" 2>/dev/null || true
 }
 
 # ── AC-1: RHEL .env template contents ─────────────────────────────────────────

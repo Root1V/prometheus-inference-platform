@@ -71,7 +71,7 @@ EOF
 
 ### RHEL automated install (operators)
 
-Operators deploying to RHEL 9.7 can use `scripts/install-rhel.sh` to provision a host, `scripts/install-rhel.sh --deploy` for fast post-release updates, and `scripts/validate.sh` to run smoke checks. See `memory/specs/023-redhat-compatibility.md` for initial setup instructions and `memory/wiki/deployment.md` for the idempotent deployment workflow (specs/024).
+Operators deploying to RHEL 9.7 can use `scripts/install-rhel.sh` to provision a host, `scripts/install-rhel.sh --deploy` for fast post-release updates, and `scripts/validate.sh` to run smoke checks.
 
 ### 2. Install and start llama.cpp on the host (macOS, no Homebrew needed)
 
@@ -246,7 +246,7 @@ uv run pmgr restart llama3-8b-q4-local     # stop + start
 uv run pmgr list                            # all registry entries with running status
 
 # Backends beyond llama.cpp — mlx (Apple Silicon), vllm, sglang (both need CUDA)
-# See memory/wiki/inference-engines.md for the comparison behind this list.
+# See RM-06 in docs/roadmap.md for the comparison behind this list.
 uv run pmgr register --backend mlx --id my-mlx-model --path mlx-community/<repo>
 
 # Manager tests (split into core / api / tui — see runtime/manager/AGENTS.md)
@@ -299,42 +299,10 @@ See `gateway/.env.podman.example` and `auth-service/.env.example` for full confi
 
 ## Roadmap
 
-See [docs/roadmap.md](docs/roadmap.md) for the prioritized backlog of upcoming
-improvements and features. Those items skip the full SDD pipeline below (one branch per
-item instead) — see the roadmap file for the reasoning.
-
-## Spec Driven Development (SDD)
-
-Every already-shipped feature below went through a spec. No code is written without an
-approved spec.
-
-```
-memory/specs/NNN-feature-name.md  →  review  →  approved  →  implement  →  closed
-```
-
-| # | Spec | Status |
-|---|------|--------|
-| 001 | [Gateway Core](memory/specs/001-gateway-core.md) | `implemented` |
-| 002 | [JWT Authentication Middleware](memory/specs/002-jwt-authentication-middleware.md) | `implemented` |
-| 003 | [llama.cpp Bare-Metal Runtime](memory/specs/003-llama-cpp-runtime.md) | `implemented` |
-| 004 | [Podman Containerization](memory/specs/004-podman-containerization.md) | `implemented` |
-| 005 | [Auth Service](memory/specs/005-auth-service.md) | `implemented` |
-| 006 | [Multi-Model Gateway](memory/specs/006-multi-model-gateway.md) | `implemented` |
-| 007 | [Rate Limiting & Throughput](memory/specs/007-rate-limiting-and-throughput.md) | `implemented` |
-| 008 | [llama-server Manager CLI & TUI](memory/specs/008-llama-server-manager.md) | `implemented` |
-
-See [memory/specs/README.md](memory/specs/README.md) for the full index and authoring guide.
-
-### GitHub Copilot agents (SDD accelerators)
-
-Open Copilot Chat and use these slash commands:
-
-| Command | What it does |
-|---------|-------------|
-| `/new-spec <feature description>` | Creates a new spec file with the `spec-writer` agent |
-| `/implement-from-spec memory/specs/NNN-*.md` | Implements an approved spec end-to-end |
-| `/generate-openapi memory/specs/NNN-*.md` | Generates an OpenAPI 3.1 contract from a spec |
-| `/security-review gateway/src/...` | Runs a security audit with OWASP + Prometheus threat model |
+See [roadmap.md](roadmap.md) for the index of shipped and planned work, and
+[docs/roadmap.md](docs/roadmap.md) for the detail behind each item (why, scope,
+tradeoffs). Items are implemented directly, one branch per item — no separate
+spec-review pipeline.
 
 ---
 
@@ -367,12 +335,6 @@ CI runs on every PR and merge. See [`.github/workflows/`](.github/workflows/).
 edge-ai-inference/
 ├── AGENTS.md                    # Copilot agent + project guidelines
 ├── README.md
-├── memory/wiki/                        # Living project documentation (Karpathy wiki pattern)
-│   ├── _index.md                # Content catalog
-│   ├── _hot.md                  # Recent changes and active context
-│   └── architecture.md          # C4 architecture diagrams + threat model
-├── memory/decisions/                   # Project decisions — date-prefixed (2026-MM-DD-title.md)
-├── memory/specs/                       # SDD specifications (source of truth)
 ├── validations/
 │   └── e2e_test.py              # End-to-end integration test
 ├── gateway/                     # Prometheus API Gateway (Podman :8000)
@@ -420,7 +382,7 @@ edge-ai-inference/
 
 - JWT RS256 — algorithm pinning, JWKS rotation, token revocation via Redis
 - Zero unauthenticated endpoints (except `/health`)
-- Per-model authorization — `model:<id>` scopes, deny-by-default (RM-07). See [memory/wiki/auth-model.md](memory/wiki/auth-model.md#per-model-scopes-rm-07).
+- Per-model authorization — `model:<id>` scopes, deny-by-default — see [RM-07 in docs/roadmap.md](docs/roadmap.md#rm-07-fine-grained-per-model-authorization-scopes-item-2) for the migration impact on existing clients.
 - Rate limiting per `user_id` + per `client_id`
 - Prompt injection defence — `system`-role messages stripped before forwarding to llama.cpp
 - Vision content parts (`image_url`) must be inline `data:` URIs — remote http(s) image URLs are rejected so the backend can't be used as an SSRF proxy (RM-09)
@@ -428,8 +390,6 @@ edge-ai-inference/
 - RFC 9457 Problem Details on all errors — no stack traces exposed
 - Client secrets stored as bcrypt hashes — never logged or returned after registration
 - Admin endpoints protected by `X-Admin-Key` — never exposed outside internal Podman network
-
-See [memory/wiki/architecture.md](memory/wiki/architecture.md) for the full threat model and C4 diagrams.
 
 ---
 
