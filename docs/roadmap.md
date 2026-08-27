@@ -733,6 +733,17 @@ Open question carried over from the scoping memo: is a client-side rolling buffe
 `/metrics` each poll, keep enough points in the browser for a small sparkline) worth doing
 now, or better deferred to whenever RM-15 lands real persistence anyway?
 
+**Done (2026-08-27)**: "Request health" row on Overview — requests (active now + total),
+error rate, latency p50 (with p95/p99 as a sub-line), and circuits open (with a half-open
+count folded into the sub-line when nonzero). `useMetrics()` (added for RM-22) widened
+with the full `inference`/`backends` shape. The process-memory caveat renders as a plain
+text line under the row rather than a dismissible banner — it's a standing fact about this
+data, not a one-time alert. Verified end-to-end: issued a real `/v1/chat/completions`
+request through the gateway and confirmed the row picked up the resulting
+requests_total/latency/backend entry on the next poll. Client-side rolling-buffer sparkline
+question: deferred, per the "ship the simple version now" default — revisit alongside
+RM-15.
+
 ## RM-29 — Overview: models needing attention (added)
 
 **Why**: split out of RM-22 — see above. The actual job of a home page is answering "what

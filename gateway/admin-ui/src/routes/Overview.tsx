@@ -1,4 +1,13 @@
-import { Boxes, HardDrive, Timer, Users as UsersIcon } from "lucide-react";
+import {
+  Activity,
+  AlertOctagon,
+  AlertTriangle,
+  Boxes,
+  Gauge,
+  HardDrive,
+  Timer,
+  Users as UsersIcon,
+} from "lucide-react";
 import { Link } from "react-router-dom";
 import { useMetrics } from "../api/metrics";
 import { useInstances } from "../api/instances";
@@ -26,6 +35,15 @@ export default function Overview() {
   const stoppedInstances = instances.filter((i) => i.state === "stopped").length;
   const activeUsers = users.filter((u) => u.is_active).length;
 
+  const inference = metricsQuery.data?.inference;
+  const backendEntries = Object.values(metricsQuery.data?.backends ?? {});
+  const openCircuits = backendEntries.filter((b) => b.circuit_state === "open").length;
+  const halfOpenCircuits = backendEntries.filter((b) => b.circuit_state === "half-open").length;
+  const errorRate =
+    inference && inference.requests_total > 0
+      ? `${((inference.errors_total / inference.requests_total) * 100).toFixed(1)}%`
+      : "0.0%";
+
   return (
     <div className="flex min-h-screen bg-background">
       <Sidebar />
@@ -52,6 +70,35 @@ export default function Overview() {
             icon={Timer}
           />
         </div>
+
+        <h2 className="mt-10 text-sm font-medium uppercase tracking-wide text-text-muted">
+          Request health
+        </h2>
+        <div className="mt-3 grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
+          <StatCard
+            label="Requests"
+            value={inference?.requests_active ?? "—"}
+            sub={inference ? `active now · ${inference.requests_total} total` : undefined}
+            icon={Activity}
+          />
+          <StatCard label="Error rate" value={inference ? errorRate : "—"} icon={AlertTriangle} />
+          <StatCard
+            label="Latency (p50)"
+            value={inference ? `${inference.latency_p50_ms} ms` : "—"}
+            sub={inference ? `p95 ${inference.latency_p95_ms}ms · p99 ${inference.latency_p99_ms}ms` : undefined}
+            icon={Gauge}
+          />
+          <StatCard
+            label="Circuits open"
+            value={openCircuits}
+            sub={`of ${backendEntries.length} models${halfOpenCircuits > 0 ? ` · ${halfOpenCircuits} half-open` : ""}`}
+            icon={AlertOctagon}
+          />
+        </div>
+        <p className="mt-2 text-xs text-text-muted">
+          Counters are process-memory only — they reset when the gateway restarts, and reflect the
+          current snapshot rather than a historical trend.
+        </p>
 
         <div className="mt-8 flex flex-wrap gap-2">
           <Link to="/instances" className={linkChipClass}>
