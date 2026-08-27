@@ -17,6 +17,11 @@ const FIXED_SCOPES = [
 
 const MODEL_SCOPE_PREFIX = "model:";
 
+// Only these scopes mean the principal actually calls a model (API inference or
+// the chat UI) — admin/internal-tooling users (admin:*, backend-registry:*,
+// ops:dashboard) never need per-model access, so the picker stays hidden for them.
+const MODEL_CONSUMER_SCOPES = ["inference:read", "inference:stream", "ui:chat"];
+
 export function ScopePicker({
   value,
   onChange,
@@ -46,6 +51,12 @@ export function ScopePicker({
     (s) => s.startsWith(MODEL_SCOPE_PREFIX) && !knownModelScopes.has(s),
   );
 
+  // Show the picker once the user is (or already was) a model consumer — either
+  // a consumer scope is checked now, or they already hold model:<id> grants from
+  // before (so editing never hides — and risks silently dropping — existing access).
+  const hasModelGrants = value.some((s) => s.startsWith(MODEL_SCOPE_PREFIX));
+  const isModelConsumer = MODEL_CONSUMER_SCOPES.some((s) => value.includes(s)) || hasModelGrants;
+
   const toggle = (scope: string) => {
     onChange(value.includes(scope) ? value.filter((s) => s !== scope) : [...value, scope]);
   };
@@ -61,7 +72,7 @@ export function ScopePicker({
         ))}
       </div>
 
-      {(modelOptions.length > 0 || staleModelScopes.length > 0) && (
+      {isModelConsumer && (modelOptions.length > 0 || staleModelScopes.length > 0) && (
         <div>
           <p className="mb-1 text-xs font-medium text-text-muted">Models</p>
           <div className="max-h-40 space-y-1 overflow-y-auto rounded-lg border border-border p-2">

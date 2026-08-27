@@ -48,7 +48,7 @@ folded in here per your "muchos más que vayas encontrando."
 | [RM-21](#rm-21-simplified-instance-creation-added) | Simplified instance creation (added) | todo | RM-20 |
 | [RM-22](#rm-22-platform-overview-home-page-added) | Platform overview / home page (added) | todo | RM-10 |
 | [RM-23](#rm-23-active-sessions--connected-users-added) | Active sessions / connected users (added) | todo | RM-10, related to RM-15 |
-| [RM-24](#rm-24-model-picker-in-create-user-added) | Model picker in Create User (added) | todo | RM-11, RM-21 |
+| [RM-24](#rm-24-model-picker-in-create-user-added) | Model picker in Create User (added) | done | RM-11 |
 | [RM-25](#rm-25-node-sshremote-maintenance-credentials-added-speculative) | Node SSH/remote-maintenance credentials (added, speculative) | todo | RM-20 |
 
 Why this order, briefly:
