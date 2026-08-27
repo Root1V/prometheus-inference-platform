@@ -213,6 +213,45 @@ async def test_delete_node_proxies_to_auth_service(gw, rsa_keys):
     assert route.called
 
 
+async def test_check_node_proxies_to_auth_service(gw, rsa_keys):
+    with respx.mock:
+        route = respx.post(f"{AUTH_ADMIN_URL}/nodes/n1/check").mock(
+            return_value=Response(200, json={"id": "n1", "name": "mac", "is_active": True})
+        )
+        resp = await gw.post("/admin/api/nodes/n1/check", headers=_headers(rsa_keys, "admin:write"))
+    assert resp.status_code == 200
+    assert route.called
+
+
+async def test_activate_node_proxies_to_auth_service(gw, rsa_keys):
+    with respx.mock:
+        route = respx.post(f"{AUTH_ADMIN_URL}/nodes/n1/activate").mock(
+            return_value=Response(200, json={"id": "n1", "name": "mac", "is_active": True})
+        )
+        resp = await gw.post(
+            "/admin/api/nodes/n1/activate", headers=_headers(rsa_keys, "admin:write")
+        )
+    assert resp.status_code == 200
+    assert route.called
+
+
+async def test_deactivate_node_proxies_to_auth_service(gw, rsa_keys):
+    with respx.mock:
+        route = respx.post(f"{AUTH_ADMIN_URL}/nodes/n1/deactivate").mock(
+            return_value=Response(200, json={"id": "n1", "name": "mac", "is_active": False})
+        )
+        resp = await gw.post(
+            "/admin/api/nodes/n1/deactivate", headers=_headers(rsa_keys, "admin:write")
+        )
+    assert resp.status_code == 200
+    assert route.called
+
+
+async def test_deactivate_node_requires_admin_write(gw, rsa_keys):
+    resp = await gw.post("/admin/api/nodes/n1/deactivate", headers=_headers(rsa_keys, "admin:read"))
+    assert resp.status_code == 403
+
+
 # ── GET /admin/api/instances ──────────────────────────────────────────────────
 
 

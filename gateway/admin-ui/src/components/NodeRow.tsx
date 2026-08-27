@@ -1,6 +1,6 @@
-import { Pencil, RefreshCw, Trash2 } from "lucide-react";
+import { Pencil, Power, RefreshCw, Trash2 } from "lucide-react";
 import { useState } from "react";
-import { useCheckNode, useDeleteNode } from "../api/nodes";
+import { useActivateNode, useCheckNode, useDeactivateNode, useDeleteNode } from "../api/nodes";
 import { useToast } from "../context/ToastContext";
 import { cn } from "../lib/cn";
 import { getErrorMessage } from "../lib/errors";
@@ -14,8 +14,12 @@ const actionButtonClass =
 export function NodeRow({ node, onEdit }: { node: Node; onEdit: (node: Node) => void }) {
   const { showToast } = useToast();
   const [confirmDelete, setConfirmDelete] = useState(false);
+  const [confirmDeactivate, setConfirmDeactivate] = useState(false);
   const remove = useDeleteNode();
   const check = useCheckNode();
+  const activate = useActivateNode();
+  const deactivate = useDeactivateNode();
+  const isBusy = check.isPending || activate.isPending || deactivate.isPending || remove.isPending;
 
   return (
     <>
@@ -33,7 +37,7 @@ export function NodeRow({ node, onEdit }: { node: Node; onEdit: (node: Node) => 
               type="button"
               title="Re-check connectivity"
               aria-label={`Re-check connectivity for ${node.name}`}
-              disabled={check.isPending}
+              disabled={isBusy}
               onClick={() =>
                 check.mutate(node.id, {
                   onSuccess: (updated) =>
@@ -50,9 +54,29 @@ export function NodeRow({ node, onEdit }: { node: Node; onEdit: (node: Node) => 
             </button>
             <button
               type="button"
+              title={node.is_active ? "Deactivate" : "Activate"}
+              aria-label={`${node.is_active ? "Deactivate" : "Activate"} ${node.name}`}
+              disabled={isBusy}
+              onClick={() =>
+                node.is_active
+                  ? setConfirmDeactivate(true)
+                  : activate.mutate(node.id, {
+                      onSuccess: () => showToast(`${node.name} activated`, "success"),
+                      onError: (error) => showToast(getErrorMessage(error), "error"),
+                    })
+              }
+              className={cn(
+                actionButtonClass,
+                node.is_active ? "text-red-600 hover:bg-red-50" : "text-green-600 hover:bg-green-50",
+              )}
+            >
+              <Power size={16} />
+            </button>
+            <button
+              type="button"
               title="Edit"
               aria-label={`Edit ${node.name}`}
-              disabled={remove.isPending}
+              disabled={isBusy}
               onClick={() => onEdit(node)}
               className={cn(actionButtonClass, "text-text-muted hover:bg-background")}
             >
@@ -62,7 +86,7 @@ export function NodeRow({ node, onEdit }: { node: Node; onEdit: (node: Node) => 
               type="button"
               title="Delete"
               aria-label={`Delete ${node.name}`}
-              disabled={remove.isPending}
+              disabled={isBusy}
               onClick={() => setConfirmDelete(true)}
               className={cn(actionButtonClass, "text-red-600 hover:bg-red-50")}
             >
@@ -81,6 +105,20 @@ export function NodeRow({ node, onEdit }: { node: Node; onEdit: (node: Node) => 
           setConfirmDelete(false);
           remove.mutate(node.id, {
             onSuccess: () => showToast(`${node.name} deleted`, "success"),
+            onError: (error) => showToast(getErrorMessage(error), "error"),
+          });
+        }}
+      />
+      <ConfirmDialog
+        open={confirmDeactivate}
+        title={`Deactivate ${node.name}?`}
+        description="This takes the node out of routing and instance control immediately, even though it may still be reachable. Can be reactivated any time."
+        confirmLabel="Deactivate"
+        onCancel={() => setConfirmDeactivate(false)}
+        onConfirm={() => {
+          setConfirmDeactivate(false);
+          deactivate.mutate(node.id, {
+            onSuccess: () => showToast(`${node.name} deactivated`, "success"),
             onError: (error) => showToast(getErrorMessage(error), "error"),
           });
         }}

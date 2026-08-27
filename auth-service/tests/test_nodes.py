@@ -148,3 +148,38 @@ async def test_nodes_check_endpoint_updates_status(client, monkeypatch):
 async def test_nodes_check_endpoint_not_found(client):
     resp = await client.post("/admin/nodes/does-not-exist/check", headers=ADMIN_HEADERS)
     assert resp.status_code == 404
+
+
+async def test_nodes_deactivate_is_manual_override_independent_of_connectivity(client):
+    """/deactivate marks a node inactive even though it's reachable (_reachable fixture)."""
+    node = await _create_node(client, name="manual-toggle-node")
+    assert node["is_active"] is True
+
+    resp = await client.post(f"/admin/nodes/{node['id']}/deactivate", headers=ADMIN_HEADERS)
+    assert resp.status_code == 200
+    assert resp.json()["is_active"] is False
+
+
+async def test_nodes_activate_is_manual_override_independent_of_connectivity(client, monkeypatch):
+    """/activate marks a node active even though it's unreachable."""
+
+    async def _fake_check(manager_url: str) -> bool:
+        return False
+
+    monkeypatch.setattr(admin_router, "_check_node_reachable", _fake_check)
+    node = await _create_node(client, name="manual-activate-node")
+    assert node["is_active"] is False
+
+    resp = await client.post(f"/admin/nodes/{node['id']}/activate", headers=ADMIN_HEADERS)
+    assert resp.status_code == 200
+    assert resp.json()["is_active"] is True
+
+
+async def test_nodes_deactivate_not_found(client):
+    resp = await client.post("/admin/nodes/does-not-exist/deactivate", headers=ADMIN_HEADERS)
+    assert resp.status_code == 404
+
+
+async def test_nodes_activate_not_found(client):
+    resp = await client.post("/admin/nodes/does-not-exist/activate", headers=ADMIN_HEADERS)
+    assert resp.status_code == 404

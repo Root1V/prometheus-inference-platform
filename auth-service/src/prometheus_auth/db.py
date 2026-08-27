@@ -124,9 +124,10 @@ class Node(Base):
     manager_url: Mapped[str] = mapped_column(String(512), nullable=False)
     node_type: Mapped[NodeType] = mapped_column(Enum(NodeType), nullable=False)
     tag: Mapped[str | None] = mapped_column(Text, nullable=True)
-    # Reflects an actual connectivity check (GET {manager_url}/health) — set at
-    # creation, on manager_url changes, and via the explicit re-check endpoint.
-    # Never a bare admin-settable toggle divorced from real reachability.
+    # Set automatically by a connectivity check (GET {manager_url}/health) at
+    # creation, on manager_url changes, and via the /check endpoint — or set
+    # directly by an operator via /activate, /deactivate for on-demand overrides
+    # (e.g. taking a reachable node out of rotation for maintenance).
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),

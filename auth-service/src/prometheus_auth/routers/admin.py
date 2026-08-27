@@ -732,6 +732,61 @@ async def check_node(
     return _node_to_item(node)
 
 
+@router.post(
+    "/nodes/{node_id}/activate", response_model=NodeListItem, dependencies=[Depends(_require_admin)]
+)
+async def activate_node(
+    node_id: str,
+    db: AsyncSession = Depends(_get_db),
+) -> Any:
+    """Manually mark a node active — an on-demand override, independent of connectivity.
+
+    Implements: docs/roadmap.md — RM-20. Distinct from /check: this sets is_active
+    directly rather than probing the node, so an operator can bring a node back
+    into routing immediately (or take it out for maintenance via /deactivate)
+    without waiting on or relying on the outcome of a health probe.
+    """
+    result = await db.execute(select(Node).where(Node.id == node_id))
+    node = result.scalar_one_or_none()
+    if node is None:
+        raise HTTPException(status_code=404, detail="Node not found.")
+
+    node.is_active = True
+    node.updated_at = datetime.now(timezone.utc)
+    await db.commit()
+    await db.refresh(node)
+
+    logger.info("auth.node_activated", node_id=node.id)
+    return _node_to_item(node)
+
+
+@router.post(
+    "/nodes/{node_id}/deactivate",
+    response_model=NodeListItem,
+    dependencies=[Depends(_require_admin)],
+)
+async def deactivate_node(
+    node_id: str,
+    db: AsyncSession = Depends(_get_db),
+) -> Any:
+    """Manually mark a node inactive — an on-demand override, e.g. for maintenance.
+
+    Implements: docs/roadmap.md — RM-20.
+    """
+    result = await db.execute(select(Node).where(Node.id == node_id))
+    node = result.scalar_one_or_none()
+    if node is None:
+        raise HTTPException(status_code=404, detail="Node not found.")
+
+    node.is_active = False
+    node.updated_at = datetime.now(timezone.utc)
+    await db.commit()
+    await db.refresh(node)
+
+    logger.info("auth.node_deactivated", node_id=node.id)
+    return _node_to_item(node)
+
+
 @router.delete("/nodes/{node_id}", status_code=204, dependencies=[Depends(_require_admin)])
 async def delete_node(
     node_id: str,

@@ -12,6 +12,8 @@ POST   /admin/api/nodes                                    — register a node
 PATCH  /admin/api/nodes/{node_id}                            — update a node
 DELETE /admin/api/nodes/{node_id}                            — remove a node
 POST   /admin/api/nodes/{node_id}/check                      — re-run connectivity check
+POST   /admin/api/nodes/{node_id}/activate                   — manually mark active (on-demand override)
+POST   /admin/api/nodes/{node_id}/deactivate                 — manually mark inactive (on-demand override)
 GET    /admin/api/instances                                 — aggregated across all nodes
 POST   /admin/api/nodes/{node}/models                        — register
 PATCH  /admin/api/nodes/{node}/models/{model_id}               — update fields
@@ -399,6 +401,18 @@ def create_admin_router(manager_client: ManagerApiClient) -> APIRouter:
         if (forbidden := _require_scope(request, "admin:write")) is not None:
             return forbidden
         return await _auth_admin_request(request, "POST", f"/nodes/{node_id}/check")
+
+    @router.post("/admin/api/nodes/{node_id}/activate")
+    async def activate_node(node_id: str, request: Request) -> Response:
+        if (forbidden := _require_scope(request, "admin:write")) is not None:
+            return forbidden
+        return await _auth_admin_request(request, "POST", f"/nodes/{node_id}/activate")
+
+    @router.post("/admin/api/nodes/{node_id}/deactivate")
+    async def deactivate_node(node_id: str, request: Request) -> Response:
+        if (forbidden := _require_scope(request, "admin:write")) is not None:
+            return forbidden
+        return await _auth_admin_request(request, "POST", f"/nodes/{node_id}/deactivate")
 
     @router.post("/admin/api/users/share/{token_id}/revoke")
     async def revoke_user_share(token_id: str, request: Request) -> Response:
