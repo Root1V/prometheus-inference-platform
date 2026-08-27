@@ -36,6 +36,7 @@ Status: `done` · `todo`
 | RM-28 | Overview: golden signals row | done | Requests/errors/latency p50-p95-p99/circuits-open, live from gateway `/metrics` |
 | RM-29 | Overview: models needing attention | done | Instances ⋈ circuit state, sorted unhealthy-first |
 | RM-30 | Overview: usage & cost placeholder | done | "Coming soon" card on the Overview page; real version blocked on RM-15 |
+| RM-31 | Overview: link out to Grafana/Tempo | todo | Needs a `GRAFANA_URL`-style config first — dropped from RM-22 to avoid a fragile guessed link |
 
 Adding an item: append the next `RM-NN` row here with a one-liner, then add the full
 Why/Scope writeup to `docs/roadmap.md`.

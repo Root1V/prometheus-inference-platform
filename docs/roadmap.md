@@ -528,6 +528,12 @@ lean on RM-12's Langfuse integration if that lands first (Langfuse already track
 prompt/completion/token data, which may make a separate aggregation redundant). Decide the
 data source before designing the page.
 
+**Carried over from RM-28's scoping**: once this lands with real persistence, revisit
+whether the Overview page's golden-signals row (RM-28) should grow a small client-side
+trend/sparkline, or just link into whatever historical view RM-15 builds — a client-side
+rolling buffer sampled from `/metrics` was considered and deliberately deferred rather than
+built twice.
+
 ## RM-16 — Routing & rate-limit visibility (added)
 
 **Why**: the gateway already enforces rate limiting and circuit breakers (spec 007), but
@@ -708,6 +714,11 @@ endpoints — `useNodeRegistry()`, `useInstances()`, `useUsers()` already exist.
 revisit once RM-29 lands and it's clear which page an operator actually looks at first
 when something's wrong.
 
+**Resolved once RM-29 landed**: no separate banner. RM-29's "Needs attention" table *is*
+that callout — always visible (not dismissible-and-forgotten like a banner), and it shows
+structured detail (model/node/state/circuit) instead of just a name list. A banner
+restating the same thing above it would be pure duplication.
+
 **Done (2026-08-27)**: `/` now renders a new `Overview` page — stat strip (nodes
 active/total, instances total + running/stopped subtext, users active/total, gateway
 uptime from a new minimal `useMetrics()` hook against `GET /metrics`) plus a links row to
@@ -863,6 +874,21 @@ add a Delete action in `UserRow.tsx`'s action column (mirrors `NodeRow.tsx`'s
 delete-with-`ConfirmDialog` pattern already used for nodes) that calls it with
 `?permanent=true`. Needs clear confirmation copy distinguishing it from Deactivate
 (irreversible vs. reversible) so an operator doesn't reach for the wrong one.
+
+## RM-31 — Overview: link out to Grafana/Tempo (added)
+
+**Why**: dropped from RM-22's original scope — see that item's "Scope trim" note. The
+Overview page memo called for a links row to the existing Grafana ops dashboard and Tempo
+trace search, but there's no `GRAFANA_URL`-shaped setting anywhere in the gateway's config
+to build a reliable link from, and guessing one client-side (assuming Grafana sits on the
+same host at :3000, per `podman-compose.yml`) would be fragile across deployments —
+different host, different port, TLS, or no Grafana deployed at all.
+
+**Scope (not yet designed in detail)**: add a `GRAFANA_URL` (or similar) setting to the
+gateway's config, exposed to the admin-ui (e.g. via a small unauthenticated `/admin/api/config`
+read, or baked into the served `index.html` at container-build/start time — needs picking
+one). Render the links row on Overview only when the setting is present; omit it entirely
+otherwise rather than showing a dead link.
 
 ## Adding new items
 
