@@ -7,6 +7,7 @@ import Limits from "./routes/Limits";
 import Login from "./routes/Login";
 import Nodes from "./routes/Nodes";
 import Overview from "./routes/Overview";
+import Sessions from "./routes/Sessions";
 import Usage from "./routes/Usage";
 import Users from "./routes/Users";
 
@@ -68,6 +69,14 @@ export default function App() {
               element={
                 <ProtectedRoute>
                   <Limits />
+                </ProtectedRoute>
+              }
+            />
+            <Route
+              path="/sessions"
+              element={
+                <ProtectedRoute>
+                  <Sessions />
                 </ProtectedRoute>
               }
             />

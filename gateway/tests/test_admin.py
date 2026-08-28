@@ -649,3 +649,28 @@ async def test_get_config_returns_rate_limit_and_circuit_breaker_settings(gw, rs
     assert body["circuit_breaker_failure_threshold"] == 5
     assert body["circuit_breaker_recovery_timeout"] == 30
     assert body["circuit_breaker_success_threshold"] == 2
+
+
+# ── GET /admin/api/sessions — docs/roadmap.md RM-23 ─────────────────────────
+
+
+async def test_get_sessions_reports_a_client_seen_via_the_dashboard(gw, rsa_keys):
+    client_id = "rm23-dashboard-client"
+    token = make_token(rsa_keys["private"], azp=client_id, sub="rm23-user", scope="admin:read")
+    # Any authenticated /admin/api/* call touches ActivityTracker via the
+    # JWTAuthMiddleware hook — hit /admin/api/config first to register it.
+    await gw.get("/admin/api/config", headers={"Authorization": f"Bearer {token}"})
+
+    resp = await gw.get("/admin/api/sessions", headers={"Authorization": f"Bearer {token}"})
+
+    assert resp.status_code == 200
+    sessions = resp.json()["sessions"]
+    entry = next(s for s in sessions if s["client_id"] == client_id)
+    assert entry["connection_type"] == "dashboard"
+    assert entry["user_id"] == "rm23-user"
+    assert entry["last_seen_ago_s"] == 0
+
+
+async def test_get_sessions_requires_admin_read(gw, rsa_keys):
+    resp = await gw.get("/admin/api/sessions", headers=_headers(rsa_keys, "inference:read"))
+    assert resp.status_code == 403

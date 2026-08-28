@@ -32,6 +32,7 @@ POST   /admin/api/users/{client_id}/reset-password           — password princi
 POST   /admin/api/users/{client_id}/share                    — one-time credential link
 POST   /admin/api/users/share/{token_id}/revoke
 GET    /admin/api/config                                    — dashboard-facing settings (RM-31)
+GET    /admin/api/sessions                                  — clients active in the last 15m (RM-23)
 
 Implements: docs/roadmap.md — RM-10 (gateway admin dashboard, phase 1)
 Implements: docs/roadmap.md — RM-11 (Users section, dual login modes)
@@ -39,6 +40,7 @@ Implements: docs/roadmap.md — RM-20 (Nodes section, replaces static MANAGER_NO
 Implements: docs/roadmap.md — RM-31 (Overview: link out to Grafana/Tempo)
 Implements: docs/roadmap.md — RM-13 (admin dashboard: live log viewer)
 Implements: docs/roadmap.md — RM-16 (routing & rate-limit visibility)
+Implements: docs/roadmap.md — RM-23 (active sessions / connected users)
 """
 
 from __future__ import annotations
@@ -51,7 +53,7 @@ from fastapi.responses import JSONResponse
 
 from ..config import Settings
 from ..router import _problem
-from ..telemetry import get_logger
+from ..telemetry import activity_tracker, get_logger
 from .client import ManagerApiClient
 from .nodes_client import fetch_nodes
 
@@ -476,5 +478,14 @@ def create_admin_router(manager_client: ManagerApiClient) -> APIRouter:
             "circuit_breaker_recovery_timeout": settings.circuit_breaker_recovery_timeout,
             "circuit_breaker_success_threshold": settings.circuit_breaker_success_threshold,
         }
+
+    @router.get("/admin/api/sessions")
+    async def list_sessions(request: Request) -> Any:
+        """Clients active in the last 15 minutes (RM-23) — a last-seen-based
+        approximation, not a real connection registry. See ActivityTracker.
+        """
+        if (forbidden := _require_scope(request, "admin:read")) is not None:
+            return forbidden
+        return {"sessions": await activity_tracker.snapshot()}
 
     return router

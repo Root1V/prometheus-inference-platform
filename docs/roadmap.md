@@ -875,19 +875,35 @@ link to this roadmap item — nothing in the running app is wired to expose the 
 roadmap docs, so a "link" would just be dead; the explanatory text carries the same
 information instead. No backend work, as scoped.
 
-## RM-23 — Active sessions / connected users (added)
+## RM-23 — Active sessions / connected users (added) — `done`
 
 **Why**: no visibility today into who or what is actively using the platform right now —
 operators logged into the dashboard web UI, end users chatting via a model's own UI, API
 callers, and (future) SDK users. RM-15 covers historical/aggregate usage; this is about
 *live* connections instead.
 
-**Scope (not yet designed)**: a page listing active sessions/connections, showing per
-entry: which model is being used, connection type (dashboard web / model UI chat / API /
-SDK), and how long it's been connected. Needs a session-tracking mechanism spanning
-gateway (API calls), auth-service (dashboard login sessions), and any model-facing chat UI
-— this is the least-designed item in this batch; where "active" state actually gets
-recorded needs its own scoping pass before implementation starts.
+**Scope trim (2026-08-28)**: JWTs are stateless — there's no server-side session object
+anywhere to track, so a *real* connection registry isn't buildable without adding one.
+Landed instead as a last-seen-based approximation: a new `ActivityTracker` (in-memory,
+same single-process `asyncio.Lock` pattern as `MetricsStore`) records `(client_id, user_id,
+connection_type, last_seen)` on every authenticated request, hooked directly into
+`JWTAuthMiddleware` right after claims validation. `connection_type` is inferred purely
+from the URL prefix (`/admin/api` → "dashboard", `/v1` → "api", the only signal available
+without reading further into who's calling) — **not** tracked: the web chat UI's `/ui/*`
+routes (spec 013), which are Bearer-exempt and authenticate via their own session cookie
+(`ui/router.py`'s `_validate_session`), so those sessions are invisible to this mechanism.
+Per-model attribution ("which model is being used") was also cut from v1 — the model id
+only lives in the request body, not the URL, and reading it in middleware would mean
+buffering every request body for a nice-to-have; a natural fast-follow once there's a
+concrete need. New `GET /admin/api/sessions` (`admin:read`) returns entries seen in the
+last 15 minutes, most-recent-first, pruning older ones on read. New `/sessions` page,
+cross-referencing the Users list for a readable name.
+
+**Verified**: 4 new `ActivityTracker` unit tests (`test_activity_tracker.py`) + 2 new
+`test_admin.py` tests (53/53 admin-area tests green) — full gateway suite 206/206, full
+`.githooks/pre-push` green. Live-verified against the local demo gateway: the current
+admin dashboard session showed up on `/sessions` as "Dashboard · just now", name resolved
+correctly against the real Users list.
 
 ## RM-24 — Model picker in Create User (done)
 

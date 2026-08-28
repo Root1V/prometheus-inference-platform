@@ -35,6 +35,8 @@ __all__ = [
     "trace_id_from_context",
     "MetricsStore",
     "metrics_store",
+    "ActivityTracker",
+    "activity_tracker",
 ]
 
 
@@ -162,3 +164,54 @@ class MetricsStore:
 
 # Module-level singleton — injected into the FastAPI app at startup
 metrics_store = MetricsStore()
+
+
+# ── In-process ActivityTracker — docs/roadmap.md RM-23 ───────────────────────
+
+
+class ActivityTracker:
+    """Last-seen-based "who's active right now" approximation.
+
+    Not a real session registry — JWTs are stateless, there's no server-side
+    session object to track. This just records the most recent request per
+    client_id and reports anything seen within the last 15 minutes. Same
+    single-process in-memory pattern as MetricsStore.
+    """
+
+    _STALE_AFTER_S = 15 * 60
+
+    def __init__(self) -> None:
+        self._lock = asyncio.Lock()
+        self._entries: dict[str, dict[str, Any]] = {}
+
+    async def touch(self, client_id: str, user_id: str, connection_type: str) -> None:
+        async with self._lock:
+            self._entries[client_id] = {
+                "client_id": client_id,
+                "user_id": user_id,
+                "connection_type": connection_type,
+                "last_seen": time.time(),
+            }
+
+    async def snapshot(self) -> list[dict[str, Any]]:
+        """Active entries (seen in the last 15 min), most recent first.
+
+        Prunes anything older than that while it's already got the lock.
+        """
+        now = time.time()
+        async with self._lock:
+            stale_ids = [
+                cid
+                for cid, e in self._entries.items()
+                if now - e["last_seen"] > self._STALE_AFTER_S
+            ]
+            for cid in stale_ids:
+                del self._entries[cid]
+            active = [
+                {**e, "last_seen_ago_s": int(now - e["last_seen"])} for e in self._entries.values()
+            ]
+        active.sort(key=lambda e: e["last_seen_ago_s"])
+        return active
+
+
+activity_tracker = ActivityTracker()
