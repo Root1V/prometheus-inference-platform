@@ -293,7 +293,11 @@ def create_admin_router(manager_client: ManagerApiClient) -> APIRouter:
     # that service requires (distinct from manager_client's OAuth2 flow).
 
     async def _auth_admin_request(
-        request: Request, method: str, path: str, json: Any = None
+        request: Request,
+        method: str,
+        path: str,
+        json: Any = None,
+        params: dict[str, Any] | None = None,
     ) -> Response:
         settings: Settings = request.app.state.settings
         if not settings.auth_service_admin_url or not settings.auth_service_admin_api_key:
@@ -313,6 +317,7 @@ def create_admin_router(manager_client: ManagerApiClient) -> APIRouter:
                     method,
                     f"{settings.auth_service_admin_url}{path}",
                     json=json,
+                    params=params,
                     headers={"X-Admin-Key": settings.auth_service_admin_api_key},
                 )
         except Exception as exc:
@@ -338,10 +343,15 @@ def create_admin_router(manager_client: ManagerApiClient) -> APIRouter:
         return await _auth_admin_request(request, "PATCH", f"/clients/{client_id}", json=body)
 
     @router.delete("/admin/api/users/{client_id}")
-    async def deactivate_user(client_id: str, request: Request) -> Response:
+    async def deactivate_user(
+        client_id: str, request: Request, permanent: bool = False
+    ) -> Response:
+        """`?permanent=true` hard-deletes the user (RM-27); default is soft deactivate."""
         if (forbidden := _require_scope(request, "admin:write")) is not None:
             return forbidden
-        return await _auth_admin_request(request, "DELETE", f"/clients/{client_id}")
+        return await _auth_admin_request(
+            request, "DELETE", f"/clients/{client_id}", params={"permanent": permanent}
+        )
 
     @router.post("/admin/api/users/{client_id}/reactivate")
     async def reactivate_user(client_id: str, request: Request) -> Response:

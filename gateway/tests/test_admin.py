@@ -544,6 +544,17 @@ async def test_deactivate_user_proxies_delete(gw, rsa_keys):
         resp = await gw.delete("/admin/api/users/u3", headers=_headers(rsa_keys, "admin:write"))
     assert resp.status_code == 204
     assert route.called
+    assert route.calls.last.request.url.params["permanent"] == "false"
+
+
+async def test_delete_user_permanent_forwards_query_param(gw, rsa_keys):  # RM-27
+    with respx.mock:
+        route = respx.delete(f"{AUTH_ADMIN_URL}/clients/u3").mock(return_value=Response(204))
+        resp = await gw.delete(
+            "/admin/api/users/u3?permanent=true", headers=_headers(rsa_keys, "admin:write")
+        )
+    assert resp.status_code == 204
+    assert route.calls.last.request.url.params["permanent"] == "true"
 
 
 async def test_share_user_credential_proxies_to_auth_service(gw, rsa_keys):

@@ -32,7 +32,7 @@ Status: `done` · `todo`
 | RM-24 | Model picker in Create User | done | Pick from the existing Instances/registry list instead of typing `model:<id>` scopes by hand |
 | RM-25 | Node SSH/remote-maintenance credentials | todo | Speculative — no consuming feature yet |
 | RM-26 | Instances list: numbered, paginated, active-first | done | Add a row-number column, paginate when the list is long, sort running instances first |
-| RM-27 | Delete user | todo | Permanent delete action in the Users table, alongside the existing deactivate/reactivate |
+| RM-27 | Delete user | done | Permanent delete action in the Users table, alongside the existing deactivate/reactivate |
 | RM-28 | Overview: golden signals row | done | Requests/errors/latency p50-p95-p99/circuits-open, live from gateway `/metrics` |
 | RM-29 | Overview: models needing attention | done | Instances ⋈ circuit state, sorted unhealthy-first |
 | RM-30 | Overview: usage & cost placeholder | done | "Coming soon" card on the Overview page; real version blocked on RM-15 |

@@ -1,6 +1,12 @@
-import { Pencil, Power, RotateCw } from "lucide-react";
+import { Pencil, Power, RotateCw, Trash2 } from "lucide-react";
 import { useState } from "react";
-import { useDeactivateUser, useReactivateUser, useResetPassword, useRotateSecret } from "../api/users";
+import {
+  useDeactivateUser,
+  useDeleteUser,
+  useReactivateUser,
+  useResetPassword,
+  useRotateSecret,
+} from "../api/users";
 import { useToast } from "../context/ToastContext";
 import { cn } from "../lib/cn";
 import { getErrorMessage } from "../lib/errors";
@@ -24,12 +30,18 @@ export function UserRow({
 }) {
   const { showToast } = useToast();
   const [confirmDeactivate, setConfirmDeactivate] = useState(false);
+  const [confirmDelete, setConfirmDelete] = useState(false);
   const deactivate = useDeactivateUser();
+  const deleteUser = useDeleteUser();
   const reactivate = useReactivateUser();
   const rotateSecret = useRotateSecret();
   const resetPassword = useResetPassword();
   const isBusy =
-    deactivate.isPending || reactivate.isPending || rotateSecret.isPending || resetPassword.isPending;
+    deactivate.isPending ||
+    deleteUser.isPending ||
+    reactivate.isPending ||
+    rotateSecret.isPending ||
+    resetPassword.isPending;
 
   const runAction = (mutateAsync: () => Promise<unknown>, successMessage: string) => {
     mutateAsync().then(
@@ -128,6 +140,16 @@ export function UserRow({
             >
               <Power size={16} />
             </button>
+            <button
+              type="button"
+              title="Delete"
+              aria-label={`Delete ${user.client_name}`}
+              disabled={isBusy}
+              onClick={() => setConfirmDelete(true)}
+              className={cn(actionButtonClass, "text-red-600 hover:bg-red-50")}
+            >
+              <Trash2 size={16} />
+            </button>
           </div>
         </td>
       </tr>
@@ -140,6 +162,17 @@ export function UserRow({
         onConfirm={() => {
           setConfirmDeactivate(false);
           runAction(() => deactivate.mutateAsync(user.client_id), `${user.client_name} deactivated`);
+        }}
+      />
+      <ConfirmDialog
+        open={confirmDelete}
+        title={`Permanently delete ${user.client_name}?`}
+        description="Unlike Deactivate, this cannot be undone — the user record is removed entirely and any tokens already issued are rejected immediately."
+        confirmLabel="Delete permanently"
+        onCancel={() => setConfirmDelete(false)}
+        onConfirm={() => {
+          setConfirmDelete(false);
+          runAction(() => deleteUser.mutateAsync(user.client_id), `${user.client_name} deleted`);
         }}
       />
     </>

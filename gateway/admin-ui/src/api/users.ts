@@ -50,6 +50,17 @@ export function useDeactivateUser() {
   });
 }
 
+/** Permanent hard-delete (RM-27) — distinct from useDeactivateUser's reversible revoke. */
+export function useDeleteUser() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async (clientId: string) => {
+      await apiClient.delete(`/users/${clientId}`, { params: { permanent: true } });
+    },
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: USERS_KEY }),
+  });
+}
+
 export function useReactivateUser() {
   const queryClient = useQueryClient();
   return useMutation({

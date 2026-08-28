@@ -913,7 +913,7 @@ Live-verified against the local demo gateway's real 28-instance list: the one `r
 instance sorted to row 1 ahead of 27 `stopped` ones, page 1 showed "Showing 1–20 of 28",
 and Next correctly advanced to page 2 ("Showing 21–28 of 28", rows numbered 21–28).
 
-## RM-27 — Delete user (added)
+## RM-27 — Delete user (added) — `done`
 
 **Why**: the Users table only offers deactivate/reactivate (`UserRow.tsx`) — there's no way
 to permanently remove a principal from the dashboard. auth-service's `DELETE
@@ -925,11 +925,20 @@ work is frontend, but not all: the gateway's own proxy (`DELETE /admin/api/users
 with no query params, silently dropping `permanent` even if the frontend sent it — that
 proxy needs to forward the param through.
 
-**Scope (not yet designed in detail)**: forward `permanent` through the gateway's proxy;
-add a Delete action in `UserRow.tsx`'s action column (mirrors `NodeRow.tsx`'s
-delete-with-`ConfirmDialog` pattern already used for nodes) that calls it with
-`?permanent=true`. Needs clear confirmation copy distinguishing it from Deactivate
-(irreversible vs. reversible) so an operator doesn't reach for the wrong one.
+**Scope**: `_auth_admin_request` gained a `params` passthrough; `deactivate_user`'s route
+now accepts `?permanent=true` and forwards it. Frontend: `useDeleteUser()` in `api/users.ts`
+(always sends `permanent: true`, distinct from `useDeactivateUser`'s reversible call), a
+Delete action in `UserRow.tsx`'s action column mirroring `NodeRow.tsx`'s
+delete-with-`ConfirmDialog` pattern, with confirmation copy that explicitly contrasts it
+with Deactivate ("Unlike Deactivate, this cannot be undone...") so an operator doesn't
+reach for the wrong one.
+
+**Verified**: `test_delete_user_permanent_forwards_query_param` (+ updated
+`test_deactivate_user_proxies_delete` asserting the default is `permanent=false`) in
+`test_admin.py` — 40/40 admin tests green, full `.githooks/pre-push` green. Live-verified
+against the real local demo auth-service: deleted a genuine leftover test principal
+("RM24 Test User") through the dashboard's new Delete button, confirmed the row disappeared
+from both the UI and a direct `GET /admin/api/users` call.
 
 ## RM-31 — Overview: link out to Grafana/Tempo (added)
 
