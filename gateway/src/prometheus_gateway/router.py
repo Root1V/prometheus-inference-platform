@@ -19,7 +19,7 @@ import structlog
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 
-from . import db
+from . import db, pricing
 from .models.registry import ModelRegistry
 from .models.schemas import ChatCompletionRequest, EmbeddingsRequest
 from .telemetry import get_logger, get_tracer, metrics_store
@@ -278,6 +278,7 @@ def create_router(registry: ModelRegistry, pool: "BackendPool") -> APIRouter:
                     "Unable to read usage data from the store.",
                 )
 
+            price_table = pricing.get_pricing_table()
             by_client: dict[str, dict[str, Any]] = {}
             for row in rows:
                 entry = by_client.setdefault(
@@ -288,6 +289,7 @@ def create_router(registry: ModelRegistry, pool: "BackendPool") -> APIRouter:
                         "completion_tokens": 0,
                         "total_tokens": 0,
                         "request_count": 0,
+                        "estimated_cost_usd": None,
                         "by_model": [],
                     },
                 )
@@ -295,6 +297,11 @@ def create_router(registry: ModelRegistry, pool: "BackendPool") -> APIRouter:
                 entry["completion_tokens"] += row.completion_tokens
                 entry["total_tokens"] += row.prompt_tokens + row.completion_tokens
                 entry["request_count"] += row.request_count
+                model_cost = price_table.estimate_cost_usd(
+                    row.model_id, row.prompt_tokens, row.completion_tokens
+                )
+                if model_cost is not None:
+                    entry["estimated_cost_usd"] = (entry["estimated_cost_usd"] or 0.0) + model_cost
                 entry["by_model"].append(
                     {
                         "model_id": row.model_id,
@@ -302,6 +309,7 @@ def create_router(registry: ModelRegistry, pool: "BackendPool") -> APIRouter:
                         "completion_tokens": row.completion_tokens,
                         "total_tokens": row.prompt_tokens + row.completion_tokens,
                         "request_count": row.request_count,
+                        "estimated_cost_usd": model_cost,
                     }
                 )
 

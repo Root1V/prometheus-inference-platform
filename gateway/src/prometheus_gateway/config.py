@@ -153,6 +153,12 @@ class Settings(BaseSettings):
     # AUTH_DB_URL — swap for a Postgres URL in production if desired.
     gateway_db_url: str = "sqlite+aiosqlite:///./gateway.db"
 
+    # ── Pricing — docs/roadmap.md RM-33 ─────────────────────────────────────────
+    # Optional per-model USD pricing (see gateway/pricing.yaml.example). Path is
+    # relative to repo root or absolute; unset means "no pricing configured" —
+    # GET /v1/usage's estimated_cost_usd is null for every model, not $0.
+    pricing_file: str | None = None
+
     # ── Observability — memory/specs/018-observability-telemetry.md ────────────────
     log_level: str = "INFO"
     log_file_path: str | None = None

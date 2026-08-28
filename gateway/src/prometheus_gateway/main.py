@@ -101,6 +101,12 @@ def create_app(
 
     db_engine = init_db_engine(settings.gateway_db_url)
 
+    # RM-33: static pricing table — loaded eagerly for the same testability reason
+    # as db_engine above. Missing/unset pricing_file just yields an empty table.
+    from .pricing import init_pricing_table
+
+    init_pricing_table(settings.pricing_file)
+
     @asynccontextmanager
     async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
         app.state.backend_pool = pool

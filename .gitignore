@@ -72,3 +72,7 @@ runtime/container-logs/
 # runtime state, not committed.
 *.db
 *.db-journal
+
+# RM-33: real per-model USD pricing is deployment-specific — only the
+# .example template is committed, same convention as .env/.env.example.
+gateway/pricing.yaml

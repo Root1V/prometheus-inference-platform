@@ -15,6 +15,16 @@ export default function Usage() {
   const nameByClientId = new Map(users.map((u) => [u.client_id, u.client_name]));
   const entries = usageQuery.data?.data ?? [];
 
+  function formatCost(cost: number | null): string {
+    if (cost === null) return "—";
+    return cost.toLocaleString(undefined, {
+      style: "currency",
+      currency: "USD",
+      minimumFractionDigits: 2,
+      maximumFractionDigits: 4,
+    });
+  }
+
   function toggleExpanded(clientId: string) {
     setExpanded((prev) => {
       const next = new Set(prev);
@@ -68,6 +78,7 @@ export default function Usage() {
                   <th className="px-4 py-3 font-medium">Completion tokens</th>
                   <th className="px-4 py-3 font-medium">Total tokens</th>
                   <th className="px-4 py-3 font-medium">Requests</th>
+                  <th className="px-4 py-3 font-medium">Est. cost</th>
                 </tr>
               </thead>
               <tbody>
@@ -106,6 +117,9 @@ export default function Usage() {
                         <td className="px-4 py-3 text-text-muted">
                           {entry.request_count.toLocaleString()}
                         </td>
+                        <td className="px-4 py-3 text-text-muted">
+                          {formatCost(entry.estimated_cost_usd)}
+                        </td>
                       </tr>
                       {isExpanded &&
                         entry.by_model.map((model) => (
@@ -125,6 +139,9 @@ export default function Usage() {
                             </td>
                             <td className="px-4 py-2 text-text-muted">
                               {model.request_count.toLocaleString()}
+                            </td>
+                            <td className="px-4 py-2 text-text-muted">
+                              {formatCost(model.estimated_cost_usd)}
                             </td>
                           </tr>
                         ))}

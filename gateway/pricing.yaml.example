@@ -1,0 +1,15 @@
+# Optional per-model token pricing — copy to gateway/pricing.yaml to enable.
+#
+# Prices are USD per 1,000,000 tokens. Prompt and completion tokens are
+# usually priced differently, so both are required per model.
+#
+# A model id with no entry here simply shows no cost figure in the Usage
+# page/API (never a silent $0) — GET /v1/usage's estimated_cost_usd is null
+# for it. Safe to price only the models you actually want to track.
+#
+# Implements: docs/roadmap.md — RM-33 (pricing table + real cost).
+
+models:
+  - id: gpt-oss-20b-mxfp4
+    prompt_price_per_1m: 0.15
+    completion_price_per_1m: 0.60

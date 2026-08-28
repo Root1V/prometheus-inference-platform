@@ -562,6 +562,7 @@ async def test_usage_endpoint_AC11(
     assert client_data["completion_tokens"] == 30
     assert client_data["total_tokens"] == 80
     assert client_data["request_count"] == 2
+    assert client_data["estimated_cost_usd"] is None  # RM-33: no pricing.yaml in this fixture
     assert client_data["by_model"] == [
         {
             "model_id": "small-model",
@@ -569,8 +570,50 @@ async def test_usage_endpoint_AC11(
             "completion_tokens": 30,
             "total_tokens": 80,
             "request_count": 2,
+            "estimated_cost_usd": None,
         }
     ]
+
+
+async def test_usage_endpoint_includes_estimated_cost(
+    rsa_keys, tmp_path, small_registry, fake_redis, admin_headers
+):  # docs/roadmap.md — RM-33 (pricing table + real cost)
+    """A priced model's usage carries an estimated_cost_usd; an unpriced one stays null."""
+    from prometheus_gateway import db
+    from prometheus_gateway.main import create_app
+
+    key_file = tmp_path / "public.pem"
+    key_file.write_text(rsa_keys["public"])
+    pricing_file = tmp_path / "pricing.yaml"
+    pricing_file.write_text(
+        "models:\n"
+        "  - id: small-model\n"
+        "    prompt_price_per_1m: 1.0\n"
+        "    completion_price_per_1m: 2.0\n"
+    )
+    settings = Settings(
+        jwt_issuer="https://auth.test",
+        jwt_audience="prometheus-gateway",
+        jwt_public_key_file=str(key_file),
+        jwt_clock_skew_seconds=30,
+        jwt_revocation_redis_url=None,
+        rate_limit_strict=False,
+        pricing_file=str(pricing_file),
+    )
+    app = create_app(settings=settings, registry=small_registry, redis_client=fake_redis)
+    await db.create_tables(db.get_engine())
+    # 1M prompt tokens @ $1/1M + 500k completion tokens @ $2/1M = $1.00 + $1.00
+    await db.record_usage(
+        "client-a", "small-model", prompt_tokens=1_000_000, completion_tokens=500_000
+    )
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
+        r = await c.get("/v1/usage", headers=admin_headers)
+
+    body = r.json()
+    client_data = next(d for d in body["data"] if d["client_id"] == "client-a")
+    assert client_data["estimated_cost_usd"] == pytest.approx(2.0)
+    assert client_data["by_model"][0]["estimated_cost_usd"] == pytest.approx(2.0)
 
 
 async def test_usage_endpoint_invalid_date_400(rl_app, admin_headers):  # RM-32

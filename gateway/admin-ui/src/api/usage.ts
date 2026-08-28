@@ -7,6 +7,8 @@ export interface ModelUsageEntry {
   completion_tokens: number;
   total_tokens: number;
   request_count: number;
+  /** null when this model has no configured price (docs/roadmap.md RM-33) — never $0. */
+  estimated_cost_usd: number | null;
 }
 
 export interface UsageEntry {
@@ -15,6 +17,7 @@ export interface UsageEntry {
   completion_tokens: number;
   total_tokens: number;
   request_count: number;
+  estimated_cost_usd: number | null;
   by_model: ModelUsageEntry[];
 }
 

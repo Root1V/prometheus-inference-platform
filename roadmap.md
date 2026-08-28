@@ -38,7 +38,7 @@ Status: `done` · `todo`
 | RM-30 | Overview: usage & cost placeholder | done | "Coming soon" card on the Overview page; real version blocked on RM-15 |
 | RM-31 | Overview: link out to Grafana/Tempo | todo | Needs a `GRAFANA_URL`-style config first — dropped from RM-22 to avoid a fragile guessed link |
 | RM-32 | Usage: persisted history + per-model breakdown | done | Replaces Redis daily counters with a real store — needed for any trend chart |
-| RM-33 | Usage: pricing table + real cost | todo | Per-model price config; turns token counts into a dollar figure |
+| RM-33 | Usage: pricing table + real cost | done | Per-model price config; turns token counts into a dollar figure |
 | RM-34 | Overview: wire the usage & cost card to real data | todo | Replaces RM-30's placeholder once RM-32/33 land |
 
 Adding an item: append the next `RM-NN` row here with a one-liner, then add the full

@@ -959,17 +959,28 @@ correctly across two clients/two models, `?date=` on a past empty day returns `[
 invalid date returns RFC9457 400, and the built admin-ui renders the expandable
 per-model rows and reacts to the date picker.
 
-## RM-33 — Usage: pricing table + real cost (added)
+## RM-33 — Usage: pricing table + real cost (added) — `done`
 
 **Why**: split out of RM-15 — see that item's gap #4. No part of this codebase has ever
 recorded what a token costs; without it, "usage" can show counts but never a dollar figure.
 
-**Scope (not yet designed)**: a pricing table keyed by model id and/or quantization (price
-per 1K or 1M prompt/completion tokens — these are usually priced differently). Needs a
-decision on where it's edited: a static config file (simplest, matches this project's
-existing `.env`/`registry.yaml` conventions) versus a dashboard settings page (friendlier,
-but new CRUD surface for something that changes rarely). Depends on RM-32 existing first —
-no per-model token counts to multiply a price against otherwise.
+**Scope**: static config file, not a dashboard settings page — pricing changes rarely and
+this avoids a new CRUD surface (auth + admin scopes + UI) for something that's really just
+a handful of numbers per model. `gateway/pricing.yaml` (gitignored, real dollar figures are
+deployment-specific — `gateway/pricing.yaml.example` is the committed template), keyed by
+model id: `prompt_price_per_1m` / `completion_price_per_1m` USD. `pricing.py` loads it once
+at startup (`PRICING_FILE` env var, defaults to `gateway/pricing.yaml`, missing file → empty
+table, never an error). A model with no price entry gets `estimated_cost_usd: null`
+everywhere — deliberately not `0`, so an unpriced model never looks free in the UI.
+`GET /v1/usage` adds `estimated_cost_usd` per client (sum of its priced models only) and per
+model in `by_model`. `Usage.tsx` adds an "Est. cost" column, rendered as `—` when null.
+
+**Verified**: `gateway/tests/test_pricing.py` (4 unit tests) +
+`test_usage_endpoint_includes_estimated_cost` in `test_rate_limiting.py` — full
+`.githooks/pre-push` green (192 gateway tests). Live-verified against the local demo
+gateway with a real `pricing.yaml` for `gpt-oss-20b-mxfp4`: `/v1/usage` and the built
+admin-ui both show the computed cost for the priced model and `—`/`null` for `small-model`,
+which has no price entry.
 
 ## RM-34 — Overview: wire the usage & cost card to real data (added)
 
