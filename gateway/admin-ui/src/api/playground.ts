@@ -1,6 +1,18 @@
 import { useMutation } from "@tanstack/react-query";
 import { rootClient } from "./client";
 
+export interface ChatMessage {
+  role: "system" | "user" | "assistant";
+  content: string;
+}
+
+export interface PlaygroundParams {
+  temperature?: number;
+  top_p?: number;
+  max_tokens?: number;
+  stop?: string[];
+}
+
 interface ChatCompletionResponse {
   choices: { message: { role: string; content: string }; finish_reason: string | null }[];
   usage: { prompt_tokens: number; completion_tokens: number; total_tokens: number };
@@ -14,12 +26,21 @@ interface ChatCompletionResponse {
  */
 export function usePlaygroundChat() {
   return useMutation({
-    mutationFn: async ({ model, prompt }: { model: string; prompt: string }) =>
+    mutationFn: async ({
+      model,
+      messages,
+      params,
+    }: {
+      model: string;
+      messages: ChatMessage[];
+      params: PlaygroundParams;
+    }) =>
       (
         await rootClient.post<ChatCompletionResponse>("/v1/chat/completions", {
           model,
-          messages: [{ role: "user", content: prompt }],
+          messages,
           stream: false,
+          ...params,
         })
       ).data,
   });

@@ -565,6 +565,27 @@ got back a real "banana" completion (75+29=104 tokens), and confirmed that exact
 appeared as a new row on the Usage page under "Demo Admin" — proving cost/usage recording
 fires for real through this path, not just the UI response.
 
+**Redesigned (2026-08-28)**: first-use feedback on the single prompt/response layout was
+that it wasted most of the page's width. Researched what current playgrounds converge on
+(OpenAI, Anthropic's Playground, LiteLLM) — multi-turn conversation area plus a parameters
+sidebar is the common shape, so that's what this became: a real conversation (each send
+carries the full prior history, not just one message) on the left, a **Parameters** panel
+on the right (Temperature, Top P, Max tokens, Stop sequences — the exact fields
+`ChatCompletionRequest` already forwards, so zero backend changes), and a separate System
+prompt field above the conversation. Added Copy/Regenerate per response and a Clear-
+conversation action. Still no streaming (see RM-36) and still text models only (see
+RM-37). Verified live: multi-turn context actually holds (asked the model "what word did
+you just say" in a follow-up turn and it answered correctly), Regenerate produces a fresh
+real call with different token/latency numbers, Clear empties the conversation.
+
+**Also fixed alongside this**: every dashboard page shared a layout bug — `main` lacked
+`min-w-0`, so a wide table (e.g. Instances' 900px-wide table) grew the whole page past the
+viewport instead of scrolling inside its own box, and the Sidebar was a plain static flex
+item, so scrolling down a tall page scrolled the nav out of view with it. Fixed both
+(`min-w-0` on every route's `main`, `sticky top-0` + `overflow-y-auto` on `Sidebar`) —
+unrelated to the Playground specifically, just discovered while trying it on the Instances
+page with 28 rows.
+
 ## RM-15 — Usage: wire up today's per-client totals (added)
 
 **Why**: LiteLLM's Usage page, Portkey, and Helicone all treat per-model/per-client token
@@ -1101,6 +1122,88 @@ existing Instances/Nodes/Users links.
 verified against the local demo gateway with a real `pricing.yaml`: Overview showed "Tokens
 today: 515 (2 clients)", "Est. spend today: USD 0.0001", "Top model: gpt-oss-20b-mxfp4 (460
 tokens today)" — matching `/v1/usage`'s actual aggregates.
+
+## RM-35 — Native tool-calling (OpenAI-style function calling) (added)
+
+**Why**: identified while extending the Playground — every comparable platform (and
+OpenAI's own API) supports `tools`/`tool_calls` on chat completions; Prometheus's
+`ChatCompletionRequest` allowlist has no `tools` field at all today, and `"tool"` is only
+a recognized message *role*, not an actually-wired capability.
+
+**Scope (not yet designed)**: needs, at minimum: `tools`/`tool_choice` added to
+`ChatCompletionRequest`'s allowlist, confirming the configured llama.cpp backends actually
+support function-calling grammars (varies by model/backend build), forwarding
+`tool_calls` back in the response, and a Playground UI to define tools and render calls.
+Real backend work, not just a UI addition.
+
+## RM-36 — Playground: streaming responses (added)
+
+**Why**: the gateway's `/v1/chat/completions` already has real SSE streaming
+(`_stream_response` in `router.py`) — RM-14 deliberately shipped the Playground
+non-streaming first to keep the initial redesign scoped.
+
+**Scope**: send `stream: true` from the Playground, consume the SSE response, and render
+tokens as they arrive instead of waiting for the full completion. Latency/token-count
+display (currently computed from the final response) needs rethinking for a streamed
+response — token counts arrive incrementally or only in a final usage chunk depending on
+the backend.
+
+## RM-37 — Playground: embedding model testing (added)
+
+**Why**: `POST /v1/embeddings` already exists (RM-09) — the Playground's model picker just
+filters to `modality === "text"`, so embedding models never show up as testable.
+
+**Scope**: a distinct playground mode (or a second tab) for embedding models — single text
+input, no conversation history, response shows the vector's dimensionality and a
+truncated preview rather than trying to render a multi-thousand-float array.
+
+## RM-38 — Image generation model support (added, speculative)
+
+**Why**: identified as a gap while extending the Playground, but Prometheus has no image-
+generation backend, endpoint, or modality today — recorded because it came up, not
+because a concrete need or backend choice exists yet.
+
+**Scope**: undefined. Would need a new `modality` value, a chosen backend (e.g. an
+OpenAI-images-compatible server), a new gateway endpoint, and Playground UI to render
+generated images. Revisit only once a specific backend/model is chosen.
+
+## RM-39 — Video generation model support (added, speculative)
+
+**Why**: same origin as RM-38 — flagged, not scoped. Self-hosted video generation is far
+less mature/proven than image generation; even lower priority.
+
+**Scope**: undefined. Revisit only if a real need and a viable self-hostable model/backend
+both show up.
+
+## RM-40 — Playground: image upload for Vision/VLM models (added)
+
+**Why**: RM-09 already added vision content-part support to `/v1/chat/completions`
+(`has_image`/modality checks in `router.py`) and the model registry already tracks
+`modality: "vision"` per instance — the Playground just has no way to attach an image today.
+
+**Scope**: an image upload/attach control in the Playground's message composer, enabled
+only when the selected model's `modality` is `"vision"` (disabled/hidden otherwise, so it's
+never offered for a model that would just reject it). Sends the image as a `image_url`
+content part alongside the text prompt, matching what `router.py` already expects.
+
+## RM-41 — Playground: show which model answered (added)
+
+**Why**: identified during the Playground redesign — once you can switch models mid-
+conversation, a response with no visible model label makes it easy to lose track of which
+model actually produced which answer.
+
+**Scope**: small — render the model id next to the Copy button on each assistant response
+(the model used for that specific call is already known client-side at response time, no
+backend change needed).
+
+## RM-42 — Playground: animate the "waiting for a response" state (added)
+
+**Why**: identified during the Playground redesign — the current "Waiting for a
+response…" text is static and doesn't read as active/alive while a real (sometimes
+multi-second) inference call is in flight.
+
+**Scope**: small, purely cosmetic — replace the static string with something that visibly
+animates (e.g. an ellipsis cycle, a subtle pulse) so a slow response doesn't look stalled.
 
 ## Adding new items
 
