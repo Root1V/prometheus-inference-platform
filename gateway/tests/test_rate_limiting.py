@@ -535,16 +535,19 @@ async def test_rate_limit_global_fallback_AC13b(
 
 
 async def test_usage_endpoint_AC11(
-    rl_app, admin_headers, auth_headers, fake_redis
-):  # memory/specs/007-rate-limiting-and-throughput.md
-    """After inference requests, GET /v1/usage returns per-client token totals."""
+    rl_app, admin_headers
+):  # docs/roadmap.md — RM-32 (persisted history + per-model breakdown)
+    """GET /v1/usage returns per-client token totals, with a per-model breakdown."""
     from datetime import datetime, timezone as _tz
 
-    today = datetime.now(tz=_tz.utc).date().isoformat()
-    # Pre-seed usage counters
-    await fake_redis.set(f"prometheus:usage:day:{today}:client-a:prompt", 50)
-    await fake_redis.set(f"prometheus:usage:day:{today}:client-a:completion", 30)
-    await fake_redis.set(f"prometheus:usage:day:{today}:client-a:requests", 5)
+    from prometheus_gateway import db
+
+    today = datetime.now(tz=_tz.utc).date()
+    # create_app() (via the rl_app fixture) already called init_db_engine() —
+    # ASGITransport skips lifespan, so create_tables() must run explicitly here.
+    await db.create_tables(db.get_engine())
+    await db.record_usage("client-a", "small-model", prompt_tokens=50, completion_tokens=30)
+    await db.record_usage("client-a", "small-model", prompt_tokens=0, completion_tokens=0)
 
     async with AsyncClient(transport=ASGITransport(app=rl_app), base_url="http://test") as c:
         r = await c.get("/v1/usage", headers=admin_headers)
@@ -552,13 +555,44 @@ async def test_usage_endpoint_AC11(
     assert r.status_code == 200
     body = r.json()
     assert body["object"] == "list"
-    assert body["window"] == today
+    assert body["window"] == today.isoformat()
     client_data = next((d for d in body["data"] if d["client_id"] == "client-a"), None)
     assert client_data is not None
     assert client_data["prompt_tokens"] == 50
     assert client_data["completion_tokens"] == 30
     assert client_data["total_tokens"] == 80
-    assert client_data["request_count"] == 5
+    assert client_data["request_count"] == 2
+    assert client_data["by_model"] == [
+        {
+            "model_id": "small-model",
+            "prompt_tokens": 50,
+            "completion_tokens": 30,
+            "total_tokens": 80,
+            "request_count": 2,
+        }
+    ]
+
+
+async def test_usage_endpoint_invalid_date_400(rl_app, admin_headers):  # RM-32
+    async with AsyncClient(transport=ASGITransport(app=rl_app), base_url="http://test") as c:
+        r = await c.get("/v1/usage", params={"date": "not-a-date"}, headers=admin_headers)
+
+    assert r.status_code == 400
+    assert "invalid-date" in r.json()["type"]
+
+
+async def test_usage_endpoint_past_date_empty(rl_app, admin_headers):  # RM-32
+    from prometheus_gateway import db
+
+    await db.create_tables(db.get_engine())
+
+    async with AsyncClient(transport=ASGITransport(app=rl_app), base_url="http://test") as c:
+        r = await c.get("/v1/usage", params={"date": "2020-01-01"}, headers=admin_headers)
+
+    assert r.status_code == 200
+    body = r.json()
+    assert body["window"] == "2020-01-01"
+    assert body["data"] == []
 
 
 # ── Inference path: no Redis configured → strict blocks ─────────────────────

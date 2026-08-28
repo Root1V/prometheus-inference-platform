@@ -92,9 +92,22 @@ def create_app(
         retry_backoff_base_ms=settings.backend_retry_backoff_base_ms,
     )
 
+    # RM-32: usage-tracking DB engine — created eagerly (like `pool` above) so
+    # it's available in tests too, which don't trigger `_lifespan` (ASGITransport
+    # skips lifespan events). Table creation itself is async, so that part still
+    # happens in `_lifespan` for real server startup; tests call create_tables()
+    # explicitly in their own fixture instead.
+    from .db import init_db_engine
+
+    db_engine = init_db_engine(settings.gateway_db_url)
+
     @asynccontextmanager
     async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
         app.state.backend_pool = pool
+
+        from .db import create_tables
+
+        await create_tables(db_engine)
 
         # AC-7 (007): inject Redis client into JWKS module for cross-worker cache
         if _redis_instance is not None:
@@ -127,6 +140,7 @@ def create_app(
         if _manager_sync is not None:
             await _manager_sync.stop()
         await pool.aclose()
+        await db_engine.dispose()
 
     app = FastAPI(
         title="Prometheus Gateway",

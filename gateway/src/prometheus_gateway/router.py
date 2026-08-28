@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import time
+from datetime import date as _date
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any
 
@@ -18,6 +19,7 @@ import structlog
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 
+from . import db
 from .models.registry import ModelRegistry
 from .models.schemas import ChatCompletionRequest, EmbeddingsRequest
 from .telemetry import get_logger, get_tracer, metrics_store
@@ -31,7 +33,6 @@ _tracer = get_tracer("gateway")
 _BASE_URL = "https://prometheus.internal/errors"
 # Token approximation ratio — 4 chars ≈ 1 token (AC-12)
 _CHARS_PER_TOKEN = 4
-_USAGE_TTL = 25 * 3600  # 25 hours
 # RM-09: rough per-image token cost for context-budget estimation (AC-12 predates
 # vision content parts). Matches common VLM low/mid-resolution tile estimates —
 # not exact, just enough to keep the existing context-exceeded guard meaningful.
@@ -229,13 +230,13 @@ def create_router(registry: ModelRegistry, pool: "BackendPool") -> APIRouter:
             return {"object": "list", "data": data}
 
     # ── GET /v1/usage ────────────────────────────────────────────────────────
-    # Implements: memory/specs/007-rate-limiting-and-throughput.md — AC-11
+    # Implements: docs/roadmap.md — RM-32 (persisted history + per-model breakdown)
     @router.get("/v1/usage")
-    async def get_usage(request: Request) -> Any:
-        """Return aggregate token usage per client for the current UTC day.
+    async def get_usage(request: Request, date: str | None = None) -> Any:
+        """Return per-client token usage (with a per-model breakdown) for one UTC day.
 
-        Requires admin:read scope.
-        Implements: memory/specs/007-rate-limiting-and-throughput.md — AC-11
+        Requires admin:read scope. Defaults to today; pass ?date=YYYY-MM-DD for a
+        past day. Implements: docs/roadmap.md — RM-32.
         Implements: memory/specs/022-opentelemetry-sdk-instrumentation.md — G-9
         """
         from opentelemetry.trace import SpanKind
@@ -246,49 +247,28 @@ def create_router(registry: ModelRegistry, pool: "BackendPool") -> APIRouter:
                 request, 403, "forbidden", "Forbidden", "This endpoint requires admin:read scope."
             )
 
+        if date is None:
+            target_day = datetime.now(tz=timezone.utc).date()
+        else:
+            try:
+                target_day = _date.fromisoformat(date)
+            except ValueError:
+                return _problem(
+                    request,
+                    400,
+                    "invalid-date",
+                    "Invalid Date",
+                    f"{date!r} is not a valid YYYY-MM-DD date.",
+                )
+
         with _tracer.start_as_current_span("usage.query", kind=SpanKind.INTERNAL) as span:
             user_id = claims.user_id if claims else "unknown"
             span.set_attribute("user_id", user_id)
 
-            rl_redis = getattr(pool, "_redis", None)
-            today = datetime.now(tz=timezone.utc).date().isoformat()
-            if rl_redis is None:
-                span.set_attribute("http.status_code", 200)
-                return {"object": "list", "window": today, "data": []}
-
-            usage_map: dict[str, dict[str, int]] = {}
             try:
-                pattern = f"prometheus:usage:day:{today}:*"
-                cursor = 0
-                all_keys: list[str] = []
-                while True:
-                    cursor, keys = await rl_redis.scan(cursor, match=pattern, count=100)
-                    all_keys.extend(k.decode() if isinstance(k, bytes) else k for k in keys)
-                    if cursor == 0:
-                        break
-
-                for key in all_keys:
-                    parts = key.split(":")
-                    if len(parts) < 6:
-                        continue
-                    client_id = parts[4]
-                    metric = parts[5]
-                    raw = await rl_redis.get(key)
-                    value = int(raw) if raw else 0
-                    if client_id not in usage_map:
-                        usage_map[client_id] = {
-                            "prompt_tokens": 0,
-                            "completion_tokens": 0,
-                            "request_count": 0,
-                        }
-                    if metric == "prompt":
-                        usage_map[client_id]["prompt_tokens"] += value
-                    elif metric == "completion":
-                        usage_map[client_id]["completion_tokens"] += value
-                    elif metric == "requests":
-                        usage_map[client_id]["request_count"] += value
+                rows = await db.query_usage_day(target_day)
             except Exception as exc:
-                logger.error("usage.redis_error", error=str(exc))
+                logger.error("usage.db_error", error=str(exc))
                 span.set_attribute("http.status_code", 503)
                 return _problem(
                     request,
@@ -298,18 +278,39 @@ def create_router(registry: ModelRegistry, pool: "BackendPool") -> APIRouter:
                     "Unable to read usage data from the store.",
                 )
 
-            data = [
-                {
-                    "client_id": cid,
-                    "prompt_tokens": m["prompt_tokens"],
-                    "completion_tokens": m["completion_tokens"],
-                    "total_tokens": m["prompt_tokens"] + m["completion_tokens"],
-                    "request_count": m["request_count"],
-                }
-                for cid, m in usage_map.items()
-            ]
+            by_client: dict[str, dict[str, Any]] = {}
+            for row in rows:
+                entry = by_client.setdefault(
+                    row.client_id,
+                    {
+                        "client_id": row.client_id,
+                        "prompt_tokens": 0,
+                        "completion_tokens": 0,
+                        "total_tokens": 0,
+                        "request_count": 0,
+                        "by_model": [],
+                    },
+                )
+                entry["prompt_tokens"] += row.prompt_tokens
+                entry["completion_tokens"] += row.completion_tokens
+                entry["total_tokens"] += row.prompt_tokens + row.completion_tokens
+                entry["request_count"] += row.request_count
+                entry["by_model"].append(
+                    {
+                        "model_id": row.model_id,
+                        "prompt_tokens": row.prompt_tokens,
+                        "completion_tokens": row.completion_tokens,
+                        "total_tokens": row.prompt_tokens + row.completion_tokens,
+                        "request_count": row.request_count,
+                    }
+                )
+
             span.set_attribute("http.status_code", 200)
-            return {"object": "list", "window": today, "data": data}
+            return {
+                "object": "list",
+                "window": target_day.isoformat(),
+                "data": list(by_client.values()),
+            }
 
     # ── POST /v1/chat/completions ────────────────────────────────────────────
     @router.post("/v1/chat/completions")
@@ -591,8 +592,8 @@ def create_router(registry: ModelRegistry, pool: "BackendPool") -> APIRouter:
                         backend_id=entry.id,
                     )
 
-                    # AC-11 (007): record daily usage
-                    await _record_usage(pool, claims, prompt_tokens, completion_tokens)
+                    # RM-32: record persisted daily usage
+                    await _record_usage(claims, entry.id, prompt_tokens, completion_tokens)
 
                     # Increment TPM counter with actual token usage
                     rl_redis = getattr(pool, "_redis", None)
@@ -805,31 +806,20 @@ def create_router(registry: ModelRegistry, pool: "BackendPool") -> APIRouter:
 
 
 async def _record_usage(
-    pool: "BackendPool", claims: Any, prompt_tokens: int, completion_tokens: int
+    claims: Any, model_id: str, prompt_tokens: int, completion_tokens: int
 ) -> None:
-    """Write daily token counters to Redis.
+    """Write persisted per-day, per-client, per-model token counters.
 
-    Implements: memory/specs/007-rate-limiting-and-throughput.md — AC-11
+    Implements: docs/roadmap.md — RM-32 (replaces the old Redis daily-TTL counters).
     """
-    rl_redis = getattr(pool, "_redis", None)
-    if rl_redis is None or claims is None:
+    if claims is None:
         return
-    total = prompt_tokens + completion_tokens
-    if total == 0:
+    if prompt_tokens + completion_tokens == 0:
         return
-    today = datetime.now(tz=timezone.utc).date().isoformat()
-    cid = claims.client_id
     try:
-        pipe = rl_redis.pipeline()
-        pipe.incrby(f"prometheus:usage:day:{today}:{cid}:prompt", prompt_tokens)
-        pipe.incrby(f"prometheus:usage:day:{today}:{cid}:completion", completion_tokens)
-        pipe.incr(f"prometheus:usage:day:{today}:{cid}:requests")
-        pipe.expire(f"prometheus:usage:day:{today}:{cid}:prompt", _USAGE_TTL)
-        pipe.expire(f"prometheus:usage:day:{today}:{cid}:completion", _USAGE_TTL)
-        pipe.expire(f"prometheus:usage:day:{today}:{cid}:requests", _USAGE_TTL)
-        await pipe.execute()
+        await db.record_usage(claims.client_id, model_id, prompt_tokens, completion_tokens)
     except Exception as exc:
-        logger.warning("usage.redis_write_error", error=str(exc))
+        logger.warning("usage.db_write_error", error=str(exc))
 
 
 async def _stream_response(
@@ -921,8 +911,8 @@ async def _stream_response(
                 backend_id=backend_id,
                 error=stream_error is not None,
             )
-            # AC-11: daily usage for streaming
-            await _record_usage(pool, claims, prompt_tokens, completion_tokens)
+            # RM-32: persisted daily usage for streaming
+            await _record_usage(claims, backend_id, prompt_tokens, completion_tokens)
 
     logger.info("llama.forwarding_stream", backend_id=backend_id, request_id=request_id)
     return StreamingResponse(

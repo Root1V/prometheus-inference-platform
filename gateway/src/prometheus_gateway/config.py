@@ -147,6 +147,12 @@ class Settings(BaseSettings):
             )
         return self
 
+    # ── Usage tracking — docs/roadmap.md RM-32 ─────────────────────────────────
+    # Replaces the old Redis daily-TTL usage counters with real persisted history
+    # and a per-model dimension. SQLite by default, same pattern as auth-service's
+    # AUTH_DB_URL — swap for a Postgres URL in production if desired.
+    gateway_db_url: str = "sqlite+aiosqlite:///./gateway.db"
+
     # ── Observability — memory/specs/018-observability-telemetry.md ────────────────
     log_level: str = "INFO"
     log_file_path: str | None = None

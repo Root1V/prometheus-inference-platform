@@ -67,3 +67,8 @@ docker-compose.override.yml
 *.DS_Store
 data/
 runtime/container-logs/
+
+# Local SQLite databases (auth-service's auth.db, gateway's gateway.db) —
+# runtime state, not committed.
+*.db
+*.db-journal

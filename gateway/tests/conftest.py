@@ -265,3 +265,15 @@ def clear_jwks_cache():
     _reset_cache_for_testing()
     yield
     _reset_cache_for_testing()
+
+
+@pytest.fixture(autouse=True)
+def _isolated_gateway_db(tmp_path, monkeypatch):
+    """RM-32: every test gets its own SQLite file via GATEWAY_DB_URL.
+
+    Settings() reads this env var when gateway_db_url isn't passed explicitly,
+    so every existing Settings(...) fixture across the suite picks this up
+    automatically — without it, they'd all default to ./gateway.db and share/
+    pollute a single file across test runs.
+    """
+    monkeypatch.setenv("GATEWAY_DB_URL", f"sqlite+aiosqlite:///{tmp_path}/gateway-test.db")

@@ -935,18 +935,29 @@ read, or baked into the served `index.html` at container-build/start time — ne
 one). Render the links row on Overview only when the setting is present; omit it entirely
 otherwise rather than showing a dead link.
 
-## RM-32 — Usage: persisted history + per-model breakdown (added)
+## RM-32 — Usage: persisted history + per-model breakdown (added) — `done`
 
 **Why**: split out of RM-15 — see that item's gap #2/#3. A trend chart and a "which model
 costs the most" answer both need data `/v1/usage`'s Redis daily counters can't provide:
 real persistence beyond a day, and a per-model dimension.
 
-**Scope (not yet designed)**: pick a data source first (this was RM-15's original
-undecided question) — a new database table written alongside/instead of the Redis
-counters, aggregating from existing OTel/Tempo traces, or leaning on RM-12's Langfuse
-integration if that lands first. Whichever is chosen needs at minimum: date, client_id,
-model_id, prompt/completion tokens, request count — the same shape `_record_usage` already
-writes to Redis, just keyed by model too and durable past a day.
+**Scope**: new `usage_daily` SQLite table (async SQLAlchemy, mirrors auth-service's
+`db.py` conventions) — one row per (day, client_id, model_id), aggregate counters
+incremented via an `asyncio.Lock`-guarded upsert (same single-process-safety assumption as
+`MetricsStore`). Replaces the old Redis daily-TTL counters entirely — this is the gateway's
+first persistent database. `GET /v1/usage` kept its original response shape (so the
+already-shipped RM-15 page didn't break) and added a `by_model` array per client plus an
+optional `?date=YYYY-MM-DD` query param for browsing past days. Frontend: `Usage.tsx` gained
+an expandable per-client row (chevron) showing the model breakdown, and a native date picker
+next to the heading.
+
+**Verified**: `gateway/tests/test_usage_db.py` (6 unit tests on `db.py`) +
+`test_rate_limiting.py`'s usage tests (incl. invalid-date 400, past-date-empty) — full
+`.githooks/pre-push` green. Live-verified against the local demo gateway: seeded the
+isolated demo SQLite file directly via `db.record_usage`, confirmed `/v1/usage` aggregates
+correctly across two clients/two models, `?date=` on a past empty day returns `[]`, an
+invalid date returns RFC9457 400, and the built admin-ui renders the expandable
+per-model rows and reacts to the date picker.
 
 ## RM-33 — Usage: pricing table + real cost (added)
 
