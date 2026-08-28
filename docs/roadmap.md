@@ -526,18 +526,44 @@ running `gpt-oss-20b-mxfp4` instance (up 37h): expanded its row and confirmed th
 rendered the real 64-line log file exactly (matching `wc -l`/`tail` on disk), with the
 correct last line and auto-scroll landing at the bottom.
 
-## RM-14 — Model playground (added)
+## RM-14 — Model playground (added) — `done`
 
 **Why**: every comparable platform researched (LiteLLM Proxy, Portkey, Helicone) ships an
 in-dashboard playground — a way to send a test prompt to a running model and see the
 response without curl/Postman. Prometheus has none today; you have to hit the gateway's
 inference API directly to sanity-check a model you just started.
 
-**Scope (not yet designed)**: a dashboard page where you pick a running instance and send
-a request through the gateway's existing `/v1/chat/completions` (or `/v1/embeddings` for
-embedding models) using your own admin session — showing the raw request/response, ideally
-with streaming. Should reuse the gateway's existing inference API as-is; no new backend
-inference surface, just a UI in front of what already exists.
+**Auth finding that shaped the scope**: the admin dashboard's own login only ever requests
+`admin:read admin:write` from auth-service's OAuth2 token endpoint (`admin/router.py`'s
+`login`), and that endpoint *intersects* the requested scope against the principal's
+`allowed_scopes` rather than just granting whatever's asked (`oauth2.py`) — meaning an
+admin session token can never carry `inference:read`/`model:<id>` today. Naively adding
+`inference:read` to the login's requested scope would have been actively dangerous: if an
+admin principal doesn't already have that scope granted, the *entire login* fails with
+`400 invalid_scope` (the endpoint rejects the whole request, not just that one scope) —
+breaking dashboard login for any admin without that grant.
+
+**Scope (built)**: no new endpoint, no login changes — the playground calls the real `POST
+/v1/chat/completions` directly (matching the "explicitly the real API, register real
+cost, use everything we're already offering" requirement) with the admin's existing
+session token. `chat_completions`'s two RM-07 authorization checks (`inference:read`/
+`inference:stream`, and per-model `model:<id>`) each gained an `admin:write`-holder bypass
+— admin:write already implies full model management control (`admin:models`), so letting
+it also invoke any model for testing isn't a new privilege, just an explicit, narrow
+carve-out scoped to that one existing scope. Everything downstream of the auth check
+(usage/cost recording via RM-32/33, TPM rate limiting, `GET /metrics` counters, tracing)
+runs completely unchanged, since this *is* the real endpoint. Non-streaming only for v1,
+text models only (embeddings playground UI not built). Frontend: a model picker (running
+text instances only), a prompt textarea, and a response panel showing the raw completion
+plus its real token counts.
+
+**Verified**: 3 new tests in `test_model_scopes.py` (admin:write bypasses both checks,
+admin:read alone does not, bypass covers streaming too) — 209/209 gateway tests green,
+full `.githooks/pre-push` green. Live-verified against the real local demo stack: sent
+"Say the word banana and nothing else." to the actually-running `gpt-oss-20b-mxfp4`,
+got back a real "banana" completion (75+29=104 tokens), and confirmed that exact request
+appeared as a new row on the Usage page under "Demo Admin" — proving cost/usage recording
+fires for real through this path, not just the UI response.
 
 ## RM-15 — Usage: wire up today's per-client totals (added)
 

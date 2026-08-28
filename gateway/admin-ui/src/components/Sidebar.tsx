@@ -7,6 +7,7 @@ import {
   LogOut,
   Radio,
   Server,
+  Terminal,
   Users,
 } from "lucide-react";
 import { NavLink } from "react-router-dom";
@@ -17,6 +18,7 @@ const NAV_ITEMS = [
   { to: "/", label: "Overview", icon: LayoutDashboard },
   { to: "/instances", label: "Instances", icon: Server },
   { to: "/nodes", label: "Nodes", icon: HardDrive },
+  { to: "/playground", label: "Playground", icon: Terminal },
   { to: "/usage", label: "Usage", icon: Coins },
   { to: "/limits", label: "Limits", icon: Gauge },
   { to: "/sessions", label: "Sessions", icon: Radio },

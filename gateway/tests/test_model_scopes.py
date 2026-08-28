@@ -136,6 +136,45 @@ async def test_streaming_requires_inference_stream_not_inference_read(gw, rsa_ke
     assert "inference:stream" in resp.json()["detail"]
 
 
+# ── RM-14: admin:write bypass (model playground) ─────────────────────────────
+
+
+async def test_admin_write_bypasses_inference_and_model_scope(gw, rsa_keys):
+    """The dashboard's own admin:write session can invoke any model — no
+    inference:read/model:<id> needed — used by the RM-14 playground so cost/
+    usage still records against the operator's own real call to /v1/chat/completions."""
+    headers = _headers(rsa_keys, "admin:read admin:write")
+    with respx.mock:
+        respx.post(f"{LLAMA_URL}/v1/chat/completions").mock(
+            return_value=Response(200, json=LLAMA_RESPONSE)
+        )
+        resp = await gw.post("/v1/chat/completions", json=VALID_BODY, headers=headers)
+    assert resp.status_code == 200
+
+
+async def test_admin_read_alone_does_not_bypass(rsa_keys, gw):
+    """Only admin:write bypasses — admin:read (list-only) does not."""
+    headers = _headers(rsa_keys, "admin:read")
+    resp = await gw.post("/v1/chat/completions", json=VALID_BODY, headers=headers)
+    assert resp.status_code == 403
+
+
+async def test_admin_write_bypasses_streaming_scope_too(gw, rsa_keys):
+    """The bypass covers inference:stream as well as inference:read."""
+    headers = _headers(rsa_keys, "admin:write")
+    body = {**VALID_BODY, "stream": True}
+    with respx.mock:
+        respx.post(f"{LLAMA_URL}/v1/chat/completions").mock(
+            return_value=Response(
+                200,
+                content=b'data: {"choices":[{"delta":{"content":"ok"}}]}\n\ndata: [DONE]\n\n',
+                headers={"content-type": "text/event-stream"},
+            )
+        )
+        resp = await gw.post("/v1/chat/completions", json=body, headers=headers)
+    assert resp.status_code == 200
+
+
 async def test_unknown_model_returns_400_before_403(gw, rsa_keys):
     """Model-existence (400) is checked before authorization (403) — the model
     catalog is public via GET /v1/models, so there's nothing to protect by

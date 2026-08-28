@@ -363,8 +363,16 @@ def create_router(registry: ModelRegistry, pool: "BackendPool") -> APIRouter:
             # RM-07: inference:read/inference:stream were documented scopes but never
             # actually enforced here — any valid JWT could call any model.
             # See memory/wiki/auth-model.md.
+            # RM-14: admin:write holders (the admin dashboard's own session, used by
+            # the model playground) bypass both scope checks below — admin:write
+            # already implies full model management control (admin:models), so
+            # letting it also invoke any model for testing isn't a new privilege,
+            # just an explicit, narrow carve-out. Everything else about the request
+            # (usage/cost recording, rate limiting, circuit breaker) still applies
+            # exactly as for a real client — this is the real endpoint, not a proxy.
+            is_admin_bypass = claims is not None and claims.has_scope("admin:write")
             required_scope = "inference:stream" if body.stream else "inference:read"
-            if claims is None or not claims.has_scope(required_scope):
+            if claims is None or not (claims.has_scope(required_scope) or is_admin_bypass):
                 inf_span.set_attribute("http.status_code", 403)
                 return _problem(
                     request,
@@ -376,7 +384,7 @@ def create_router(registry: ModelRegistry, pool: "BackendPool") -> APIRouter:
 
             # RM-07: per-model grant, deny-by-default — a client with no model:*
             # scope at all has no model access, even with inference:read/stream.
-            if not claims.has_model_scope(body.model):
+            if not (claims.has_model_scope(body.model) or is_admin_bypass):
                 inf_span.set_attribute("http.status_code", 403)
                 return _problem(
                     request,

@@ -7,6 +7,7 @@ import Limits from "./routes/Limits";
 import Login from "./routes/Login";
 import Nodes from "./routes/Nodes";
 import Overview from "./routes/Overview";
+import Playground from "./routes/Playground";
 import Sessions from "./routes/Sessions";
 import Usage from "./routes/Usage";
 import Users from "./routes/Users";
@@ -77,6 +78,14 @@ export default function App() {
               element={
                 <ProtectedRoute>
                   <Sessions />
+                </ProtectedRoute>
+              }
+            />
+            <Route
+              path="/playground"
+              element={
+                <ProtectedRoute>
+                  <Playground />
                 </ProtectedRoute>
               }
             />
