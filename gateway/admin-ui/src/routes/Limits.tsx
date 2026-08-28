@@ -15,7 +15,7 @@ export default function Limits() {
   return (
     <div className="flex min-h-screen bg-background">
       <Sidebar />
-      <main className="flex-1 px-8 py-8">
+      <main className="min-w-0 flex-1 px-8 py-8">
         <h1 className="text-2xl font-semibold text-text">Limits</h1>
         <p className="mt-1 text-sm text-text-muted">
           Current rate-limit and circuit-breaker configuration, and live per-model circuit

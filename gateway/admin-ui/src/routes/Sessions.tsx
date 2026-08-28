@@ -21,7 +21,7 @@ export default function Sessions() {
   return (
     <div className="flex min-h-screen bg-background">
       <Sidebar />
-      <main className="flex-1 px-8 py-8">
+      <main className="min-w-0 flex-1 px-8 py-8">
         <h1 className="text-2xl font-semibold text-text">Sessions</h1>
         <p className="mt-1 text-sm text-text-muted">
           Clients active in the last 15 minutes — a last-seen approximation from request

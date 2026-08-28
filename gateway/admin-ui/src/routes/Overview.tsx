@@ -82,7 +82,7 @@ export default function Overview() {
   return (
     <div className="flex min-h-screen bg-background">
       <Sidebar />
-      <main className="flex-1 px-8 py-8">
+      <main className="min-w-0 flex-1 px-8 py-8">
         <h1 className="text-2xl font-semibold text-text">Overview</h1>
 
         <div className="mt-6 grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">

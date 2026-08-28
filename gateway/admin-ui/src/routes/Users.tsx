@@ -31,7 +31,7 @@ export default function Users() {
   return (
     <div className="flex min-h-screen bg-background">
       <Sidebar />
-      <main className="flex-1 px-8 py-8">
+      <main className="min-w-0 flex-1 px-8 py-8">
         <div className="flex items-center justify-between">
           <h1 className="text-2xl font-semibold text-text">Users</h1>
           <button

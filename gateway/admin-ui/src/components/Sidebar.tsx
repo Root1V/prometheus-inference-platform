@@ -29,7 +29,7 @@ export function Sidebar() {
   const { logout } = useAuth();
 
   return (
-    <aside className="flex h-screen w-64 shrink-0 flex-col bg-gray-900 text-gray-100">
+    <aside className="sticky top-0 flex h-screen w-64 shrink-0 flex-col overflow-y-auto bg-gray-900 text-gray-100">
       <div className="px-6 py-6">
         <div className="flex items-center gap-2">
           <Flame size={20} className="text-primary" />
