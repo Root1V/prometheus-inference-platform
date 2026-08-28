@@ -515,35 +515,47 @@ embedding models) using your own admin session — showing the raw request/respo
 with streaming. Should reuse the gateway's existing inference API as-is; no new backend
 inference surface, just a UI in front of what already exists.
 
-## RM-15 — Usage & spend analytics (added)
+## RM-15 — Usage: wire up today's per-client totals (added)
 
 **Why**: LiteLLM's Usage page, Portkey, and Helicone all treat per-model/per-client token
 and request usage as a first-class dashboard page. Today the only way to see usage in
 Prometheus is going directly to Grafana/Tempo — there's no aggregated view in the admin
 dashboard itself.
 
-**Scope (not yet designed)**: needs a source of truth first. Two options worth comparing
-before building: aggregate from the existing OTel/Tempo traces (specs 018/020/021/022), or
-lean on RM-12's Langfuse integration if that lands first (Langfuse already tracks
-prompt/completion/token data, which may make a separate aggregation redundant). Decide the
-data source before designing the page.
+**Split (2026-08-27)**: scoping this while building RM-30's placeholder surfaced four
+concrete, separable gaps rather than one monolithic "usage & spend" feature — recorded
+below, then split into their own items so the part that needs zero new backend work isn't
+stuck waiting on the parts that need real design work (persistence, pricing):
 
-**Concrete gaps found while scoping RM-30 (2026-08-27)** — what "usage & spend" actually
-needs, spelled out so this isn't designed from scratch later:
-1. **Wire up what already exists**: `GET /v1/usage` (gateway, pre-existing, unrelated to
-   this backlog series) already returns real per-client prompt/completion/request token
-   counts — for the current UTC day only — but nothing in the admin-ui ever calls it. A
-   first pass could show *just this* (today's totals per client) before anything else here
-   is built.
-2. **Real history**: `/v1/usage`'s counters live in Redis with a daily TTL — fine for
-   "today," useless for a trend chart. Needs an actual persisted, queryable store (a
-   database table, or one of the OTel/Langfuse options above).
-3. **Per-model breakdown**: `/v1/usage` only splits by client, not by model — "which model
-   is costing the most" isn't answerable from it today.
-4. **Pricing**: there is no price-per-token/per-model concept anywhere in this codebase.
-   Turning a token count into a dollar figure needs a new pricing table (keyed by model id
-   and/or quantization) and a decision on where it's edited (a config file? a dashboard
-   settings page? RM-14/RM-24's model-picker plumbing could inform where this lives).
+1. **Wire up what already exists** (this item, RM-15): `GET /v1/usage` (gateway,
+   pre-existing, unrelated to this backlog series) already returns real per-client
+   prompt/completion/request token counts — for the current UTC day only — but nothing in
+   the admin-ui ever calls it.
+2. **Real history** (RM-32): `/v1/usage`'s counters live in Redis with a daily TTL — fine
+   for "today," useless for a trend chart. Needs an actual persisted, queryable store (a
+   database table, or aggregating from OTel/Tempo traces, or leaning on RM-12's Langfuse
+   integration if that lands first — Langfuse already tracks prompt/completion/token data,
+   which may make a separate aggregation redundant. Decide the data source before
+   designing RM-32).
+3. **Per-model breakdown** (RM-32): `/v1/usage` only splits by client, not by model —
+   "which model is costing the most" isn't answerable from it today.
+4. **Pricing** (RM-33): there is no price-per-token/per-model concept anywhere in this
+   codebase. Turning a token count into a dollar figure needs a new pricing table (keyed by
+   model id and/or quantization) and a decision on where it's edited (a config file? a
+   dashboard settings page? RM-14/RM-24's model-picker plumbing could inform where this
+   lives).
+
+**Scope (this item)**: a new "Usage" nav page rendering `GET /v1/usage`'s data — one row
+per client (cross-referenced against the Users list for a readable name instead of a raw
+`client_id`), showing prompt/completion/total tokens and request count for the current UTC
+day. Must handle and clearly explain the two degraded states the endpoint itself returns:
+an empty list when no Redis is configured, and a `503 usage-store-unavailable` if Redis is
+configured but unreachable. No new backend work — this is a pure frontend read of an
+endpoint that already exists.
+
+**Not this item**: any historical view, per-model split, or dollar figure — seeing those
+here would require RM-32/33 landing first; this item is explicitly "today's numbers only,"
+labeled as such.
 
 **Carried over from RM-28's scoping**: once this lands with real persistence, revisit
 whether the Overview page's golden-signals row (RM-28) should grow a small client-side
@@ -906,6 +918,42 @@ gateway's config, exposed to the admin-ui (e.g. via a small unauthenticated `/ad
 read, or baked into the served `index.html` at container-build/start time — needs picking
 one). Render the links row on Overview only when the setting is present; omit it entirely
 otherwise rather than showing a dead link.
+
+## RM-32 — Usage: persisted history + per-model breakdown (added)
+
+**Why**: split out of RM-15 — see that item's gap #2/#3. A trend chart and a "which model
+costs the most" answer both need data `/v1/usage`'s Redis daily counters can't provide:
+real persistence beyond a day, and a per-model dimension.
+
+**Scope (not yet designed)**: pick a data source first (this was RM-15's original
+undecided question) — a new database table written alongside/instead of the Redis
+counters, aggregating from existing OTel/Tempo traces, or leaning on RM-12's Langfuse
+integration if that lands first. Whichever is chosen needs at minimum: date, client_id,
+model_id, prompt/completion tokens, request count — the same shape `_record_usage` already
+writes to Redis, just keyed by model too and durable past a day.
+
+## RM-33 — Usage: pricing table + real cost (added)
+
+**Why**: split out of RM-15 — see that item's gap #4. No part of this codebase has ever
+recorded what a token costs; without it, "usage" can show counts but never a dollar figure.
+
+**Scope (not yet designed)**: a pricing table keyed by model id and/or quantization (price
+per 1K or 1M prompt/completion tokens — these are usually priced differently). Needs a
+decision on where it's edited: a static config file (simplest, matches this project's
+existing `.env`/`registry.yaml` conventions) versus a dashboard settings page (friendlier,
+but new CRUD surface for something that changes rarely). Depends on RM-32 existing first —
+no per-model token counts to multiply a price against otherwise.
+
+## RM-34 — Overview: wire the usage & cost card to real data (added)
+
+**Why**: RM-30 shipped an honest "coming soon" placeholder specifically so the real numbers
+wouldn't need to be faked. Once RM-32 (history/per-model) and RM-33 (pricing) exist, this
+closes the loop.
+
+**Scope**: replace RM-30's placeholder card on the Overview page with real stat cards —
+tokens today, estimated spend, top model by cost/usage (per the original scoping memo's
+Row 4 mockup). Straightforward once RM-32/33 exist; not worth designing further until they
+do.
 
 ## Adding new items
 

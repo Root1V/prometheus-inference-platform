@@ -21,7 +21,7 @@ Status: `done` · `todo`
 | RM-12 | E2E LLM tracing with Langfuse | todo | Prompt/completion/token-level tracing, alongside existing OTel/Tempo |
 | RM-13 | Live log viewer per instance | todo | Expand a dashboard row to tail that instance's log |
 | RM-14 | Model playground | todo | Send test prompts to a running instance from the dashboard |
-| RM-15 | Usage & spend analytics | todo | Per-model/per-client token & request usage in the dashboard |
+| RM-15 | Usage: wire up today's per-client totals | todo | New Usage page — connects the existing `GET /v1/usage`, no new backend work |
 | RM-16 | Routing & rate-limit visibility | todo | Surface gateway's rate-limit/circuit-breaker state in the dashboard |
 | RM-17 | Guardrails / content filtering | todo | Speculative — no known need yet |
 | RM-18 | ~~Teams / multi-user RBAC~~ | merged | Merged into RM-11 |
@@ -37,6 +37,9 @@ Status: `done` · `todo`
 | RM-29 | Overview: models needing attention | done | Instances ⋈ circuit state, sorted unhealthy-first |
 | RM-30 | Overview: usage & cost placeholder | done | "Coming soon" card on the Overview page; real version blocked on RM-15 |
 | RM-31 | Overview: link out to Grafana/Tempo | todo | Needs a `GRAFANA_URL`-style config first — dropped from RM-22 to avoid a fragile guessed link |
+| RM-32 | Usage: persisted history + per-model breakdown | todo | Replaces Redis daily counters with a real store — needed for any trend chart |
+| RM-33 | Usage: pricing table + real cost | todo | Per-model price config; turns token counts into a dollar figure |
+| RM-34 | Overview: wire the usage & cost card to real data | todo | Replaces RM-30's placeholder once RM-32/33 land |
 
 Adding an item: append the next `RM-NN` row here with a one-liner, then add the full
 Why/Scope writeup to `docs/roadmap.md`.
