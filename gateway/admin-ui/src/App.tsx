@@ -6,6 +6,7 @@ import Dashboard from "./routes/Dashboard";
 import Login from "./routes/Login";
 import Nodes from "./routes/Nodes";
 import Overview from "./routes/Overview";
+import Usage from "./routes/Usage";
 import Users from "./routes/Users";
 
 function ProtectedRoute({ children }: { children: ReactNode }) {
@@ -34,6 +35,14 @@ export default function App() {
               element={
                 <ProtectedRoute>
                   <Dashboard />
+                </ProtectedRoute>
+              }
+            />
+            <Route
+              path="/usage"
+              element={
+                <ProtectedRoute>
+                  <Usage />
                 </ProtectedRoute>
               }
             />

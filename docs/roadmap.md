@@ -557,6 +557,22 @@ endpoint that already exists.
 here would require RM-32/33 landing first; this item is explicitly "today's numbers only,"
 labeled as such.
 
+**Done (2026-08-27)**: new `/usage` route + sidebar entry, between Nodes and Users. New
+`rootClient` in `api/client.ts` (same token-attach/401-redirect interceptors as the
+existing `apiClient`, but for gateway endpoints outside `/admin/api` — `/metrics` didn't
+need this since it's unauthenticated, but `/v1/usage` requires `admin:read`). Table shows
+one row per client (name resolved via the existing Users list, falling back to the raw
+`client_id` for any principal not found), plus loading/error/empty states. The two
+degraded-state responses collapse to the same "No usage recorded for today yet." message
+client-side, since the endpoint itself returns an identical empty array for "no Redis
+configured" and "Redis configured, zero usage today" — there's no way to tell them apart
+from the response alone, so the message doesn't claim a cause it can't verify. Verified
+both states for real: installed Redis locally (this dev machine didn't have one), pointed
+the gateway at it, made a real `/v1/chat/completions` call, and confirmed the resulting
+row (name, exact token/request counts) rendered correctly — then reverted the gateway to
+its prior no-Redis config and stopped Redis, confirming the page falls back to the empty
+state cleanly.
+
 **Carried over from RM-28's scoping**: once this lands with real persistence, revisit
 whether the Overview page's golden-signals row (RM-28) should grow a small client-side
 trend/sparkline, or just link into whatever historical view RM-15 builds — a client-side
