@@ -13,9 +13,11 @@ const actionButtonClass =
   "rounded-md p-1.5 transition-colors disabled:cursor-not-allowed disabled:opacity-30";
 
 export function InstanceRow({
+  rowNumber,
   instance,
   onEdit,
 }: {
+  rowNumber: number;
   instance: InstanceEntry;
   onEdit: (instance: InstanceEntry) => void;
 }) {
@@ -42,6 +44,7 @@ export function InstanceRow({
   return (
     <>
       <tr className="border-b border-border last:border-0">
+        <td className="px-4 py-3 text-text-muted">{rowNumber}</td>
         <td className="px-4 py-3 font-medium text-text">{instance.id}</td>
         <td className="px-4 py-3 text-text-muted">{instance.node}</td>
         <td className="px-4 py-3 text-text-muted">{instance.backend}</td>

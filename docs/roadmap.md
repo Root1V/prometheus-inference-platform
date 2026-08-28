@@ -49,6 +49,12 @@ Sequencing rationale that isn't captured there:
     page — pure UX, no new backend data model.
   - **Live platform visibility** (RM-23): who/what is connected right now, distinct from
     RM-15's historical usage aggregates.
+- **"Dashboard / UX" block** (2026-08-27, after the RM-15/32/33/34 usage series shipped):
+  the remaining `todo` items that are pure admin-ui work — RM-13, RM-14, RM-16, RM-23,
+  RM-26, RM-27, RM-31 — grouped together and worked one branch at a time, same rhythm as
+  the usage series. Excludes RM-12 (Langfuse — backend tracing integration), RM-17
+  (guardrails — speculative policy feature, not UX), and RM-25 (node SSH credentials —
+  infra/security, not UX). Started with **RM-26** (simplest, no backend dependency).
 
 ---
 
@@ -888,19 +894,24 @@ likewise forbids dots/uppercase) — any registry entry with such an id was adde
 hand-editing `registry.yaml` directly, bypassing `_validate_id`. Out of scope here since
 it's a data-hygiene issue in the registry, not something this feature introduced.
 
-## RM-26 — Instances list: numbered, paginated, active-first (added)
+## RM-26 — Instances list: numbered, paginated, active-first (added) — `done`
 
 **Why**: the Instances table on the dashboard just lists rows in whatever order the
 gateway returns them, with no row numbering and no cap — as the number of registered
 instances grows (across more nodes, more models) the table gets long and running
 instances get lost among stopped ones.
 
-**Scope (not yet designed in detail)**: add a leading row-number column; sort running
-instances before stopped ones (state order, not a separate boolean toggle); paginate the
-table once the instance count passes a threshold (client-side pagination is likely
-sufficient — the aggregated list already comes from one `GET /admin/api/instances` call,
-no new backend endpoint obviously needed unless the list turns out large enough to want
-server-side paging).
+**Scope**: all client-side, in `InstanceTable.tsx` — no backend change needed, the
+aggregated list already comes from one `GET /admin/api/instances` call. Added a leading
+`#` column (continuous across pages, not reset per page). Sort by state rank (`ready` >
+`loading` > `error` > `paused` > `stopped`) so anything non-idle surfaces above the many
+normally-stopped rows. Paginated at 20 rows/page with Prev/Next controls and a "Showing
+X–Y of Z" label, shown only once the list exceeds one page.
+
+**Verified**: `npm run build` type-checks cleanly; full `.githooks/pre-push` green.
+Live-verified against the local demo gateway's real 28-instance list: the one `ready`
+instance sorted to row 1 ahead of 27 `stopped` ones, page 1 showed "Showing 1–20 of 28",
+and Next correctly advanced to page 2 ("Showing 21–28 of 28", rows numbered 21–28).
 
 ## RM-27 — Delete user (added)
 
