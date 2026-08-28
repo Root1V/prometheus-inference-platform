@@ -982,16 +982,25 @@ gateway with a real `pricing.yaml` for `gpt-oss-20b-mxfp4`: `/v1/usage` and the 
 admin-ui both show the computed cost for the priced model and `—`/`null` for `small-model`,
 which has no price entry.
 
-## RM-34 — Overview: wire the usage & cost card to real data (added)
+## RM-34 — Overview: wire the usage & cost card to real data (added) — `done`
 
 **Why**: RM-30 shipped an honest "coming soon" placeholder specifically so the real numbers
 wouldn't need to be faked. Once RM-32 (history/per-model) and RM-33 (pricing) exist, this
 closes the loop.
 
-**Scope**: replace RM-30's placeholder card on the Overview page with real stat cards —
-tokens today, estimated spend, top model by cost/usage (per the original scoping memo's
-Row 4 mockup). Straightforward once RM-32/33 exist; not worth designing further until they
-do.
+**Scope**: replaced RM-30's placeholder with 3 real stat cards, fed by `useUsage()`
+(RM-32/33's `GET /v1/usage`): **Tokens today** (sum of `total_tokens` across all clients,
+sub-label counts clients), **Est. spend today** (sum of `estimated_cost_usd`, shown as "—
+No pricing configured" when every client's cost is null rather than a misleading $0), and
+**Top model** (highest-token model aggregated across all clients' `by_model` breakdowns).
+Added a shared `formatUsdCost()` helper in `lib/format.ts` (used by both this card and
+`Usage.tsx`, replacing that page's local copy) and a "→ Usage" link chip alongside the
+existing Instances/Nodes/Users links.
+
+**Verified**: `npm run build` type-checks cleanly; full `.githooks/pre-push` green. Live-
+verified against the local demo gateway with a real `pricing.yaml`: Overview showed "Tokens
+today: 515 (2 clients)", "Est. spend today: USD 0.0001", "Top model: gpt-oss-20b-mxfp4 (460
+tokens today)" — matching `/v1/usage`'s actual aggregates.
 
 ## Adding new items
 

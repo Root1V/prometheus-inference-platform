@@ -5,3 +5,14 @@ export function formatUptime(totalSeconds: number): string {
   const minutes = Math.floor((totalSeconds % 3600) / 60);
   return hours === 0 ? `${minutes}m` : `${hours}h ${minutes}m`;
 }
+
+/** Formats a USD cost, or "—" for null (docs/roadmap.md RM-33: null means "no price configured"). */
+export function formatUsdCost(cost: number | null): string {
+  if (cost === null) return "—";
+  return cost.toLocaleString(undefined, {
+    style: "currency",
+    currency: "USD",
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 4,
+  });
+}

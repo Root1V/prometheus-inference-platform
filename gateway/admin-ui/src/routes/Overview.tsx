@@ -7,17 +7,19 @@ import {
   Gauge,
   HardDrive,
   Timer,
+  Trophy,
   Users as UsersIcon,
 } from "lucide-react";
 import { Link } from "react-router-dom";
 import { useMetrics } from "../api/metrics";
 import { useInstances } from "../api/instances";
 import { useNodeRegistry } from "../api/nodes";
+import { useUsage } from "../api/usage";
 import { useUsers } from "../api/users";
 import { AttentionTable, type AttentionEntry } from "../components/AttentionTable";
 import { Sidebar } from "../components/Sidebar";
 import { StatCard } from "../components/StatCard";
-import { formatUptime } from "../lib/format";
+import { formatUptime, formatUsdCost } from "../lib/format";
 
 /** Higher = more urgent. An actual crash outranks a tripped circuit. */
 function attentionScore(entry: AttentionEntry): number {
@@ -32,6 +34,7 @@ export default function Overview() {
   const instancesQuery = useInstances();
   const usersQuery = useUsers();
   const metricsQuery = useMetrics();
+  const usageQuery = useUsage();
 
   const nodes = nodesQuery.data ?? [];
   const instances = instancesQuery.data?.instances ?? [];
@@ -59,6 +62,19 @@ export default function Overview() {
         instance.state === "error" || circuitState === "open" || circuitState === "half-open",
     )
     .sort((a, b) => attentionScore(b) - attentionScore(a));
+
+  // RM-34: today's usage & cost, aggregated from RM-32/33's per-client/per-model data.
+  const usageEntries = usageQuery.data?.data ?? [];
+  const tokensToday = usageEntries.reduce((sum, e) => sum + e.total_tokens, 0);
+  const hasAnyCost = usageEntries.some((e) => e.estimated_cost_usd !== null);
+  const spendToday = usageEntries.reduce((sum, e) => sum + (e.estimated_cost_usd ?? 0), 0);
+  const modelTotals = new Map<string, number>();
+  for (const e of usageEntries) {
+    for (const m of e.by_model) {
+      modelTotals.set(m.model_id, (modelTotals.get(m.model_id) ?? 0) + m.total_tokens);
+    }
+  }
+  const topModel = [...modelTotals.entries()].sort((a, b) => b[1] - a[1])[0];
 
   return (
     <div className="flex min-h-screen bg-background">
@@ -126,17 +142,25 @@ export default function Overview() {
         <h2 className="mt-10 text-sm font-medium uppercase tracking-wide text-text-muted">
           Usage &amp; cost
         </h2>
-        <div className="mt-3 flex items-center gap-4 rounded-xl border border-dashed border-border bg-surface p-5 opacity-70">
-          <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-primary/10 text-primary">
-            <Coins size={20} />
-          </div>
-          <div>
-            <p className="text-sm font-medium text-text">Coming soon</p>
-            <p className="text-xs text-text-muted">
-              Token usage and spend need a persisted usage store and per-model pricing, not just
-              today's per-client totals — tracked separately.
-            </p>
-          </div>
+        <div className="mt-3 grid grid-cols-1 gap-4 sm:grid-cols-3">
+          <StatCard
+            label="Tokens today"
+            value={usageQuery.data ? tokensToday.toLocaleString() : "—"}
+            sub={usageQuery.data ? `${usageEntries.length} client${usageEntries.length === 1 ? "" : "s"}` : undefined}
+            icon={Activity}
+          />
+          <StatCard
+            label="Est. spend today"
+            value={usageQuery.data ? (hasAnyCost ? formatUsdCost(spendToday) : "—") : "—"}
+            sub={usageQuery.data && !hasAnyCost ? "No pricing configured" : undefined}
+            icon={Coins}
+          />
+          <StatCard
+            label="Top model"
+            value={topModel ? topModel[0] : "—"}
+            sub={topModel ? `${topModel[1].toLocaleString()} tokens today` : undefined}
+            icon={Trophy}
+          />
         </div>
 
         <div className="mt-8 flex flex-wrap gap-2">
@@ -145,6 +169,9 @@ export default function Overview() {
           </Link>
           <Link to="/nodes" className={linkChipClass}>
             → Nodes
+          </Link>
+          <Link to="/usage" className={linkChipClass}>
+            → Usage
           </Link>
           <Link to="/users" className={linkChipClass}>
             → Users

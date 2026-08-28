@@ -4,6 +4,7 @@ import { useUsage } from "../api/usage";
 import { useUsers } from "../api/users";
 import { Sidebar } from "../components/Sidebar";
 import { getErrorMessage } from "../lib/errors";
+import { formatUsdCost } from "../lib/format";
 
 export default function Usage() {
   const [date, setDate] = useState("");
@@ -14,16 +15,6 @@ export default function Usage() {
   const users = usersQuery.data ?? [];
   const nameByClientId = new Map(users.map((u) => [u.client_id, u.client_name]));
   const entries = usageQuery.data?.data ?? [];
-
-  function formatCost(cost: number | null): string {
-    if (cost === null) return "—";
-    return cost.toLocaleString(undefined, {
-      style: "currency",
-      currency: "USD",
-      minimumFractionDigits: 2,
-      maximumFractionDigits: 4,
-    });
-  }
 
   function toggleExpanded(clientId: string) {
     setExpanded((prev) => {
@@ -118,7 +109,7 @@ export default function Usage() {
                           {entry.request_count.toLocaleString()}
                         </td>
                         <td className="px-4 py-3 text-text-muted">
-                          {formatCost(entry.estimated_cost_usd)}
+                          {formatUsdCost(entry.estimated_cost_usd)}
                         </td>
                       </tr>
                       {isExpanded &&
@@ -141,7 +132,7 @@ export default function Usage() {
                               {model.request_count.toLocaleString()}
                             </td>
                             <td className="px-4 py-2 text-text-muted">
-                              {formatCost(model.estimated_cost_usd)}
+                              {formatUsdCost(model.estimated_cost_usd)}
                             </td>
                           </tr>
                         ))}
