@@ -3,6 +3,7 @@ import { HashRouter, Navigate, Route, Routes } from "react-router-dom";
 import { AuthProvider, useAuth } from "./context/AuthContext";
 import { ToastProvider } from "./context/ToastContext";
 import Dashboard from "./routes/Dashboard";
+import Limits from "./routes/Limits";
 import Login from "./routes/Login";
 import Nodes from "./routes/Nodes";
 import Overview from "./routes/Overview";
@@ -59,6 +60,14 @@ export default function App() {
               element={
                 <ProtectedRoute>
                   <Nodes />
+                </ProtectedRoute>
+              }
+            />
+            <Route
+              path="/limits"
+              element={
+                <ProtectedRoute>
+                  <Limits />
                 </ProtectedRoute>
               }
             />

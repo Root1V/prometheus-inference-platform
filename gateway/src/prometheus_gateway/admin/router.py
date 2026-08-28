@@ -434,10 +434,23 @@ def create_admin_router(manager_client: ManagerApiClient) -> APIRouter:
 
     @router.get("/admin/api/config")
     async def get_dashboard_config(request: Request) -> Any:
-        """Dashboard-facing settings — currently just the optional Grafana link (RM-31)."""
+        """Dashboard-facing settings — Grafana link (RM-31), rate-limit/circuit-breaker
+        config (RM-16). Read-only: live-editing these stays out of scope — .env remains
+        the single source of truth.
+        """
         if (forbidden := _require_scope(request, "admin:read")) is not None:
             return forbidden
         settings: Settings = request.app.state.settings
-        return {"grafana_url": settings.grafana_url}
+        return {
+            "grafana_url": settings.grafana_url,
+            "rate_limit_rpm": settings.rate_limit_rpm,
+            "rate_limit_tpm": settings.rate_limit_tpm,
+            "rate_limit_rpm_chat_completions": settings.rate_limit_rpm_chat_completions,
+            "rate_limit_tpm_chat_completions": settings.rate_limit_tpm_chat_completions,
+            "rate_limit_strict": settings.rate_limit_strict,
+            "circuit_breaker_failure_threshold": settings.circuit_breaker_failure_threshold,
+            "circuit_breaker_recovery_timeout": settings.circuit_breaker_recovery_timeout,
+            "circuit_breaker_success_threshold": settings.circuit_breaker_success_threshold,
+        }
 
     return router

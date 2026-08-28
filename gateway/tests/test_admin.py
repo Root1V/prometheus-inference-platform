@@ -585,15 +585,29 @@ async def test_get_config_returns_grafana_url_when_configured(admin_settings, rs
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as gw2:
         resp = await gw2.get("/admin/api/config", headers=_headers(rsa_keys, "admin:read"))
     assert resp.status_code == 200
-    assert resp.json() == {"grafana_url": "http://localhost:3000"}
+    assert resp.json()["grafana_url"] == "http://localhost:3000"
 
 
 async def test_get_config_returns_null_grafana_url_when_unset(gw, rsa_keys):
     resp = await gw.get("/admin/api/config", headers=_headers(rsa_keys, "admin:read"))
     assert resp.status_code == 200
-    assert resp.json() == {"grafana_url": None}
+    assert resp.json()["grafana_url"] is None
 
 
 async def test_get_config_requires_admin_read(gw, rsa_keys):
     resp = await gw.get("/admin/api/config", headers=_headers(rsa_keys, "inference:read"))
     assert resp.status_code == 403
+
+
+async def test_get_config_returns_rate_limit_and_circuit_breaker_settings(gw, rsa_keys):  # RM-16
+    resp = await gw.get("/admin/api/config", headers=_headers(rsa_keys, "admin:read"))
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["rate_limit_rpm"] == 60
+    assert body["rate_limit_tpm"] == 40_000
+    assert body["rate_limit_rpm_chat_completions"] is None
+    assert body["rate_limit_tpm_chat_completions"] is None
+    assert body["rate_limit_strict"] is False
+    assert body["circuit_breaker_failure_threshold"] == 5
+    assert body["circuit_breaker_recovery_timeout"] == 30
+    assert body["circuit_breaker_success_threshold"] == 2

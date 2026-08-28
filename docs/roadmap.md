@@ -585,18 +585,29 @@ trend/sparkline, or just link into whatever historical view RM-15 builds — a c
 rolling buffer sampled from `/metrics` was considered and deliberately deferred rather than
 built twice.
 
-## RM-16 — Routing & rate-limit visibility (added)
+## RM-16 — Routing & rate-limit visibility (added) — `done`
 
 **Why**: the gateway already enforces rate limiting and circuit breakers (spec 007), but
 that state is invisible today outside reading `.env` files or logs. Comparable platforms
 expose current rate-limit/circuit-breaker state and routing rules directly in their
 dashboards.
 
-**Scope (not yet designed)**: start read-only — show current limits and per-backend
-circuit-breaker state in the dashboard. Whether the dashboard should also let you *change*
-that config live (vs. `.env` staying the single source of truth) is a bigger, separate
-question — don't scope that in without deciding it deliberately, to avoid ending up with
-two conflicting config sources.
+**Scope**: read-only, as scoped — live-editing config from the dashboard stays explicitly
+out, `.env` remains the single source of truth. Extended the existing `GET
+/admin/api/config` (RM-31) with the 6 rate-limit/circuit-breaker config fields already in
+`Settings` (global RPM/TPM, the optional per-endpoint chat-completions override,
+fail-open/strict mode, circuit-breaker failure/recovery/success thresholds) — nothing new
+on the backend beyond exposing values that already existed. New `/limits` page: a config
+card group plus a table of every backend's live `circuit_state`, reusing `GET /metrics`'s
+existing `backends` map (already built for RM-28/29) via a newly-extracted shared
+`CircuitBadge` component (previously private to `AttentionTable.tsx`, now in its own file
+since it has a second real caller).
+
+**Verified**: 3 new/updated tests in `test_admin.py` (44/44 admin tests green), full
+`.githooks/pre-push` green. Live-verified against the local demo gateway: the Limits page
+rendered the exact configured defaults (60 RPM, 40,000 TPM, no per-endpoint override,
+"Allow (fail-open)" matching `RATE_LIMIT_STRICT=false`, 5/30s/2 circuit-breaker thresholds)
+and the correct empty state for backend circuit traffic on a freshly started process.
 
 ## RM-17 — Guardrails / content filtering (added, speculative)
 

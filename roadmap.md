@@ -22,7 +22,7 @@ Status: `done` · `todo`
 | RM-13 | Live log viewer per instance | todo | Expand a dashboard row to tail that instance's log |
 | RM-14 | Model playground | todo | Send test prompts to a running instance from the dashboard |
 | RM-15 | Usage: wire up today's per-client totals | done | New Usage page — connects the existing `GET /v1/usage`, no new backend work |
-| RM-16 | Routing & rate-limit visibility | todo | Surface gateway's rate-limit/circuit-breaker state in the dashboard |
+| RM-16 | Routing & rate-limit visibility | done | Surface gateway's rate-limit/circuit-breaker state in the dashboard |
 | RM-17 | Guardrails / content filtering | todo | Speculative — no known need yet |
 | RM-18 | ~~Teams / multi-user RBAC~~ | merged | Merged into RM-11 |
 | RM-19 | Dashboard branding: logo + favicon | done | Icon next to "Prometheus" in the sidebar, reused as the page favicon |

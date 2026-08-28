@@ -1,4 +1,4 @@
-import { Coins, Flame, HardDrive, LayoutDashboard, LogOut, Server, Users } from "lucide-react";
+import { Coins, Flame, Gauge, HardDrive, LayoutDashboard, LogOut, Server, Users } from "lucide-react";
 import { NavLink } from "react-router-dom";
 import { useAuth } from "../context/AuthContext";
 import { cn } from "../lib/cn";
@@ -8,6 +8,7 @@ const NAV_ITEMS = [
   { to: "/instances", label: "Instances", icon: Server },
   { to: "/nodes", label: "Nodes", icon: HardDrive },
   { to: "/usage", label: "Usage", icon: Coins },
+  { to: "/limits", label: "Limits", icon: Gauge },
   { to: "/users", label: "Users", icon: Users },
 ];
 
