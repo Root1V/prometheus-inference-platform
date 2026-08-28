@@ -940,7 +940,7 @@ against the real local demo auth-service: deleted a genuine leftover test princi
 ("RM24 Test User") through the dashboard's new Delete button, confirmed the row disappeared
 from both the UI and a direct `GET /admin/api/users` call.
 
-## RM-31 — Overview: link out to Grafana/Tempo (added)
+## RM-31 — Overview: link out to Grafana/Tempo (added) — `done`
 
 **Why**: dropped from RM-22's original scope — see that item's "Scope trim" note. The
 Overview page memo called for a links row to the existing Grafana ops dashboard and Tempo
@@ -949,11 +949,20 @@ to build a reliable link from, and guessing one client-side (assuming Grafana si
 same host at :3000, per `podman-compose.yml`) would be fragile across deployments —
 different host, different port, TLS, or no Grafana deployed at all.
 
-**Scope (not yet designed in detail)**: add a `GRAFANA_URL` (or similar) setting to the
-gateway's config, exposed to the admin-ui (e.g. via a small unauthenticated `/admin/api/config`
-read, or baked into the served `index.html` at container-build/start time — needs picking
-one). Render the links row on Overview only when the setting is present; omit it entirely
-otherwise rather than showing a dead link.
+**Scope**: added a `grafana_url: str | None` setting (Tempo has no separately exposed UI in
+`podman-compose.yml` — its trace search lives inside Grafana's Explore view against the
+Tempo datasource, so one URL covers both). Exposed via a new `GET /admin/api/config`
+(requires `admin:read`, like every other admin-ui endpoint — simpler than carving out an
+unauthenticated exception for one non-secret URL). Frontend: `useDashboardConfig()` in
+`api/config.ts` (`staleTime: Infinity` — it can't change without a gateway restart), and a
+"Grafana / Tempo" link chip on Overview, rendered only when `grafana_url` is set, opening
+in a new tab.
+
+**Verified**: `test_admin.py` (3 new tests: configured/unset/scope-enforcement) — 43/43
+admin tests green, full `.githooks/pre-push` green. Live-verified against the local demo
+gateway both ways: with `GRAFANA_URL=http://localhost:3000` set, the Overview page showed
+a working "Grafana / Tempo" link (`target="_blank"`, correct `href`); with it unset, the
+link chip was absent entirely rather than a dead link.
 
 ## RM-32 — Usage: persisted history + per-model breakdown (added) — `done`
 

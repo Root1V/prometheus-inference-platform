@@ -4,6 +4,7 @@ import {
   AlertTriangle,
   Boxes,
   Coins,
+  ExternalLink,
   Gauge,
   HardDrive,
   Timer,
@@ -11,6 +12,7 @@ import {
   Users as UsersIcon,
 } from "lucide-react";
 import { Link } from "react-router-dom";
+import { useDashboardConfig } from "../api/config";
 import { useMetrics } from "../api/metrics";
 import { useInstances } from "../api/instances";
 import { useNodeRegistry } from "../api/nodes";
@@ -35,6 +37,7 @@ export default function Overview() {
   const usersQuery = useUsers();
   const metricsQuery = useMetrics();
   const usageQuery = useUsage();
+  const configQuery = useDashboardConfig();
 
   const nodes = nodesQuery.data ?? [];
   const instances = instancesQuery.data?.instances ?? [];
@@ -176,6 +179,17 @@ export default function Overview() {
           <Link to="/users" className={linkChipClass}>
             → Users
           </Link>
+          {configQuery.data?.grafana_url && (
+            <a
+              href={configQuery.data.grafana_url}
+              target="_blank"
+              rel="noreferrer"
+              className={`${linkChipClass} inline-flex items-center gap-1`}
+            >
+              Grafana / Tempo
+              <ExternalLink size={12} />
+            </a>
+          )}
         </div>
       </main>
     </div>

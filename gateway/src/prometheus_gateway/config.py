@@ -153,6 +153,13 @@ class Settings(BaseSettings):
     # AUTH_DB_URL — swap for a Postgres URL in production if desired.
     gateway_db_url: str = "sqlite+aiosqlite:///./gateway.db"
 
+    # ── Observability links — docs/roadmap.md RM-31 ─────────────────────────────
+    # Grafana's URL (e.g. http://localhost:3000) — Tempo has no separately exposed
+    # UI in podman-compose.yml, trace search lives inside Grafana's Explore view
+    # against the Tempo datasource. Unset means "not deployed" — the Overview
+    # page's links row is omitted entirely rather than guessing a fragile URL.
+    grafana_url: str | None = None
+
     # ── Pricing — docs/roadmap.md RM-33 ─────────────────────────────────────────
     # Optional per-model USD pricing (see gateway/pricing.yaml.example). Path is
     # relative to repo root or absolute; unset means "no pricing configured" —

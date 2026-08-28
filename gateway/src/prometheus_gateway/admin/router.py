@@ -30,10 +30,12 @@ POST   /admin/api/users/{client_id}/rotate-secret            — oauth2 principa
 POST   /admin/api/users/{client_id}/reset-password           — password principals
 POST   /admin/api/users/{client_id}/share                    — one-time credential link
 POST   /admin/api/users/share/{token_id}/revoke
+GET    /admin/api/config                                    — dashboard-facing settings (RM-31)
 
 Implements: docs/roadmap.md — RM-10 (gateway admin dashboard, phase 1)
 Implements: docs/roadmap.md — RM-11 (Users section, dual login modes)
 Implements: docs/roadmap.md — RM-20 (Nodes section, replaces static MANAGER_NODES)
+Implements: docs/roadmap.md — RM-31 (Overview: link out to Grafana/Tempo)
 """
 
 from __future__ import annotations
@@ -429,5 +431,13 @@ def create_admin_router(manager_client: ManagerApiClient) -> APIRouter:
         if (forbidden := _require_scope(request, "admin:write")) is not None:
             return forbidden
         return await _auth_admin_request(request, "POST", f"/clients/share/{token_id}/revoke")
+
+    @router.get("/admin/api/config")
+    async def get_dashboard_config(request: Request) -> Any:
+        """Dashboard-facing settings — currently just the optional Grafana link (RM-31)."""
+        if (forbidden := _require_scope(request, "admin:read")) is not None:
+            return forbidden
+        settings: Settings = request.app.state.settings
+        return {"grafana_url": settings.grafana_url}
 
     return router

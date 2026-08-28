@@ -569,3 +569,31 @@ async def test_share_user_credential_proxies_to_auth_service(gw, rsa_keys):
         )
     assert resp.status_code == 200
     assert resp.json()["share_url"] == "https://x/share/tok"
+
+
+# ── GET /admin/api/config — docs/roadmap.md RM-31 ───────────────────────────
+
+
+async def test_get_config_returns_grafana_url_when_configured(admin_settings, rsa_keys):
+    from prometheus_gateway.main import create_app
+    from prometheus_gateway.models.registry import ModelRegistry
+
+    admin_settings.grafana_url = "http://localhost:3000"
+    registry = ModelRegistry.__new__(ModelRegistry)
+    registry._models = {}
+    app = create_app(settings=admin_settings, registry=registry)
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as gw2:
+        resp = await gw2.get("/admin/api/config", headers=_headers(rsa_keys, "admin:read"))
+    assert resp.status_code == 200
+    assert resp.json() == {"grafana_url": "http://localhost:3000"}
+
+
+async def test_get_config_returns_null_grafana_url_when_unset(gw, rsa_keys):
+    resp = await gw.get("/admin/api/config", headers=_headers(rsa_keys, "admin:read"))
+    assert resp.status_code == 200
+    assert resp.json() == {"grafana_url": None}
+
+
+async def test_get_config_requires_admin_read(gw, rsa_keys):
+    resp = await gw.get("/admin/api/config", headers=_headers(rsa_keys, "inference:read"))
+    assert resp.status_code == 403
