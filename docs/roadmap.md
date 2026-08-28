@@ -528,6 +528,23 @@ lean on RM-12's Langfuse integration if that lands first (Langfuse already track
 prompt/completion/token data, which may make a separate aggregation redundant). Decide the
 data source before designing the page.
 
+**Concrete gaps found while scoping RM-30 (2026-08-27)** — what "usage & spend" actually
+needs, spelled out so this isn't designed from scratch later:
+1. **Wire up what already exists**: `GET /v1/usage` (gateway, pre-existing, unrelated to
+   this backlog series) already returns real per-client prompt/completion/request token
+   counts — for the current UTC day only — but nothing in the admin-ui ever calls it. A
+   first pass could show *just this* (today's totals per client) before anything else here
+   is built.
+2. **Real history**: `/v1/usage`'s counters live in Redis with a daily TTL — fine for
+   "today," useless for a trend chart. Needs an actual persisted, queryable store (a
+   database table, or one of the OTel/Langfuse options above).
+3. **Per-model breakdown**: `/v1/usage` only splits by client, not by model — "which model
+   is costing the most" isn't answerable from it today.
+4. **Pricing**: there is no price-per-token/per-model concept anywhere in this codebase.
+   Turning a token count into a dollar figure needs a new pricing table (keyed by model id
+   and/or quantization) and a decision on where it's edited (a config file? a dashboard
+   settings page? RM-14/RM-24's model-picker plumbing could inform where this lives).
+
 **Carried over from RM-28's scoping**: once this lands with real persistence, revisit
 whether the Overview page's golden-signals row (RM-28) should grow a small client-side
 trend/sparkline, or just link into whatever historical view RM-15 builds — a client-side
