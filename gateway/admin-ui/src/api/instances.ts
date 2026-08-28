@@ -74,6 +74,27 @@ export function useUpdateModel() {
   });
 }
 
+interface InstanceLogsResponse {
+  model_id: string;
+  lines: string[];
+}
+
+/** RM-13: tails an instance's log file. Only polls while `enabled` (the row is expanded)
+ * — otherwise this would multiply request volume by the number of registered models. */
+export function useInstanceLogs(node: string, modelId: string, enabled: boolean) {
+  return useQuery({
+    queryKey: ["instance-logs", node, modelId] as const,
+    queryFn: async () =>
+      (
+        await apiClient.get<InstanceLogsResponse>(`/nodes/${node}/instances/${modelId}/logs`, {
+          params: { tail: 200 },
+        })
+      ).data,
+    enabled,
+    refetchInterval: enabled ? 3000 : false,
+  });
+}
+
 export function useDeleteModel() {
   const queryClient = useQueryClient();
   return useMutation({

@@ -19,7 +19,7 @@ Status: `done` · `todo`
 | RM-10 | Gateway admin dashboard (phase 1) | done | React SPA — register/edit/start/stop/restart instances |
 | RM-11 | Auth & Users dashboard | done | Users section with roles; login via OAuth2 client_id/secret or email+password (default) |
 | RM-12 | E2E LLM tracing with Langfuse | todo | Prompt/completion/token-level tracing, alongside existing OTel/Tempo |
-| RM-13 | Live log viewer per instance | todo | Expand a dashboard row to tail that instance's log |
+| RM-13 | Live log viewer per instance | done | Expand a dashboard row to tail that instance's log |
 | RM-14 | Model playground | todo | Send test prompts to a running instance from the dashboard |
 | RM-15 | Usage: wire up today's per-client totals | done | New Usage page — connects the existing `GET /v1/usage`, no new backend work |
 | RM-16 | Routing & rate-limit visibility | done | Surface gateway's rate-limit/circuit-breaker state in the dashboard |

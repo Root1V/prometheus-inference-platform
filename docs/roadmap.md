@@ -480,7 +480,7 @@ without duplicating what Tempo already captures at the HTTP layer.
 
 ---
 
-## RM-13 — Admin dashboard: live log viewer (added)
+## RM-13 — Admin dashboard: live log viewer (added) — `done`
 
 **Why**: requested by the user after trying RM-10's dashboard — when an instance is in the
 `error` state (or any state), there's currently no way to see *why* without SSH access to
@@ -507,6 +507,24 @@ expands it inline to show that instance's live log tail. Needs, roughly:
 logs are needed, and whether this should also cover manager-api's/gateway's own logs (this
 item is specifically about *inference backend instance* logs, matching what `{log_dir}/
 {model_id}.log` already captures via `lifecycle.py`'s `subprocess.Popen(..., stdout=log_fh)`).
+
+**Scope (built)**: manager-api gained `GET /v1/backends/{model_id}/logs?tail=N` (default
+200, capped at 2000; same `backend-registry:read` scope as the existing read endpoints) —
+a plain whole-file read + `lines[-n:]`, not a seek-based tail; fine for a single model's
+log, revisit only if that ever proves too slow. Gateway proxies it at `GET
+/admin/api/nodes/{node}/instances/{model_id}/logs` (`admin:read`). Frontend: a "Logs"
+toggle button per instance row expands a `<pre>`-style tail panel (auto-scrolling to the
+newest line), polling every 3s **only while expanded** — not for every row on every cycle,
+per the original scope note. Non-streaming polling, matching the dashboard's existing
+`refetchInterval` pattern everywhere else, rather than introducing SSE/chunked responses
+for a first version.
+
+**Verified**: 5 new manager-api tests (`test_logs.py`, 38/38 manager-api tests green) + 3
+new gateway proxy tests in `test_admin.py` (47/47 admin tests green), full
+`.githooks/pre-push` green. Live-verified against the real local manager-api and its actual
+running `gpt-oss-20b-mxfp4` instance (up 37h): expanded its row and confirmed the panel
+rendered the real 64-line log file exactly (matching `wc -l`/`tail` on disk), with the
+correct last line and auto-scroll landing at the bottom.
 
 ## RM-14 — Model playground (added)
 

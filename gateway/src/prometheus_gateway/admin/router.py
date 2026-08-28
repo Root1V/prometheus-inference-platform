@@ -21,6 +21,7 @@ DELETE /admin/api/nodes/{node}/models/{model_id}              — deregister
 POST   /admin/api/nodes/{node}/instances/{model_id}/start
 POST   /admin/api/nodes/{node}/instances/{model_id}/stop
 POST   /admin/api/nodes/{node}/instances/{model_id}/restart
+GET    /admin/api/nodes/{node}/instances/{model_id}/logs   — tail its log file (RM-13)
 GET    /admin/api/users                                     — list principals
 POST   /admin/api/users                                     — create (oauth2 or password)
 PATCH  /admin/api/users/{client_id}                          — update
@@ -36,6 +37,8 @@ Implements: docs/roadmap.md — RM-10 (gateway admin dashboard, phase 1)
 Implements: docs/roadmap.md — RM-11 (Users section, dual login modes)
 Implements: docs/roadmap.md — RM-20 (Nodes section, replaces static MANAGER_NODES)
 Implements: docs/roadmap.md — RM-31 (Overview: link out to Grafana/Tempo)
+Implements: docs/roadmap.md — RM-13 (admin dashboard: live log viewer)
+Implements: docs/roadmap.md — RM-16 (routing & rate-limit visibility)
 """
 
 from __future__ import annotations
@@ -286,6 +289,27 @@ def create_admin_router(manager_client: ManagerApiClient) -> APIRouter:
 
         try:
             resp = await manager_client.post(node_url, f"/v1/backends/{model_id}/{action}")
+        except Exception as exc:
+            return _proxy_error_response(request, exc)
+        return _passthrough(resp)
+
+    @router.get("/admin/api/nodes/{node}/instances/{model_id}/logs")
+    async def get_instance_logs(
+        node: str, model_id: str, request: Request, tail: int = 200
+    ) -> Response:
+        """Tail a running instance's log file (RM-13)."""
+        if (forbidden := _require_scope(request, "admin:read")) is not None:
+            return forbidden
+        node_url = await _resolve_node(request, node)
+        if node_url is None:
+            return _problem(
+                request, 400, "unknown-node", "Unknown Node", f"Node {node!r} is not configured."
+            )
+
+        try:
+            resp = await manager_client.get(
+                node_url, f"/v1/backends/{model_id}/logs", params={"tail": tail}
+            )
         except Exception as exc:
             return _proxy_error_response(request, exc)
         return _passthrough(resp)

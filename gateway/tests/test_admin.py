@@ -486,6 +486,44 @@ async def test_control_instance_lifecycle_conflict_proxied(gw, rsa_keys):
     assert body["type"].endswith("lifecycle-conflict")
 
 
+# ── GET /admin/api/nodes/{node}/instances/{model_id}/logs — RM-13 ───────────
+
+
+async def test_get_instance_logs_proxies_with_tail_param(gw, rsa_keys):
+    with respx.mock:
+        _mock_nodes(("mac", NODE_URL))
+        _mock_manager_token()
+        route = respx.get(f"{NODE_URL}/v1/backends/model-a/logs").mock(
+            return_value=Response(200, json={"model_id": "model-a", "lines": ["a", "b"]})
+        )
+        resp = await gw.get(
+            "/admin/api/nodes/mac/instances/model-a/logs",
+            params={"tail": 50},
+            headers=_headers(rsa_keys, "admin:read"),
+        )
+    assert resp.status_code == 200
+    assert resp.json()["lines"] == ["a", "b"]
+    assert route.calls.last.request.url.params["tail"] == "50"
+
+
+async def test_get_instance_logs_requires_admin_read(gw, rsa_keys):
+    resp = await gw.get(
+        "/admin/api/nodes/mac/instances/model-a/logs",
+        headers=_headers(rsa_keys, "inference:read"),
+    )
+    assert resp.status_code == 403
+
+
+async def test_get_instance_logs_unknown_node_returns_400(gw, rsa_keys):
+    with respx.mock:
+        _mock_nodes(("mac", NODE_URL))
+        resp = await gw.get(
+            "/admin/api/nodes/does-not-exist/instances/model-a/logs",
+            headers=_headers(rsa_keys, "admin:read"),
+        )
+    assert resp.status_code == 400
+
+
 # ── /admin/api/users/* — RM-11 ────────────────────────────────────────────────
 
 

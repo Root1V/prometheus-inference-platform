@@ -1,10 +1,12 @@
 """API routes for the Prometheus Manager.
 
-GET /health            — liveness probe (no auth)
-GET /v1/backends       — all registered models + live state (requires JWT)
-GET /v1/backends/{id}  — single model + live state (requires JWT)
+GET /health                 — liveness probe (no auth)
+GET /v1/backends            — all registered models + live state (requires JWT)
+GET /v1/backends/{id}       — single model + live state (requires JWT)
+GET /v1/backends/{id}/logs  — tail that model's log file (requires JWT)
 
 Implements: memory/specs/008-llama-server-manager.md — AC-11, AC-12, AC-13
+Implements: docs/roadmap.md — RM-13 (live log viewer)
 """
 
 from __future__ import annotations
@@ -222,6 +224,72 @@ async def get_backend(
         span.set_attribute("backend_state", result.get("state", "unknown"))
         span.set_attribute("http.status_code", 200)
         return result
+
+
+def _tail_lines(path: Path, n: int) -> list[str]:
+    """Return the last *n* lines of a text file. Simple whole-file read — fine for a
+    single model's log; revisit with a seek-based tail if this ever proves too slow."""
+    text = path.read_text(errors="replace")
+    lines = text.splitlines()
+    return lines[-n:]
+
+
+@router.get("/v1/backends/{model_id}/logs", tags=["backends"])
+async def get_backend_logs(
+    model_id: str,
+    request: Request,
+    _claims: Annotated[Claims, Depends(require_backend_registry_read)],
+    tail: Annotated[
+        int, Query(ge=1, le=2000, description="Number of trailing lines to return.")
+    ] = 200,
+) -> dict[str, Any]:
+    """Return the tail of a backend's log file (stdout+stderr, RM-13).
+
+    Implements: docs/roadmap.md — RM-13 (live log viewer)
+    """
+    with _tracer.start_as_current_span("backend.logs", kind=SpanKind.INTERNAL) as span:
+        span.set_attribute("model_id", model_id)
+        registry: Registry = request.app.state.registry
+        registry.reload()
+
+        from prometheus_manager_core.registry import _validate_id as _vid
+
+        try:
+            _vid(model_id)
+        except ValueError:
+            span.set_attribute("http.status_code", 404)
+            raise HTTPException(
+                status_code=404,
+                detail={
+                    "type": "https://prometheus.local/errors/not-found",
+                    "title": "Not Found",
+                    "status": 404,
+                    "detail": "Backend not found.",
+                },
+            ) from None
+
+        if registry.get(model_id) is None:
+            span.set_attribute("http.status_code", 404)
+            raise HTTPException(
+                status_code=404,
+                detail={
+                    "type": "https://prometheus.local/errors/not-found",
+                    "title": "Not Found",
+                    "status": 404,
+                    "detail": f"Backend '{model_id}' not found.",
+                },
+            )
+
+        config = request.app.state.config
+        log_path: Path = config.resolved_log_dir / f"{model_id}.log"
+        if not log_path.exists():
+            span.set_attribute("http.status_code", 200)
+            return {"model_id": model_id, "lines": []}
+
+        lines = await asyncio.to_thread(_tail_lines, log_path, tail)
+        span.set_attribute("line_count", len(lines))
+        span.set_attribute("http.status_code", 200)
+        return {"model_id": model_id, "lines": lines}
 
 
 def _uptime_s(ps: ProcessState) -> float:
