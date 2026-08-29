@@ -131,6 +131,54 @@ def create_router(registry: ModelRegistry, pool: "BackendPool") -> APIRouter:
                 ],
             }
 
+    # ── GET /v1/models/mine ──────────────────────────────────────────────────
+    # RM-45: unlike GET /v1/models above (public, lists the full catalog),
+    # this requires a valid Bearer token and returns only the models the
+    # caller's own model:<id> scopes grant — model access can be assigned or
+    # changed after a client is created, so a client may want to check what
+    # it currently has before making an inference request.
+    @router.get("/v1/models/mine")
+    async def list_my_models(request: Request) -> Any:
+        """List only the models the caller's JWT authorizes it to use."""
+        from opentelemetry.trace import SpanKind
+
+        claims = getattr(getattr(request, "state", None), "claims", None)
+        if claims is None:
+            return _problem(
+                request,
+                401,
+                "missing-credentials",
+                "Unauthorized",
+                "This endpoint requires a valid Bearer token.",
+            )
+
+        with _tracer.start_as_current_span("models.list_mine", kind=SpanKind.INTERNAL) as span:
+            # RM-14: same admin:write carve-out used for the Playground's own
+            # inference calls — admin:write already implies full model
+            # management, so seeing every model here isn't a new privilege.
+            is_admin_bypass = claims.has_scope("admin:write")
+            authorized = [
+                m
+                for m in registry.list_active_models()
+                if is_admin_bypass or claims.has_model_scope(m.id)
+            ]
+            span.set_attribute("model_count", len(authorized))
+            return {
+                "object": "list",
+                "data": [
+                    {
+                        "id": m.id,
+                        "object": "model",
+                        "owned_by": "prometheus",
+                        "context_length": m.context_length,
+                        "family": m.family,
+                        "quantization": m.quantization,
+                        "modality": m.modality,
+                    }
+                    for m in authorized
+                ],
+            }
+
     # ── GET /v1/backends ────────────────────────────────────────────────────
     # Implements: memory/specs/006-multi-model-gateway.md — AC-14
     # Implements: memory/specs/007-rate-limiting-and-throughput.md — AC-10, AC-20

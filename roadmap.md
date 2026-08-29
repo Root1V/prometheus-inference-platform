@@ -50,7 +50,7 @@ Status: `done` · `todo`
 | RM-42 | Playground: animate the "waiting for a response" state | todo | Replace the static text with something that reads as active waiting |
 | RM-43 | Stop stripping client-supplied system messages | done | Found while scoping RM-35 — broke the RM-14 Playground's own System prompt field |
 | RM-44 | Dashboard: light/dark mode, auto-detected + manual toggle | todo | System `prefers-color-scheme` on load, synced toggle button, persists the manual choice |
-| RM-45 | Let a client list which models it's actually allowed to use | todo | `GET /v1/models` today ignores the caller's own `model:<id>` grants entirely |
+| RM-45 | Let a client list which models it's actually allowed to use | done | New `GET /v1/models/mine` — authenticated, filtered to the caller's own `model:<id>` grants |
 | RM-46 | Per-model performance metrics: avg response time, TTFT, inter-token latency | todo | New instrumentation — nothing like this is tracked today, only overall request latency |
 
 Adding an item: append the next `RM-NN` row here with a one-liner, then add the full

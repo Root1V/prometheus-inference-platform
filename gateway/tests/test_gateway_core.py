@@ -394,6 +394,44 @@ async def test_multi_model_gateway_AC1_active_models_only(gw):  # memory/specs/0
     assert "invalid-backend-model" not in ids
 
 
+# ── RM-45: GET /v1/models/mine — caller's authorized subset only ──────────
+
+
+async def test_rm45_models_mine_requires_auth(gw):
+    """RM-45: unlike GET /v1/models, /v1/models/mine requires a Bearer token."""
+    resp = await gw.get("/v1/models/mine")
+    assert resp.status_code == 401
+
+
+async def test_rm45_models_mine_filters_to_granted_scopes(gw, rsa_keys):
+    """RM-45: only models the token's model:<id> scopes grant are returned."""
+    token = make_token(
+        rsa_keys["private"],
+        scope="inference:read model:small-model",
+    )
+    resp = await gw.get("/v1/models/mine", headers={"Authorization": f"Bearer {token}"})
+    assert resp.status_code == 200
+    ids = [m["id"] for m in resp.json()["data"]]
+    assert ids == ["small-model"]
+
+
+async def test_rm45_models_mine_empty_for_zero_grants(gw, rsa_keys):
+    """RM-45: a token with no model:<id> scope at all sees an empty list, not an error."""
+    token = make_token(rsa_keys["private"], scope="inference:read")
+    resp = await gw.get("/v1/models/mine", headers={"Authorization": f"Bearer {token}"})
+    assert resp.status_code == 200
+    assert resp.json()["data"] == []
+
+
+async def test_rm45_models_mine_admin_write_sees_all(gw, rsa_keys):
+    """RM-45: admin:write bypasses per-model grants, same carve-out as RM-14."""
+    token = make_token(rsa_keys["private"], scope="admin:write")
+    resp = await gw.get("/v1/models/mine", headers={"Authorization": f"Bearer {token}"})
+    assert resp.status_code == 200
+    ids = {m["id"] for m in resp.json()["data"]}
+    assert {"llama3-8b-q4", "small-model"} <= ids
+
+
 # ── AC-2: Routes to correct backend for llama3-8b-q4 ─────────────────────
 
 

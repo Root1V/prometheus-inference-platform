@@ -1408,23 +1408,33 @@ dark palette can likely be added by redefining those same tokens under a
 toggle just sets `data-theme` on `<html>`) — without touching individual components at
 all, unless some inline literal color turns up during implementation.
 
-## RM-45 — Let a client list which models it's actually allowed to use (added)
+## RM-45 — Let a client list which models it's actually allowed to use (done)
 
 **Why**: `GET /v1/models` (`gateway/src/prometheus_gateway/router.py`) is unauthenticated
 and lists every active model in the registry — it never looks at the caller's own JWT at
 all, so a real registered client (an "App"/"Agent" role principal with a handful of
 `model:<id>` grants, not an admin) has no way to ask the gateway "of everything that
 exists, which of these am I actually authorized to call?" They'd have to already know
-their own granted scopes out-of-band, or discover access by trial-and-error 403s.
+their own granted scopes out-of-band, or discover access by trial-and-error 403s. Access
+can also be granted or changed after the client was created, so this isn't a one-time
+lookup — the client may want to re-check before every batch of requests.
 
-**Scope (not yet designed)**: needs a decision on shape — extend `GET /v1/models` to
-optionally read the caller's claims (when a bearer token is present) and add an
-`authorized: true/false` field per model, or add a separate authenticated endpoint (e.g.
-`GET /v1/models/mine`) that returns only the subset the caller's `model:<id>` scopes
-allow. The former keeps one endpoint and stays backward-compatible for unauthenticated
-callers (open `/v1/models` browsing keeps working); the latter is a cleaner, more
-explicit read. Should also cover: what a client with zero model grants sees (empty list,
-or the full catalog all marked `authorized: false`?).
+**Scope**: added a new endpoint, `GET /v1/models/mine`, rather than extending the existing
+public `GET /v1/models` — the two have genuinely different security postures (one is
+deliberately open, the other must read the caller's own grants), and `/v1/models/mine`
+is NOT in the JWT middleware's `EXEMPT_PATHS`, so it gets the same Bearer-token
+enforcement as every other protected route for free, with zero middleware changes.
+Handler filters `registry.list_active_models()` down to entries where
+`claims.has_model_scope(model.id)` is true (reusing RM-07's existing per-model scope
+check verbatim); `admin:write` bypasses the filter and sees every model, matching the
+RM-14 Playground carve-out (admin:write already implies full model management, so this
+isn't a new privilege). A client with zero `model:<id>` grants gets a 200 with an empty
+`data: []`, not an error — it's a legitimate state (client onboarded, no models
+assigned yet), same shape as `GET /v1/models`.
+
+**Verified**: `gateway/tests/test_gateway_core.py` — 401 with no token, filters to only
+the granted `model:<id>` scopes, empty list for a token with zero model grants,
+`admin:write` sees every active model. `uv run --project gateway pytest` green.
 
 ## RM-46 — Per-model performance metrics: avg response time, TTFT, inter-token latency (added)
 
