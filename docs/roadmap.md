@@ -1306,14 +1306,33 @@ the message list scrolled on its own while the Parameters sidebar stayed fully v
 static the entire time, and the reasoning disclosure appeared on ordinary successful
 responses too.
 
-## RM-37 — Playground: embedding model testing (added)
+## RM-37 — Playground: embedding model testing (done)
 
 **Why**: `POST /v1/embeddings` already exists (RM-09) — the Playground's model picker just
 filters to `modality === "text"`, so embedding models never show up as testable.
 
-**Scope**: a distinct playground mode (or a second tab) for embedding models — single text
-input, no conversation history, response shows the vector's dimensionality and a
-truncated preview rather than trying to render a multi-thousand-float array.
+**Scope**: a second "Embeddings" tab next to "Chat" in the Playground — single text input,
+no conversation history (each request is independent, nothing accumulates like chat
+turns), result shows the vector's dimensionality, a truncated preview (first 8 values),
+real token usage, latency, and a copy button for the full vector as JSON. The right
+sidebar swaps to just a model picker filtered to `modality === "embedding"` — none of
+Chat's params/tools apply to embeddings. Reused `usePlaygroundChat`'s pattern for a new
+`useEmbeddings()` hook (`gateway/admin-ui/src/api/playground.ts`) — same real
+`POST /v1/embeddings` call, same real usage/cost recording.
+
+**Backend fix required to make this work at all**: `/v1/embeddings`
+(`gateway/src/prometheus_gateway/router.py`) had no `admin:write` bypass — unlike
+`/v1/chat/completions`'s RM-14 carve-out, so the Playground's admin-dashboard session
+(which only carries `admin:*` scopes, no `inference:read`/`model:<id>`) would have gotten
+a 403 on every embeddings call. Added the identical bypass used by chat completions.
+
+**Verified**: `gateway/tests/test_modality.py` — new
+`test_embeddings_admin_write_bypasses_scope_checks` (14/14 passing). Frontend: `tsc
+--noEmit`, `npm run build`, `npm run lint` all clean. Live in the browser: tab switching
+works, both empty states render correctly (no running text/embedding models in this dev
+environment — verified via Instances showing 0 registered models), no new console errors,
+existing Chat mode unaffected. Could not verify a real embeddings round-trip end-to-end —
+no embedding-modality backend instance is running locally to test against.
 
 ## RM-38 — Image generation model support (added, speculative)
 

@@ -72,6 +72,25 @@ export function usePlaygroundChat() {
   });
 }
 
+interface EmbeddingsResponse {
+  object: string;
+  data: { object: string; index: number; embedding: number[] }[];
+  model: string;
+  usage: { prompt_tokens: number; total_tokens: number };
+}
+
+/**
+ * RM-37: calls the gateway's real POST /v1/embeddings with the admin
+ * dashboard's own session token — same real-usage rationale as
+ * usePlaygroundChat (RM-14).
+ */
+export function useEmbeddings() {
+  return useMutation({
+    mutationFn: async ({ model, input }: { model: string; input: string }) =>
+      (await rootClient.post<EmbeddingsResponse>("/v1/embeddings", { model, input })).data,
+  });
+}
+
 /** A partial tool_calls entry as it arrives in a streaming delta — same shape
  * OpenAI/llama.cpp use: only `index` is guaranteed on every chunk; `id`/
  * `function.name` arrive once, `function.arguments` arrives in fragments. */

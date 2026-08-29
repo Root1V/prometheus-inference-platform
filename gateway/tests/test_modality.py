@@ -240,6 +240,26 @@ async def test_embeddings_accepts_list_input(gw, rsa_keys):
     assert resp.status_code == 200
 
 
+async def test_embeddings_admin_write_bypasses_scope_checks(gw, rsa_keys):
+    """RM-37: the Playground's admin:write session has no inference:read/
+    model:<id> grants of its own — same bypass as RM-14's chat completions."""
+    headers = _headers(rsa_keys, "admin:write")
+    backend_response = {
+        "object": "list",
+        "data": [{"object": "embedding", "index": 0, "embedding": [0.1, 0.2, 0.3]}],
+        "model": "embed-model",
+        "usage": {"prompt_tokens": 2, "total_tokens": 2},
+    }
+    with respx.mock:
+        respx.post(f"{EMBED_URL}/v1/embeddings").mock(
+            return_value=Response(200, json=backend_response)
+        )
+        resp = await gw.post(
+            "/v1/embeddings", json={"model": "embed-model", "input": "hello"}, headers=headers
+        )
+    assert resp.status_code == 200
+
+
 async def test_embeddings_backend_unreachable_returns_503(gw, rsa_keys):
     import httpx
 

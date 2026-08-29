@@ -3,6 +3,7 @@ import { useEffect, useRef, useState } from "react";
 import { useInstances } from "../api/instances";
 import {
   streamPlaygroundChat,
+  useEmbeddings,
   usePlaygroundChat,
   type ChatMessage,
   type ToolCall,
@@ -58,9 +59,25 @@ interface InProgress {
   toolCalls: ToolCall[];
 }
 
+interface EmbeddingResult {
+  input: string;
+  embedding: number[];
+  usage: { prompt_tokens: number; total_tokens: number };
+  latencyMs: number;
+}
+
+const EMBEDDING_PREVIEW_COUNT = 8;
+
 export default function Playground() {
   const instancesQuery = useInstances();
   const chat = usePlaygroundChat();
+  const embeddings = useEmbeddings();
+
+  const [mode, setMode] = useState<"chat" | "embeddings">("chat");
+  const [embedModel, setEmbedModel] = useState("");
+  const [embedInput, setEmbedInput] = useState("");
+  const [embedResults, setEmbedResults] = useState<EmbeddingResult[]>([]);
+  const [embedError, setEmbedError] = useState<string | null>(null);
 
   const [model, setModel] = useState("");
   const [systemPrompt, setSystemPrompt] = useState("");
@@ -86,6 +103,36 @@ export default function Playground() {
     (i) => i.state === "ready" && i.modality === "text",
   );
   const selectedModel = model || runningTextModels[0]?.id || "";
+
+  const runningEmbeddingModels = (instancesQuery.data?.instances ?? []).filter(
+    (i) => i.state === "ready" && i.modality === "embedding",
+  );
+  const selectedEmbedModel = embedModel || runningEmbeddingModels[0]?.id || "";
+
+  async function handleGetEmbedding() {
+    if (!selectedEmbedModel || !embedInput.trim() || embeddings.isPending) return;
+    setEmbedError(null);
+    const startedAt = performance.now();
+    try {
+      const data = await embeddings.mutateAsync({ model: selectedEmbedModel, input: embedInput });
+      setEmbedResults((prev) => [
+        ...prev,
+        {
+          input: embedInput,
+          embedding: data.data[0]?.embedding ?? [],
+          usage: data.usage,
+          latencyMs: Math.round(performance.now() - startedAt),
+        },
+      ]);
+      setEmbedInput("");
+    } catch (error) {
+      setEmbedError(getErrorMessage(error));
+    }
+  }
+
+  async function handleCopyEmbedding(embedding: number[]) {
+    await navigator.clipboard.writeText(JSON.stringify(embedding));
+  }
 
   /** Returns null (and sets toolsError) if the JSON is present but invalid. */
   function parseTools(): ToolDefinition[] | null | undefined {
@@ -249,8 +296,13 @@ export default function Playground() {
   }
 
   function handleClear() {
-    setTurns([]);
-    setSendError(null);
+    if (mode === "chat") {
+      setTurns([]);
+      setSendError(null);
+    } else {
+      setEmbedResults([]);
+      setEmbedError(null);
+    }
   }
 
   async function handleCopy(message: ChatMessage) {
@@ -278,7 +330,7 @@ export default function Playground() {
             <button
               type="button"
               onClick={handleClear}
-              disabled={turns.length === 0}
+              disabled={mode === "chat" ? turns.length === 0 : embedResults.length === 0}
               className="flex items-center gap-1.5 rounded-lg border border-border px-3 py-1.5 text-sm text-text-muted hover:bg-surface disabled:cursor-not-allowed disabled:opacity-40"
             >
               <Trash2 size={14} />
@@ -286,6 +338,35 @@ export default function Playground() {
             </button>
           </div>
 
+          <div className="mt-4 flex gap-2 border-b border-border">
+            <button
+              type="button"
+              onClick={() => setMode("chat")}
+              className={cn(
+                "border-b-2 px-3 py-2 text-sm font-medium",
+                mode === "chat"
+                  ? "border-primary text-text"
+                  : "border-transparent text-text-muted hover:text-text",
+              )}
+            >
+              Chat
+            </button>
+            <button
+              type="button"
+              onClick={() => setMode("embeddings")}
+              className={cn(
+                "border-b-2 px-3 py-2 text-sm font-medium",
+                mode === "embeddings"
+                  ? "border-primary text-text"
+                  : "border-transparent text-text-muted hover:text-text",
+              )}
+            >
+              Embeddings
+            </button>
+          </div>
+
+          {mode === "chat" ? (
+          <>
           <div className="mt-4">
             <label htmlFor="playground-system" className="mb-1.5 block text-sm font-medium text-text">
               System prompt
@@ -524,9 +605,88 @@ export default function Playground() {
               Send
             </button>
           </div>
+          </>
+          ) : (
+          <>
+          <div className="mt-4 min-h-0 flex-1 space-y-3 overflow-y-auto rounded-xl border border-border bg-surface p-4">
+            {embedResults.length === 0 ? (
+              <p className="text-sm text-text-muted">
+                No embeddings yet — send some text to get its vector.
+              </p>
+            ) : (
+              embedResults.map((result, i) => (
+                <div
+                  key={i}
+                  className="rounded-xl border border-border bg-background px-4 py-3 text-sm text-text"
+                >
+                  <p className="whitespace-pre-wrap text-text-muted">"{result.input}"</p>
+                  <p className="mt-2 font-mono text-xs text-text">
+                    [{result.embedding
+                      .slice(0, EMBEDDING_PREVIEW_COUNT)
+                      .map((v) => v.toFixed(4))
+                      .join(", ")}
+                    {result.embedding.length > EMBEDDING_PREVIEW_COUNT ? ", …" : ""}]
+                  </p>
+                  <div className="mt-2 flex items-center gap-3 border-t border-border pt-2 text-xs text-text-muted">
+                    <span>{result.embedding.length} dimensions</span>
+                    <span>{result.usage.total_tokens} tokens</span>
+                    <span>{result.latencyMs} ms</span>
+                    <button
+                      type="button"
+                      onClick={() => handleCopyEmbedding(result.embedding)}
+                      title="Copy full vector as JSON"
+                      className="ml-auto text-text-muted hover:text-text"
+                    >
+                      <Copy size={14} />
+                    </button>
+                  </div>
+                </div>
+              ))
+            )}
+          </div>
+
+          {embedError && (
+            <div className="mt-3 rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-red-700">
+              {embedError}
+            </div>
+          )}
+
+          <div className="mt-4 flex items-end gap-2">
+            <textarea
+              rows={2}
+              value={embedInput}
+              onChange={(e) => setEmbedInput(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter" && !e.shiftKey) {
+                  e.preventDefault();
+                  void handleGetEmbedding();
+                }
+              }}
+              placeholder={
+                runningEmbeddingModels.length === 0
+                  ? "No running embedding models — start one from Instances first."
+                  : "Text to embed… (Enter to send, Shift+Enter for a new line)"
+              }
+              disabled={runningEmbeddingModels.length === 0}
+              className={cn(inputClass, "flex-1")}
+            />
+            <button
+              type="button"
+              onClick={() => void handleGetEmbedding()}
+              disabled={!selectedEmbedModel || !embedInput.trim() || embeddings.isPending}
+              className="flex items-center gap-2 rounded-lg bg-primary px-4 py-2.5 text-sm font-medium text-primary-foreground hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-40"
+            >
+              <Send size={16} />
+              Get embedding
+            </button>
+          </div>
+          </>
+          )}
         </div>
 
         <aside className="w-72 shrink-0 space-y-5 overflow-y-auto border-l border-border bg-surface px-5 py-8">
+          {mode === "chat" ? (
+          <>
           <div>
             <label htmlFor="playground-model" className="mb-1.5 block text-sm font-medium text-text">
               Model
@@ -663,6 +823,34 @@ export default function Playground() {
               </p>
             )}
           </div>
+          </>
+          ) : (
+          <div>
+            <label htmlFor="playground-embed-model" className="mb-1.5 block text-sm font-medium text-text">
+              Model
+            </label>
+            {runningEmbeddingModels.length === 0 ? (
+              <p className="text-sm text-text-muted">No running embedding models.</p>
+            ) : (
+              <select
+                id="playground-embed-model"
+                value={selectedEmbedModel}
+                onChange={(e) => setEmbedModel(e.target.value)}
+                className={inputClass}
+              >
+                {runningEmbeddingModels.map((i) => (
+                  <option key={i.id} value={i.id}>
+                    {i.id}
+                  </option>
+                ))}
+              </select>
+            )}
+            <p className="mt-3 text-xs text-text-muted">
+              Embeddings are single-shot — each request is independent, there's no
+              conversation history to carry over between them.
+            </p>
+          </div>
+          )}
         </aside>
       </main>
     </div>

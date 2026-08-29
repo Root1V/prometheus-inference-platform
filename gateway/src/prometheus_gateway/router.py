@@ -751,7 +751,11 @@ def create_router(registry: ModelRegistry, pool: "BackendPool") -> APIRouter:
                 f"Use GET /v1/models to find an embedding-capable model.",
             )
 
-        if claims is None or not claims.has_scope("inference:read"):
+        # RM-37: same admin:write carve-out as /v1/chat/completions (RM-14) — the
+        # Playground's own embeddings calls run under the admin dashboard's
+        # session, which has no inference:read/model:<id> grants of its own.
+        is_admin_bypass = claims is not None and claims.has_scope("admin:write")
+        if claims is None or not (claims.has_scope("inference:read") or is_admin_bypass):
             return _problem(
                 request,
                 403,
@@ -760,7 +764,7 @@ def create_router(registry: ModelRegistry, pool: "BackendPool") -> APIRouter:
                 "This endpoint requires inference:read scope.",
             )
 
-        if not claims.has_model_scope(body.model):
+        if not (claims.has_model_scope(body.model) or is_admin_bypass):
             return _problem(
                 request,
                 403,
