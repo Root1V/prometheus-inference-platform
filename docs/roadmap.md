@@ -1211,6 +1211,19 @@ not reported (streamed)", real latency), and streaming + tool-calling together (
 result, and a real final streamed answer using that data) — both via the actual
 Playground UI against the real running `gpt-oss-20b-mxfp4`.
 
+**Follow-up bug report (same day)**: user reported some prompts (e.g. "dame un poema de
+500 palabras") streamed nothing at all — just an empty bubble under "tokens not reported
+(streamed)". Reproduced with the exact prompt via curl in both streaming and
+non-streaming mode: `gpt-oss-20b-mxfp4` spent its *entire* `max_tokens` budget on hidden
+`reasoning_content` (visibly reasoning about how to count to exactly 500 words) and never
+emitted any `content` — `finish_reason: "length"` with `content: ""` in both modes. Not a
+gateway or streaming bug — a genuine model/token-budget behavior that was simply invisible
+before, in either response mode. Fixed by tracking `finish_reason` per turn and, when a
+turn ends with empty content, no tool_calls, and `finish_reason === "length"`, showing an
+explicit explanation ("Ran out of max tokens before producing a visible answer... Try
+raising Max tokens") instead of a silent blank bubble. Verified live with the exact
+reported prompt — the explanation now renders correctly in place of the blank response.
+
 ## RM-37 — Playground: embedding model testing (added)
 
 **Why**: `POST /v1/embeddings` already exists (RM-09) — the Playground's model picker just

@@ -23,6 +23,7 @@ interface Turn {
   // usage for stream:true (docs/roadmap.md RM-36).
   usage: { prompt_tokens: number; completion_tokens: number; total_tokens: number } | null;
   latencyMs: number;
+  finishReason: string | null;
 }
 
 interface InProgress {
@@ -110,7 +111,12 @@ export default function Playground() {
     };
     setTurns((prev) => [
       ...prev,
-      { messages: [...leadingMessages, assistantMessage], usage: data.usage, latencyMs },
+      {
+        messages: [...leadingMessages, assistantMessage],
+        usage: data.usage,
+        latencyMs,
+        finishReason: data.choices[0]?.finish_reason ?? null,
+      },
     ]);
   }
 
@@ -120,22 +126,25 @@ export default function Playground() {
     const toolCallsByIndex = new Map<number, ToolCall>();
     setInProgress({ leading: leadingMessages, content: "", toolCalls: [] });
 
-    await streamPlaygroundChat({ model: selectedModel, messages, params: buildParams(tools) }, (delta) => {
-      if (delta.content) content += delta.content;
-      for (const partial of delta.tool_calls ?? []) {
-        const existing = toolCallsByIndex.get(partial.index) ?? {
-          id: "",
-          type: "function" as const,
-          function: { name: "", arguments: "" },
-        };
-        if (partial.id) existing.id = partial.id;
-        if (partial.function?.name) existing.function.name = partial.function.name;
-        if (partial.function?.arguments) existing.function.arguments += partial.function.arguments;
-        toolCallsByIndex.set(partial.index, existing);
-      }
-      setInProgress({ leading: leadingMessages, content, toolCalls: [...toolCallsByIndex.values()] });
-      requestAnimationFrame(() => bottomRef.current?.scrollIntoView({ block: "end" }));
-    });
+    const { finishReason } = await streamPlaygroundChat(
+      { model: selectedModel, messages, params: buildParams(tools) },
+      (delta) => {
+        if (delta.content) content += delta.content;
+        for (const partial of delta.tool_calls ?? []) {
+          const existing = toolCallsByIndex.get(partial.index) ?? {
+            id: "",
+            type: "function" as const,
+            function: { name: "", arguments: "" },
+          };
+          if (partial.id) existing.id = partial.id;
+          if (partial.function?.name) existing.function.name = partial.function.name;
+          if (partial.function?.arguments) existing.function.arguments += partial.function.arguments;
+          toolCallsByIndex.set(partial.index, existing);
+        }
+        setInProgress({ leading: leadingMessages, content, toolCalls: [...toolCallsByIndex.values()] });
+        requestAnimationFrame(() => bottomRef.current?.scrollIntoView({ block: "end" }));
+      },
+    );
 
     const latencyMs = Math.round(performance.now() - startedAt);
     const toolCalls = [...toolCallsByIndex.values()];
@@ -145,7 +154,10 @@ export default function Playground() {
       tool_calls: toolCalls.length > 0 ? toolCalls : undefined,
     };
     setInProgress(null);
-    setTurns((prev) => [...prev, { messages: [...leadingMessages, assistantMessage], usage: null, latencyMs }]);
+    setTurns((prev) => [
+      ...prev,
+      { messages: [...leadingMessages, assistantMessage], usage: null, latencyMs, finishReason },
+    ]);
   }
 
   async function sendMessages(leadingMessages: ChatMessage[]) {
@@ -277,6 +289,15 @@ export default function Playground() {
                     {assistantMessage.content && (
                       <p className="whitespace-pre-wrap">{assistantMessage.content}</p>
                     )}
+                    {!assistantMessage.content &&
+                      !assistantMessage.tool_calls?.length &&
+                      turn.finishReason === "length" && (
+                        <p className="text-amber-600">
+                          Ran out of max tokens before producing a visible answer — this model
+                          spends tokens on hidden reasoning first, and used up the whole budget
+                          there. Try raising Max tokens.
+                        </p>
+                      )}
                     {assistantMessage.tool_calls?.map((call) => (
                       <div
                         key={call.id}
