@@ -263,10 +263,10 @@ export default function Playground() {
   }
 
   return (
-    <div className="flex min-h-screen bg-background">
+    <div className="flex h-screen overflow-hidden bg-background">
       <Sidebar />
-      <main className="flex min-w-0 flex-1">
-        <div className="flex min-w-0 flex-1 flex-col px-8 py-8">
+      <main className="flex min-h-0 min-w-0 flex-1">
+        <div className="flex min-h-0 min-w-0 flex-1 flex-col px-8 py-8">
           <div className="flex items-center justify-between">
             <div>
               <h1 className="text-2xl font-semibold text-text">Playground</h1>
@@ -300,7 +300,7 @@ export default function Playground() {
             />
           </div>
 
-          <div className="mt-4 flex-1 space-y-4 overflow-y-auto rounded-xl border border-border bg-surface p-4">
+          <div className="mt-4 min-h-0 flex-1 space-y-4 overflow-y-auto rounded-xl border border-border bg-surface p-4">
             {turns.length === 0 ? (
               <p className="text-sm text-text-muted">No messages yet — send a prompt to get started.</p>
             ) : (
@@ -334,35 +334,32 @@ export default function Playground() {
                     {!assistantMessage.content &&
                       !assistantMessage.tool_calls?.length &&
                       turn.finishReason === "length" && (
-                        <div>
-                          <p className="text-amber-600">
-                            Ran out of max tokens before producing a visible answer — this model
-                            spends tokens on hidden reasoning first, and used up the whole budget
-                            there. Try raising Max tokens.
-                          </p>
-                          {turn.reasoning && (
-                            <details className="mt-2 rounded-lg border border-dashed border-border bg-surface p-2 text-xs text-text-muted">
-                              <summary className="cursor-pointer select-none font-medium">
-                                Show the model's reasoning ({turn.reasoning.length.toLocaleString()}{" "}
-                                chars)
-                              </summary>
-                              <div className="mt-2 flex items-start justify-between gap-2">
-                                <p className="max-h-64 overflow-y-auto whitespace-pre-wrap italic">
-                                  {turn.reasoning}
-                                </p>
-                                <button
-                                  type="button"
-                                  onClick={() => handleCopyReasoning(turn.reasoning)}
-                                  title="Copy reasoning"
-                                  className="shrink-0 text-text-muted hover:text-text"
-                                >
-                                  <Copy size={14} />
-                                </button>
-                              </div>
-                            </details>
-                          )}
-                        </div>
+                        <p className="text-amber-600">
+                          Ran out of max tokens before producing a visible answer — this model
+                          spends tokens on hidden reasoning first, and used up the whole budget
+                          there. Try raising Max tokens.
+                        </p>
                       )}
+                    {turn.reasoning && (
+                      <details className="mt-2 rounded-lg border border-dashed border-border bg-surface p-2 text-xs text-text-muted">
+                        <summary className="cursor-pointer select-none font-medium">
+                          Show the model's reasoning ({turn.reasoning.length.toLocaleString()} chars)
+                        </summary>
+                        <div className="mt-2 flex items-start justify-between gap-2">
+                          <p className="max-h-64 overflow-y-auto whitespace-pre-wrap italic">
+                            {turn.reasoning}
+                          </p>
+                          <button
+                            type="button"
+                            onClick={() => handleCopyReasoning(turn.reasoning)}
+                            title="Copy reasoning"
+                            className="shrink-0 text-text-muted hover:text-text"
+                          >
+                            <Copy size={14} />
+                          </button>
+                        </div>
+                      </details>
+                    )}
                     {assistantMessage.tool_calls?.map((call) => (
                       <div
                         key={call.id}
@@ -529,7 +526,7 @@ export default function Playground() {
           </div>
         </div>
 
-        <aside className="w-72 shrink-0 space-y-5 border-l border-border bg-surface px-5 py-8">
+        <aside className="w-72 shrink-0 space-y-5 overflow-y-auto border-l border-border bg-surface px-5 py-8">
           <div>
             <label htmlFor="playground-model" className="mb-1.5 block text-sm font-medium text-text">
               Model

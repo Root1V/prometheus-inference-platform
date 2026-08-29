@@ -1284,6 +1284,28 @@ reported (streamed)" fallback stays in place for any backend that doesn't emit `
 either. Verified live: a streamed response showed "76 + 95 = 171 tokens" instead of the
 placeholder text.
 
+**Fifth follow-up (same day) — reasoning viewer for every turn, and a real layout bug**:
+two more asks: (1) show the collapsed reasoning disclosure for every turn, not just the
+"ran out of tokens" failure case; (2) the chat area grew unbounded as the conversation got
+longer, pushing the Parameters/Tools sidebar out of view — needed its own scroll.
+
+(1) was a small render change — the `<details>` block moved out of the failure-only
+branch and now renders whenever `turn.reasoning` is non-empty, success or failure alike.
+
+(2) was a real flexbox layout bug: the page used `min-h-screen` (grows with content) with
+`flex-1 overflow-y-auto` on the message list — but without every ancestor in that flex
+chain capped to the viewport (`h-screen` + `min-h-0` at each level), a flex child's
+`overflow-y-auto` never actually engages; it just grows to fit its content like anything
+else, taking the whole page and the sidebar along with it. Fixed by making the outer
+container `h-screen overflow-hidden` and adding `min-h-0` down the flex chain (main → chat
+column → message list), so the message list is the only thing that scrolls internally now.
+Also gave the right `<aside>` (Model/Parameters/Tools) its own `overflow-y-auto`, so it
+stays fully visible and independently scrollable regardless of how long the conversation
+gets. Verified live at a constrained 1400×700 viewport: sent several messages, confirmed
+the message list scrolled on its own while the Parameters sidebar stayed fully visible and
+static the entire time, and the reasoning disclosure appeared on ordinary successful
+responses too.
+
 ## RM-37 — Playground: embedding model testing (added)
 
 **Why**: `POST /v1/embeddings` already exists (RM-09) — the Playground's model picker just
