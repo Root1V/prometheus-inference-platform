@@ -1461,6 +1461,24 @@ matches its existing per-row granularity) over a global Overview stat, but worth
 look once the exact metrics are chosen — could also make sense as a new tab/section
 there rather than more columns on an already-wide table.
 
+## RM-47 — Evaluate whether `GET /v1/models` should stay unauthenticated (added)
+
+**Why**: raised while building [[RM-45]] — `GET /v1/models` is intentionally public today
+(`gateway/AGENTS.md`: "it only lists active model IDs, no user data or inference
+capability"), and the README's own quickstart uses it as the first unauthenticated `curl`
+to confirm the gateway is alive before a caller has credentials. With RM-45's
+`/v1/models/mine` now covering "what am I authorized to use," the original motivation for
+also exposing the full catalog publicly is worth re-checking rather than assumed — but
+nothing has actually changed about the tradeoff yet, so this is a review item, not a
+decision to remove it.
+
+**Scope**: confirm what, if anything, actually depends on unauthenticated access (the
+README quickstart curl, any SDK/client bootstrap flow, the "Unknown Model" error message
+in `router.py` that points callers at `GET /v1/models`) before considering tightening it.
+Model catalog contents (IDs, family, quantization, context length) aren't sensitive on
+their own — this is about whether *discoverability without credentials* is still wanted,
+not about hiding secrets. Leaning against changing it unless a concrete reason turns up.
+
 ## Adding new items
 
 Append a new row to the table with the next `RM-NN` id and a new `## RM-NN — ...` section

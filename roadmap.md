@@ -52,6 +52,7 @@ Status: `done` · `todo`
 | RM-44 | Dashboard: light/dark mode, auto-detected + manual toggle | todo | System `prefers-color-scheme` on load, synced toggle button, persists the manual choice |
 | RM-45 | Let a client list which models it's actually allowed to use | done | New `GET /v1/models/mine` — authenticated, filtered to the caller's own `model:<id>` grants |
 | RM-46 | Per-model performance metrics: avg response time, TTFT, inter-token latency | todo | New instrumentation — nothing like this is tracked today, only overall request latency |
+| RM-47 | Evaluate whether `GET /v1/models` should stay unauthenticated | todo | Raised while building RM-45 — confirm nothing depends on public access before considering any change |
 
 Adding an item: append the next `RM-NN` row here with a one-liner, then add the full
 Why/Scope writeup to `docs/roadmap.md`.
