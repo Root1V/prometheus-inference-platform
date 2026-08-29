@@ -1174,15 +1174,42 @@ needs to switch to "auto" to see one. Verified live: submitted a mock weather re
 `tool_choice: required` (correctly forced another tool call, confirming the behavior),
 then switched to `auto` and got a real final answer incorporating the mock data verbatim.
 
+## RM-36 — Playground: streaming responses (added) — `done`
+
 **Why**: the gateway's `/v1/chat/completions` already has real SSE streaming
 (`_stream_response` in `router.py`) — RM-14 deliberately shipped the Playground
 non-streaming first to keep the initial redesign scoped.
 
-**Scope**: send `stream: true` from the Playground, consume the SSE response, and render
-tokens as they arrive instead of waiting for the full completion. Latency/token-count
-display (currently computed from the final response) needs rethinking for a streamed
-response — token counts arrive incrementally or only in a final usage chunk depending on
-the backend.
+**Scope**: no backend changes — confirmed via direct curl that the gateway's existing
+streaming path already forwards `tools`/`tool_choice` and produces real incremental
+`delta.tool_calls` (OpenAI's standard shape: `{index, id?, function: {name?, arguments}}`,
+first chunk carries `id`/`name`, later chunks carry only `arguments` fragments to
+concatenate by `index`). The backends verified so far never include a `usage` field in
+the stream, so token counts are shown as "not reported (streamed)" rather than a fabricated
+estimate. Added `streamPlaygroundChat()` in `api/playground.ts` — a plain `fetch()` +
+`ReadableStream` reader parsing SSE lines (not a react-query mutation, since progressive
+UI updates don't fit that model), reusing `getStoredToken()`/`AUTH_EXPIRED_EVENT` for the
+same auth/401 behavior as the axios-based clients. Playground gained a "Stream response"
+checkbox; when on, `content` and `tool_calls` accumulate live into an in-progress bubble
+(with a blinking cursor) that's replaced by a finalized turn once the stream ends. The
+existing Regenerate/tool-result-submission flows both reuse the same send path, so they
+stream too when the toggle is on.
+
+**Bug caught during live verification**: the first implementation nested the params object
+as a literal `{"params": {...}}` key in the request body instead of spreading it —
+`ChatCompletionRequest`'s allowlist silently dropped the whole unrecognized key, so
+`tools`/`tool_choice`/`temperature` etc. never reached the backend in streaming mode at
+all. Caught by comparing a raw-curl streaming request (which correctly returned
+`tool_calls`) against the same prompt through the Playground (which never did) — a
+`window.fetch` monkey-patch surfaced the actual request body and the bug. Fixed by
+spreading `params` at the top level, matching the non-streaming path's pattern.
+
+**Verified**: `npm run build` type-checks cleanly; full `.githooks/pre-push` green.
+Live end-to-end after the fix: plain streaming (visible live text accumulation, "tokens
+not reported (streamed)", real latency), and streaming + tool-calling together (a
+`get_weather` call correctly accumulated from incremental deltas, answered with a mock
+result, and a real final streamed answer using that data) — both via the actual
+Playground UI against the real running `gpt-oss-20b-mxfp4`.
 
 ## RM-37 — Playground: embedding model testing (added)
 

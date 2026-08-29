@@ -2,8 +2,10 @@ import { Copy, RotateCcw, Send, Trash2, Wrench } from "lucide-react";
 import { useRef, useState } from "react";
 import { useInstances } from "../api/instances";
 import {
+  streamPlaygroundChat,
   usePlaygroundChat,
   type ChatMessage,
+  type ToolCall,
   type ToolDefinition,
 } from "../api/playground";
 import { Sidebar } from "../components/Sidebar";
@@ -17,8 +19,16 @@ interface Turn {
   // Leading message(s) — either one "user" message, or one "tool" message per
   // pending tool_call being answered — followed by the assistant's response.
   messages: ChatMessage[];
-  usage: { prompt_tokens: number; completion_tokens: number; total_tokens: number };
+  // null for a streamed response — the backends verified so far don't report
+  // usage for stream:true (docs/roadmap.md RM-36).
+  usage: { prompt_tokens: number; completion_tokens: number; total_tokens: number } | null;
   latencyMs: number;
+}
+
+interface InProgress {
+  leading: ChatMessage[];
+  content: string;
+  toolCalls: ToolCall[];
 }
 
 export default function Playground() {
@@ -39,6 +49,9 @@ export default function Playground() {
   const [toolChoice, setToolChoice] = useState<"auto" | "required" | "none">("auto");
   const [toolsError, setToolsError] = useState<string | null>(null);
   const [toolResultDrafts, setToolResultDrafts] = useState<Record<string, string>>({});
+  const [streamingEnabled, setStreamingEnabled] = useState(false);
+  const [isSending, setIsSending] = useState(false);
+  const [inProgress, setInProgress] = useState<InProgress | null>(null);
 
   const bottomRef = useRef<HTMLDivElement>(null);
 
@@ -85,45 +98,87 @@ export default function Playground() {
       : history;
   }
 
+  async function sendNonStreaming(leadingMessages: ChatMessage[], messages: ChatMessage[], tools: ToolDefinition[] | undefined) {
+    const startedAt = performance.now();
+    const data = await chat.mutateAsync({ model: selectedModel, messages, params: buildParams(tools) });
+    const latencyMs = Math.round(performance.now() - startedAt);
+    const responseMessage = data.choices[0]?.message;
+    const assistantMessage: ChatMessage = {
+      role: "assistant",
+      content: responseMessage?.content ?? null,
+      tool_calls: responseMessage?.tool_calls,
+    };
+    setTurns((prev) => [
+      ...prev,
+      { messages: [...leadingMessages, assistantMessage], usage: data.usage, latencyMs },
+    ]);
+  }
+
+  async function sendStreaming(leadingMessages: ChatMessage[], messages: ChatMessage[], tools: ToolDefinition[] | undefined) {
+    const startedAt = performance.now();
+    let content = "";
+    const toolCallsByIndex = new Map<number, ToolCall>();
+    setInProgress({ leading: leadingMessages, content: "", toolCalls: [] });
+
+    await streamPlaygroundChat({ model: selectedModel, messages, params: buildParams(tools) }, (delta) => {
+      if (delta.content) content += delta.content;
+      for (const partial of delta.tool_calls ?? []) {
+        const existing = toolCallsByIndex.get(partial.index) ?? {
+          id: "",
+          type: "function" as const,
+          function: { name: "", arguments: "" },
+        };
+        if (partial.id) existing.id = partial.id;
+        if (partial.function?.name) existing.function.name = partial.function.name;
+        if (partial.function?.arguments) existing.function.arguments += partial.function.arguments;
+        toolCallsByIndex.set(partial.index, existing);
+      }
+      setInProgress({ leading: leadingMessages, content, toolCalls: [...toolCallsByIndex.values()] });
+      requestAnimationFrame(() => bottomRef.current?.scrollIntoView({ block: "end" }));
+    });
+
+    const latencyMs = Math.round(performance.now() - startedAt);
+    const toolCalls = [...toolCallsByIndex.values()];
+    const assistantMessage: ChatMessage = {
+      role: "assistant",
+      content: content || null,
+      tool_calls: toolCalls.length > 0 ? toolCalls : undefined,
+    };
+    setInProgress(null);
+    setTurns((prev) => [...prev, { messages: [...leadingMessages, assistantMessage], usage: null, latencyMs }]);
+  }
+
   async function sendMessages(leadingMessages: ChatMessage[]) {
-    if (!selectedModel) return;
+    if (!selectedModel || isSending) return;
     const tools = parseTools();
     if (tools === null) return; // invalid JSON — toolsError is already set
     setSendError(null);
+    setIsSending(true);
     const messages = [...historyMessages(), ...leadingMessages];
-    const startedAt = performance.now();
     try {
-      const data = await chat.mutateAsync({
-        model: selectedModel,
-        messages,
-        params: buildParams(tools),
-      });
-      const latencyMs = Math.round(performance.now() - startedAt);
-      const responseMessage = data.choices[0]?.message;
-      const assistantMessage: ChatMessage = {
-        role: "assistant",
-        content: responseMessage?.content ?? null,
-        tool_calls: responseMessage?.tool_calls,
-      };
-      setTurns((prev) => [
-        ...prev,
-        { messages: [...leadingMessages, assistantMessage], usage: data.usage, latencyMs },
-      ]);
+      if (streamingEnabled) {
+        await sendStreaming(leadingMessages, messages, tools);
+      } else {
+        await sendNonStreaming(leadingMessages, messages, tools);
+      }
       requestAnimationFrame(() => bottomRef.current?.scrollIntoView({ block: "end" }));
     } catch (error) {
+      setInProgress(null);
       setSendError(getErrorMessage(error));
+    } finally {
+      setIsSending(false);
     }
   }
 
   function handleSend() {
-    if (!draft.trim() || chat.isPending) return;
+    if (!draft.trim() || isSending) return;
     const userMessage: ChatMessage = { role: "user", content: draft };
     setDraft("");
     void sendMessages([userMessage]);
   }
 
   function handleRegenerate() {
-    if (turns.length === 0 || chat.isPending) return;
+    if (turns.length === 0 || isSending) return;
     const lastLeading = turns[turns.length - 1].messages.slice(0, -1);
     setTurns((prev) => prev.slice(0, -1));
     void sendMessages(lastLeading);
@@ -133,7 +188,7 @@ export default function Playground() {
    * tool executor, so the operator types a mock result per call to continue the
    * conversation and see the model's actual final answer. */
   function handleSubmitToolResults(calls: ChatMessage["tool_calls"]) {
-    if (!calls || calls.length === 0 || chat.isPending) return;
+    if (!calls || calls.length === 0 || isSending) return;
     const toolMessages: ChatMessage[] = calls.map((call) => ({
       role: "tool",
       tool_call_id: call.id,
@@ -236,8 +291,9 @@ export default function Playground() {
                     ))}
                     <div className="mt-2 flex items-center gap-3 border-t border-border pt-2 text-xs text-text-muted">
                       <span>
-                        {turn.usage.prompt_tokens} + {turn.usage.completion_tokens} ={" "}
-                        {turn.usage.total_tokens} tokens
+                        {turn.usage
+                          ? `${turn.usage.prompt_tokens} + ${turn.usage.completion_tokens} = ${turn.usage.total_tokens} tokens`
+                          : "tokens not reported (streamed)"}
                       </span>
                       <span>{turn.latencyMs} ms</span>
                       <button
@@ -252,7 +308,7 @@ export default function Playground() {
                         <button
                           type="button"
                           onClick={handleRegenerate}
-                          disabled={chat.isPending}
+                          disabled={isSending}
                           title="Regenerate"
                           className="text-text-muted hover:text-text disabled:opacity-40"
                         >
@@ -286,7 +342,7 @@ export default function Playground() {
                       <button
                         type="button"
                         onClick={() => handleSubmitToolResults(assistantMessage.tool_calls)}
-                        disabled={chat.isPending}
+                        disabled={isSending}
                         className="rounded-lg bg-primary px-3 py-1.5 text-xs font-medium text-primary-foreground hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-40"
                       >
                         Submit result
@@ -297,7 +353,52 @@ export default function Playground() {
                 );
               })
             )}
-            {chat.isPending && <p className="text-sm text-text-muted">Waiting for a response…</p>}
+            {isSending && !inProgress && (
+              <p className="text-sm text-text-muted">Waiting for a response…</p>
+            )}
+            {inProgress &&
+              inProgress.leading.map((m, j) =>
+                m.role === "tool" ? (
+                  <div
+                    key={j}
+                    className="ml-auto max-w-[80%] rounded-xl border border-dashed border-border bg-surface px-4 py-2 text-xs text-text-muted"
+                  >
+                    Tool result: {m.content}
+                  </div>
+                ) : (
+                  <div
+                    key={j}
+                    className="ml-auto max-w-[80%] rounded-xl bg-primary px-4 py-2 text-sm text-primary-foreground"
+                  >
+                    {m.content}
+                  </div>
+                ),
+              )}
+            {inProgress && (
+              <div className="max-w-[80%] rounded-xl border border-border bg-background px-4 py-2 text-sm text-text">
+                {inProgress.content && (
+                  <p className="whitespace-pre-wrap">
+                    {inProgress.content}
+                    <span className="animate-pulse">▍</span>
+                  </p>
+                )}
+                {inProgress.toolCalls.map((call, idx) => (
+                  <div
+                    key={idx}
+                    className="mt-1 flex items-start gap-2 rounded-lg bg-surface p-2 font-mono text-xs text-text"
+                  >
+                    <Wrench size={14} className="mt-0.5 shrink-0 text-primary" />
+                    <div>
+                      <span className="font-semibold">{call.function.name || "…"}</span>
+                      <span className="text-text-muted">({call.function.arguments})</span>
+                    </div>
+                  </div>
+                ))}
+                {!inProgress.content && inProgress.toolCalls.length === 0 && (
+                  <p className="text-text-muted">Streaming…</p>
+                )}
+              </div>
+            )}
             <div ref={bottomRef} />
           </div>
 
@@ -329,7 +430,7 @@ export default function Playground() {
             <button
               type="button"
               onClick={handleSend}
-              disabled={!selectedModel || !draft.trim() || chat.isPending}
+              disabled={!selectedModel || !draft.trim() || isSending}
               className="flex items-center gap-2 rounded-lg bg-primary px-4 py-2.5 text-sm font-medium text-primary-foreground hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-40"
             >
               <Send size={16} />
@@ -360,6 +461,15 @@ export default function Playground() {
               </select>
             )}
           </div>
+
+          <label className="flex items-center gap-2 text-sm text-text">
+            <input
+              type="checkbox"
+              checked={streamingEnabled}
+              onChange={(e) => setStreamingEnabled(e.target.checked)}
+            />
+            Stream response
+          </label>
 
           <h2 className="text-xs font-medium uppercase tracking-wide text-text-muted">Parameters</h2>
 

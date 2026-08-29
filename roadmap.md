@@ -41,7 +41,7 @@ Status: `done` · `todo`
 | RM-33 | Usage: pricing table + real cost | done | Per-model price config; turns token counts into a dollar figure |
 | RM-34 | Overview: wire the usage & cost card to real data | done | Replaces RM-30's placeholder once RM-32/33 land |
 | RM-35 | Native tool-calling (OpenAI-style function calling) | done | `tools`/`tool_calls` on `/v1/chat/completions` — new backend surface, not just a UI |
-| RM-36 | Playground: streaming responses | todo | Gateway already supports `stream:true`; Playground deliberately shipped non-streaming first |
+| RM-36 | Playground: streaming responses | done | Gateway already supports `stream:true`; Playground deliberately shipped non-streaming first |
 | RM-37 | Playground: embedding model testing | todo | `/v1/embeddings` already exists (RM-09); Playground only lets you pick text models today |
 | RM-38 | Image generation model support | todo | Speculative — new modality, new backend integration, no known model/backend chosen yet |
 | RM-39 | Video generation model support | todo | Speculative — same as RM-38, even less proven for self-hosted use |
