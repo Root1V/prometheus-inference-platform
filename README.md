@@ -176,6 +176,51 @@ curl -X POST http://localhost:8000/v1/chat/completions \
 > log human operators in with email + password by default, alongside the existing
 > client_id/client_secret mode for machine clients.
 
+### Integrating your own client
+
+Common questions from a developer wiring up a real client against this platform:
+
+**Authentication (OAuth2)**
+
+- **One token endpoint, no separate refresh endpoint.** `POST {auth-service}/oauth2/token`
+  issues every token. There's no `grant_type=refresh_token` support today — tokens are
+  short-lived and stateless (role-based TTL: `app` 5 min, `agent` 10 min, `cognitive`
+  1 h, `admin` 3 h; see `ROLE_DEFAULT_TTL` in `auth-service/src/prometheus_auth/config.py`),
+  and there's no server-side session to refresh. To get a new one, just call
+  `/oauth2/token` again with the same `client_id`/`client_secret` — that credential pair
+  is the durable thing, not the token. Plan your client to re-request a token whenever a
+  call gets a `401`, or proactively a bit before `expires_in` runs out.
+- **Grant type for a service-to-service client: `client_credentials`.** This is the one
+  a real API client should use (see the example in step 5 above). `grant_type=password`
+  also exists, but only for human operators signing into the admin dashboard with
+  email + password (RM-11) — not the flow for a machine client.
+- **Credentials are `client_id` + `client_secret`**, not an API key or a certificate.
+  They're issued by an operator via `POST /admin/clients` (needs `X-Admin-Key`, or the
+  dashboard's Create User screen) — the response's `client_secret` is shown once and
+  can't be retrieved again afterwards.
+
+**Gateway API**
+
+- **`POST /v1/chat/completions` follows the OpenAI Chat Completions format** — same
+  request shape (`model`, `messages[]`, `stream`, `max_tokens`, `temperature`, and since
+  RM-35, `tools`/`tool_choice` for native function-calling) and the same response shape
+  (`choices[].message`, `usage`, etc.), so existing OpenAI-compatible SDKs/clients work
+  by pointing their `base_url` at this gateway instead.
+- **Base URL**: this is self-hosted infrastructure, not a hosted service with fixed
+  dev/staging domains — the base URL is whatever host/port your operator deployed the
+  gateway on (`http://localhost:8000` in this README's own local quickstart above; a
+  real deployment's URL comes from whoever runs it).
+- **`GET /v1/models`** — public, no token required, lists every active model:
+  `{"object": "list", "data": [{"id", "object", "owned_by", "context_length", "family",
+  "quantization", "modality"}, ...]}`. There's no per-model "supports tool-calling" flag —
+  every model accepts the `tools`/`tool_choice` request fields, but whether the underlying
+  model actually honors them depends on that model, not the gateway.
+- **`GET /v1/models/mine`** (RM-45) — same response shape, but requires a Bearer token
+  and returns only the models *your* client's `model:<id>` scopes actually grant, since
+  access can be assigned or changed after your client was created. Useful for checking
+  what you currently have before making an inference request, without guessing or
+  hitting a `403`.
+
 ### 6. End-to-end integration test
 
 ```bash
