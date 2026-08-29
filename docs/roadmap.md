@@ -1161,7 +1161,18 @@ inconsistent tool-call-vs-plain-text answers even at `temperature: 0`, which loo
 gateway bug at first — it was llama-server's own prompt/KV-cache reuse across near-
 identical requests; a fresh, never-asked prompt reproduced the tool call every time.
 
-## RM-36 — Playground: streaming responses (added)
+**Follow-up (same day)**: live validation surfaced a real gap — after the model called a
+tool, the conversation just stopped there. The Playground has no real tool executor (an
+arbitrary `get_weather` the operator just typed has no oracle to actually call), so there
+was no way to see the model's *final* answer using a tool's result. Added a small "answer
+the tool call" form: one text input per pending `tool_call` for a typed mock result, which
+gets sent back as `{role: "tool", tool_call_id, content}` message(s) to continue the
+conversation. Also surfaced (and documented inline in the UI): `tool_choice: "required"`
+forces a tool call on *every* turn, including the follow-up — an operator who leaves it on
+"required" after submitting a result gets another tool call, not a final text answer, and
+needs to switch to "auto" to see one. Verified live: submitted a mock weather result with
+`tool_choice: required` (correctly forced another tool call, confirming the behavior),
+then switched to `auto` and got a real final answer incorporating the mock data verbatim.
 
 **Why**: the gateway's `/v1/chat/completions` already has real SSE streaming
 (`_stream_response` in `router.py`) — RM-14 deliberately shipped the Playground

@@ -14,7 +14,9 @@ const inputClass =
   "w-full rounded-lg border border-border bg-background px-3 py-2 text-sm text-text focus:border-primary focus:outline-none";
 
 interface Turn {
-  messages: ChatMessage[]; // [user, assistant] once complete
+  // Leading message(s) — either one "user" message, or one "tool" message per
+  // pending tool_call being answered — followed by the assistant's response.
+  messages: ChatMessage[];
   usage: { prompt_tokens: number; completion_tokens: number; total_tokens: number };
   latencyMs: number;
 }
@@ -36,6 +38,7 @@ export default function Playground() {
   const [toolsInput, setToolsInput] = useState("");
   const [toolChoice, setToolChoice] = useState<"auto" | "required" | "none">("auto");
   const [toolsError, setToolsError] = useState<string | null>(null);
+  const [toolResultDrafts, setToolResultDrafts] = useState<Record<string, string>>({});
 
   const bottomRef = useRef<HTMLDivElement>(null);
 
@@ -82,12 +85,12 @@ export default function Playground() {
       : history;
   }
 
-  async function sendMessages(userMessage: ChatMessage) {
+  async function sendMessages(leadingMessages: ChatMessage[]) {
     if (!selectedModel) return;
     const tools = parseTools();
     if (tools === null) return; // invalid JSON — toolsError is already set
     setSendError(null);
-    const messages = [...historyMessages(), userMessage];
+    const messages = [...historyMessages(), ...leadingMessages];
     const startedAt = performance.now();
     try {
       const data = await chat.mutateAsync({
@@ -104,7 +107,7 @@ export default function Playground() {
       };
       setTurns((prev) => [
         ...prev,
-        { messages: [userMessage, assistantMessage], usage: data.usage, latencyMs },
+        { messages: [...leadingMessages, assistantMessage], usage: data.usage, latencyMs },
       ]);
       requestAnimationFrame(() => bottomRef.current?.scrollIntoView({ block: "end" }));
     } catch (error) {
@@ -116,14 +119,28 @@ export default function Playground() {
     if (!draft.trim() || chat.isPending) return;
     const userMessage: ChatMessage = { role: "user", content: draft };
     setDraft("");
-    void sendMessages(userMessage);
+    void sendMessages([userMessage]);
   }
 
   function handleRegenerate() {
     if (turns.length === 0 || chat.isPending) return;
-    const lastUserMessage = turns[turns.length - 1].messages[0];
+    const lastLeading = turns[turns.length - 1].messages.slice(0, -1);
     setTurns((prev) => prev.slice(0, -1));
-    void sendMessages(lastUserMessage);
+    void sendMessages(lastLeading);
+  }
+
+  /** RM-35 follow-up: the model asked to call a tool — the Playground has no real
+   * tool executor, so the operator types a mock result per call to continue the
+   * conversation and see the model's actual final answer. */
+  function handleSubmitToolResults(calls: ChatMessage["tool_calls"]) {
+    if (!calls || calls.length === 0 || chat.isPending) return;
+    const toolMessages: ChatMessage[] = calls.map((call) => ({
+      role: "tool",
+      tool_call_id: call.id,
+      content: toolResultDrafts[call.id]?.trim() || "(no result provided)",
+    }));
+    setToolResultDrafts({});
+    void sendMessages(toolMessages);
   }
 
   function handleClear() {
@@ -178,16 +195,34 @@ export default function Playground() {
             {turns.length === 0 ? (
               <p className="text-sm text-text-muted">No messages yet — send a prompt to get started.</p>
             ) : (
-              turns.map((turn, i) => (
+              turns.map((turn, i) => {
+                const leading = turn.messages.slice(0, -1);
+                const assistantMessage = turn.messages[turn.messages.length - 1];
+                const isLastTurn = i === turns.length - 1;
+                return (
                 <div key={i} className="space-y-3">
-                  <div className="ml-auto max-w-[80%] rounded-xl bg-primary px-4 py-2 text-sm text-primary-foreground">
-                    {turn.messages[0].content}
-                  </div>
+                  {leading.map((m, j) =>
+                    m.role === "tool" ? (
+                      <div
+                        key={j}
+                        className="ml-auto max-w-[80%] rounded-xl border border-dashed border-border bg-surface px-4 py-2 text-xs text-text-muted"
+                      >
+                        Tool result: {m.content}
+                      </div>
+                    ) : (
+                      <div
+                        key={j}
+                        className="ml-auto max-w-[80%] rounded-xl bg-primary px-4 py-2 text-sm text-primary-foreground"
+                      >
+                        {m.content}
+                      </div>
+                    ),
+                  )}
                   <div className="max-w-[80%] rounded-xl border border-border bg-background px-4 py-2 text-sm text-text">
-                    {turn.messages[1].content && (
-                      <p className="whitespace-pre-wrap">{turn.messages[1].content}</p>
+                    {assistantMessage.content && (
+                      <p className="whitespace-pre-wrap">{assistantMessage.content}</p>
                     )}
-                    {turn.messages[1].tool_calls?.map((call) => (
+                    {assistantMessage.tool_calls?.map((call) => (
                       <div
                         key={call.id}
                         className="mt-1 flex items-start gap-2 rounded-lg bg-surface p-2 font-mono text-xs text-text"
@@ -207,13 +242,13 @@ export default function Playground() {
                       <span>{turn.latencyMs} ms</span>
                       <button
                         type="button"
-                        onClick={() => handleCopy(turn.messages[1])}
+                        onClick={() => handleCopy(assistantMessage)}
                         title="Copy response"
                         className="ml-auto text-text-muted hover:text-text"
                       >
                         <Copy size={14} />
                       </button>
-                      {i === turns.length - 1 && (
+                      {isLastTurn && (
                         <button
                           type="button"
                           onClick={handleRegenerate}
@@ -226,8 +261,41 @@ export default function Playground() {
                       )}
                     </div>
                   </div>
+                  {isLastTurn && assistantMessage.tool_calls && assistantMessage.tool_calls.length > 0 && (
+                    <div className="max-w-[80%] space-y-2 rounded-xl border border-dashed border-border bg-surface p-3">
+                      <p className="text-xs text-text-muted">
+                        The Playground doesn't execute tools for real — type a mock result to
+                        continue and see the model's final answer.
+                      </p>
+                      {assistantMessage.tool_calls.map((call) => (
+                        <div key={call.id} className="flex items-center gap-2">
+                          <span className="shrink-0 font-mono text-xs text-text-muted">
+                            {call.function.name}:
+                          </span>
+                          <input
+                            type="text"
+                            value={toolResultDrafts[call.id] ?? ""}
+                            onChange={(e) =>
+                              setToolResultDrafts((prev) => ({ ...prev, [call.id]: e.target.value }))
+                            }
+                            placeholder="Mock result, e.g. 22C, sunny"
+                            className={cn(inputClass, "text-xs")}
+                          />
+                        </div>
+                      ))}
+                      <button
+                        type="button"
+                        onClick={() => handleSubmitToolResults(assistantMessage.tool_calls)}
+                        disabled={chat.isPending}
+                        className="rounded-lg bg-primary px-3 py-1.5 text-xs font-medium text-primary-foreground hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-40"
+                      >
+                        Submit result
+                      </button>
+                    </div>
+                  )}
                 </div>
-              ))
+                );
+              })
             )}
             {chat.isPending && <p className="text-sm text-text-muted">Waiting for a response…</p>}
             <div ref={bottomRef} />
@@ -391,6 +459,12 @@ export default function Playground() {
               <option value="required">required</option>
               <option value="none">none</option>
             </select>
+            {toolChoice === "required" && (
+              <p className="mt-1 text-xs text-text-muted">
+                "required" forces a tool call every turn — switch to "auto" after submitting a
+                result if you want the model's final text answer instead of another call.
+              </p>
+            )}
           </div>
         </aside>
       </main>
