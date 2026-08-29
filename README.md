@@ -199,6 +199,49 @@ Common questions from a developer wiring up a real client against this platform:
   dashboard's Create User screen) — the response's `client_secret` is shown once and
   can't be retrieved again afterwards.
 
+**`POST /oauth2/token` example** (`client_credentials` grant — real response shape,
+captured against a local dev instance and redacted for this doc):
+
+```bash
+curl -X POST http://localhost:9000/oauth2/token \
+  -d "grant_type=client_credentials" \
+  -d "client_id=<client_id from POST /admin/clients>" \
+  -d "client_secret=<client_secret from POST /admin/clients>" \
+  -d "scope=inference:read inference:stream model:llama3-8b-q4-local"
+```
+
+```json
+{
+  "access_token": "<header>.<payload>.<signature>",
+  "token_type": "bearer",
+  "expires_in": 300,
+  "scope": "inference:read inference:stream model:llama3-8b-q4-local"
+}
+```
+
+`access_token` is a signed JWT — decoding its payload (the middle, base64-encoded
+segment) shows exactly what the gateway checks on every request:
+
+```json
+{
+  "iss": "http://auth-service:9000",
+  "sub": "<client_id, the token's subject>",
+  "azp": "<client_id, same value, OAuth2 authorized-party>",
+  "aud": "prometheus-gateway",
+  "iat": 1788035748,
+  "exp": 1788036048,
+  "jti": "<unique token id, used for revocation lookups>",
+  "scope": "inference:read inference:stream model:llama3-8b-q4-local",
+  "role": "app",
+  "client_name": "docs-example-client"
+}
+```
+
+`scope` is what `Authorization: Bearer <access_token>` gets checked against on every
+gateway call — `inference:read`/`inference:stream` gate the endpoint itself, each
+`model:<id>` entry gates one specific model (RM-07, deny-by-default: no grant, no
+access), and `exp` is when you'll need to call `/oauth2/token` again.
+
 **Gateway API**
 
 - **`POST /v1/chat/completions` follows the OpenAI Chat Completions format** — same
