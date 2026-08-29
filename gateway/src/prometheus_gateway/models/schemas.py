@@ -44,9 +44,26 @@ class ImageContentPart(BaseModel):
 ContentPart = Annotated[Union[TextContentPart, ImageContentPart], Field(discriminator="type")]
 
 
+class FunctionCall(BaseModel):
+    name: str
+    arguments: str  # JSON-encoded string, per the OpenAI tool-calling shape
+
+
+class ToolCall(BaseModel):
+    id: str
+    type: Literal["function"] = "function"
+    function: FunctionCall
+
+
 class ChatMessage(BaseModel):
     role: str
-    content: str | list[ContentPart]
+    # RM-35: content is optional — an assistant message that only calls a tool has
+    # content: null, matching OpenAI's shape.
+    content: str | list[ContentPart] | None = None
+    # RM-35: set on an assistant message that's calling one or more tools.
+    tool_calls: list[ToolCall] | None = None
+    # RM-35: set on a "tool" role message — which tool_calls entry this is answering.
+    tool_call_id: str | None = None
 
     @field_validator("role")
     @classmethod
@@ -55,6 +72,17 @@ class ChatMessage(BaseModel):
         if v not in allowed:
             raise ValueError(f"role must be one of {allowed}, got {v!r}")
         return v
+
+
+class FunctionDefinition(BaseModel):
+    name: str
+    description: str | None = None
+    parameters: dict[str, object] | None = None  # JSON Schema object
+
+
+class ToolDefinition(BaseModel):
+    type: Literal["function"] = "function"
+    function: FunctionDefinition
 
 
 class ChatCompletionRequest(BaseModel):
@@ -70,12 +98,16 @@ class ChatCompletionRequest(BaseModel):
     temperature: float | None = Field(default=None, ge=0.0, le=2.0)
     top_p: float | None = Field(default=None, gt=0.0, le=1.0)
     stop: list[str] | str | None = None
+    # RM-35: native tool-calling — forwarded as-is to llama.cpp, which does the actual
+    # grammar-constrained generation and tool_calls parsing. The gateway only proxies.
+    tools: list[ToolDefinition] | None = None
+    tool_choice: str | dict[str, object] | None = None
 
     def to_llama_payload(self) -> dict[str, object]:
         """Serialise to a dict suitable for forwarding — drops None fields."""
         payload: dict[str, object] = {
             "model": self.model,
-            "messages": [m.model_dump() for m in self.messages],
+            "messages": [m.model_dump(exclude_none=True) for m in self.messages],
             "stream": self.stream,
         }
         if self.max_tokens is not None:
@@ -86,6 +118,10 @@ class ChatCompletionRequest(BaseModel):
             payload["top_p"] = self.top_p
         if self.stop is not None:
             payload["stop"] = self.stop
+        if self.tools is not None:
+            payload["tools"] = [t.model_dump(exclude_none=True) for t in self.tools]
+        if self.tool_choice is not None:
+            payload["tool_choice"] = self.tool_choice
         return payload
 
 

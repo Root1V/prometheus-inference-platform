@@ -1,7 +1,11 @@
-import { Copy, RotateCcw, Send, Trash2 } from "lucide-react";
+import { Copy, RotateCcw, Send, Trash2, Wrench } from "lucide-react";
 import { useRef, useState } from "react";
 import { useInstances } from "../api/instances";
-import { usePlaygroundChat, type ChatMessage } from "../api/playground";
+import {
+  usePlaygroundChat,
+  type ChatMessage,
+  type ToolDefinition,
+} from "../api/playground";
 import { Sidebar } from "../components/Sidebar";
 import { cn } from "../lib/cn";
 import { getErrorMessage } from "../lib/errors";
@@ -29,6 +33,9 @@ export default function Playground() {
   const [topP, setTopP] = useState(1.0);
   const [maxTokens, setMaxTokens] = useState(512);
   const [stopInput, setStopInput] = useState("");
+  const [toolsInput, setToolsInput] = useState("");
+  const [toolChoice, setToolChoice] = useState<"auto" | "required" | "none">("auto");
+  const [toolsError, setToolsError] = useState<string | null>(null);
 
   const bottomRef = useRef<HTMLDivElement>(null);
 
@@ -37,7 +44,24 @@ export default function Playground() {
   );
   const selectedModel = model || runningTextModels[0]?.id || "";
 
-  function buildParams() {
+  /** Returns null (and sets toolsError) if the JSON is present but invalid. */
+  function parseTools(): ToolDefinition[] | null | undefined {
+    if (!toolsInput.trim()) {
+      setToolsError(null);
+      return undefined;
+    }
+    try {
+      const parsed = JSON.parse(toolsInput);
+      if (!Array.isArray(parsed)) throw new Error("Tools must be a JSON array.");
+      setToolsError(null);
+      return parsed as ToolDefinition[];
+    } catch (e) {
+      setToolsError(e instanceof Error ? e.message : "Invalid JSON.");
+      return null;
+    }
+  }
+
+  function buildParams(tools: ToolDefinition[] | undefined) {
     const stop = stopInput
       .split(",")
       .map((s) => s.trim())
@@ -47,6 +71,7 @@ export default function Playground() {
       top_p: topP,
       max_tokens: maxTokens,
       ...(stop.length > 0 ? { stop } : {}),
+      ...(tools ? { tools, tool_choice: toolChoice } : {}),
     };
   }
 
@@ -59,17 +84,28 @@ export default function Playground() {
 
   async function sendMessages(userMessage: ChatMessage) {
     if (!selectedModel) return;
+    const tools = parseTools();
+    if (tools === null) return; // invalid JSON — toolsError is already set
     setSendError(null);
     const messages = [...historyMessages(), userMessage];
     const startedAt = performance.now();
     try {
-      const data = await chat.mutateAsync({ model: selectedModel, messages, params: buildParams() });
+      const data = await chat.mutateAsync({
+        model: selectedModel,
+        messages,
+        params: buildParams(tools),
+      });
       const latencyMs = Math.round(performance.now() - startedAt);
+      const responseMessage = data.choices[0]?.message;
       const assistantMessage: ChatMessage = {
         role: "assistant",
-        content: data.choices[0]?.message.content ?? "",
+        content: responseMessage?.content ?? null,
+        tool_calls: responseMessage?.tool_calls,
       };
-      setTurns((prev) => [...prev, { messages: [userMessage, assistantMessage], usage: data.usage, latencyMs }]);
+      setTurns((prev) => [
+        ...prev,
+        { messages: [userMessage, assistantMessage], usage: data.usage, latencyMs },
+      ]);
       requestAnimationFrame(() => bottomRef.current?.scrollIntoView({ block: "end" }));
     } catch (error) {
       setSendError(getErrorMessage(error));
@@ -95,8 +131,9 @@ export default function Playground() {
     setSendError(null);
   }
 
-  async function handleCopy(content: string) {
-    await navigator.clipboard.writeText(content);
+  async function handleCopy(message: ChatMessage) {
+    const text = message.content ?? JSON.stringify(message.tool_calls, null, 2);
+    await navigator.clipboard.writeText(text ?? "");
   }
 
   return (
@@ -147,7 +184,21 @@ export default function Playground() {
                     {turn.messages[0].content}
                   </div>
                   <div className="max-w-[80%] rounded-xl border border-border bg-background px-4 py-2 text-sm text-text">
-                    <p className="whitespace-pre-wrap">{turn.messages[1].content}</p>
+                    {turn.messages[1].content && (
+                      <p className="whitespace-pre-wrap">{turn.messages[1].content}</p>
+                    )}
+                    {turn.messages[1].tool_calls?.map((call) => (
+                      <div
+                        key={call.id}
+                        className="mt-1 flex items-start gap-2 rounded-lg bg-surface p-2 font-mono text-xs text-text"
+                      >
+                        <Wrench size={14} className="mt-0.5 shrink-0 text-primary" />
+                        <div>
+                          <span className="font-semibold">{call.function.name}</span>
+                          <span className="text-text-muted">({call.function.arguments})</span>
+                        </div>
+                      </div>
+                    ))}
                     <div className="mt-2 flex items-center gap-3 border-t border-border pt-2 text-xs text-text-muted">
                       <span>
                         {turn.usage.prompt_tokens} + {turn.usage.completion_tokens} ={" "}
@@ -156,7 +207,7 @@ export default function Playground() {
                       <span>{turn.latencyMs} ms</span>
                       <button
                         type="button"
-                        onClick={() => handleCopy(turn.messages[1].content)}
+                        onClick={() => handleCopy(turn.messages[1])}
                         title="Copy response"
                         className="ml-auto text-text-muted hover:text-text"
                       >
@@ -304,6 +355,42 @@ export default function Playground() {
               placeholder="Comma-separated, optional"
               className={inputClass}
             />
+          </div>
+
+          <h2 className="text-xs font-medium uppercase tracking-wide text-text-muted">
+            Tools (function calling)
+          </h2>
+
+          <div>
+            <label htmlFor="playground-tools" className="mb-1.5 block text-sm text-text">
+              Tool definitions (JSON)
+            </label>
+            <textarea
+              id="playground-tools"
+              rows={6}
+              value={toolsInput}
+              onChange={(e) => setToolsInput(e.target.value)}
+              placeholder={'Optional — an OpenAI-style tools array, e.g.\n[\n  {\n    "type": "function",\n    "function": {\n      "name": "get_weather",\n      "parameters": {"type": "object", "properties": {"city": {"type": "string"}}}\n    }\n  }\n]'}
+              className={cn(inputClass, "font-mono text-xs")}
+            />
+            {toolsError && <p className="mt-1 text-xs text-red-600">{toolsError}</p>}
+          </div>
+
+          <div>
+            <label htmlFor="playground-tool-choice" className="mb-1.5 block text-sm text-text">
+              Tool choice
+            </label>
+            <select
+              id="playground-tool-choice"
+              value={toolChoice}
+              onChange={(e) => setToolChoice(e.target.value as "auto" | "required" | "none")}
+              disabled={!toolsInput.trim()}
+              className={cn(inputClass, !toolsInput.trim() && "opacity-40")}
+            >
+              <option value="auto">auto</option>
+              <option value="required">required</option>
+              <option value="none">none</option>
+            </select>
           </div>
         </aside>
       </main>

@@ -1123,18 +1123,43 @@ verified against the local demo gateway with a real `pricing.yaml`: Overview sho
 today: 515 (2 clients)", "Est. spend today: USD 0.0001", "Top model: gpt-oss-20b-mxfp4 (460
 tokens today)" — matching `/v1/usage`'s actual aggregates.
 
-## RM-35 — Native tool-calling (OpenAI-style function calling) (added)
+## RM-35 — Native tool-calling (OpenAI-style function calling) (added) — `done`
 
 **Why**: identified while extending the Playground — every comparable platform (and
 OpenAI's own API) supports `tools`/`tool_calls` on chat completions; Prometheus's
 `ChatCompletionRequest` allowlist has no `tools` field at all today, and `"tool"` is only
 a recognized message *role*, not an actually-wired capability.
 
-**Scope (not yet designed)**: needs, at minimum: `tools`/`tool_choice` added to
-`ChatCompletionRequest`'s allowlist, confirming the configured llama.cpp backends actually
-support function-calling grammars (varies by model/backend build), forwarding
-`tool_calls` back in the response, and a Playground UI to define tools and render calls.
-Real backend work, not just a UI addition.
+**Scope**: the gateway is a pure allowlist proxy — `GET /v1/chat/completions`'s response
+handler already forwards the backend's full JSON body untouched
+(`JSONResponse(content=resp_body, ...)`, no field-by-field reconstruction), so the
+response side needed zero changes. The request side gained: `tools`/`tool_choice` on
+`ChatCompletionRequest`; `tool_calls`/`tool_call_id` on `ChatMessage`, plus making
+`content` optional (an assistant message that only calls a tool has `content: null`, per
+OpenAI's shape); `to_llama_payload()` forwards both new fields and dumps messages with
+`exclude_none=True` so the new optional fields don't show up as literal `null`s on every
+message that doesn't use them. `_estimate_tokens()` treats `content: None` as `""`
+instead of the string `"None"`. Playground gained a "Tools (function calling)" section: a
+raw JSON textarea for the tools array (simplest honest option — a visual schema builder is
+real UI work with no clear payoff yet) and a `tool_choice` select (`auto`/`required`/
+`none` — dropped the OpenAI dict form that forces one specific function, since the local
+gpt-oss backend used for verification didn't honor it), rendering any `tool_calls` in the
+response as a distinct 🔧 block instead of empty text.
+
+**Verified**: 3 new tests in `test_gateway_core.py` (tools/tool_choice forwarded intact,
+response tool_calls pass through byte-for-byte, a full assistant-tool_calls +
+tool-role-response round trip forwards correctly) — 212/212 gateway tests green, full
+`.githooks/pre-push` green. Live end-to-end against the real locally-running
+`gpt-oss-20b-mxfp4`: hit the backend directly first to confirm it genuinely supports
+tool-calling (`tool_choice: "required"` — the OpenAI-style `{"type":"function",...}`
+forcing dict was accepted but silently ignored by this backend build), then confirmed the
+exact same real `tool_calls` response comes back through the gateway unmodified, and
+through the redesigned Playground itself (a `get_weather` call rendered correctly with
+real token counts and latency). One methodology pitfall worth recording: repeatedly
+re-querying the *same* prompt against the *same* llama-server process produced
+inconsistent tool-call-vs-plain-text answers even at `temperature: 0`, which looked like a
+gateway bug at first — it was llama-server's own prompt/KV-cache reuse across near-
+identical requests; a fresh, never-asked prompt reproduced the tool call every time.
 
 ## RM-36 — Playground: streaming responses (added)
 
@@ -1204,6 +1229,30 @@ multi-second) inference call is in flight.
 
 **Scope**: small, purely cosmetic — replace the static string with something that visibly
 animates (e.g. an ellipsis cycle, a subtle pulse) so a slow response doesn't look stalled.
+
+## RM-43 — Stop stripping client-supplied system messages (added) — `done`
+
+**Why**: found while scoping RM-35 (tool-calling) — `router.py`'s `_sanitise_messages()`
+unconditionally deleted every `role: "system"` message from the client's request before
+forwarding it, per an old AC-6 rule ("the gateway itself does not inject system messages
+in this spec... any system message from the client payload is treated as an injection
+attempt"). Nothing in the codebase ever injects a system message of its own to protect —
+the rule just made a client-supplied system prompt silently vanish. That directly broke
+the RM-14 Playground's own System prompt field the moment it shipped: typed, sent, and
+discarded before reaching the model, with no error to explain why.
+
+**Scope**: removed `_sanitise_messages()` and its call site entirely — a caller has
+already passed `inference:read`/`inference:stream` + `model:<id>` authorization by the
+time messages are forwarded, so their own system prompt is legitimate input, exactly like
+calling OpenAI's API directly. `payload["messages"]` now comes straight from
+`ChatCompletionRequest.to_llama_payload()` (which already builds it from the validated
+`body.messages`), with no separate sanitisation step for either the streaming or
+non-streaming path (both share the same payload construction).
+
+**Verified**: rewrote `test_gateway_core_AC6_strip_injected_system_message` (now
+`test_client_system_message_is_forwarded`) to assert the opposite of the old behavior —
+a system message now reaches the mocked backend intact. Full gateway suite green
+(209/209), full `.githooks/pre-push` green.
 
 ## Adding new items
 

@@ -1,9 +1,22 @@
 import { useMutation } from "@tanstack/react-query";
 import { rootClient } from "./client";
 
+export interface ToolCall {
+  id: string;
+  type: "function";
+  function: { name: string; arguments: string };
+}
+
 export interface ChatMessage {
-  role: "system" | "user" | "assistant";
-  content: string;
+  role: "system" | "user" | "assistant" | "tool";
+  content: string | null;
+  tool_calls?: ToolCall[];
+  tool_call_id?: string;
+}
+
+export interface ToolDefinition {
+  type: "function";
+  function: { name: string; description?: string; parameters?: object };
 }
 
 export interface PlaygroundParams {
@@ -11,10 +24,15 @@ export interface PlaygroundParams {
   top_p?: number;
   max_tokens?: number;
   stop?: string[];
+  tools?: ToolDefinition[];
+  tool_choice?: string;
 }
 
 interface ChatCompletionResponse {
-  choices: { message: { role: string; content: string }; finish_reason: string | null }[];
+  choices: {
+    message: { role: string; content: string | null; tool_calls?: ToolCall[] };
+    finish_reason: string | null;
+  }[];
   usage: { prompt_tokens: number; completion_tokens: number; total_tokens: number };
 }
 

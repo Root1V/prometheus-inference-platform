@@ -40,7 +40,7 @@ Status: `done` · `todo`
 | RM-32 | Usage: persisted history + per-model breakdown | done | Replaces Redis daily counters with a real store — needed for any trend chart |
 | RM-33 | Usage: pricing table + real cost | done | Per-model price config; turns token counts into a dollar figure |
 | RM-34 | Overview: wire the usage & cost card to real data | done | Replaces RM-30's placeholder once RM-32/33 land |
-| RM-35 | Native tool-calling (OpenAI-style function calling) | todo | `tools`/`tool_calls` on `/v1/chat/completions` — new backend surface, not just a UI |
+| RM-35 | Native tool-calling (OpenAI-style function calling) | done | `tools`/`tool_calls` on `/v1/chat/completions` — new backend surface, not just a UI |
 | RM-36 | Playground: streaming responses | todo | Gateway already supports `stream:true`; Playground deliberately shipped non-streaming first |
 | RM-37 | Playground: embedding model testing | todo | `/v1/embeddings` already exists (RM-09); Playground only lets you pick text models today |
 | RM-38 | Image generation model support | todo | Speculative — new modality, new backend integration, no known model/backend chosen yet |
@@ -48,6 +48,7 @@ Status: `done` · `todo`
 | RM-40 | Playground: image upload for Vision/VLM models | todo | Builds on RM-09's vision content parts; upload only enabled when the selected model's modality is vision |
 | RM-41 | Playground: show which model answered | todo | Small label next to the copy button per response — matters once you switch models mid-conversation |
 | RM-42 | Playground: animate the "waiting for a response" state | todo | Replace the static text with something that reads as active waiting |
+| RM-43 | Stop stripping client-supplied system messages | done | Found while scoping RM-35 — broke the RM-14 Playground's own System prompt field |
 
 Adding an item: append the next `RM-NN` row here with a one-liner, then add the full
 Why/Scope writeup to `docs/roadmap.md`.

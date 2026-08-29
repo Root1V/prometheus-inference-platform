@@ -82,7 +82,8 @@ def _estimate_tokens(messages: list[dict[str, Any]]) -> int:
     """
     total_tokens = 0
     for m in messages:
-        content = m.get("content", "")
+        # RM-35: an assistant message that only calls a tool has content: None.
+        content = m.get("content") or ""
         if isinstance(content, list):
             for part in content:
                 if not isinstance(part, dict):
@@ -94,16 +95,6 @@ def _estimate_tokens(messages: list[dict[str, Any]]) -> int:
         else:
             total_tokens += len(str(content)) // _CHARS_PER_TOKEN
     return max(1, total_tokens)
-
-
-def _sanitise_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Strip all system-role messages from client-controlled input.
-
-    Implements: memory/specs/001-gateway-core.md — AC-6
-    The gateway itself does not inject system messages in this spec.
-    Any system message from the client payload is treated as an injection attempt.
-    """
-    return [msg for msg in messages if msg.get("role") != "system"]
 
 
 def create_router(registry: ModelRegistry, pool: "BackendPool") -> APIRouter:
@@ -494,11 +485,7 @@ def create_router(registry: ModelRegistry, pool: "BackendPool") -> APIRouter:
                         "circuit_breaker.check_error", backend_id=entry.id, error=str(exc)
                     )
 
-            # AC-6 (001): sanitise messages (strip injected system messages)
-            sanitised = _sanitise_messages(raw_messages)
-
             payload = body.to_llama_payload()
-            payload["messages"] = sanitised
 
             target_url = f"{entry.backend_url.rstrip('/')}/v1/chat/completions"
 
@@ -589,7 +576,9 @@ def create_router(registry: ModelRegistry, pool: "BackendPool") -> APIRouter:
                     if settings is not None and getattr(
                         settings, "log_include_prompt_summary", False
                     ):
-                        first_user = next((m for m in sanitised if m.get("role") == "user"), None)
+                        first_user = next(
+                            (m for m in raw_messages if m.get("role") == "user"), None
+                        )
                         if first_user:
                             log_fields["input"] = str(first_user.get("content", ""))[:200]
                         try:
