@@ -1252,6 +1252,25 @@ instead of dropping it. Verified live: reproduced two consecutive empty-response
 — confirming the conversation survives repeated empty turns instead of permanently
 locking up after the first one.
 
+**Third follow-up (same day) — the "ran out of tokens" case explained, and reasoning kept**:
+user asked whether the model's reasoning was genuinely looping, and to stop discarding it
+when the "ran out of tokens" message shows — keep it collapsed with a copy button for
+external analysis. Investigated with a much higher `max_tokens` (1500) budget on the exact
+"300 palabras exactas" prompt: confirmed it's real model behavior, not a bug — the model
+composes each line, counts words one by one, finds it's off by N, patches the line, and
+recounts, for every single line, and with only ~5 of the 12 lines needed done at 1500
+tokens, this scales badly with the requested length rather than ever reliably converging.
+Raising `max_tokens` further helps only so much for an "exact word count" ask specifically.
+
+Added: `Turn` now keeps `reasoning` (from `reasoning_content`, both response modes) instead
+of discarding it once the stream/response completes. When a turn ends with the "ran out of
+max tokens" explanation, a collapsed `<details>` ("Show the model's reasoning (N chars)")
+reveals the full text with its own Copy button, so an operator can inspect what the model
+was actually doing outside the Playground. Verified live in non-streaming mode: the
+disclosure rendered "1,649 chars", expanded to show the real word-counting loop, and the
+copy button's `navigator.clipboard.writeText` call was confirmed to receive the exact
+1,649-character string.
+
 ## RM-37 — Playground: embedding model testing (added)
 
 **Why**: `POST /v1/embeddings` already exists (RM-09) — the Playground's model picker just

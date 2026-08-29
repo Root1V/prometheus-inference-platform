@@ -45,6 +45,10 @@ interface Turn {
   usage: { prompt_tokens: number; completion_tokens: number; total_tokens: number } | null;
   latencyMs: number;
   finishReason: string | null;
+  // The model's chain-of-thought for this turn, if any — kept around (collapsed
+  // in the UI) rather than discarded, especially useful when it ran out of
+  // max_tokens before producing a visible answer.
+  reasoning: string;
 }
 
 interface InProgress {
@@ -142,6 +146,7 @@ export default function Playground() {
         usage: data.usage,
         latencyMs,
         finishReason: data.choices[0]?.finish_reason ?? null,
+        reasoning: responseMessage?.reasoning_content ?? "",
       },
     ]);
   }
@@ -189,7 +194,7 @@ export default function Playground() {
     setInProgress(null);
     setTurns((prev) => [
       ...prev,
-      { messages: [...leadingMessages, assistantMessage], usage: null, latencyMs, finishReason },
+      { messages: [...leadingMessages, assistantMessage], usage: null, latencyMs, finishReason, reasoning },
     ]);
   }
 
@@ -251,6 +256,10 @@ export default function Playground() {
   async function handleCopy(message: ChatMessage) {
     const text = message.content ?? JSON.stringify(message.tool_calls, null, 2);
     await navigator.clipboard.writeText(text ?? "");
+  }
+
+  async function handleCopyReasoning(reasoning: string) {
+    await navigator.clipboard.writeText(reasoning);
   }
 
   return (
@@ -325,11 +334,34 @@ export default function Playground() {
                     {!assistantMessage.content &&
                       !assistantMessage.tool_calls?.length &&
                       turn.finishReason === "length" && (
-                        <p className="text-amber-600">
-                          Ran out of max tokens before producing a visible answer — this model
-                          spends tokens on hidden reasoning first, and used up the whole budget
-                          there. Try raising Max tokens.
-                        </p>
+                        <div>
+                          <p className="text-amber-600">
+                            Ran out of max tokens before producing a visible answer — this model
+                            spends tokens on hidden reasoning first, and used up the whole budget
+                            there. Try raising Max tokens.
+                          </p>
+                          {turn.reasoning && (
+                            <details className="mt-2 rounded-lg border border-dashed border-border bg-surface p-2 text-xs text-text-muted">
+                              <summary className="cursor-pointer select-none font-medium">
+                                Show the model's reasoning ({turn.reasoning.length.toLocaleString()}{" "}
+                                chars)
+                              </summary>
+                              <div className="mt-2 flex items-start justify-between gap-2">
+                                <p className="max-h-64 overflow-y-auto whitespace-pre-wrap italic">
+                                  {turn.reasoning}
+                                </p>
+                                <button
+                                  type="button"
+                                  onClick={() => handleCopyReasoning(turn.reasoning)}
+                                  title="Copy reasoning"
+                                  className="shrink-0 text-text-muted hover:text-text"
+                                >
+                                  <Copy size={14} />
+                                </button>
+                              </div>
+                            </details>
+                          )}
+                        </div>
                       )}
                     {assistantMessage.tool_calls?.map((call) => (
                       <div

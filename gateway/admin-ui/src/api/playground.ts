@@ -31,7 +31,14 @@ export interface PlaygroundParams {
 
 interface ChatCompletionResponse {
   choices: {
-    message: { role: string; content: string | null; tool_calls?: ToolCall[] };
+    message: {
+      role: string;
+      content: string | null;
+      tool_calls?: ToolCall[];
+      /** gpt-oss-style chain-of-thought — not part of the OpenAI response schema,
+       * but some backends include it. Kept for the "ran out of tokens" case. */
+      reasoning_content?: string;
+    };
     finish_reason: string | null;
   }[];
   usage: { prompt_tokens: number; completion_tokens: number; total_tokens: number };
