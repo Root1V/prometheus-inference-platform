@@ -1498,6 +1498,52 @@ Model catalog contents (IDs, family, quantization, context length) aren't sensit
 their own — this is about whether *discoverability without credentials* is still wanted,
 not about hiding secrets. Leaning against changing it unless a concrete reason turns up.
 
+## RM-48 — Dashboard: Models page — discover, download, and manage the model lifecycle (added)
+
+**Why**: today "Register model" (`RegisterModelModal.tsx`) is pure free-text entry — a
+local `path`, or an `hf_repo`/`hf_filename` pair typed by hand, no search, no model card,
+no record of what's actually been vetted or downloaded before it's wired up for instance
+creation. The user wants a real lifecycle: browse/search open-source models, read the
+model card, download to a configurable folder with visible progress (cancel/resume/
+delete), and — critically — restrict instance creation to only models that have actually
+been downloaded through this flow, not any path/repo string someone happens to type.
+
+**Source: Hugging Face, not Kaggle or another hub** — and this isn't a from-scratch
+choice, it's already the established one in this codebase:
+- `runtime/manager/core/src/prometheus_manager_core/downloader.py` already implements
+  resumable HF downloads with real-time progress, SHA-256 verification,
+  and a `queued/downloading/verifying/done/failed/cancelled` status machine — used today by
+  the terminal TUI's own Downloads view (`runtime/manager/tui/.../views/downloads.py`).
+- The TUI also already has a **Discovery view** (`views/discovery.py`) that searches
+  Hugging Face and does "one-key download" — GGUF quantizations for llama.cpp are
+  overwhelmingly published there (bartowski, unsloth, and similar community quantizers),
+  so this is where the models this platform actually runs already live.
+- `[downloads]` in `manager.toml` already has a configurable download directory
+  (`resolved_downloads_dir`) — the "configurable download folder" part of the ask is
+  already satisfied, not new work.
+- Kaggle Models skews toward notebook-era TensorFlow/PyTorch model zoo entries, not
+  llama.cpp-ready GGUF artifacts — there's no existing integration to build on and
+  materially less relevant inventory for this platform's use case. Not worth building a
+  second hub integration unless a real need for it shows up.
+
+**Scope**: this is a genuinely new *web* surface, not new *capability* — the hard parts
+(search, resumable download, progress, verification) already exist in manager-core/TUI;
+what's missing is exposing them over HTTP and building the dashboard page:
+- New `manager-api` endpoints wrapping the existing `discovery.py`/`downloader.py` logic:
+  search Hugging Face (by name/tag/library=gguf), fetch a model's card/README + metadata,
+  start/cancel/resume/delete a download, and list downloads with live progress.
+- Gateway admin proxy routes for the above, same `_auth_admin_request` pattern already
+  used for Instances/Nodes/Users.
+- New **Models** page in the admin-ui: search + model card view, a download manager
+  (progress bars, cancel/resume/delete, matching the TUI's existing states), and a list
+  of already-downloaded models (with delete).
+- `RegisterModelModal`'s model-source fields (`path`/`hf_repo`/`hf_filename`, all
+  free-text today) change to a picker sourced from the downloaded-models list instead —
+  this is the actual lifecycle gate the user asked for ("esos modelos sean los únicos que
+  se puedan seleccionar al crear las instancias").
+- Modify/delete of an already-downloaded model: straightforward once the download list
+  exists — needs to check the model isn't backing a running instance first.
+
 ## Adding new items
 
 Append a new row to the table with the next `RM-NN` id and a new `## RM-NN — ...` section
