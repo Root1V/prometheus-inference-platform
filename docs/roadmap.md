@@ -1271,6 +1271,19 @@ disclosure rendered "1,649 chars", expanded to show the real word-counting loop,
 copy button's `navigator.clipboard.writeText` call was confirmed to receive the exact
 1,649-character string.
 
+**Fourth follow-up (same day) — real token counts for streamed responses**: user asked to
+show input/output token counts next to "tokens not reported (streamed)". The response never
+carries a standard OpenAI `usage` field for `stream: true`, but llama.cpp's final chunk
+includes its own `timings` object — confirmed by comparing a non-streaming call's `usage`
+against the *same* request's `timings`: `cache_n + prompt_n` matched `usage.prompt_tokens`
+exactly, and `predicted_n` matched `usage.completion_tokens` exactly. Real counts, just
+under a llama.cpp-specific field rather than the OpenAI one — not a character-based
+estimate. `streamPlaygroundChat()` now parses `timings` from the final chunk and computes
+real `prompt_tokens`/`completion_tokens`/`total_tokens` from it; the existing "tokens not
+reported (streamed)" fallback stays in place for any backend that doesn't emit `timings`
+either. Verified live: a streamed response showed "76 + 95 = 171 tokens" instead of the
+placeholder text.
+
 ## RM-37 — Playground: embedding model testing (added)
 
 **Why**: `POST /v1/embeddings` already exists (RM-09) — the Playground's model picker just

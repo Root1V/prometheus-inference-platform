@@ -90,17 +90,29 @@ export interface StreamDelta {
   tool_calls?: ToolCallDelta[];
 }
 
+export interface StreamUsage {
+  prompt_tokens: number;
+  completion_tokens: number;
+  total_tokens: number;
+}
+
 /**
  * RM-36: same real endpoint as usePlaygroundChat, but with stream: true,
  * parsed as Server-Sent Events and reported incrementally via onDelta — not a
  * react-query mutation, since progressive UI updates don't fit that model.
- * The gateway doesn't report `usage` for a streamed response with the
- * backends verified so far, so there's no token count to return here.
+ * The response never carries a standard OpenAI `usage` field for a streamed
+ * request, but llama.cpp's final chunk includes its own `timings` object —
+ * `cache_n` (tokens already in the KV cache) + `prompt_n` (newly processed)
+ * equals the real total prompt token count, and `predicted_n` is the real
+ * completion token count (confirmed against the same request's non-streaming
+ * `usage` — cache_n + prompt_n matched usage.prompt_tokens exactly, and
+ * predicted_n matched usage.completion_tokens exactly). Real counts, not an
+ * estimate — just under a llama.cpp-specific field, not the OpenAI one.
  */
 export async function streamPlaygroundChat(
   { model, messages, params }: { model: string; messages: ChatMessage[]; params: PlaygroundParams },
   onDelta: (delta: StreamDelta) => void,
-): Promise<{ finishReason: string | null }> {
+): Promise<{ finishReason: string | null; usage: StreamUsage | null }> {
   const token = getStoredToken();
   const response = await fetch("/v1/chat/completions", {
     method: "POST",
@@ -129,6 +141,7 @@ export async function streamPlaygroundChat(
   const decoder = new TextDecoder();
   let buffer = "";
   let finishReason: string | null = null;
+  let usage: StreamUsage | null = null;
 
   while (true) {
     const { value, done } = await reader.read();
@@ -156,11 +169,23 @@ export async function streamPlaygroundChat(
       }
       const data = line.slice(5).trim();
       if (data === "[DONE]" || !data) continue;
-      let chunk: { choices?: { delta?: StreamDelta; finish_reason?: string | null }[] };
+      let chunk: {
+        choices?: { delta?: StreamDelta; finish_reason?: string | null }[];
+        timings?: { cache_n?: number; prompt_n?: number; predicted_n?: number };
+      };
       try {
         chunk = JSON.parse(data);
       } catch {
         continue;
+      }
+      if (chunk.timings?.prompt_n !== undefined && chunk.timings.predicted_n !== undefined) {
+        const promptTokens = (chunk.timings.cache_n ?? 0) + chunk.timings.prompt_n;
+        const completionTokens = chunk.timings.predicted_n;
+        usage = {
+          prompt_tokens: promptTokens,
+          completion_tokens: completionTokens,
+          total_tokens: promptTokens + completionTokens,
+        };
       }
       const choice = chunk.choices?.[0];
       if (!choice) continue;
@@ -169,5 +194,5 @@ export async function streamPlaygroundChat(
     }
   }
 
-  return { finishReason };
+  return { finishReason, usage };
 }

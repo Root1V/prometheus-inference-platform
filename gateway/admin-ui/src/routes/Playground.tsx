@@ -158,7 +158,7 @@ export default function Playground() {
     const toolCallsByIndex = new Map<number, ToolCall>();
     setInProgress({ leading: leadingMessages, content: "", reasoning: "", toolCalls: [] });
 
-    const { finishReason } = await streamPlaygroundChat(
+    const { finishReason, usage } = await streamPlaygroundChat(
       { model: selectedModel, messages, params: buildParams(tools) },
       (delta) => {
         if (delta.content) content += delta.content;
@@ -194,7 +194,7 @@ export default function Playground() {
     setInProgress(null);
     setTurns((prev) => [
       ...prev,
-      { messages: [...leadingMessages, assistantMessage], usage: null, latencyMs, finishReason, reasoning },
+      { messages: [...leadingMessages, assistantMessage], usage, latencyMs, finishReason, reasoning },
     ]);
   }
 
