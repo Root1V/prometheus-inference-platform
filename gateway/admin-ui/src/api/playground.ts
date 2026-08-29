@@ -76,6 +76,10 @@ export interface ToolCallDelta {
 
 export interface StreamDelta {
   content?: string;
+  /** gpt-oss-style chain-of-thought, sent as its own delta field before any
+   * real `content` — surfaced live so a long reasoning phase doesn't look
+   * frozen (docs/roadmap.md RM-36 follow-up). */
+  reasoning_content?: string;
   tool_calls?: ToolCallDelta[];
 }
 
@@ -127,7 +131,22 @@ export async function streamPlaygroundChat(
     buffer = events.pop() ?? "";
     for (const event of events) {
       const line = event.trim();
-      if (!line.startsWith("data:")) continue;
+      if (!line.startsWith("data:")) {
+        // llama.cpp can commit to a 200 streaming response and then write a
+        // plain (non-SSE-prefixed) {"error": {...}} line if the request turns
+        // out invalid mid-stream (e.g. malformed conversation history) —
+        // surface it instead of silently dropping it as an unrecognized line.
+        if (line.startsWith("{") && line.includes('"error"')) {
+          let message: string | undefined;
+          try {
+            message = JSON.parse(line)?.error?.message;
+          } catch {
+            /* not valid JSON after all — fall through and ignore the line */
+          }
+          if (message) throw new Error(message);
+        }
+        continue;
+      }
       const data = line.slice(5).trim();
       if (data === "[DONE]" || !data) continue;
       let chunk: { choices?: { delta?: StreamDelta; finish_reason?: string | null }[] };

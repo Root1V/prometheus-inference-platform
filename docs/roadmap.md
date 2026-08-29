@@ -1224,6 +1224,34 @@ explicit explanation ("Ran out of max tokens before producing a visible answer..
 raising Max tokens") instead of a silent blank bubble. Verified live with the exact
 reported prompt — the explanation now renders correctly in place of the blank response.
 
+**Second follow-up (same day) — live reasoning display + a real conversation-breaking bug**:
+user asked for the model's reasoning to visibly "paint in" during streaming rather than a
+static "Streaming…" label sitting frozen for 4-8+ seconds while `reasoning_content` (not
+shown anywhere) consumed the whole request. Added a "🧠 Thinking…" box that live-updates
+from `reasoning_content` deltas (own auto-scrolling `ReasoningBox` component, same
+accumulation pattern as `content`/`tool_calls`), shown only while no real `content`/
+`tool_calls` have arrived yet — once the real answer starts, it takes over.
+
+While verifying this, found a second, more serious bug triggered by the *previous*
+follow-up's empty-response case: `sendStreaming`'s assistant-message construction used
+`content: content || null` — since `content` is `""` (falsy) whenever nothing was
+generated, this silently became `null` with no `tool_calls` either, an assistant message
+shape the OpenAI API convention forbids (`null` content is only valid *alongside*
+`tool_calls`). Once that malformed message sat in conversation history, llama.cpp
+rejected *every subsequent request* in that conversation with a 400
+(`"Assistant message must contain either 'content' or 'tool_calls'!"`) — sent as a bare
+`{"error": {...}}` line without the `data:` SSE prefix, which the parser's
+`line.startsWith("data:")` check silently skipped, so the failure surfaced as a blank
+response completing in ~10ms with no explanation, indistinguishable at a glance from
+"model produced literally nothing." Fixed both ends: `content` is now only ever `null`
+when `tool_calls` exist (same fix applied defensively to the non-streaming path, which
+happened to already be safe via `?? null` not converting `""`), and the SSE parser now
+detects a non-`data:`-prefixed `{"error": {...}}` line and throws it as a real error
+instead of dropping it. Verified live: reproduced two consecutive empty-response turns
+(different poem prompts) followed by two normal exchanges in between, none of which broke
+— confirming the conversation survives repeated empty turns instead of permanently
+locking up after the first one.
+
 ## RM-37 — Playground: embedding model testing (added)
 
 **Why**: `POST /v1/embeddings` already exists (RM-09) — the Playground's model picker just

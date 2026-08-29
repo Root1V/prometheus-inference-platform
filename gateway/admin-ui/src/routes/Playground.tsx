@@ -1,5 +1,5 @@
 import { Copy, RotateCcw, Send, Trash2, Wrench } from "lucide-react";
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useInstances } from "../api/instances";
 import {
   streamPlaygroundChat,
@@ -11,6 +11,27 @@ import {
 import { Sidebar } from "../components/Sidebar";
 import { cn } from "../lib/cn";
 import { getErrorMessage } from "../lib/errors";
+
+/** Auto-scrolls to its own bottom as `text` grows — so the model's live chain-of-thought
+ * stays visible instead of scrolling out of a fixed-height box (RM-36 follow-up). */
+function ReasoningBox({ text }: { text: string }) {
+  const ref = useRef<HTMLParagraphElement>(null);
+  useEffect(() => {
+    ref.current?.scrollIntoView({ block: "end" });
+  }, [text]);
+  return (
+    <div className="max-w-[80%] rounded-xl border border-dashed border-border bg-surface px-4 py-2 text-xs text-text-muted">
+      <p className="mb-1 font-medium">🧠 Thinking…</p>
+      <div className="max-h-40 overflow-y-auto">
+        <p className="whitespace-pre-wrap italic">
+          {text}
+          <span className="animate-pulse">▍</span>
+        </p>
+        <div ref={ref} />
+      </div>
+    </div>
+  );
+}
 
 const inputClass =
   "w-full rounded-lg border border-border bg-background px-3 py-2 text-sm text-text focus:border-primary focus:outline-none";
@@ -29,6 +50,7 @@ interface Turn {
 interface InProgress {
   leading: ChatMessage[];
   content: string;
+  reasoning: string;
   toolCalls: ToolCall[];
 }
 
@@ -104,9 +126,13 @@ export default function Playground() {
     const data = await chat.mutateAsync({ model: selectedModel, messages, params: buildParams(tools) });
     const latencyMs = Math.round(performance.now() - startedAt);
     const responseMessage = data.choices[0]?.message;
+    const hasToolCalls = (responseMessage?.tool_calls?.length ?? 0) > 0;
     const assistantMessage: ChatMessage = {
       role: "assistant",
-      content: responseMessage?.content ?? null,
+      // Same rule as the streaming path: null content is only valid when
+      // tool_calls carries the payload instead, or the backend never gets
+      // sent as history on a later turn.
+      content: hasToolCalls ? null : (responseMessage?.content ?? ""),
       tool_calls: responseMessage?.tool_calls,
     };
     setTurns((prev) => [
@@ -123,13 +149,15 @@ export default function Playground() {
   async function sendStreaming(leadingMessages: ChatMessage[], messages: ChatMessage[], tools: ToolDefinition[] | undefined) {
     const startedAt = performance.now();
     let content = "";
+    let reasoning = "";
     const toolCallsByIndex = new Map<number, ToolCall>();
-    setInProgress({ leading: leadingMessages, content: "", toolCalls: [] });
+    setInProgress({ leading: leadingMessages, content: "", reasoning: "", toolCalls: [] });
 
     const { finishReason } = await streamPlaygroundChat(
       { model: selectedModel, messages, params: buildParams(tools) },
       (delta) => {
         if (delta.content) content += delta.content;
+        if (delta.reasoning_content) reasoning += delta.reasoning_content;
         for (const partial of delta.tool_calls ?? []) {
           const existing = toolCallsByIndex.get(partial.index) ?? {
             id: "",
@@ -141,7 +169,7 @@ export default function Playground() {
           if (partial.function?.arguments) existing.function.arguments += partial.function.arguments;
           toolCallsByIndex.set(partial.index, existing);
         }
-        setInProgress({ leading: leadingMessages, content, toolCalls: [...toolCallsByIndex.values()] });
+        setInProgress({ leading: leadingMessages, content, reasoning, toolCalls: [...toolCallsByIndex.values()] });
         requestAnimationFrame(() => bottomRef.current?.scrollIntoView({ block: "end" }));
       },
     );
@@ -150,7 +178,12 @@ export default function Playground() {
     const toolCalls = [...toolCallsByIndex.values()];
     const assistantMessage: ChatMessage = {
       role: "assistant",
-      content: content || null,
+      // OpenAI's shape only allows null content when tool_calls carries the
+      // payload instead — an assistant message with neither is invalid and
+      // gets the *entire conversation* rejected by the backend on every
+      // later turn. An empty-but-present string (e.g. ran out of max_tokens
+      // during reasoning) must stay a string, never null.
+      content: toolCalls.length > 0 ? null : content,
       tool_calls: toolCalls.length > 0 ? toolCalls : undefined,
     };
     setInProgress(null);
@@ -395,7 +428,11 @@ export default function Playground() {
                   </div>
                 ),
               )}
-            {inProgress && (
+            {inProgress &&
+              !inProgress.content &&
+              inProgress.toolCalls.length === 0 &&
+              inProgress.reasoning && <ReasoningBox text={inProgress.reasoning} />}
+            {inProgress && (inProgress.content || inProgress.toolCalls.length > 0) && (
               <div className="max-w-[80%] rounded-xl border border-border bg-background px-4 py-2 text-sm text-text">
                 {inProgress.content && (
                   <p className="whitespace-pre-wrap">
@@ -415,10 +452,10 @@ export default function Playground() {
                     </div>
                   </div>
                 ))}
-                {!inProgress.content && inProgress.toolCalls.length === 0 && (
-                  <p className="text-text-muted">Streaming…</p>
-                )}
               </div>
+            )}
+            {inProgress && !inProgress.content && !inProgress.reasoning && inProgress.toolCalls.length === 0 && (
+              <p className="text-sm text-text-muted">Streaming…</p>
             )}
             <div ref={bottomRef} />
           </div>
