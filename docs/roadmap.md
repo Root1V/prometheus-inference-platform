@@ -1387,6 +1387,70 @@ non-streaming path (both share the same payload construction).
 a system message now reaches the mocked backend intact. Full gateway suite green
 (209/209), full `.githooks/pre-push` green.
 
+## RM-44 — Dashboard: light/dark mode, auto-detected + manual toggle (added)
+
+**Why**: the admin-ui only has one (light) palette today — no dark mode at all, and no way
+to tell what the user's OS is set to.
+
+**Scope (not yet designed in detail)**: on load, read `prefers-color-scheme` and apply
+light/dark accordingly; add a toggle button (sidebar, near Logout, is the obvious spot)
+that lets the operator override it on demand, persisted (localStorage) so it survives a
+reload, and the toggle's own visual state must stay in sync with whichever mode is
+actually applied at any given time — including if the OS-level preference changes while
+the toggle hasn't been touched.
+
+Meaningfully easier than a typical retrofit: `src/index.css` already centralizes every
+color as a semantic Tailwind v4 `@theme` token (`--color-background`, `--color-surface`,
+`--color-text`, etc.) and every component consumes those tokens (`bg-background`,
+`text-text-muted`, ...) rather than literal Tailwind color utilities scattered around. A
+dark palette can likely be added by redefining those same tokens under a
+`prefers-color-scheme: dark` media query plus a `[data-theme]` attribute override (the
+toggle just sets `data-theme` on `<html>`) — without touching individual components at
+all, unless some inline literal color turns up during implementation.
+
+## RM-45 — Let a client list which models it's actually allowed to use (added)
+
+**Why**: `GET /v1/models` (`gateway/src/prometheus_gateway/router.py`) is unauthenticated
+and lists every active model in the registry — it never looks at the caller's own JWT at
+all, so a real registered client (an "App"/"Agent" role principal with a handful of
+`model:<id>` grants, not an admin) has no way to ask the gateway "of everything that
+exists, which of these am I actually authorized to call?" They'd have to already know
+their own granted scopes out-of-band, or discover access by trial-and-error 403s.
+
+**Scope (not yet designed)**: needs a decision on shape — extend `GET /v1/models` to
+optionally read the caller's claims (when a bearer token is present) and add an
+`authorized: true/false` field per model, or add a separate authenticated endpoint (e.g.
+`GET /v1/models/mine`) that returns only the subset the caller's `model:<id>` scopes
+allow. The former keeps one endpoint and stays backward-compatible for unauthenticated
+callers (open `/v1/models` browsing keeps working); the latter is a cleaner, more
+explicit read. Should also cover: what a client with zero model grants sees (empty list,
+or the full catalog all marked `authorized: false`?).
+
+## RM-46 — Per-model performance metrics: avg response time, TTFT, inter-token latency (added)
+
+**Why**: today `GET /metrics` only tracks overall request latency percentiles
+(p50/p95/p99) across all backends combined (`MetricsStore` in
+`gateway/src/prometheus_gateway/telemetry.py`) — nothing per-model, and nothing like
+time-to-first-token (TTFT) or inter-token latency (sometimes called TTIT/ITL) exists
+anywhere in the codebase today. This is real new instrumentation, not a "ship what
+already exists" item like most of the Usage/Overview series.
+
+**Scope (not yet designed)**: needs, at minimum, per-backend (not just global) latency
+tracking in `MetricsStore`, plus two new measurements neither the gateway nor
+`MetricsStore` currently take:
+- **TTFT**: for a streaming request, the time between sending the request and receiving
+  the *first* content chunk — needs a timestamp captured at that point in
+  `_stream_response()` (`router.py`).
+- **Inter-token latency**: time between successive tokens during generation. llama.cpp's
+  own `timings` object (already surfaced client-side for RM-36's Playground token counts)
+  reports `predicted_per_token_ms` per request — a ready-made per-request measurement that
+  just needs aggregating server-side per model, rather than inventing a new one.
+
+Once captured, needs a home to render: **Instances** page is the natural fit (per-model,
+matches its existing per-row granularity) over a global Overview stat, but worth a second
+look once the exact metrics are chosen — could also make sense as a new tab/section
+there rather than more columns on an already-wide table.
+
 ## Adding new items
 
 Append a new row to the table with the next `RM-NN` id and a new `## RM-NN — ...` section
