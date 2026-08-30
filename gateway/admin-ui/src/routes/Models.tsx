@@ -10,7 +10,8 @@ import {
   useRetryDownload,
   useStartDownload,
 } from "../api/models";
-import { useInstances, useNodes } from "../api/instances";
+import { useInstances } from "../api/instances";
+import { useNodeRegistry } from "../api/nodes";
 import { Sidebar } from "../components/Sidebar";
 import { useToast } from "../context/ToastContext";
 import { cn } from "../lib/cn";
@@ -111,8 +112,10 @@ function DownloadRow({ entry, node }: { entry: DownloadEntry; node: string }) {
 
 export default function Models() {
   const { showToast } = useToast();
-  const nodesQuery = useNodes();
-  const nodes = nodesQuery.data ?? [];
+  const nodesQuery = useNodeRegistry();
+  // Only active nodes are actually reachable — fetch_nodes() on the manager-api
+  // side filters inactive ones out, so offering them here would just 400.
+  const nodes = (nodesQuery.data ?? []).filter((n) => n.is_active).map((n) => n.name);
   const [node, setNode] = useState("");
   const selectedNode = node || nodes[0] || "";
 
@@ -188,7 +191,9 @@ export default function Models() {
 
         {nodes.length === 0 ? (
           <div className="mt-6 rounded-xl border border-border bg-surface p-12 text-center text-text-muted">
-            No nodes configured — add one from the Nodes page first.
+            {(nodesQuery.data?.length ?? 0) === 0
+              ? "No nodes configured — add one from the Nodes page first."
+              : "No active nodes — check connectivity from the Nodes page."}
           </div>
         ) : (
           <div className="mt-6 grid grid-cols-1 gap-6 lg:grid-cols-2">

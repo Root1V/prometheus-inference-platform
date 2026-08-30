@@ -1579,6 +1579,15 @@ model card, downloaded `unsloth/SmolLM2-135M-Instruct-GGUF`'s Q2_K file (84 MB) 
 completion with live progress, confirmed it appeared in Downloaded models, then deleted
 it — confirmed both the on-disk file and the registry entry were gone afterward.
 
+**Follow-up (same day)**: user hit `Unknown Node — Node 'Remote GPU' is not configured`
+searching from the Models page — the node `<select>` was populated from `useNodes()`
+(`api/instances.ts`, names only, no `is_active`), which lists every node regardless of
+reachability, while `fetch_nodes()` on the manager-api side silently filters to active
+nodes only. Selecting an inactive node was always going to 400. Fixed by switching
+`Models.tsx` to `useNodeRegistry()` (`api/nodes.ts`, full objects) and filtering to
+`is_active` client-side; the empty-state message also now distinguishes "no nodes exist"
+from "nodes exist but none are active."
+
 ## Adding new items
 
 Append a new row to the table with the next `RM-NN` id and a new `## RM-NN — ...` section
