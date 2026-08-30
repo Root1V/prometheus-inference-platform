@@ -42,11 +42,15 @@ secrets/
 # Implements: memory/specs/024-idempotent-deploy.md — AC-4
 .deploy-state
 
-# Model weights — large binaries stored outside the repo
+# Model weights — large binaries stored outside the repo. RM-48's configured
+# download directory (runtime/models/downloads/, see manager.toml's [downloads]
+# dir) is one level deeper than plain runtime/models/, so it needs its own
+# recursive pattern — *.gguf alone wouldn't match a subdirectory.
 runtime/models/*.gguf
 runtime/models/*.bin
 runtime/models/*.pt
 runtime/models/*.safetensors
+runtime/models/downloads/
 
 # Manager runtime-generated files (logs + PID files)
 runtime/logs/

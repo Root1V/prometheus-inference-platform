@@ -21,7 +21,14 @@ export interface HfModelCard {
   metadata: Record<string, unknown>;
 }
 
-export type DownloadStatus = "queued" | "downloading" | "verifying" | "done" | "failed" | "cancelled";
+export type DownloadStatus =
+  | "queued"
+  | "downloading"
+  | "verifying"
+  | "done"
+  | "failed"
+  | "cancelled"
+  | "paused";
 
 export interface DownloadEntry {
   model_id: string;

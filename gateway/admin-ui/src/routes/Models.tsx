@@ -1,4 +1,4 @@
-import { Ban, Download, RotateCcw, Search, Trash2 } from "lucide-react";
+import { Ban, Download, Pause, Play, RotateCcw, Search, Trash2 } from "lucide-react";
 import { useState } from "react";
 import {
   useCancelDownload,
@@ -7,6 +7,8 @@ import {
   useModelCard,
   useModelFiles,
   useModelSearch,
+  usePauseDownload,
+  useResumeDownload,
   useRetryDownload,
   useStartDownload,
 } from "../api/models";
@@ -51,6 +53,7 @@ const STATUS_COLOR: Record<DownloadEntry["status"], string> = {
   done: "text-green-600",
   failed: "text-red-600",
   cancelled: "text-text-muted",
+  paused: "text-amber-600",
 };
 
 const _ACTIVE = new Set(["queued", "downloading", "verifying"]);
@@ -58,8 +61,12 @@ const _ACTIVE = new Set(["queued", "downloading", "verifying"]);
 function DownloadRow({ entry, node }: { entry: DownloadEntry; node: string }) {
   const { showToast } = useToast();
   const cancelDownload = useCancelDownload();
+  const pauseDownload = usePauseDownload();
+  const resumeDownload = useResumeDownload();
   const retryDownload = useRetryDownload();
   const isActive = _ACTIVE.has(entry.status);
+  const isPaused = entry.status === "paused";
+  const baseModelId = entry.model_id.split(" [")[0];
 
   return (
     <div className="rounded-lg border border-border bg-background p-3 text-sm">
@@ -68,10 +75,10 @@ function DownloadRow({ entry, node }: { entry: DownloadEntry; node: string }) {
         <span className={cn("text-xs font-medium", STATUS_COLOR[entry.status])}>{entry.status}</span>
       </div>
       <p className="mt-0.5 truncate text-xs text-text-muted">{entry.hf_repo}</p>
-      {isActive && (
+      {(isActive || isPaused) && (
         <div className="mt-2 h-1.5 w-full overflow-hidden rounded-full bg-border">
           <div
-            className="h-full bg-primary transition-all"
+            className={cn("h-full transition-all", isPaused ? "bg-amber-500" : "bg-primary")}
             style={{ width: `${Math.round(entry.progress * 100)}%` }}
           />
         </div>
@@ -86,8 +93,38 @@ function DownloadRow({ entry, node }: { entry: DownloadEntry; node: string }) {
             <button
               type="button"
               onClick={() =>
+                pauseDownload.mutate(
+                  { node, modelId: baseModelId },
+                  { onError: (e) => showToast(getErrorMessage(e), "error") },
+                )
+              }
+              title="Pause"
+              className="flex items-center gap-1 text-text-muted hover:text-amber-600"
+            >
+              <Pause size={14} />
+            </button>
+          )}
+          {isPaused && (
+            <button
+              type="button"
+              onClick={() =>
+                resumeDownload.mutate(
+                  { node, modelId: baseModelId },
+                  { onError: (e) => showToast(getErrorMessage(e), "error") },
+                )
+              }
+              title="Resume"
+              className="flex items-center gap-1 text-text-muted hover:text-primary"
+            >
+              <Play size={14} />
+            </button>
+          )}
+          {isActive && (
+            <button
+              type="button"
+              onClick={() =>
                 cancelDownload.mutate(
-                  { node, modelId: entry.model_id.split(" [")[0] },
+                  { node, modelId: baseModelId },
                   { onError: (e) => showToast(getErrorMessage(e), "error") },
                 )
               }
@@ -102,7 +139,7 @@ function DownloadRow({ entry, node }: { entry: DownloadEntry; node: string }) {
               type="button"
               onClick={() =>
                 retryDownload.mutate(
-                  { node, modelId: entry.model_id.split(" [")[0] },
+                  { node, modelId: baseModelId },
                   { onError: (e) => showToast(getErrorMessage(e), "error") },
                 )
               }
@@ -346,7 +383,7 @@ export default function Models() {
                 {(downloadsQuery.data?.length ?? 0) === 0 ? (
                   <p className="text-sm text-text-muted">No downloads yet.</p>
                 ) : (
-                  <div className="space-y-2">
+                  <div className="max-h-72 space-y-2 overflow-y-auto">
                     {downloadsQuery.data?.map((d) => (
                       <DownloadRow key={d.model_id} entry={d} node={selectedNode} />
                     ))}
@@ -361,7 +398,7 @@ export default function Models() {
                     Nothing downloaded yet — search above to get started.
                   </p>
                 ) : (
-                  <div className="space-y-1">
+                  <div className="max-h-72 space-y-1 overflow-y-auto">
                     {downloadedModels.map((m) => (
                       <div
                         key={m.id}

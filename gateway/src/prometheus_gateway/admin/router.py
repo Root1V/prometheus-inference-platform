@@ -24,6 +24,8 @@ GET    /admin/api/nodes/{node}/models/search/card              — fetch a repo'
 POST   /admin/api/nodes/{node}/models/downloads               — register + start downloading
 GET    /admin/api/nodes/{node}/models/downloads               — list download progress
 POST   /admin/api/nodes/{node}/models/downloads/{model_id}/cancel
+POST   /admin/api/nodes/{node}/models/downloads/{model_id}/pause
+POST   /admin/api/nodes/{node}/models/downloads/{model_id}/resume
 POST   /admin/api/nodes/{node}/models/downloads/{model_id}/retry
 DELETE /admin/api/nodes/{node}/models/{model_id}/downloaded    — delete file + deregister
 POST   /admin/api/nodes/{node}/instances/{model_id}/start
@@ -376,7 +378,7 @@ def create_admin_router(manager_client: ManagerApiClient) -> APIRouter:
     async def download_action_proxy(
         node: str, model_id: str, action: str, request: Request
     ) -> Response:
-        if action not in ("cancel", "retry"):
+        if action not in ("cancel", "pause", "resume", "retry"):
             return _problem(request, 404, "not-found", "Not Found", f"Unknown action {action!r}.")
         if (forbidden := _require_scope(request, "admin:write")) is not None:
             return forbidden

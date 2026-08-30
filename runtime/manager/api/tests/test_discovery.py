@@ -308,6 +308,89 @@ class TestDownloadProgress:
         assert resp.status_code == 404
 
 
+class TestPauseAndResume:
+    def test_pause_sets_flag_on_active_download(self, tmp_path: Path):
+        client = _authed_write(_make_client(tmp_path))
+        ds = DownloadState(
+            model_id="m1", hf_repo="x/y", hf_filename="m1.gguf", status="downloading"
+        )
+        app.state.downloads.append(ds)
+        try:
+            resp = client.post("/v1/models/downloads/m1/pause", headers=_HEADERS)
+        finally:
+            _clear_overrides()
+        assert resp.status_code == 200
+        assert ds.pause_requested is True
+
+    def test_pause_rejects_when_nothing_active(self, tmp_path: Path):
+        client = _authed_write(_make_client(tmp_path))
+        try:
+            resp = client.post("/v1/models/downloads/no-such-model/pause", headers=_HEADERS)
+        finally:
+            _clear_overrides()
+        assert resp.status_code == 409
+
+    def test_pause_rejects_already_paused(self, tmp_path: Path):
+        client = _authed_write(_make_client(tmp_path))
+        app.state.downloads.append(
+            DownloadState(model_id="m1", hf_repo="x/y", hf_filename="m1.gguf", status="paused")
+        )
+        try:
+            resp = client.post("/v1/models/downloads/m1/pause", headers=_HEADERS)
+        finally:
+            _clear_overrides()
+        assert resp.status_code == 409
+
+    def test_resume_requires_existing_downloadable_entry(self, tmp_path: Path):
+        client = _authed_write(_make_client(tmp_path))
+        try:
+            resp = client.post("/v1/models/downloads/no-such-model/resume", headers=_HEADERS)
+        finally:
+            _clear_overrides()
+        assert resp.status_code == 404
+
+    def test_resume_requires_a_paused_download(self, tmp_path: Path):
+        client = _authed_write(_make_client(tmp_path))
+        app.state.registry.add(
+            RegistryEntry(
+                id="model-m1",
+                port=8090,
+                context_length=4096,
+                hf_repo="x/y",
+                hf_filename="m1.gguf",
+            )
+        )
+        try:
+            resp = client.post("/v1/models/downloads/model-m1/resume", headers=_HEADERS)
+        finally:
+            _clear_overrides()
+        assert resp.status_code == 404
+
+    def test_resume_starts_when_a_paused_shard_exists(self, tmp_path: Path):
+        client = _authed_write(_make_client(tmp_path))
+        app.state.registry.add(
+            RegistryEntry(
+                id="model-m1",
+                port=8090,
+                context_length=4096,
+                hf_repo="x/y",
+                hf_filename="m1.gguf",
+            )
+        )
+        app.state.downloads.append(
+            DownloadState(
+                model_id="model-m1", hf_repo="x/y", hf_filename="m1.gguf", status="paused"
+            )
+        )
+        try:
+            with patch("prometheus_manager_api.discovery.download_model"):
+                resp = client.post("/v1/models/downloads/model-m1/resume", headers=_HEADERS)
+        finally:
+            _clear_overrides()
+        assert resp.status_code == 202
+        assert resp.json()["model_id"] == "model-m1"
+
+
 # ── DELETE /v1/models/{id}/downloaded ────────────────────────────────────────
 
 
@@ -416,7 +499,7 @@ class TestDeleteDownloaded:
 
 class TestRunDownload:
     async def test_marks_downloaded_true_on_full_success(self, tmp_path: Path):
-        from prometheus_manager_api.discovery import _run_download
+        from prometheus_manager_api.discovery import _kick_download
 
         registry = _make_registry(tmp_path)
         config = _make_config(tmp_path)
@@ -447,8 +530,7 @@ class TestRunDownload:
                 return dest
 
             mock_download.side_effect = fake_download
-            await _run_download(
-                None,
+            await _kick_download(
                 downloads,
                 registry,
                 config,
@@ -466,7 +548,7 @@ class TestRunDownload:
     async def test_failed_shard_does_not_mark_downloaded(self, tmp_path: Path):
         from prometheus_manager_core.downloader import DownloadError
 
-        from prometheus_manager_api.discovery import _run_download
+        from prometheus_manager_api.discovery import _kick_download
 
         registry = _make_registry(tmp_path)
         config = _make_config(tmp_path)
@@ -485,11 +567,67 @@ class TestRunDownload:
             "prometheus_manager_api.discovery.download_model",
             side_effect=DownloadError("network error"),
         ):
-            await _run_download(
-                None, downloads, registry, config, "broken-model", "x/y", ["m.gguf"], ""
-            )
+            await _kick_download(downloads, registry, config, "broken-model", "x/y", ["m.gguf"], "")
 
         entry = registry.get("broken-model")
         assert entry.downloaded is False
         assert downloads[0].status == "failed"
         assert downloads[0].error == "network error"
+
+    async def test_resumes_a_paused_shard_via_download_shards(self, tmp_path: Path):
+        """A shard already status=='paused' is resumed (resume=True passed to
+        download_model), not restarted — and shards already 'done' are
+        skipped entirely rather than re-downloaded."""
+        from prometheus_manager_api.discovery import _download_shards
+
+        registry = _make_registry(tmp_path)
+        config = _make_config(tmp_path)
+        registry.add(
+            RegistryEntry(
+                id="multi-model",
+                port=8081,
+                context_length=4096,
+                hf_repo="x/y",
+                hf_filename="m-00001-of-00002.gguf",
+                hf_filenames=["m-00001-of-00002.gguf", "m-00002-of-00002.gguf"],
+            )
+        )
+        done_shard = DownloadState(
+            model_id="multi-model [1/2]",
+            hf_repo="x/y",
+            hf_filename="m-00001-of-00002.gguf",
+            status="done",
+        )
+        paused_shard = DownloadState(
+            model_id="multi-model [2/2]",
+            hf_repo="x/y",
+            hf_filename="m-00002-of-00002.gguf",
+            status="paused",
+            downloaded_bytes=500,
+        )
+        downloads = [done_shard, paused_shard]
+
+        with patch("prometheus_manager_api.discovery.download_model") as mock_download:
+
+            def fake_download(*, on_progress, **kwargs):
+                state = DownloadState(
+                    model_id=kwargs["model_id"],
+                    hf_repo=kwargs["hf_repo"],
+                    hf_filename=kwargs["hf_filename"],
+                    status="done",
+                    total_bytes=1000,
+                    downloaded_bytes=1000,
+                )
+                on_progress(state)
+                return tmp_path / "models" / kwargs["hf_filename"]
+
+            mock_download.side_effect = fake_download
+            await _download_shards(downloads, registry, config, "multi-model", "x/y", downloads, "")
+
+        # Only the paused shard was actually downloaded — the done one was skipped.
+        mock_download.assert_called_once()
+        assert mock_download.call_args.kwargs["resume"] is True
+        assert mock_download.call_args.kwargs["hf_filename"] == "m-00002-of-00002.gguf"
+        assert paused_shard.status == "done"
+        entry = registry.get("multi-model")
+        assert entry.downloaded is True

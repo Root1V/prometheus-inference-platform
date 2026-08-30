@@ -75,7 +75,7 @@ export function useDownloads(node: string) {
   });
 }
 
-function useDownloadAction(action: "cancel" | "retry") {
+function useDownloadAction(action: "cancel" | "pause" | "resume" | "retry") {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: async ({ node, modelId }: { node: string; modelId: string }) =>
@@ -85,6 +85,8 @@ function useDownloadAction(action: "cancel" | "retry") {
 }
 
 export const useCancelDownload = () => useDownloadAction("cancel");
+export const usePauseDownload = () => useDownloadAction("pause");
+export const useResumeDownload = () => useDownloadAction("resume");
 export const useRetryDownload = () => useDownloadAction("retry");
 
 export function useDeleteDownloadedModel() {

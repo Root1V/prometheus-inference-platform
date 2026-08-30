@@ -1604,6 +1604,41 @@ control, file sizes before downloading, and the file list stretching the whole p
   pushed the whole page taller. Capped at `max-h-64 overflow-y-auto`, matching the
   pattern already used for the search-results list and the model-card panel.
 
+**Follow-up (same day)**: real pause/resume — a genuine HTTP byte-range resume, not the
+retry-from-scratch semantics the user originally chose for RM-48's first pass. Also
+capped the "Downloaded models" list at `max-h-72 overflow-y-auto` (same class of
+unbounded-height issue as the file-list fix above, just on a different list — this
+environment alone has 29 downloaded models).
+- `downloader.py`: `Status` gained `"paused"`, `DownloadState` gained
+  `pause_requested` (mirrors `cancel_requested`, but keeps the partial file instead of
+  deleting it). `download_model()` gained `resume: bool` — when true and a partial file
+  exists, sends `Range: bytes={existing}-` and appends; the *server's actual response
+  code* is the source of truth (206 = honored, appends; anything else = Range was
+  ignored, falls back to a full fresh download rather than corrupting the file by
+  appending onto stale/mismatched data). `Content-Range`'s total supersedes
+  `Content-Length` when resumed, since the latter is only the remaining bytes.
+- `manager-api/discovery.py`: `_run_download` split into `_kick_download` (fresh —
+  unchanged behavior) and `_download_shards` (works over existing `DownloadState`s —
+  skips shards already `"done"`, resumes one that's `"paused"` via `resume=True`, stops
+  without touching later `"queued"` shards on a fresh pause so a later `/resume`
+  continues the sequence exactly where it left off). New `POST .../pause` (409 if
+  nothing's active) and `POST .../resume` (404 if nothing's paused).
+- Gateway: the existing generic `.../downloads/{id}/{action}` proxy just needed `pause`/
+  `resume` added to its allowed-actions tuple — no new route.
+- Frontend: `usePauseDownload`/`useResumeDownload` hooks; `DownloadRow` shows Pause+Cancel
+  while active, Resume while paused (amber progress bar/status for the paused state).
+
+**Verified**: `downloader.py` — new tests for pause-keeps-partial-file, resume sends the
+correct `Range` header and appends, resume with nothing on disk behaves like a fresh
+download, and resume falls back to a full restart when the server ignores Range (200
+instead of 206) rather than silently corrupting the file. `discovery.py` — pause/resume
+HTTP tests plus a direct `_download_shards` test proving a `"done"` shard is skipped and
+a `"paused"` one is resumed with `resume=True`. Live end-to-end against real Hugging
+Face: started downloading a 270 MB file, paused at 65 MB (partial file confirmed on
+disk), resumed — `downloaded_bytes` continued from 65 MB (not 0), completed at exactly
+270,885,952 bytes matching the expected size, `downloaded=True` set correctly. Full
+`.githooks/pre-push` green across all 6 Python packages + admin-ui.
+
 ## Adding new items
 
 Append a new row to the table with the next `RM-NN` id and a new `## RM-NN — ...` section

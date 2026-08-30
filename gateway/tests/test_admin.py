@@ -579,6 +579,34 @@ async def test_download_retry_proxies_to_node(gw, rsa_keys):
     assert resp.status_code == 202
 
 
+async def test_download_pause_proxies_to_node(gw, rsa_keys):
+    with respx.mock:
+        _mock_nodes(("mac", NODE_URL))
+        _mock_manager_token()
+        respx.post(f"{NODE_URL}/v1/models/downloads/m-local/pause").mock(
+            return_value=Response(200, json={"paused": ["m-local"]})
+        )
+        resp = await gw.post(
+            "/admin/api/nodes/mac/models/downloads/m-local/pause",
+            headers=_headers(rsa_keys, "admin:write"),
+        )
+    assert resp.status_code == 200
+
+
+async def test_download_resume_proxies_to_node(gw, rsa_keys):
+    with respx.mock:
+        _mock_nodes(("mac", NODE_URL))
+        _mock_manager_token()
+        respx.post(f"{NODE_URL}/v1/models/downloads/m-local/resume").mock(
+            return_value=Response(202, json={"model_id": "m-local"})
+        )
+        resp = await gw.post(
+            "/admin/api/nodes/mac/models/downloads/m-local/resume",
+            headers=_headers(rsa_keys, "admin:write"),
+        )
+    assert resp.status_code == 202
+
+
 async def test_download_unknown_action_returns_404(gw, rsa_keys):
     resp = await gw.post(
         "/admin/api/nodes/mac/models/downloads/m-local/explode",

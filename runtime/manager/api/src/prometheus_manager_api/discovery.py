@@ -6,7 +6,9 @@ GET    /v1/models/search/card          — fetch a repo's model card
 POST   /v1/models/downloads            — register + start downloading a model
 GET    /v1/models/downloads            — list active/recent download progress
 POST   /v1/models/downloads/{id}/cancel
-POST   /v1/models/downloads/{id}/retry — restart from scratch (no byte-range resume)
+POST   /v1/models/downloads/{id}/pause  — keeps the partial file (unlike cancel)
+POST   /v1/models/downloads/{id}/resume — continues via HTTP Range, not from byte 0
+POST   /v1/models/downloads/{id}/retry — restart from scratch
 DELETE /v1/models/{id}/downloaded      — delete the on-disk file(s) + deregister
 
 Implements: docs/roadmap.md — RM-48 (Models page: discover/download/manage)
@@ -164,33 +166,37 @@ async def search_card(
 # ── Download orchestration ────────────────────────────────────────────────────
 
 
-async def _run_download(
-    request_app_state: Any,
+async def _download_shards(
     downloads: list[DownloadState],
     registry: Registry,
     config: ManagerConfig,
     model_id: str,
     hf_repo: str,
-    shard_files: list[str],
+    shard_states: list[DownloadState],
     expected_sha256: str,
 ) -> None:
-    """Background task — downloads every shard, then marks the entry
-    downloaded=True. Mirrors app.py's App._do_download exactly."""
-    total = len(shard_files)
-    shard_states: list[DownloadState] = []
-    for idx, hf_filename in enumerate(shard_files):
-        label = f"{model_id} [{idx + 1}/{total}]" if total > 1 else model_id
-        ds = DownloadState(
-            model_id=label, hf_repo=hf_repo, hf_filename=hf_filename, status="queued"
-        )
-        shard_states.append(ds)
-        downloads.append(ds)
+    """Background task — downloads every not-yet-done shard in *shard_states*,
+    then marks the registry entry downloaded=True. Mirrors app.py's
+    App._do_download exactly, extended for pause/resume (RM-48 follow-up):
 
-    first_dest: Path | None = None
+    - A shard already status=="done" (from an earlier pause/resume cycle) is
+      skipped rather than re-downloaded.
+    - A shard status=="paused" is resumed via download_model(resume=True),
+      which continues its partial file with an HTTP Range request rather
+      than restarting from byte 0.
+    - A pause mid-sequence stops without touching any shard still "queued"
+      after it — a later resume call picks the sequence back up from there.
+    """
+    total = len(shard_states)
     for ds in shard_states:
+        if ds.status == "done":
+            continue
         if ds.cancel_requested:
             ds.status = "cancelled"
             continue
+
+        resume = ds.status == "paused"
+        ds.pause_requested = False
 
         def on_progress(state: DownloadState, _ds: DownloadState = ds) -> None:
             _ds.total_bytes = state.total_bytes
@@ -201,9 +207,11 @@ async def _run_download(
             _ds.eta_seconds = state.eta_seconds
             if _ds.cancel_requested:
                 state.cancel_requested = True
+            if _ds.pause_requested:
+                state.pause_requested = True
 
         try:
-            dest = await asyncio.to_thread(
+            await asyncio.to_thread(
                 download_model,
                 model_id=ds.model_id,
                 hf_repo=hf_repo,
@@ -213,6 +221,7 @@ async def _run_download(
                 expected_sha256=(expected_sha256 or None) if total == 1 else None,
                 on_progress=on_progress,
                 ca_bundle=config.resolved_ca_bundle,
+                resume=resume,
             )
         except DownloadError as exc:
             ds.status = "failed"
@@ -222,16 +231,44 @@ async def _run_download(
                     remaining.status = "cancelled"
             return
 
-        if ds.status != "cancelled" and first_dest is None:
-            first_dest = dest
+        if ds.status == "paused":
+            return  # stop the sequence here — a later /resume continues it
         if ds.status == "cancelled":
             for remaining in shard_states:
                 if remaining.status == "queued":
                     remaining.status = "cancelled"
             return
 
-    if all(s.status == "done" for s in shard_states) and first_dest is not None:
-        registry.update(model_id, downloaded=True, path=str(first_dest))
+    if all(s.status == "done" for s in shard_states):
+        first_path = config.resolved_downloads_dir / shard_states[0].hf_filename
+        registry.update(model_id, downloaded=True, path=str(first_path))
+
+
+async def _kick_download(
+    downloads: list[DownloadState],
+    registry: Registry,
+    config: ManagerConfig,
+    model_id: str,
+    hf_repo: str,
+    shard_files: list[str],
+    expected_sha256: str,
+) -> None:
+    """Fresh download — builds new DownloadState entries for every shard and
+    starts the sequence from the beginning."""
+    total = len(shard_files)
+    shard_states = [
+        DownloadState(
+            model_id=f"{model_id} [{idx + 1}/{total}]" if total > 1 else model_id,
+            hf_repo=hf_repo,
+            hf_filename=hf_filename,
+            status="queued",
+        )
+        for idx, hf_filename in enumerate(shard_files)
+    ]
+    downloads.extend(shard_states)
+    await _download_shards(
+        downloads, registry, config, model_id, hf_repo, shard_states, expected_sha256
+    )
 
 
 @router.post("/v1/models/downloads", tags=["models"], status_code=202)
@@ -316,8 +353,7 @@ async def start_download(
 
         downloads = _downloads_list(request)
         asyncio.create_task(
-            _run_download(
-                request.app.state,
+            _kick_download(
                 downloads,
                 registry,
                 config,
@@ -392,8 +428,7 @@ async def retry_download(
 
         shard_files = list(entry.hf_filenames) if entry.hf_filenames else [entry.hf_filename]
         asyncio.create_task(
-            _run_download(
-                request.app.state,
+            _kick_download(
                 downloads,
                 registry,
                 config,
@@ -405,6 +440,63 @@ async def retry_download(
         )
         span.set_attribute("http.status_code", 202)
         return {"model_id": model_id, "shard_count": len(shard_files)}
+
+
+@router.post("/v1/models/downloads/{model_id}/pause", tags=["models"])
+async def pause_download(
+    model_id: str,
+    request: Request,
+    _claims: Annotated[Claims, Depends(require_backend_registry_write)],
+) -> dict[str, Any]:
+    """Pause an in-progress download — keeps the partial file (unlike cancel)
+    so a later /resume call can continue it via an HTTP Range request."""
+    downloads = _downloads_list(request)
+    matches = _matching(downloads, model_id)
+    active = [ds for ds in matches if ds.status in _ACTIVE_STATUSES]
+    if not active:
+        raise _problem(
+            409,
+            "lifecycle-conflict",
+            "Lifecycle Conflict",
+            f"{model_id!r} is not currently downloading.",
+        )
+    for ds in active:
+        ds.pause_requested = True
+    return {"paused": [ds.model_id for ds in active]}
+
+
+@router.post("/v1/models/downloads/{model_id}/resume", tags=["models"], status_code=202)
+async def resume_download(
+    model_id: str,
+    request: Request,
+    _claims: Annotated[Claims, Depends(require_backend_registry_write)],
+) -> dict[str, Any]:
+    """Continue a paused download from where it left off — a real HTTP Range
+    resume for the paused shard, then any remaining queued shards in order."""
+    with _tracer.start_as_current_span("models.download.resume", kind=SpanKind.INTERNAL) as span:
+        span.set_attribute("model_id", model_id)
+        registry: Registry = request.app.state.registry
+        config: ManagerConfig = request.app.state.config
+        entry = registry.get(model_id)
+        if entry is None or not entry.hf_repo:
+            span.set_attribute("http.status_code", 404)
+            raise _problem(
+                404, "not-found", "Not Found", f"No downloadable model registered as {model_id!r}."
+            )
+
+        downloads = _downloads_list(request)
+        matches = _matching(downloads, model_id)
+        if not any(ds.status == "paused" for ds in matches):
+            span.set_attribute("http.status_code", 404)
+            raise _problem(404, "not-found", "Not Found", f"No paused download for {model_id!r}.")
+
+        asyncio.create_task(
+            _download_shards(
+                downloads, registry, config, model_id, entry.hf_repo, matches, entry.hf_sha256
+            )
+        )
+        span.set_attribute("http.status_code", 202)
+        return {"model_id": model_id}
 
 
 @router.delete("/v1/models/{model_id}/downloaded", tags=["models"], status_code=204)
