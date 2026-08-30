@@ -163,7 +163,7 @@ export default function Models() {
   const [node, setNode] = useState("");
   const selectedNode = node || nodes[0] || "";
 
-  const [tab, setTab] = useState<Tab>("discover");
+  const [tab, setTab] = useState<Tab>("library");
   const [settingsOpen, setSettingsOpen] = useState(false);
 
   const [query, setQuery] = useState("");
@@ -253,18 +253,6 @@ export default function Models() {
             <div className="mt-4 flex gap-2 border-b border-border">
               <button
                 type="button"
-                onClick={() => setTab("discover")}
-                className={cn(
-                  "border-b-2 px-3 py-2 text-sm font-medium",
-                  tab === "discover"
-                    ? "border-primary text-text"
-                    : "border-transparent text-text-muted hover:text-text",
-                )}
-              >
-                Discover
-              </button>
-              <button
-                type="button"
                 onClick={() => setTab("library")}
                 className={cn(
                   "border-b-2 px-3 py-2 text-sm font-medium",
@@ -277,6 +265,18 @@ export default function Models() {
                 {downloadedModels.length > 0 && (
                   <span className="ml-1.5 text-xs text-text-muted">({downloadedModels.length})</span>
                 )}
+              </button>
+              <button
+                type="button"
+                onClick={() => setTab("discover")}
+                className={cn(
+                  "border-b-2 px-3 py-2 text-sm font-medium",
+                  tab === "discover"
+                    ? "border-primary text-text"
+                    : "border-transparent text-text-muted hover:text-text",
+                )}
+              >
+                Discover
               </button>
             </div>
 
