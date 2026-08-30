@@ -297,6 +297,29 @@ def _uptime_s(ps: ProcessState) -> float:
     return float((now - ps.started_at).total_seconds())
 
 
+def _file_size_bytes(entry: dict[str, Any]) -> int | None:
+    """Total on-disk size of a downloaded model's file(s) — RM-48 follow-up.
+
+    Sums every shard for a multi-part model (hf_filenames), all resolved
+    relative to the single `path` field's own directory rather than
+    reaching into ManagerConfig, so _merge() stays self-contained. None
+    when the entry isn't downloaded, has no path, or a file is missing
+    (e.g. deleted out-of-band) — the admin dashboard shows that as "?".
+    """
+    path = entry.get("path")
+    if not entry.get("downloaded") or not path:
+        return None
+    base_dir = Path(path).parent
+    filenames = entry.get("hf_filenames") or [Path(path).name]
+    total = 0
+    try:
+        for filename in filenames:
+            total += (base_dir / filename).stat().st_size
+    except OSError:
+        return None
+    return total
+
+
 def _merge(
     entry: dict[str, Any],
     ps: ProcessState | str | None,
@@ -318,6 +341,7 @@ def _merge(
     that's simply never been started ("stopped" either way).
     """
     result: dict[str, Any] = dict(entry)
+    result["file_size_bytes"] = _file_size_bytes(entry)
     # Rewrite backend_url for container consumers when proxy_host is set.
     if proxy_host and result.get("backend_url"):
         result["backend_url"] = (

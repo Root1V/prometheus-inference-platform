@@ -85,6 +85,63 @@ def _clear_overrides() -> None:
 _HEADERS = {"Authorization": "Bearer dummy"}
 
 
+# ── GET/PATCH /v1/models/config ──────────────────────────────────────────────
+
+
+class TestModelsConfig:
+    def test_get_requires_auth(self, tmp_path: Path):
+        client = _make_client(tmp_path)
+        resp = client.get("/v1/models/config")
+        assert resp.status_code == 401
+
+    def test_get_returns_current_downloads_dir(self, tmp_path: Path):
+        client = _authed_read(_make_client(tmp_path))
+        try:
+            resp = client.get("/v1/models/config", headers=_HEADERS)
+        finally:
+            _clear_overrides()
+        assert resp.status_code == 200
+        assert resp.json()["downloads_dir"] == str(tmp_path / "models")
+
+    def test_patch_requires_auth(self, tmp_path: Path):
+        client = _make_client(tmp_path)
+        resp = client.patch("/v1/models/config", json={"downloads_dir": "/tmp/x"})
+        assert resp.status_code == 401
+
+    def test_patch_updates_downloads_dir(self, tmp_path: Path):
+        client = _authed_write(_make_client(tmp_path))
+        try:
+            resp = client.patch(
+                "/v1/models/config",
+                json={"downloads_dir": "/new/models/path"},
+                headers=_HEADERS,
+            )
+        finally:
+            _clear_overrides()
+        assert resp.status_code == 200
+        assert resp.json()["downloads_dir"] == "/new/models/path"
+        assert app.state.config.downloads.dir == "/new/models/path"
+
+    def test_patch_rejects_empty_downloads_dir(self, tmp_path: Path):
+        client = _authed_write(_make_client(tmp_path))
+        try:
+            resp = client.patch("/v1/models/config", json={"downloads_dir": "  "}, headers=_HEADERS)
+        finally:
+            _clear_overrides()
+        assert resp.status_code == 400
+
+    def test_patch_updates_hf_token_env(self, tmp_path: Path):
+        client = _authed_write(_make_client(tmp_path))
+        try:
+            resp = client.patch(
+                "/v1/models/config", json={"hf_token_env": "MY_HF_TOKEN"}, headers=_HEADERS
+            )
+        finally:
+            _clear_overrides()
+        assert resp.status_code == 200
+        assert resp.json()["hf_token_env"] == "MY_HF_TOKEN"
+
+
 # ── GET /v1/models/search[/files|/card] ──────────────────────────────────────
 
 

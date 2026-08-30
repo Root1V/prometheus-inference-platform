@@ -10,6 +10,8 @@ POST   /v1/models/downloads/{id}/pause  — keeps the partial file (unlike cance
 POST   /v1/models/downloads/{id}/resume — continues via HTTP Range, not from byte 0
 POST   /v1/models/downloads/{id}/retry — restart from scratch
 DELETE /v1/models/{id}/downloaded      — delete the on-disk file(s) + deregister
+GET    /v1/models/config               — current download settings (downloads dir, etc.)
+PATCH  /v1/models/config               — update them (in-memory only, this session)
 
 Implements: docs/roadmap.md — RM-48 (Models page: discover/download/manage)
 
@@ -161,6 +163,54 @@ async def search_card(
             raise _problem(502, "hf-card-failed", "Model Card Fetch Failed", str(exc)) from exc
         span.set_attribute("http.status_code", 200)
         return card
+
+
+# ── GET/PATCH /v1/models/config ──────────────────────────────────────────────
+
+
+def _serialize_config(config: ManagerConfig) -> dict[str, Any]:
+    return {
+        "downloads_dir": config.downloads.dir,
+        "hf_token_env": config.downloads.hf_token_env,
+        "ca_bundle": config.downloads.ca_bundle,
+    }
+
+
+@router.get("/v1/models/config", tags=["models"])
+async def get_models_config(
+    request: Request,
+    _claims: Annotated[Claims, Depends(require_backend_registry_read)],
+) -> dict[str, Any]:
+    return _serialize_config(request.app.state.config)
+
+
+@router.patch("/v1/models/config", tags=["models"])
+async def update_models_config(
+    body: dict[str, Any],
+    request: Request,
+    _claims: Annotated[Claims, Depends(require_backend_registry_write)],
+) -> dict[str, Any]:
+    """Update download settings for the running manager process.
+
+    In-memory only — takes effect immediately for any download started
+    after this call, but does not persist past a restart: manager.toml
+    isn't rewritten here, since the running config has no reliable way to
+    know which file (if any) it was originally loaded from. Edit
+    manager.toml directly for a change that survives a restart.
+    """
+    config: ManagerConfig = request.app.state.config
+    if "downloads_dir" in body:
+        new_dir = str(body["downloads_dir"]).strip()
+        if not new_dir:
+            raise _problem(
+                400, "invalid-config", "Invalid Config", "downloads_dir cannot be empty."
+            )
+        config.downloads.dir = new_dir
+    if "hf_token_env" in body:
+        config.downloads.hf_token_env = str(body["hf_token_env"]).strip() or "HF_TOKEN"
+    if "ca_bundle" in body:
+        config.downloads.ca_bundle = str(body["ca_bundle"]).strip()
+    return _serialize_config(config)
 
 
 # ── Download orchestration ────────────────────────────────────────────────────

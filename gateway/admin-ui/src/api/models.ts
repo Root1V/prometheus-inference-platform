@@ -6,9 +6,11 @@ import type {
   HfFile,
   HfModelCard,
   HfSearchResult,
+  ModelsConfig,
   ModelSort,
   StartDownloadRequest,
   StartDownloadResult,
+  UpdateModelsConfigRequest,
 } from "../types/models";
 
 const DOWNLOADS_POLL_MS = 2000;
@@ -88,6 +90,25 @@ export const useCancelDownload = () => useDownloadAction("cancel");
 export const usePauseDownload = () => useDownloadAction("pause");
 export const useResumeDownload = () => useDownloadAction("resume");
 export const useRetryDownload = () => useDownloadAction("retry");
+
+const MODELS_CONFIG_KEY = ["models-config"] as const;
+
+export function useModelsConfig(node: string) {
+  return useQuery({
+    queryKey: [...MODELS_CONFIG_KEY, node] as const,
+    queryFn: async () => (await apiClient.get<ModelsConfig>(`/nodes/${node}/models/config`)).data,
+    enabled: node.length > 0,
+  });
+}
+
+export function useUpdateModelsConfig() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async ({ node, data }: { node: string; data: UpdateModelsConfigRequest }) =>
+      (await apiClient.patch<ModelsConfig>(`/nodes/${node}/models/config`, data)).data,
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: MODELS_CONFIG_KEY }),
+  });
+}
 
 export function useDeleteDownloadedModel() {
   const queryClient = useQueryClient();

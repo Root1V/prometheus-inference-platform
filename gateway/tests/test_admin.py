@@ -627,6 +627,52 @@ async def test_delete_downloaded_model_proxies_to_node(gw, rsa_keys):
     assert resp.status_code == 204
 
 
+async def test_get_models_config_proxies_to_node(gw, rsa_keys):
+    with respx.mock:
+        _mock_nodes(("mac", NODE_URL))
+        _mock_manager_token()
+        respx.get(f"{NODE_URL}/v1/models/config").mock(
+            return_value=Response(
+                200,
+                json={
+                    "downloads_dir": "runtime/models",
+                    "hf_token_env": "HF_TOKEN",
+                    "ca_bundle": "",
+                },
+            )
+        )
+        resp = await gw.get(
+            "/admin/api/nodes/mac/models/config", headers=_headers(rsa_keys, "admin:read")
+        )
+    assert resp.status_code == 200
+    assert resp.json()["downloads_dir"] == "runtime/models"
+
+
+async def test_update_models_config_requires_admin_write(gw, rsa_keys):
+    resp = await gw.patch(
+        "/admin/api/nodes/mac/models/config",
+        json={"downloads_dir": "/x"},
+        headers=_headers(rsa_keys, "admin:read"),
+    )
+    assert resp.status_code == 403
+
+
+async def test_update_models_config_proxies_to_node(gw, rsa_keys):
+    with respx.mock:
+        _mock_nodes(("mac", NODE_URL))
+        _mock_manager_token()
+        respx.patch(f"{NODE_URL}/v1/models/config").mock(
+            return_value=Response(200, json={"downloads_dir": "/new/path"})
+        )
+        resp = await gw.patch(
+            "/admin/api/nodes/mac/models/config",
+            json={"downloads_dir": "/new/path"},
+            headers=_headers(rsa_keys, "admin:write"),
+        )
+    assert resp.status_code == 200
+    assert resp.json()["downloads_dir"] == "/new/path"
+
+
 # ── POST /admin/api/nodes/{node}/instances/{id}/{action} ─────────────────────
 
 

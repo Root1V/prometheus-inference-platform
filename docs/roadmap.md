@@ -1628,6 +1628,44 @@ environment alone has 29 downloaded models).
 - Frontend: `usePauseDownload`/`useResumeDownload` hooks; `DownloadRow` shows Pause+Cancel
   while active, Resume while paused (amber progress bar/status for the paused state).
 
+**Follow-up**: UX/UI redesign — the page worked but felt cramped and under-featured next to
+LM Studio/Ollama (researched via web search: LM Studio's right-side detail panel on model
+selection and flat model directory; Ollama's env-var-driven storage path and third-party
+download-manager GUIs). Four asks, all shipped:
+- **Settings**: gear button opens `ModelSettingsModal.tsx`, backed by new `GET`/`PATCH
+  /v1/models/config` on manager-api (downloads dir, HF token env var, CA bundle) proxied
+  through the gateway at `/admin/api/nodes/{node}/models/config`. Deliberately in-memory
+  only — `ManagerConfig` retains no reference to the TOML path it was loaded from, so
+  persisting to disk was out of scope for this pass; the modal says so explicitly ("changes
+  apply immediately... aren't written to manager.toml").
+- **Downloaded models as a real table**: `DownloadedModelsTable.tsx` (Name, Modality,
+  Family, Quantization, Context, Size, Status, Actions), replacing the old plain list.
+  Size comes from a new `file_size_bytes` field on `InstanceEntry`, computed server-side by
+  `_file_size_bytes()` in manager-api's `routes.py` (sums shard file sizes on disk, `None`
+  if not downloaded or a file's missing — never raises).
+- **Click-to-preview**: clicking a row opens `ModelPreviewPanel.tsx` on the right —
+  metadata (family/backend/context/size/port/node) plus the model card, via a new shared
+  `ModelCardView.tsx` (also reused by the Discover tab's existing card toggle, so both
+  render identically off one `useModelCard` call).
+- **Layout**: page restructured into "Discover"/"Library" tabs (`Models.tsx`) — Discover
+  keeps search/files/downloads but now spans 3 columns on wide screens instead of 2;
+  Library is the new table, full width, with the preview panel sliding in beside it. Gear
+  button and node picker moved to a shared header above the tabs.
+- New `Badge.tsx` (generic pill + `ModalityBadge` with per-modality tone) reused across the
+  table and preview panel; `formatBytes` moved from `Models.tsx` into `lib/format.ts` so
+  both the table and the existing download-progress rows share one implementation.
+- **Real bug caught before ship**: the new `PATCH .../models/config` gateway route 502'd
+  because Starlette matched the pre-existing wildcard `PATCH .../models/{model_id}` route
+  first (registered earlier) — literal "config" was being treated as a `model_id` and
+  proxied to a nonexistent manager-api endpoint. Fixed by registering the two new
+  `/models/config` routes before the wildcard PATCH/DELETE routes, with a comment to
+  prevent regression.
+- **Verified**: full `.githooks/pre-push` green (all Python packages + admin-ui build/lint
+  + 121 bash tests). Live in the browser against the real local demo stack (30 downloaded
+  models from `registry.yaml`): tab switching, settings modal loading/saving real config,
+  table rendering real modality/family/quant/size/status per model, row-click preview with
+  a real Hugging Face model card, Discover search/file-list/download unaffected.
+
 **Verified**: `downloader.py` — new tests for pause-keeps-partial-file, resume sends the
 correct `Range` header and appends, resume with nothing on disk behaves like a fresh
 download, and resume falls back to a full restart when the server ignores Range (200

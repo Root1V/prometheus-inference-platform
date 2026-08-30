@@ -59,3 +59,11 @@ export interface StartDownloadResult {
   hf_repo: string;
   shard_count: number;
 }
+
+export interface ModelsConfig {
+  downloads_dir: string;
+  hf_token_env: string;
+  ca_bundle: string;
+}
+
+export type UpdateModelsConfigRequest = Partial<ModelsConfig>;

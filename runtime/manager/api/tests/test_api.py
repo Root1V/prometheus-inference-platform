@@ -311,3 +311,106 @@ class TestErrorState:
         backend = resp.json()["backends"][0]
         assert backend["state"] == "stopped"
         assert backend["error_message"] is None
+
+
+class TestFileSizeBytes:
+    """RM-48 follow-up: file_size_bytes on /v1/backends entries, for the
+    admin dashboard's Downloaded models table."""
+
+    def _client(self, tmp_path: Path, entry: RegistryEntry) -> TestClient:
+        reg = Registry(tmp_path / "registry.yaml")
+        reg.add(entry)
+        app.state.registry = reg
+        app.state.pid_dir = tmp_path / "run"
+        client = TestClient(app, raise_server_exceptions=True)
+        app.dependency_overrides[require_backend_registry_read] = lambda: {
+            "sub": "gateway",
+            "scope": "backend-registry:read",
+        }
+        return client
+
+    def test_downloaded_single_file_reports_real_size(self, tmp_path: Path):
+        gguf = tmp_path / "model.gguf"
+        gguf.write_bytes(b"x" * 12345)
+        client = self._client(
+            tmp_path,
+            RegistryEntry(
+                id="downloaded-model",
+                path=str(gguf),
+                port=8080,
+                context_length=4096,
+                downloaded=True,
+                discovery=True,
+            ),
+        )
+        try:
+            with patch("prometheus_manager_api.routes.scan", return_value=[]):
+                resp = client.get("/v1/backends", headers={"Authorization": "Bearer valid"})
+        finally:
+            app.dependency_overrides.pop(require_backend_registry_read, None)
+
+        assert resp.json()["backends"][0]["file_size_bytes"] == 12345
+
+    def test_downloaded_sharded_model_sums_all_shards(self, tmp_path: Path):
+        (tmp_path / "m-00001-of-00002.gguf").write_bytes(b"a" * 1000)
+        (tmp_path / "m-00002-of-00002.gguf").write_bytes(b"b" * 2000)
+        client = self._client(
+            tmp_path,
+            RegistryEntry(
+                id="sharded-model",
+                path=str(tmp_path / "m-00001-of-00002.gguf"),
+                port=8080,
+                context_length=4096,
+                downloaded=True,
+                discovery=True,
+                hf_filenames=["m-00001-of-00002.gguf", "m-00002-of-00002.gguf"],
+            ),
+        )
+        try:
+            with patch("prometheus_manager_api.routes.scan", return_value=[]):
+                resp = client.get("/v1/backends", headers={"Authorization": "Bearer valid"})
+        finally:
+            app.dependency_overrides.pop(require_backend_registry_read, None)
+
+        assert resp.json()["backends"][0]["file_size_bytes"] == 3000
+
+    def test_not_downloaded_reports_none(self, tmp_path: Path):
+        client = self._client(
+            tmp_path,
+            RegistryEntry(
+                id="not-downloaded",
+                path="/models/never-downloaded.gguf",
+                port=8080,
+                context_length=4096,
+                discovery=True,
+            ),
+        )
+        try:
+            with patch("prometheus_manager_api.routes.scan", return_value=[]):
+                resp = client.get("/v1/backends", headers={"Authorization": "Bearer valid"})
+        finally:
+            app.dependency_overrides.pop(require_backend_registry_read, None)
+
+        assert resp.json()["backends"][0]["file_size_bytes"] is None
+
+    def test_missing_file_reports_none_not_error(self, tmp_path: Path):
+        """downloaded=True but the file was deleted out-of-band — don't 500."""
+        client = self._client(
+            tmp_path,
+            RegistryEntry(
+                id="missing-file",
+                path=str(tmp_path / "deleted.gguf"),
+                port=8080,
+                context_length=4096,
+                downloaded=True,
+                discovery=True,
+            ),
+        )
+        try:
+            with patch("prometheus_manager_api.routes.scan", return_value=[]):
+                resp = client.get("/v1/backends", headers={"Authorization": "Bearer valid"})
+        finally:
+            app.dependency_overrides.pop(require_backend_registry_read, None)
+
+        assert resp.status_code == 200
+        assert resp.json()["backends"][0]["file_size_bytes"] is None

@@ -16,6 +16,9 @@ export interface InstanceEntry {
   downloaded: boolean;
   discovery: boolean;
   rss_estimate_mb: number | null;
+  /** On-disk size of the downloaded file(s), summed across shards — null if
+   * not downloaded, or the file is missing. See routes.py's _merge(). */
+  file_size_bytes: number | null;
   backend_url: string;
   hf_repo: string;
   hf_filename: string;

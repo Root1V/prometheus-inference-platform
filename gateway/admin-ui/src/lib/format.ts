@@ -15,6 +15,14 @@ export function formatAgo(seconds: number): string {
   return `${hours}h ago`;
 }
 
+/** Formats a byte count as e.g. "1.2 GB", or "—" for null/unknown. */
+export function formatBytes(n: number | null): string {
+  if (n === null || n <= 0) return n === null ? "—" : "0 B";
+  const units = ["B", "KB", "MB", "GB"];
+  const i = Math.min(units.length - 1, Math.floor(Math.log(n) / Math.log(1024)));
+  return `${(n / 1024 ** i).toFixed(1)} ${units[i]}`;
+}
+
 /** Formats a USD cost, or "—" for null (docs/roadmap.md RM-33: null means "no price configured"). */
 export function formatUsdCost(cost: number | null): string {
   if (cost === null) return "—";

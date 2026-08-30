@@ -28,6 +28,8 @@ POST   /admin/api/nodes/{node}/models/downloads/{model_id}/pause
 POST   /admin/api/nodes/{node}/models/downloads/{model_id}/resume
 POST   /admin/api/nodes/{node}/models/downloads/{model_id}/retry
 DELETE /admin/api/nodes/{node}/models/{model_id}/downloaded    — delete file + deregister
+GET    /admin/api/nodes/{node}/models/config                  — current download settings
+PATCH  /admin/api/nodes/{node}/models/config                  — update them (this session)
 POST   /admin/api/nodes/{node}/instances/{model_id}/start
 POST   /admin/api/nodes/{node}/instances/{model_id}/stop
 POST   /admin/api/nodes/{node}/instances/{model_id}/restart
@@ -250,6 +252,44 @@ def create_admin_router(manager_client: ManagerApiClient) -> APIRouter:
 
         try:
             resp = await manager_client.post(node_url, "/v1/backends", json=body)
+        except Exception as exc:
+            return _proxy_error_response(request, exc)
+        return _passthrough(resp)
+
+    # RM-48 follow-up: these two literal /models/config routes MUST be
+    # registered before the wildcard PATCH/DELETE /models/{model_id} routes
+    # below — Starlette matches path routes in registration order, so a
+    # wildcard segment registered first would swallow the literal "config"
+    # as if it were a model_id (confirmed by a real 502 in testing before
+    # this was moved here).
+    @router.get("/admin/api/nodes/{node}/models/config")
+    async def get_models_config_proxy(node: str, request: Request) -> Response:
+        if (forbidden := _require_scope(request, "admin:read")) is not None:
+            return forbidden
+        node_url = await _resolve_node(request, node)
+        if node_url is None:
+            return _problem(
+                request, 400, "unknown-node", "Unknown Node", f"Node {node!r} is not configured."
+            )
+        try:
+            resp = await manager_client.get(node_url, "/v1/models/config")
+        except Exception as exc:
+            return _proxy_error_response(request, exc)
+        return _passthrough(resp)
+
+    @router.patch("/admin/api/nodes/{node}/models/config")
+    async def update_models_config_proxy(
+        node: str, body: dict[str, Any], request: Request
+    ) -> Response:
+        if (forbidden := _require_scope(request, "admin:write")) is not None:
+            return forbidden
+        node_url = await _resolve_node(request, node)
+        if node_url is None:
+            return _problem(
+                request, 400, "unknown-node", "Unknown Node", f"Node {node!r} is not configured."
+            )
+        try:
+            resp = await manager_client.patch(node_url, "/v1/models/config", json=body)
         except Exception as exc:
             return _proxy_error_response(request, exc)
         return _passthrough(resp)
