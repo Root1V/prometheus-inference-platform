@@ -68,7 +68,9 @@ export function ModelPreviewPanel({
             Model card
           </h3>
           {model.hf_repo ? (
-            <ModelCardView node={node} repoId={model.hf_repo} />
+            <div className="max-h-96 overflow-y-auto rounded-lg border border-border bg-background p-3">
+              <ModelCardView node={node} repoId={model.hf_repo} />
+            </div>
           ) : (
             <p className="text-sm text-text-muted">No source repository recorded for this model.</p>
           )}
