@@ -1666,6 +1666,36 @@ download-manager GUIs). Four asks, all shipped:
   table rendering real modality/family/quant/size/status per model, row-click preview with
   a real Hugging Face model card, Discover search/file-list/download unaffected.
 
+**Follow-up**: three small Library-tab requests — a row index, sortable columns, and an
+edit action — plus resolving where a model's name can be set at all.
+- **Row index**: `DownloadedModelsTable.tsx` gained a leading `#` column, numbered by
+  current sort order (matches `InstanceTable.tsx`'s existing `rowNumber` pattern).
+- **Sortable columns**: Modality/Family/Size/Status headers are now click-to-sort buttons
+  (`ArrowUp`/`ArrowDown`/`ArrowUpDown` from lucide, toggling asc/desc on repeat clicks),
+  sorted client-side with a `useMemo` — no new API surface needed since the full list is
+  already in memory.
+- **Rename question resolved with the user**: this repo already made a deliberate call
+  that a model's `id` is not editable in place (`RegisterModelModal.tsx`'s comment: "moving
+  a model to a different node or renaming it isn't a field edit, it's a re-registration" —
+  enforced server-side too, `_UPDATABLE_FIELDS` in manager-api's `control.py` excludes
+  `id`). Rather than break that, the resolution is mixed: a name can only be *chosen* at
+  download time (Discover tab gained a "Model name (optional)" field, passed as the
+  already-supported-but-unexposed `model_id` on `StartDownloadRequest` — the backend has
+  taken this field since RM-48 shipped, the UI just never had an input for it); once
+  downloaded, only other fields are editable.
+- **Edit action**: reused `RegisterModelModal` in its existing edit mode (`editing` prop)
+  rather than building a new modal — it already disables node/ID and edits everything else
+  (family, quantization, backend, modality, context length, path, discovery). Wired a
+  `Pencil` button next to Delete in each row. Hit the same lazy-`useState`-only-runs-once
+  bug the Instances page had already solved: without a `key={editingModel?.id}` on the
+  modal, editing model A then model B reused A's stale form state. Fixed by copying
+  `Dashboard.tsx`'s existing `key`-per-instance pattern.
+- **Verified**: full `.githooks/pre-push` green. Live in the browser: sorted by size and
+  status and confirmed order/arrows update; edited a real downloaded model's family field
+  end-to-end (confirmed the table cell changed, then reverted it); confirmed the edit modal
+  correctly reset between two different models (the bug above); typed a custom name into
+  the new Discover-tab field and confirmed it renders next to the file list.
+
 **Verified**: `downloader.py` — new tests for pause-keeps-partial-file, resume sends the
 correct `Range` header and appends, resume with nothing on disk behaves like a fresh
 download, and resume falls back to a full restart when the server ignores Range (200

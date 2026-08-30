@@ -16,11 +16,13 @@ import { DownloadedModelsTable } from "../components/DownloadedModelsTable";
 import { ModelCardView } from "../components/ModelCardView";
 import { ModelPreviewPanel } from "../components/ModelPreviewPanel";
 import { ModelSettingsModal } from "../components/ModelSettingsModal";
+import { RegisterModelModal } from "../components/RegisterModelModal";
 import { Sidebar } from "../components/Sidebar";
 import { useToast } from "../context/ToastContext";
 import { cn } from "../lib/cn";
 import { getErrorMessage } from "../lib/errors";
 import { formatBytes } from "../lib/format";
+import type { InstanceEntry } from "../types/instance";
 import type { DownloadEntry, ModelSort } from "../types/models";
 
 const inputClass =
@@ -171,8 +173,10 @@ export default function Models() {
   const [sort, setSort] = useState<ModelSort | "">("");
   const [selectedRepo, setSelectedRepo] = useState("");
   const [showCard, setShowCard] = useState(false);
+  const [customModelId, setCustomModelId] = useState("");
 
   const [previewId, setPreviewId] = useState<string | null>(null);
+  const [editingModel, setEditingModel] = useState<InstanceEntry | null>(null);
 
   const searchQuery = useModelSearch(selectedNode, searchTerm, sort);
   const filesQuery = useModelFiles(selectedNode, selectedRepo);
@@ -187,12 +191,14 @@ export default function Models() {
     setSearchTerm(query.trim());
     setSelectedRepo("");
     setShowCard(false);
+    setCustomModelId("");
   }
 
   function handleDownload(filename: string) {
     if (!selectedNode) return;
+    const modelId = customModelId.trim();
     startDownload.mutate(
-      { node: selectedNode, data: { repo_id: selectedRepo, filename } },
+      { node: selectedNode, data: { repo_id: selectedRepo, filename, ...(modelId ? { model_id: modelId } : {}) } },
       {
         onSuccess: (result) => showToast(`Downloading ${result.model_id}…`, "success"),
         onError: (e) => showToast(getErrorMessage(e), "error"),
@@ -337,6 +343,7 @@ export default function Models() {
                         onClick={() => {
                           setSelectedRepo(r.id);
                           setShowCard(false);
+                          setCustomModelId("");
                         }}
                         className={cn(
                           "block w-full rounded-lg px-3 py-2 text-left text-sm hover:bg-background",
@@ -371,6 +378,21 @@ export default function Models() {
                           <ModelCardView node={selectedNode} repoId={selectedRepo} />
                         </div>
                       )}
+
+                      <label className="mb-3 block text-sm text-text">
+                        <span className="mb-1 block text-xs font-medium text-text-muted">
+                          Model name (optional)
+                        </span>
+                        <input
+                          value={customModelId}
+                          onChange={(e) => setCustomModelId(e.target.value)}
+                          placeholder="Auto-generated if left blank"
+                          className={inputClass}
+                        />
+                        <span className="mt-1 block text-xs text-text-muted">
+                          Only settable now — once downloaded, the name can't be changed.
+                        </span>
+                      </label>
 
                       <div className="max-h-[24rem] space-y-1 overflow-y-auto">
                         {filesQuery.isLoading && (
@@ -431,6 +453,7 @@ export default function Models() {
                     node={selectedNode}
                     selectedId={previewId}
                     onSelect={(m) => setPreviewId(m.id === previewId ? null : m.id)}
+                    onEdit={setEditingModel}
                   />
                 </div>
                 {previewModel && (
@@ -447,6 +470,13 @@ export default function Models() {
       </main>
 
       <ModelSettingsModal open={settingsOpen} node={selectedNode} onClose={() => setSettingsOpen(false)} />
+      <RegisterModelModal
+        key={editingModel?.id ?? "none"}
+        open={editingModel !== null}
+        nodes={editingModel ? [editingModel.node] : []}
+        editing={editingModel}
+        onClose={() => setEditingModel(null)}
+      />
     </div>
   );
 }
