@@ -133,7 +133,12 @@ class Registry:
         self._save()
 
     def reload(self) -> None:
-        self._load()
+        """Re-read from disk — a no-op (stays empty) if the file doesn't exist
+        yet, matching __init__'s own "only load if path.exists()" behavior.
+        Without this guard, calling reload() before the very first model is
+        ever added (registry.yaml doesn't exist yet) raises FileNotFoundError."""
+        if self._path.exists():
+            self._load()
 
     # ── persistence ──────────────────────────────────────────────────────────
 

@@ -9,7 +9,7 @@ import type {
   UpdateModelRequest,
 } from "../types/instance";
 
-const INSTANCES_KEY = ["instances"] as const;
+export const INSTANCES_KEY = ["instances"] as const;
 const NODE_NAMES_KEY = ["node-names"] as const;
 const POLL_INTERVAL_MS = 5000;
 

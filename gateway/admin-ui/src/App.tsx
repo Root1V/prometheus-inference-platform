@@ -5,6 +5,7 @@ import { ToastProvider } from "./context/ToastContext";
 import Dashboard from "./routes/Dashboard";
 import Limits from "./routes/Limits";
 import Login from "./routes/Login";
+import Models from "./routes/Models";
 import Nodes from "./routes/Nodes";
 import Overview from "./routes/Overview";
 import Playground from "./routes/Playground";
@@ -38,6 +39,14 @@ export default function App() {
               element={
                 <ProtectedRoute>
                   <Dashboard />
+                </ProtectedRoute>
+              }
+            />
+            <Route
+              path="/models"
+              element={
+                <ProtectedRoute>
+                  <Models />
                 </ProtectedRoute>
               }
             />

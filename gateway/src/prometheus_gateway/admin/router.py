@@ -18,6 +18,14 @@ GET    /admin/api/instances                                 — aggregated acros
 POST   /admin/api/nodes/{node}/models                        — register
 PATCH  /admin/api/nodes/{node}/models/{model_id}               — update fields
 DELETE /admin/api/nodes/{node}/models/{model_id}              — deregister
+GET    /admin/api/nodes/{node}/models/search                 — search Hugging Face (RM-48)
+GET    /admin/api/nodes/{node}/models/search/files            — list a repo's GGUF files
+GET    /admin/api/nodes/{node}/models/search/card              — fetch a repo's model card
+POST   /admin/api/nodes/{node}/models/downloads               — register + start downloading
+GET    /admin/api/nodes/{node}/models/downloads               — list download progress
+POST   /admin/api/nodes/{node}/models/downloads/{model_id}/cancel
+POST   /admin/api/nodes/{node}/models/downloads/{model_id}/retry
+DELETE /admin/api/nodes/{node}/models/{model_id}/downloaded    — delete file + deregister
 POST   /admin/api/nodes/{node}/instances/{model_id}/start
 POST   /admin/api/nodes/{node}/instances/{model_id}/stop
 POST   /admin/api/nodes/{node}/instances/{model_id}/restart
@@ -41,6 +49,7 @@ Implements: docs/roadmap.md — RM-31 (Overview: link out to Grafana/Tempo)
 Implements: docs/roadmap.md — RM-13 (admin dashboard: live log viewer)
 Implements: docs/roadmap.md — RM-16 (routing & rate-limit visibility)
 Implements: docs/roadmap.md — RM-23 (active sessions / connected users)
+Implements: docs/roadmap.md — RM-48 (Models: discover/download/manage on Hugging Face)
 """
 
 from __future__ import annotations
@@ -273,6 +282,121 @@ def create_admin_router(manager_client: ManagerApiClient) -> APIRouter:
 
         try:
             resp = await manager_client.delete(node_url, f"/v1/backends/{model_id}")
+        except Exception as exc:
+            return _proxy_error_response(request, exc)
+        return _passthrough(resp)
+
+    # ── RM-48: Models — search Hugging Face, download, manage the lifecycle ──
+
+    @router.get("/admin/api/nodes/{node}/models/search")
+    async def search_models_proxy(node: str, request: Request, q: str) -> Response:
+        if (forbidden := _require_scope(request, "admin:read")) is not None:
+            return forbidden
+        node_url = await _resolve_node(request, node)
+        if node_url is None:
+            return _problem(
+                request, 400, "unknown-node", "Unknown Node", f"Node {node!r} is not configured."
+            )
+        try:
+            resp = await manager_client.get(node_url, "/v1/models/search", params={"q": q})
+        except Exception as exc:
+            return _proxy_error_response(request, exc)
+        return _passthrough(resp)
+
+    @router.get("/admin/api/nodes/{node}/models/search/files")
+    async def search_model_files_proxy(node: str, request: Request, repo_id: str) -> Response:
+        if (forbidden := _require_scope(request, "admin:read")) is not None:
+            return forbidden
+        node_url = await _resolve_node(request, node)
+        if node_url is None:
+            return _problem(
+                request, 400, "unknown-node", "Unknown Node", f"Node {node!r} is not configured."
+            )
+        try:
+            resp = await manager_client.get(
+                node_url, "/v1/models/search/files", params={"repo_id": repo_id}
+            )
+        except Exception as exc:
+            return _proxy_error_response(request, exc)
+        return _passthrough(resp)
+
+    @router.get("/admin/api/nodes/{node}/models/search/card")
+    async def search_model_card_proxy(node: str, request: Request, repo_id: str) -> Response:
+        if (forbidden := _require_scope(request, "admin:read")) is not None:
+            return forbidden
+        node_url = await _resolve_node(request, node)
+        if node_url is None:
+            return _problem(
+                request, 400, "unknown-node", "Unknown Node", f"Node {node!r} is not configured."
+            )
+        try:
+            resp = await manager_client.get(
+                node_url, "/v1/models/search/card", params={"repo_id": repo_id}
+            )
+        except Exception as exc:
+            return _proxy_error_response(request, exc)
+        return _passthrough(resp)
+
+    @router.post("/admin/api/nodes/{node}/models/downloads")
+    async def start_download_proxy(node: str, body: dict[str, Any], request: Request) -> Response:
+        if (forbidden := _require_scope(request, "admin:write")) is not None:
+            return forbidden
+        node_url = await _resolve_node(request, node)
+        if node_url is None:
+            return _problem(
+                request, 400, "unknown-node", "Unknown Node", f"Node {node!r} is not configured."
+            )
+        try:
+            resp = await manager_client.post(node_url, "/v1/models/downloads", json=body)
+        except Exception as exc:
+            return _proxy_error_response(request, exc)
+        return _passthrough(resp)
+
+    @router.get("/admin/api/nodes/{node}/models/downloads")
+    async def list_downloads_proxy(node: str, request: Request) -> Response:
+        if (forbidden := _require_scope(request, "admin:read")) is not None:
+            return forbidden
+        node_url = await _resolve_node(request, node)
+        if node_url is None:
+            return _problem(
+                request, 400, "unknown-node", "Unknown Node", f"Node {node!r} is not configured."
+            )
+        try:
+            resp = await manager_client.get(node_url, "/v1/models/downloads")
+        except Exception as exc:
+            return _proxy_error_response(request, exc)
+        return _passthrough(resp)
+
+    @router.post("/admin/api/nodes/{node}/models/downloads/{model_id}/{action}")
+    async def download_action_proxy(
+        node: str, model_id: str, action: str, request: Request
+    ) -> Response:
+        if action not in ("cancel", "retry"):
+            return _problem(request, 404, "not-found", "Not Found", f"Unknown action {action!r}.")
+        if (forbidden := _require_scope(request, "admin:write")) is not None:
+            return forbidden
+        node_url = await _resolve_node(request, node)
+        if node_url is None:
+            return _problem(
+                request, 400, "unknown-node", "Unknown Node", f"Node {node!r} is not configured."
+            )
+        try:
+            resp = await manager_client.post(node_url, f"/v1/models/downloads/{model_id}/{action}")
+        except Exception as exc:
+            return _proxy_error_response(request, exc)
+        return _passthrough(resp)
+
+    @router.delete("/admin/api/nodes/{node}/models/{model_id}/downloaded")
+    async def delete_downloaded_model_proxy(node: str, model_id: str, request: Request) -> Response:
+        if (forbidden := _require_scope(request, "admin:write")) is not None:
+            return forbidden
+        node_url = await _resolve_node(request, node)
+        if node_url is None:
+            return _problem(
+                request, 400, "unknown-node", "Unknown Node", f"Node {node!r} is not configured."
+            )
+        try:
+            resp = await manager_client.delete(node_url, f"/v1/models/{model_id}/downloaded")
         except Exception as exc:
             return _proxy_error_response(request, exc)
         return _passthrough(resp)

@@ -291,28 +291,15 @@ export function RegisterModelModal({ open, nodes, onClose, editing = null }: Reg
                 />
               </Field>
             )}
-            <Field label="HF repo">
-              <input
-                value={form.hf_repo}
-                onChange={(e) => update("hf_repo", e.target.value)}
-                className={inputClass}
-              />
-            </Field>
-            <Field label="HF filename">
-              <input
-                value={form.hf_filename}
-                onChange={(e) => update("hf_filename", e.target.value)}
-                className={inputClass}
-              />
-            </Field>
-            <Field label="HF sha256">
-              <input
-                value={form.hf_sha256}
-                onChange={(e) => update("hf_sha256", e.target.value)}
-                className={inputClass}
-              />
-            </Field>
           </div>
+          <p className="text-xs text-text-muted">
+            Downloading a model from Hugging Face? Use the{" "}
+            <a href="#/models" className="text-primary hover:underline">
+              Models
+            </a>{" "}
+            page instead — it searches, shows the model card, and registers the finished
+            download automatically.
+          </p>
           <label className="flex items-center gap-2 text-sm text-text">
             <input
               type="checkbox"

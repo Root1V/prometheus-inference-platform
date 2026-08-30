@@ -16,6 +16,7 @@ from prometheus_manager_core.telemetry import (
 )
 
 from .control import router as control_router
+from .discovery import router as discovery_router
 from .routes import router
 
 # Configure structlog when the API module is first loaded (idempotent — AC-24)
@@ -35,6 +36,8 @@ app.add_middleware(TraceIDMiddleware, service="manager")
 app.include_router(router)
 # RM-10: register/deregister/start/stop/restart — backend-registry:write
 app.include_router(control_router)
+# RM-48: search/download/manage models from Hugging Face
+app.include_router(discovery_router)
 
 
 @app.exception_handler(404)

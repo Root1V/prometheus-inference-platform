@@ -1498,7 +1498,7 @@ Model catalog contents (IDs, family, quantization, context length) aren't sensit
 their own — this is about whether *discoverability without credentials* is still wanted,
 not about hiding secrets. Leaning against changing it unless a concrete reason turns up.
 
-## RM-48 — Dashboard: Models page — discover, download, and manage the model lifecycle (added)
+## RM-48 — Dashboard: Models page — discover, download, and manage the model lifecycle (done)
 
 **Why**: today "Register model" (`RegisterModelModal.tsx`) is pure free-text entry — a
 local `path`, or an `hf_repo`/`hf_filename` pair typed by hand, no search, no model card,
@@ -1526,23 +1526,58 @@ choice, it's already the established one in this codebase:
   materially less relevant inventory for this platform's use case. Not worth building a
   second hub integration unless a real need for it shows up.
 
-**Scope**: this is a genuinely new *web* surface, not new *capability* — the hard parts
-(search, resumable download, progress, verification) already exist in manager-core/TUI;
-what's missing is exposing them over HTTP and building the dashboard page:
-- New `manager-api` endpoints wrapping the existing `discovery.py`/`downloader.py` logic:
-  search Hugging Face (by name/tag/library=gguf), fetch a model's card/README + metadata,
-  start/cancel/resume/delete a download, and list downloads with live progress.
-- Gateway admin proxy routes for the above, same `_auth_admin_request` pattern already
-  used for Instances/Nodes/Users.
-- New **Models** page in the admin-ui: search + model card view, a download manager
-  (progress bars, cancel/resume/delete, matching the TUI's existing states), and a list
-  of already-downloaded models (with delete).
-- `RegisterModelModal`'s model-source fields (`path`/`hf_repo`/`hf_filename`, all
-  free-text today) change to a picker sourced from the downloaded-models list instead —
-  this is the actual lifecycle gate the user asked for ("esos modelos sean los únicos que
-  se puedan seleccionar al crear las instancias").
-- Modify/delete of an already-downloaded model: straightforward once the download list
-  exists — needs to check the model isn't backing a running instance first.
+**Scope decisions made during implementation** (both confirmed with the user before
+coding): "resume" means restart-from-scratch, not real HTTP byte-range resume — nothing
+in `downloader.py` supports partial-file resume today, and adding it was out of scope for
+this pass; and deleting a downloaded model deletes the on-disk `.gguf` file(s) too (not
+just the registry entry), blocked with a 409 if an instance is currently running on it.
+
+**What shipped**:
+- `runtime/manager/core/src/prometheus_manager_core/hf_discovery.py` (new) — the TUI
+  Discovery view's pure helpers (`infer_quant`/`auto_id`/`next_free_port`/
+  `shard_filenames`/`ssl_env`) moved here as the canonical versions (TUI re-exports them
+  under their old private names, zero behavior change, its own test suite still passes
+  unmodified), plus new `search_models`/`list_model_files`/`fetch_model_card` functions
+  (the model-card fetch has no TUI precedent — `huggingface_hub.ModelCard.load`).
+- `runtime/manager/api/src/prometheus_manager_api/discovery.py` (new) — `GET
+  /v1/models/search[/files|/card]`, `POST /v1/models/downloads` (registers a
+  `downloaded=False` entry immediately, then downloads each shard in a background
+  asyncio task — mirrors the TUI's own `App._do_download`/`action_discovery_download`
+  sequence exactly, down to marking `downloaded=True` + `path` only once every shard
+  reports `done`), `GET /v1/models/downloads` (progress polling), `POST
+  .../downloads/{id}/cancel|retry`, `DELETE /v1/models/{id}/downloaded`.
+- Gateway proxy: `/admin/api/nodes/{node}/models/search[/files|/card]` and
+  `/models/downloads[/{id}/cancel|retry]` and `/models/{id}/downloaded`, same
+  `_resolve_node`/`manager_client`/`_passthrough` pattern as every other admin proxy route.
+- New **Models** page (`routes/Models.tsx`): search box + results, file list + model
+  card (raw markdown, no renderer dependency added) for the selected repo, a downloads
+  panel with live progress bars (polled every 2s) and cancel/retry, and a downloaded-models
+  list with delete.
+- `RegisterModelModal`'s `hf_repo`/`hf_filename`/`hf_sha256` inputs removed (they never
+  actually downloaded anything from the web dashboard — lifecycle.py's `start_instance`
+  has no download step at all, so those fields were silently non-functional dead ends
+  before this item); a note in the modal now points to the Models page instead. The
+  `path` field stays, for the legitimate separate case of a `.gguf` already on disk
+  outside this flow.
+
+**Real bug found and fixed along the way**: `Registry.reload()`
+(`runtime/manager/core/.../registry.py`) crashed with `FileNotFoundError` when
+`registry.yaml` didn't exist yet — harmless once at least one model has ever been added
+(the file exists from then on), but the very first model ever downloaded through this new
+flow calls `reload()` before any file exists. Fixed to no-op (matching `__init__`'s own
+"only load if the path exists" behavior) instead of crashing.
+
+**Verified**: full `.githooks/pre-push` green across all 6 Python packages + admin-ui
+(gateway 228, auth-service 83, telemetry 30, manager-core 154, manager-api 60, manager-tui
+38 tests, plus 121 bash tests) — new coverage in `test_hf_discovery.py`,
+`test_discovery.py` (manager-api, including a direct async test of the background
+download orchestration function, since FastAPI's `TestClient` tears down its event loop
+right after each request and can't reliably progress a fire-and-forget `asyncio.create_task`),
+and `test_admin.py`. Live end-to-end in the browser against real Hugging Face data: searched
+"llama-3.2" (real repos/download counts back), listed a repo's GGUF files, rendered a real
+model card, downloaded `unsloth/SmolLM2-135M-Instruct-GGUF`'s Q2_K file (84 MB) to
+completion with live progress, confirmed it appeared in Downloaded models, then deleted
+it — confirmed both the on-disk file and the registry entry were gone afterward.
 
 ## Adding new items
 

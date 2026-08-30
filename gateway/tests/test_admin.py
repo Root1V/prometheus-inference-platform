@@ -432,6 +432,157 @@ async def test_deregister_success(gw, rsa_keys):
     assert resp.status_code == 204
 
 
+# ── RM-48: Models — search/download/manage proxy ─────────────────────────────
+
+
+async def test_search_models_requires_admin_read(gw, rsa_keys):
+    """A token with neither admin scope is rejected before any network call —
+    no respx mock needed, matching this file's other scope-check tests."""
+    resp = await gw.get(
+        "/admin/api/nodes/mac/models/search",
+        params={"q": "llama"},
+        headers=_headers(rsa_keys, "inference:read"),
+    )
+    assert resp.status_code == 403
+
+
+async def test_search_models_proxies_to_node(gw, rsa_keys):
+    with respx.mock:
+        _mock_nodes(("mac", NODE_URL))
+        _mock_manager_token()
+        respx.get(f"{NODE_URL}/v1/models/search", params={"q": "llama"}).mock(
+            return_value=Response(200, json={"results": [{"id": "bartowski/Llama-3.2-1B-GGUF"}]})
+        )
+        resp = await gw.get(
+            "/admin/api/nodes/mac/models/search",
+            params={"q": "llama"},
+            headers=_headers(rsa_keys, "admin:read"),
+        )
+    assert resp.status_code == 200
+    assert resp.json()["results"][0]["id"] == "bartowski/Llama-3.2-1B-GGUF"
+
+
+async def test_search_model_files_proxies_to_node(gw, rsa_keys):
+    with respx.mock:
+        _mock_nodes(("mac", NODE_URL))
+        _mock_manager_token()
+        respx.get(f"{NODE_URL}/v1/models/search/files", params={"repo_id": "x/y"}).mock(
+            return_value=Response(
+                200, json={"files": [{"filename": "m.gguf", "quantization": "Q4_0"}]}
+            )
+        )
+        resp = await gw.get(
+            "/admin/api/nodes/mac/models/search/files",
+            params={"repo_id": "x/y"},
+            headers=_headers(rsa_keys, "admin:read"),
+        )
+    assert resp.status_code == 200
+    assert resp.json()["files"][0]["filename"] == "m.gguf"
+
+
+async def test_search_model_card_proxies_to_node(gw, rsa_keys):
+    with respx.mock:
+        _mock_nodes(("mac", NODE_URL))
+        _mock_manager_token()
+        respx.get(f"{NODE_URL}/v1/models/search/card", params={"repo_id": "x/y"}).mock(
+            return_value=Response(200, json={"repo_id": "x/y", "text": "# Card", "metadata": {}})
+        )
+        resp = await gw.get(
+            "/admin/api/nodes/mac/models/search/card",
+            params={"repo_id": "x/y"},
+            headers=_headers(rsa_keys, "admin:read"),
+        )
+    assert resp.status_code == 200
+    assert resp.json()["text"] == "# Card"
+
+
+async def test_start_download_requires_admin_write(gw, rsa_keys):
+    resp = await gw.post(
+        "/admin/api/nodes/mac/models/downloads",
+        json={"repo_id": "x/y", "filename": "m.gguf"},
+        headers=_headers(rsa_keys, "admin:read"),
+    )
+    assert resp.status_code == 403
+
+
+async def test_start_download_proxies_to_node(gw, rsa_keys):
+    with respx.mock:
+        _mock_nodes(("mac", NODE_URL))
+        _mock_manager_token()
+        respx.post(f"{NODE_URL}/v1/models/downloads").mock(
+            return_value=Response(202, json={"model_id": "m-local", "shard_count": 1})
+        )
+        resp = await gw.post(
+            "/admin/api/nodes/mac/models/downloads",
+            json={"repo_id": "x/y", "filename": "m.gguf"},
+            headers=_headers(rsa_keys, "admin:write"),
+        )
+    assert resp.status_code == 202
+    assert resp.json()["model_id"] == "m-local"
+
+
+async def test_list_downloads_proxies_to_node(gw, rsa_keys):
+    with respx.mock:
+        _mock_nodes(("mac", NODE_URL))
+        _mock_manager_token()
+        respx.get(f"{NODE_URL}/v1/models/downloads").mock(
+            return_value=Response(200, json={"downloads": []})
+        )
+        resp = await gw.get(
+            "/admin/api/nodes/mac/models/downloads", headers=_headers(rsa_keys, "admin:read")
+        )
+    assert resp.status_code == 200
+    assert resp.json() == {"downloads": []}
+
+
+async def test_download_cancel_proxies_to_node(gw, rsa_keys):
+    with respx.mock:
+        _mock_nodes(("mac", NODE_URL))
+        _mock_manager_token()
+        respx.post(f"{NODE_URL}/v1/models/downloads/m-local/cancel").mock(
+            return_value=Response(200, json={"cancelled": ["m-local"]})
+        )
+        resp = await gw.post(
+            "/admin/api/nodes/mac/models/downloads/m-local/cancel",
+            headers=_headers(rsa_keys, "admin:write"),
+        )
+    assert resp.status_code == 200
+
+
+async def test_download_retry_proxies_to_node(gw, rsa_keys):
+    with respx.mock:
+        _mock_nodes(("mac", NODE_URL))
+        _mock_manager_token()
+        respx.post(f"{NODE_URL}/v1/models/downloads/m-local/retry").mock(
+            return_value=Response(202, json={"model_id": "m-local", "shard_count": 1})
+        )
+        resp = await gw.post(
+            "/admin/api/nodes/mac/models/downloads/m-local/retry",
+            headers=_headers(rsa_keys, "admin:write"),
+        )
+    assert resp.status_code == 202
+
+
+async def test_download_unknown_action_returns_404(gw, rsa_keys):
+    resp = await gw.post(
+        "/admin/api/nodes/mac/models/downloads/m-local/explode",
+        headers=_headers(rsa_keys, "admin:write"),
+    )
+    assert resp.status_code == 404
+
+
+async def test_delete_downloaded_model_proxies_to_node(gw, rsa_keys):
+    with respx.mock:
+        _mock_nodes(("mac", NODE_URL))
+        _mock_manager_token()
+        respx.delete(f"{NODE_URL}/v1/models/m-local/downloaded").mock(return_value=Response(204))
+        resp = await gw.delete(
+            "/admin/api/nodes/mac/models/m-local/downloaded",
+            headers=_headers(rsa_keys, "admin:write"),
+        )
+    assert resp.status_code == 204
+
+
 # ── POST /admin/api/nodes/{node}/instances/{id}/{action} ─────────────────────
 
 

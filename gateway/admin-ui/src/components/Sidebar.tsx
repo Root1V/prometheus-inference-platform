@@ -1,5 +1,6 @@
 import {
   Coins,
+  Database,
   Flame,
   Gauge,
   HardDrive,
@@ -17,6 +18,7 @@ import { cn } from "../lib/cn";
 const NAV_ITEMS = [
   { to: "/", label: "Overview", icon: LayoutDashboard },
   { to: "/instances", label: "Instances", icon: Server },
+  { to: "/models", label: "Models", icon: Database },
   { to: "/nodes", label: "Nodes", icon: HardDrive },
   { to: "/playground", label: "Playground", icon: Terminal },
   { to: "/usage", label: "Usage", icon: Coins },
