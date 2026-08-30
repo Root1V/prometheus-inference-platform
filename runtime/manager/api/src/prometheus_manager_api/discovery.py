@@ -102,14 +102,18 @@ async def search(
     request: Request,
     _claims: Annotated[Claims, Depends(require_backend_registry_read)],
     q: Annotated[str, Query(min_length=1)],
+    sort: Annotated[str | None, Query()] = None,
 ) -> dict[str, Any]:
     with _tracer.start_as_current_span("models.search", kind=SpanKind.INTERNAL) as span:
         span.set_attribute("query", q)
         config: ManagerConfig = request.app.state.config
         try:
             results = await asyncio.to_thread(
-                search_models, q, 30, config.hf_token, config.resolved_ca_bundle
+                search_models, q, 30, config.hf_token, config.resolved_ca_bundle, sort
             )
+        except ValueError as exc:
+            span.set_attribute("http.status_code", 400)
+            raise _problem(400, "invalid-sort", "Invalid Sort", str(exc)) from exc
         except Exception as exc:
             span.set_attribute("http.status_code", 502)
             raise _problem(502, "hf-search-failed", "Search Failed", str(exc)) from exc

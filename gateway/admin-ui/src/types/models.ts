@@ -10,7 +10,10 @@ export interface HfSearchResult {
 export interface HfFile {
   filename: string;
   quantization: string;
+  size_bytes: number | null;
 }
+
+export type ModelSort = "downloads" | "likes" | "created_at" | "last_modified" | "trending_score";
 
 export interface HfModelCard {
   repo_id: string;

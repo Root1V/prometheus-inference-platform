@@ -95,7 +95,9 @@ class TestSearchModels:
                 "last_modified": None,
             }
         ]
-        mock_search.assert_called_once_with(filter="gguf", search="llama", limit=10, token="tok")
+        mock_search.assert_called_once_with(
+            filter="gguf", search="llama", limit=10, token="tok", sort=None
+        )
 
     def test_raises_when_huggingface_hub_missing(self) -> None:
         with (
@@ -104,16 +106,40 @@ class TestSearchModels:
         ):
             search_models("llama")
 
+    def test_rejects_unknown_sort(self) -> None:
+        with pytest.raises(ValueError, match="Unknown sort"):
+            search_models("llama", sort="popularity")
+
+    def test_passes_valid_sort_through(self) -> None:
+        with patch(
+            "prometheus_manager_core.hf_discovery.list_models", return_value=[]
+        ) as mock_search:
+            search_models("llama", sort="downloads")
+        mock_search.assert_called_once_with(
+            filter="gguf", search="llama", limit=30, token=None, sort="downloads"
+        )
+
 
 class TestListModelFiles:
-    def test_filters_to_gguf_and_infers_quant(self) -> None:
-        with patch(
-            "prometheus_manager_core.hf_discovery.list_repo_files",
-            return_value=["README.md", "model-Q4_K_M.gguf", "config.json"],
-        ):
+    def test_filters_to_gguf_infers_quant_and_size(self) -> None:
+        fake_info = SimpleNamespace(
+            siblings=[
+                SimpleNamespace(rfilename="README.md", size=100),
+                SimpleNamespace(rfilename="model-Q4_K_M.gguf", size=4_000_000),
+                SimpleNamespace(rfilename="config.json", size=50),
+            ]
+        )
+        fake_api = MagicMock()
+        fake_api.model_info.return_value = fake_info
+        with patch("prometheus_manager_core.hf_discovery.HfApi", return_value=fake_api):
             files = list_model_files("bartowski/Llama-3.2-1B-GGUF")
 
-        assert files == [{"filename": "model-Q4_K_M.gguf", "quantization": "Q4_K_M"}]
+        assert files == [
+            {"filename": "model-Q4_K_M.gguf", "quantization": "Q4_K_M", "size_bytes": 4_000_000}
+        ]
+        fake_api.model_info.assert_called_once_with(
+            "bartowski/Llama-3.2-1B-GGUF", files_metadata=True, token=None
+        )
 
 
 class TestFetchModelCard:

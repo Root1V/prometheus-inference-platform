@@ -17,15 +17,20 @@ import re
 from collections.abc import Generator
 from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 # Import at module level so tests can patch these (matches downloader.py).
 try:
-    from huggingface_hub import ModelCard, list_models, list_repo_files
+    from huggingface_hub import HfApi, ModelCard, list_models
 except ImportError:  # pragma: no cover
+    HfApi = None  # type: ignore[assignment,misc]
     ModelCard = None  # type: ignore[assignment,misc]
     list_models = None  # type: ignore[assignment]
-    list_repo_files = None  # type: ignore[assignment]
+
+# huggingface_hub's own accepted values for list_models(sort=...) — re-declared
+# here (rather than importing the private ModelSort_T) so an invalid value from
+# an HTTP caller fails with our own clear error instead of a duck-typed one.
+SORT_OPTIONS = ("downloads", "likes", "created_at", "last_modified", "trending_score")
 
 _QUANT_RE = re.compile(
     r"(IQ\d[_A-Z0-9]*|Q\d[_A-Z0-9]*|F16|F32|BF16)",
@@ -131,18 +136,31 @@ def search_models(
     limit: int = 30,
     token: str | None = None,
     ca_bundle: Path | str | None = None,
+    sort: str | None = None,
 ) -> list[dict[str, Any]]:
     """Search Hugging Face for GGUF-tagged models matching *query*.
 
     Mirrors the TUI Discovery view's search worker exactly (filter="gguf").
     Returns plain dicts (JSON-serializable) rather than huggingface_hub's
     ModelInfo objects, since this is consumed over HTTP by manager-api.
+
+    *sort* is one of SORT_OPTIONS (downloads/likes/created_at/last_modified/
+    trending_score) — huggingface_hub returns results for all of these
+    highest/most-recent first already, so there's no separate "direction".
     """
     if list_models is None:
         raise RuntimeError("huggingface-hub is not installed. Run: uv add huggingface-hub")
+    if sort is not None and sort not in SORT_OPTIONS:
+        raise ValueError(f"Unknown sort {sort!r}. Must be one of {SORT_OPTIONS}")
 
     with ssl_env(ca_bundle):
-        results = list(list_models(filter="gguf", search=query, limit=limit, token=token))
+        # sort is runtime-validated against SORT_OPTIONS above; cast satisfies
+        # list_models()'s narrower Literal type without importing huggingface_hub's
+        # private ModelSort_T alias just for an annotation.
+        validated_sort = cast("Any", sort)
+        results = list(
+            list_models(filter="gguf", search=query, limit=limit, token=token, sort=validated_sort)
+        )
 
     return [
         {
@@ -159,15 +177,23 @@ def list_model_files(
     repo_id: str,
     token: str | None = None,
     ca_bundle: Path | str | None = None,
-) -> list[dict[str, str]]:
-    """List a repo's GGUF files with an inferred quantization tag each."""
-    if list_repo_files is None:
+) -> list[dict[str, Any]]:
+    """List a repo's GGUF files with an inferred quantization tag and size each.
+
+    Uses model_info(files_metadata=True) rather than list_repo_files — the
+    latter returns filenames only, with no size information.
+    """
+    if HfApi is None:
         raise RuntimeError("huggingface-hub is not installed. Run: uv add huggingface-hub")
 
     with ssl_env(ca_bundle):
-        all_files = list(list_repo_files(repo_id, token=token))
-    gguf_files = [f for f in all_files if f.lower().endswith(".gguf")]
-    return [{"filename": f, "quantization": infer_quant(f)} for f in gguf_files]
+        info = HfApi().model_info(repo_id, files_metadata=True, token=token)
+
+    return [
+        {"filename": s.rfilename, "quantization": infer_quant(s.rfilename), "size_bytes": s.size}
+        for s in info.siblings or []
+        if s.rfilename.lower().endswith(".gguf")
+    ]
 
 
 def fetch_model_card(

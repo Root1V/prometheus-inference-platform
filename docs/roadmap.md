@@ -1588,6 +1588,22 @@ nodes only. Selecting an inactive node was always going to 400. Fixed by switchi
 `is_active` client-side; the empty-state message also now distinguishes "no nodes exist"
 from "nodes exist but none are active."
 
+**Follow-up (same day)**: three usability requests after trying the search — a sort
+control, file sizes before downloading, and the file list stretching the whole page.
+- **Sort**: `search_models()` now accepts `sort` (one of `downloads`/`likes`/
+  `created_at`/`last_modified`/`trending_score` — huggingface_hub's own accepted
+  values, re-declared as `SORT_OPTIONS` rather than importing its private
+  `ModelSort_T` alias) and passes it straight to `list_models(sort=...)`, which already
+  returns highest/most-recent first — no separate "direction" needed. Threaded through
+  the gateway proxy and a "Sort by" `<select>` next to the search box.
+- **File size**: `list_model_files()` switched from `list_repo_files()` (filenames only)
+  to `HfApi().model_info(repo_id, files_metadata=True)`, whose `siblings` carry a real
+  `.size` per file — shown next to the quantization tag.
+- **Scroll**: the file-list `<div>` under a selected repo had no `max-height`, so a
+  repo with many quantizations (common — bartowski-style quantizers often publish 7+)
+  pushed the whole page taller. Capped at `max-h-64 overflow-y-auto`, matching the
+  pattern already used for the search-results list and the model-card panel.
+
 ## Adding new items
 
 Append a new row to the table with the next `RM-NN` id and a new `## RM-NN — ...` section

@@ -6,6 +6,7 @@ import type {
   HfFile,
   HfModelCard,
   HfSearchResult,
+  ModelSort,
   StartDownloadRequest,
   StartDownloadResult,
 } from "../types/models";
@@ -14,12 +15,15 @@ const DOWNLOADS_POLL_MS = 2000;
 
 /** Not auto-fetched — the caller passes the current search box value and
  * only enables the query once there's a non-empty term to search for. */
-export function useModelSearch(node: string, query: string) {
+export function useModelSearch(node: string, query: string, sort: ModelSort | "" = "") {
   return useQuery({
-    queryKey: ["model-search", node, query] as const,
+    queryKey: ["model-search", node, query, sort] as const,
     queryFn: async () =>
-      (await apiClient.get<{ results: HfSearchResult[] }>(`/nodes/${node}/models/search`, { params: { q: query } }))
-        .data.results,
+      (
+        await apiClient.get<{ results: HfSearchResult[] }>(`/nodes/${node}/models/search`, {
+          params: { q: query, ...(sort ? { sort } : {}) },
+        })
+      ).data.results,
     enabled: node.length > 0 && query.trim().length > 0,
   });
 }

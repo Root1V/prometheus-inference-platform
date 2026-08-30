@@ -289,7 +289,9 @@ def create_admin_router(manager_client: ManagerApiClient) -> APIRouter:
     # ── RM-48: Models — search Hugging Face, download, manage the lifecycle ──
 
     @router.get("/admin/api/nodes/{node}/models/search")
-    async def search_models_proxy(node: str, request: Request, q: str) -> Response:
+    async def search_models_proxy(
+        node: str, request: Request, q: str, sort: str | None = None
+    ) -> Response:
         if (forbidden := _require_scope(request, "admin:read")) is not None:
             return forbidden
         node_url = await _resolve_node(request, node)
@@ -297,8 +299,11 @@ def create_admin_router(manager_client: ManagerApiClient) -> APIRouter:
             return _problem(
                 request, 400, "unknown-node", "Unknown Node", f"Node {node!r} is not configured."
             )
+        params: dict[str, str] = {"q": q}
+        if sort:
+            params["sort"] = sort
         try:
-            resp = await manager_client.get(node_url, "/v1/models/search", params={"q": q})
+            resp = await manager_client.get(node_url, "/v1/models/search", params=params)
         except Exception as exc:
             return _proxy_error_response(request, exc)
         return _passthrough(resp)

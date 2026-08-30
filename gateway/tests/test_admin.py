@@ -462,6 +462,22 @@ async def test_search_models_proxies_to_node(gw, rsa_keys):
     assert resp.json()["results"][0]["id"] == "bartowski/Llama-3.2-1B-GGUF"
 
 
+async def test_search_models_forwards_sort_param(gw, rsa_keys):
+    with respx.mock:
+        _mock_nodes(("mac", NODE_URL))
+        _mock_manager_token()
+        route = respx.get(
+            f"{NODE_URL}/v1/models/search", params={"q": "llama", "sort": "downloads"}
+        ).mock(return_value=Response(200, json={"results": []}))
+        resp = await gw.get(
+            "/admin/api/nodes/mac/models/search",
+            params={"q": "llama", "sort": "downloads"},
+            headers=_headers(rsa_keys, "admin:read"),
+        )
+    assert resp.status_code == 200
+    assert route.called
+
+
 async def test_search_model_files_proxies_to_node(gw, rsa_keys):
     with respx.mock:
         _mock_nodes(("mac", NODE_URL))

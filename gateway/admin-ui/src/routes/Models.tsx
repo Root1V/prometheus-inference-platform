@@ -16,10 +16,19 @@ import { Sidebar } from "../components/Sidebar";
 import { useToast } from "../context/ToastContext";
 import { cn } from "../lib/cn";
 import { getErrorMessage } from "../lib/errors";
-import type { DownloadEntry } from "../types/models";
+import type { DownloadEntry, ModelSort } from "../types/models";
 
 const inputClass =
   "w-full rounded-lg border border-border bg-background px-3 py-2 text-sm text-text focus:border-primary focus:outline-none";
+
+const SORT_OPTIONS: { value: ModelSort | ""; label: string }[] = [
+  { value: "", label: "Relevance" },
+  { value: "downloads", label: "Most downloads" },
+  { value: "likes", label: "Most likes" },
+  { value: "trending_score", label: "Trending" },
+  { value: "last_modified", label: "Recently updated" },
+  { value: "created_at", label: "Newest" },
+];
 
 function formatBytes(n: number): string {
   if (n <= 0) return "0 B";
@@ -121,10 +130,11 @@ export default function Models() {
 
   const [query, setQuery] = useState("");
   const [searchTerm, setSearchTerm] = useState("");
+  const [sort, setSort] = useState<ModelSort | "">("");
   const [selectedRepo, setSelectedRepo] = useState("");
   const [showCard, setShowCard] = useState(false);
 
-  const searchQuery = useModelSearch(selectedNode, searchTerm);
+  const searchQuery = useModelSearch(selectedNode, searchTerm, sort);
   const filesQuery = useModelFiles(selectedNode, selectedRepo);
   const cardQuery = useModelCard(selectedNode, showCard ? selectedRepo : "");
   const downloadsQuery = useDownloads(selectedNode);
@@ -218,6 +228,26 @@ export default function Models() {
                   </button>
                 </div>
 
+                {searchTerm && (
+                  <div className="mt-2 flex items-center gap-2">
+                    <label htmlFor="model-sort" className="text-xs text-text-muted">
+                      Sort by
+                    </label>
+                    <select
+                      id="model-sort"
+                      value={sort}
+                      onChange={(e) => setSort(e.target.value as ModelSort | "")}
+                      className={cn(inputClass, "w-auto py-1 text-xs")}
+                    >
+                      {SORT_OPTIONS.map((o) => (
+                        <option key={o.value} value={o.value}>
+                          {o.label}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                )}
+
                 <div className="mt-3 max-h-72 space-y-1 overflow-y-auto">
                   {searchQuery.isLoading && (
                     <p className="text-sm text-text-muted">Searching…</p>
@@ -279,7 +309,7 @@ export default function Models() {
                     </div>
                   )}
 
-                  <div className="space-y-1">
+                  <div className="max-h-64 space-y-1 overflow-y-auto">
                     {filesQuery.isLoading && (
                       <p className="text-sm text-text-muted">Loading files…</p>
                     )}
@@ -290,7 +320,9 @@ export default function Models() {
                       >
                         <div>
                           <span className="font-mono text-xs text-text">{f.filename}</span>
-                          <span className="ml-2 text-xs text-text-muted">{f.quantization}</span>
+                          <span className="ml-2 text-xs text-text-muted">
+                            {f.quantization} · {f.size_bytes !== null ? formatBytes(f.size_bytes) : "? size"}
+                          </span>
                         </div>
                         <button
                           type="button"
