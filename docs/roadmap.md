@@ -1819,6 +1819,63 @@ paths live end-to-end: edited a real entry's `family` field (`UPDATE`, verified 
 (`INSERT` then `DELETE`, both verified the same way). `git rm`'d the tracked
 `registry.yaml`, `git add`'d the new `registry.db`.
 
+## RM-50 — fix: Registry data-quality cleanup (done)
+
+**Why**: with 32 registry entries and 30 downloaded, the Instances and Library lists were
+long enough to hide real problems. Auditing both (cross-referencing `registry.db` against
+the actual `LLM_models/` filesystem) surfaced concrete bugs, not just clutter.
+
+**Scope — confirmed issues, proposed fixes**:
+- **Port collision**: `gpt-oss-20b-mxfp4` and `gemma4-31b-q6` both claim port 8087 — always
+  a live bug (`_validate_port` only range-checks, never checks uniqueness). Reassign one.
+- **Ghost download**: `minimax-m27-iq2m` is `downloaded=True` but
+  `LLM_models/MiniMax-M2.7/` doesn't exist on disk at all — starting it will always fail.
+  Delete the entry.
+- **Dead undownloaded stubs**: `qwen3-0-6b-iq4-nl-local` (port 8081, never downloaded) is a
+  redundant leftover — the same `hf_repo`/file is already downloaded under
+  `qwen3-0-6b-iq4-nl-local-2`. `bf16-qwen3-8-flash-next-bf16-00001-of-00008-local` (port
+  8111) is another never-completed registration, its id an artifact of `auto_id()` picking
+  the first shard's filename. Delete both.
+- **Size undercount** (real display bug, not just a data issue): `_file_size_bytes()`
+  (`routes.py:300-320`) sums `entry.get("hf_filenames") or [Path(path).name]` — for models
+  registered manually (not through the HF-download flow), `hf_filenames` is always empty,
+  so only the first shard is ever counted. Confirmed against the filesystem: `llama4-scout-17b-q4`
+  shows ~49.8 GB but is really 65.3 GB; `minimax-m2-q2` shows ~50 GB vs. 83.3 GB real;
+  `qwen25-32b-q4` shows ~4.0 GB vs. ~19.9 GB real (worst case, ~80% undercounted);
+  `qwen2.5-7b-q4` and `deepseek-v25-1210-iq1m` are also affected. Fixed in
+  `_file_size_bytes()`: when `hf_filenames` is empty, list the file's own directory and run
+  it through `hf_discovery.shard_filenames()` — the same shard-detection helper the Hugging
+  Face discovery flow already uses — instead of a new one-off regex, so both paths agree on
+  what counts as a shard.
+
+**Noted but not proposed as fixes** (curation calls, not bugs — left for the user to
+decide): total footprint is 564 GB, heavily concentrated in redundant same-family variants
+(7 different Gemma-4 quant/size combinations downloaded simultaneously); an unregistered
+`qwen3vl-8B-Q4/` on disk already ships its own `mmproj` file — unlike the two *registered*
+vision models (`llava-mistral-7b-q5`, `qwen3vl-32B-Q4`), which have no mmproj file anywhere
+and can't actually do vision yet; one orphan file (`Laguna-S-2.1-DFlash-BF16.gguf`) sits
+unregistered next to its registered sibling.
+
+**What shipped**: deleted the 3 broken registry entries (`minimax-m27-iq2m`,
+`qwen3-0-6b-iq4-nl-local`, `bf16-qwen3-8-flash-next-bf16-00001-of-00008-local`) live through
+the running dashboard — 32 entries down to 29; deleted the corresponding 10 MB orphan
+partial shard (`runtime/models/downloads/BF16/...-00001-of-00008.gguf`, the only one of the
+three with any file to clean up) and its now-empty directory; reassigned `gemma4-31b-q6`
+from the colliding port 8087 to the freed 8081; fixed `_file_size_bytes()` in
+`runtime/manager/api/src/prometheus_manager_api/routes.py` to reuse
+`hf_discovery.shard_filenames()` against the file's own directory when `hf_filenames` is
+empty, with a new test (`test_sharded_model_without_hf_filenames_sums_sibling_shards`)
+covering the previously-uncovered case.
+
+**Verified**: full `.githooks/pre-push` green (manager-api 78 tests, +1 from this change;
+all other packages unchanged). Live in the browser: confirmed all 3 deletions actually
+removed the rows and `registry.db` now has 29 entries with no id collisions; confirmed
+`gpt-oss-20b-mxfp4`/`gemma4-31b-q6` no longer share a port; confirmed all 5 previously-
+undercounted models now show their real combined size in the Library table —
+`llama4-scout-17b-q4` 49.8 GB → 60.9 GB, `minimax-m2-q2` 50 GB → 77.6 GB,
+`qwen25-32b-q4` 4.0 GB → 18.5 GB (the worst case), `deepseek-v25-1210-iq1m` 39.9 GB →
+49.1 GB, `qwen2.5-7b-q4` 4.0 GB → 4.4 GB.
+
 ## Adding new items
 
 Append a new row to the table with the next `RM-NN` id and a new `## RM-NN — ...` section

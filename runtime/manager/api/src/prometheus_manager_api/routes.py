@@ -20,6 +20,7 @@ from typing import Annotated, Any
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from opentelemetry.trace import SpanKind
+from prometheus_manager_core.hf_discovery import shard_filenames
 from prometheus_manager_core.registry import Registry, RegistryEntry
 from prometheus_manager_core.scanner import ProcessState, scan
 from prometheus_manager_core.telemetry import get_tracer
@@ -300,17 +301,32 @@ def _uptime_s(ps: ProcessState) -> float:
 def _file_size_bytes(entry: dict[str, Any]) -> int | None:
     """Total on-disk size of a downloaded model's file(s) — RM-48 follow-up.
 
-    Sums every shard for a multi-part model (hf_filenames), all resolved
-    relative to the single `path` field's own directory rather than
-    reaching into ManagerConfig, so _merge() stays self-contained. None
-    when the entry isn't downloaded, has no path, or a file is missing
-    (e.g. deleted out-of-band) — the admin dashboard shows that as "?".
+    Sums every shard for a multi-part model, all resolved relative to the
+    single `path` field's own directory rather than reaching into
+    ManagerConfig, so _merge() stays self-contained. None when the entry
+    isn't downloaded, has no path, or a file is missing (e.g. deleted
+    out-of-band) — the admin dashboard shows that as "?".
+
+    `hf_filenames` (populated for anything registered through the Models
+    page's download flow) is trusted when present. Models registered
+    manually — e.g. a pre-existing local .gguf pointed at directly — never
+    get `hf_filenames` populated even when the file is one shard of many
+    (RM-50: found undercounting several real multi-shard models by up to
+    ~80% this way). For those, fall back to scanning the file's own
+    directory with the same shard-detection helper the Hugging Face
+    discovery flow uses, rather than assuming a single file.
     """
     path = entry.get("path")
     if not entry.get("downloaded") or not path:
         return None
     base_dir = Path(path).parent
-    filenames = entry.get("hf_filenames") or [Path(path).name]
+    filenames = entry.get("hf_filenames") or None
+    if not filenames:
+        try:
+            siblings = [p.name for p in base_dir.iterdir() if p.is_file()]
+        except OSError:
+            return None
+        filenames = shard_filenames(Path(path).name, siblings)
     total = 0
     try:
         for filename in filenames:

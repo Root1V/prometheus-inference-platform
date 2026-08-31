@@ -374,6 +374,33 @@ class TestFileSizeBytes:
 
         assert resp.json()["backends"][0]["file_size_bytes"] == 3000
 
+    def test_sharded_model_without_hf_filenames_sums_sibling_shards(self, tmp_path: Path):
+        """RM-50: a manually-registered model (no hf_filenames — never went
+        through the download flow) whose path is one shard of several must
+        still report the total across all sibling shards, not just the one
+        file the registry happens to point at."""
+        (tmp_path / "m-00001-of-00003.gguf").write_bytes(b"a" * 1000)
+        (tmp_path / "m-00002-of-00003.gguf").write_bytes(b"b" * 2000)
+        (tmp_path / "m-00003-of-00003.gguf").write_bytes(b"c" * 3000)
+        client = self._client(
+            tmp_path,
+            RegistryEntry(
+                id="manual-sharded-model",
+                path=str(tmp_path / "m-00001-of-00003.gguf"),
+                port=8080,
+                context_length=4096,
+                downloaded=True,
+                discovery=True,
+            ),
+        )
+        try:
+            with patch("prometheus_manager_api.routes.scan", return_value=[]):
+                resp = client.get("/v1/backends", headers={"Authorization": "Bearer valid"})
+        finally:
+            app.dependency_overrides.pop(require_backend_registry_read, None)
+
+        assert resp.json()["backends"][0]["file_size_bytes"] == 6000
+
     def test_not_downloaded_reports_none(self, tmp_path: Path):
         client = self._client(
             tmp_path,
