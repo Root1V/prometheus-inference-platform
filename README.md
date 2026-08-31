@@ -445,7 +445,7 @@ edge-ai-inference/
 │   │   ├── core/src/prometheus_manager_core/   # shared domain: scanner, lifecycle, registry, config
 │   │   ├── api/src/prometheus_manager_api/     # FastAPI — containerized, pmgr-api
 │   │   ├── tui/src/prometheus_manager_tui/     # Textual TUI + pmgr CLI — bare-metal only
-│   │   ├── registry.yaml        # Model registry — source of truth (spec 008)
+│   │   ├── registry.db          # Model registry — SQLite, source of truth (spec 008, RM-49)
 │   │   └── manager.toml         # Manager configuration
 │   ├── models/
 │   │   └── registry.yaml        # Legacy model registry (gateway fallback)

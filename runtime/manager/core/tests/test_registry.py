@@ -111,10 +111,12 @@ class TestModalityField:
         assert entry.modality == "vision"
         assert entry.mmproj_path == "/models/mmproj.gguf"
 
-    def test_mmproj_path_omitted_from_dict_when_empty(self, registry_path: Path):
-        """to_dict() drops empty optional fields — keeps registry.yaml tidy."""
+    def test_mmproj_path_included_in_dict_when_empty(self, registry_path: Path):
+        """to_dict() always includes every field — RM-49 dropped the old
+        omit-falsy-fields YAML-tidiness behavior once SQLite became the
+        storage format."""
         entry = RegistryEntry(id="m", port=8080, context_length=4096, path="/m.gguf")
-        assert "mmproj_path" not in entry.to_dict()
+        assert entry.to_dict()["mmproj_path"] == ""
 
 
 # ── AC-3: Registry CRUD ────────────────────────────────────────────────────────
@@ -155,15 +157,14 @@ class TestRegistryCRUD:
     def test_AC3_reload_refreshes_from_disk(
         self, registry_path: Path, populated_registry: Registry
     ):
-        """AC-3: reload() re-reads the YAML file."""
-        # Directly mutate YAML
-        import yaml
+        """AC-3: reload() re-reads the database."""
+        # Directly mutate the DB through a second connection, bypassing Registry.
+        import sqlite3
 
-        with open(registry_path) as f:
-            data = yaml.safe_load(f)
-        data["models"][0]["port"] = 9999
-        with open(registry_path, "w") as f:
-            yaml.safe_dump(data, f)
+        conn = sqlite3.connect(str(registry_path))
+        conn.execute("UPDATE models SET port = 9999 WHERE id = 'test-model'")
+        conn.commit()
+        conn.close()
         populated_registry.reload()
         assert populated_registry.get("test-model").port == 9999
 
@@ -282,6 +283,57 @@ class TestPersistence:
         assert len(reloaded.entries) == 3
 
 
+# ── RM-49: legacy registry.yaml → SQLite migration ─────────────────────────────
+
+
+class TestLegacyYamlMigration:
+    """RM-49: a pre-existing registry.yaml is imported into the new DB once,
+    non-destructively, the first time Registry opens a not-yet-existing
+    .db path next to it."""
+
+    def test_migration_from_legacy_yaml(self, tmp_path: Path):
+        import yaml
+
+        legacy = tmp_path / "registry.yaml"
+        legacy.write_text(
+            yaml.safe_dump(
+                {
+                    "models": [
+                        {
+                            "id": "legacy-model",
+                            "port": 8080,
+                            "context_length": 4096,
+                            "family": "llama3",
+                            "quantization": "Q4_0",
+                            "path": "/models/legacy-model.gguf",
+                            "downloaded": True,
+                            "hf_repo": "org/repo",
+                            "hf_filename": "legacy-model.gguf",
+                        }
+                    ]
+                }
+            )
+        )
+        db_path = tmp_path / "registry.db"
+
+        registry = Registry(db_path)
+
+        assert db_path.exists()
+        assert not legacy.exists()
+        assert (tmp_path / "registry.yaml.bak").exists()
+        entry = registry.get("legacy-model")
+        assert entry is not None
+        assert entry.family == "llama3"
+        assert entry.path == "/models/legacy-model.gguf"
+        assert entry.hf_filenames == ["legacy-model.gguf"]
+
+    def test_no_migration_when_no_legacy_file(self, tmp_path: Path):
+        db_path = tmp_path / "registry.db"
+        registry = Registry(db_path)
+        assert registry.entries == []
+        assert not (tmp_path / "registry.yaml.bak").exists()
+
+
 # ── spec-010 AC-1 & AC-2: discovery field ─────────────────────────────────────
 
 
@@ -289,22 +341,22 @@ class TestDiscoveryField:
     """memory/specs/010 AC-1, AC-2: discovery field persists and defaults to False."""
 
     def test_AC1_discovery_defaults_to_false(self, registry_path: Path):
-        """AC-1: entries loaded from YAML without a discovery key default to False."""
-        import yaml
+        """AC-1: a row inserted without a discovery value defaults to False
+        (the schema's own DEFAULT 0), exercised via a raw connection so the
+        DB pre-exists with a row Registry itself never wrote."""
+        import sqlite3
 
-        data = {
-            "models": [
-                {
-                    "id": "no-discovery-model",
-                    "port": 9090,
-                    "context_length": 4096,
-                    "family": "llama3",
-                    "quantization": "Q4_0",
-                    "downloaded": False,
-                }
-            ]
-        }
-        registry_path.write_text(yaml.safe_dump(data))
+        from prometheus_manager_core.registry import _SCHEMA_SQL
+
+        conn = sqlite3.connect(str(registry_path))
+        conn.executescript(_SCHEMA_SQL)
+        conn.execute(
+            "INSERT INTO models (id, port, context_length, family, quantization, downloaded) "
+            "VALUES ('no-discovery-model', 9090, 4096, 'llama3', 'Q4_0', 0)"
+        )
+        conn.commit()
+        conn.close()
+
         reg = Registry(registry_path)
         entry = reg.get("no-discovery-model")
         assert entry is not None

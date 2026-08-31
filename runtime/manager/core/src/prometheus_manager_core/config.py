@@ -42,7 +42,7 @@ binary = "python3"
 start_timeout_s = 300
 
 [registry]
-path = "runtime/manager/registry.yaml"
+path = "runtime/manager/registry.db"
 
 [downloads]
 dir = "runtime/models"
@@ -115,7 +115,7 @@ class BackendsConfig:
 
 @dataclass
 class RegistryConfig:
-    path: str = "runtime/manager/registry.yaml"
+    path: str = "runtime/manager/registry.db"
 
 
 @dataclass

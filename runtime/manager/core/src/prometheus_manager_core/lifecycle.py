@@ -226,8 +226,10 @@ def start_instance(
             assigned=port,
         )
     # Persist the chosen port back to the registry so the next start uses it
-    # as the preferred value and so the gateway can discover the correct address.
-    registry.update(model_id, port=port, backend_url=f"http://127.0.0.1:{port}")
+    # as the preferred value and so the gateway can discover the correct
+    # address — backend_url is derived from port (RegistryEntry.backend_url
+    # is a computed property), so updating port alone is enough.
+    registry.update(model_id, port=port)
 
     # Build command
     binary = config.resolved_backend_binary(entry.backend)

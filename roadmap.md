@@ -54,6 +54,7 @@ Status: `done` · `todo`
 | RM-46 | Per-model performance metrics: avg response time, TTFT, inter-token latency | todo | New instrumentation — nothing like this is tracked today, only overall request latency |
 | RM-47 | Evaluate whether `GET /v1/models` should stay unauthenticated | todo | Raised while building RM-45 — confirm nothing depends on public access before considering any change |
 | RM-48 | Dashboard: Models page — discover, download, and manage the model lifecycle | done | Search Hugging Face, read the model card, download with live progress/cancel/retry, delete removes the file too |
+| RM-49 | Model registry: migrate registry.yaml → SQLite | done | Fixes a real non-atomic-write bug; sync stdlib sqlite3 (no async, no new dependency); dropped dead `log_level`/redundant `backend_url` fields, consolidated `hf_filename`/`hf_filenames` |
 
 Adding an item: append the next `RM-NN` row here with a one-liner, then add the full
 Why/Scope writeup to `docs/roadmap.md`.

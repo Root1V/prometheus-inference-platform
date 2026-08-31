@@ -1736,6 +1736,89 @@ disk), resumed — `downloaded_bytes` continued from 65 MB (not 0), completed at
 270,885,952 bytes matching the expected size, `downloaded=True` set correctly. Full
 `.githooks/pre-push` green across all 6 Python packages + admin-ui.
 
+## RM-49 — Model registry: migrate registry.yaml → SQLite (done)
+
+**Why**: user asked why the model registry still used a YAML file when `auth-service` and
+the gateway's usage tracking (RM-32) both already use SQLite. Investigating surfaced a real
+durability bug: `Registry._save()` did a full-file `open(path, "w")` + `yaml.safe_dump()`
+on every single mutation — no locking, no atomic temp-file+rename, so a crash mid-write
+could truncate/corrupt the entire registry. User's call: migrate, and fix the durability
+issue as part of it (the migration itself fixes it — SQLite commits are atomic).
+
+While doing the migration, the user also asked to evaluate whether every field in
+`RegistryEntry` still earned its place — not just carry the schema over 1:1.
+
+**Scope — storage engine**: Python's stdlib `sqlite3`, synchronously — deliberately *not*
+async SQLAlchemy (the gateway's RM-32 pattern). `Registry` is called synchronously
+everywhere it's used today — manager-api's route handlers (unawaited, inside `async def`),
+the `pmgr-api`/`pmgr` CLIs, and the Textual TUI (plain sync callbacks and
+`@work(thread=True)` background threads) — and making it async would have forced changes
+across every call site in 3 packages. Kept `Registry`'s public method signatures
+byte-for-byte identical (`get`/`add`/`update`/`remove`/`reload`/`entries`), so only
+`registry.py`'s internals changed. One `sqlite3.Connection` per `Registry` instance
+(`check_same_thread=False` + a `threading.RLock` around every public method — the TUI
+genuinely calls in from ~9 separate worker threads), WAL journal mode, and every mutation
+is now a single targeted, committed transaction instead of a full-table rewrite.
+
+**Scope — schema evaluation** (every field checked against real call sites, not assumed):
+- Removed `log_level` — stored and displayed in the TUI, but grep confirmed
+  `lifecycle.py`'s command builders never read it; dead configuration, not a working
+  feature.
+- Removed `backend_url` as a stored column — always exactly `f"http://127.0.0.1:{port}"`
+  on every real write path (`bind_host` comes from a global env var, not anything
+  per-entry); kept as a computed `@property` for source compatibility with every existing
+  reader.
+- Consolidated `hf_filename` + `hf_filenames` into a single always-populated
+  `hf_filenames: list[str]` — the old pattern needed a
+  `list(entry.hf_filenames) if entry.hf_filenames else [entry.hf_filename]` reconstruction
+  at every consumption site, which was the tell it should just be one field. Touched
+  `registry.py`, `discovery.py`, and the TUI's `app.py`/`cli.py`/`views/registry.py`, plus
+  the admin-ui's `types/instance.ts` and `RegisterModelModal.tsx` (the wire format changed,
+  so the frontend contract had to follow).
+- Added `created_at` (`DEFAULT CURRENT_TIMESTAMP`) — essentially free while the table was
+  being defined from scratch, standard elsewhere in this codebase (auth-service's
+  `Principal`/`Node`), not yet wired into any read path or UI (left for whenever a
+  "sort by downloaded date" is actually wanted, not bundled in here).
+- Attempted `CHECK (backend IN (...))`/`CHECK (modality IN (...))` constraints, **reverted**
+  — `test_lifecycle.py::test_start_instance_rejects_unknown_backend` deliberately calls
+  `registry.update(..., backend="does-not-exist")` to prove `start_instance()` has its own
+  downstream validation; `Registry.update()` being permissive (only `add()` validates) is
+  existing, intentional behavior the CHECK broke. Kept the established contract instead.
+- Deliberately left `file_size_bytes` uncached (computed live in `routes.py`'s `_merge()`,
+  unchanged) — a persisted value could go stale if a file moves/is deleted outside the app;
+  live computation is more correct, not just simpler.
+- Found, did not silently fix: `gpt-oss-20b-mxfp4` and `gemma4-31b-q6` share `port: 8087`
+  in the live demo data — a real pre-existing gap (`_validate_port` only range-checks,
+  never checks uniqueness). A `UNIQUE` constraint would have broken the migration's import
+  of this repo's own data, so it's flagged as a follow-up rather than auto-resolved.
+
+**Migration mechanics**: `Registry.__init__` checks for a legacy `registry.yaml` next to a
+not-yet-existing `.db` path; if found, imports every entry into a `.db.tmp` file, commits,
+`os.replace()`s it into place (atomic — a crash mid-import leaves an untouched, still-
+migratable `.yaml` and an orphaned `.tmp`, never a half-populated DB masquerading as
+complete), then renames the YAML to `.yaml.bak` (never deleted). `RegistryConfig.path`'s
+default changed from `runtime/manager/registry.yaml` to `runtime/manager/registry.db`.
+
+**`.gitignore`**: the existing generic `*.db` rule would have silently gitignored the new
+`registry.db` — but `runtime/manager/registry.yaml` was tracked in git as this repo's own
+demo/seed data (32 entries), so a fresh clone would've ended up with neither file. Added
+`!runtime/manager/registry.db` as an explicit exception, plus `*.db-wal`/`*.db-shm` (WAL's
+companion files) and `registry.yaml.bak` to the ignore list.
+
+**Verified**: full `.githooks/pre-push` green (277 Python tests across manager-core/api/tui
+plus admin-ui build/lint). Ran the real migration against this repo's own live
+`runtime/manager/registry.yaml` (32 entries, including this session's own earlier fixes —
+two vision-model corrections and one embedding-model correction): field-by-field diff
+against a pre-migration backup confirmed every field round-tripped exactly, including the
+one sharded model's `hf_filenames` list; confirmed idempotent on a second startup (no
+re-migration, no stray `.tmp`/duplicate `.bak`); confirmed live in the browser against the
+real gateway+manager-api stack — Overview/Instances/Models pages rendered identically
+(same 32-model count, same modality/family/quant badges), then exercised all three write
+paths live end-to-end: edited a real entry's `family` field (`UPDATE`, verified via a raw
+`sqlite3` query), registered and deleted a temporary instance via the "Model" picker
+(`INSERT` then `DELETE`, both verified the same way). `git rm`'d the tracked
+`registry.yaml`, `git add`'d the new `registry.db`.
+
 ## Adding new items
 
 Append a new row to the table with the next `RM-NN` id and a new `## RM-NN — ...` section

@@ -12,7 +12,6 @@ export interface InstanceEntry {
   backend: Backend;
   modality: Modality;
   mmproj_path: string;
-  log_level: string;
   downloaded: boolean;
   discovery: boolean;
   rss_estimate_mb: number | null;
@@ -21,7 +20,6 @@ export interface InstanceEntry {
   file_size_bytes: number | null;
   backend_url: string;
   hf_repo: string;
-  hf_filename: string;
   hf_sha256: string;
   hf_filenames: string[];
   pid: number | null;
@@ -51,7 +49,6 @@ export interface RegisterModelRequest {
   mmproj_path?: string;
   discovery?: boolean;
   hf_repo?: string;
-  hf_filename?: string;
   hf_sha256?: string;
 }
 

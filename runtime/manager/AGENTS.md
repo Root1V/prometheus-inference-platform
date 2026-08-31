@@ -31,7 +31,7 @@ runtime/manager/
 │       ├── logging_setup.py           # redirect_logging_for_tui (stdout → file)
 │       ├── views/                     # One file per view (dashboard, registry, instances, downloads, discovery)
 │       └── widgets/                   # Reusable widgets (resource_bar, model_detail)
-├── registry.yaml                      # Active model registry (runtime state)
+├── registry.db                        # Active model registry (SQLite, runtime state)
 └── manager.toml                       # Manager configuration
 ```
 
@@ -41,7 +41,7 @@ other.
 
 ## Before starting any task here
 
-1. Check `registry.yaml` and `manager.toml` for the current runtime state before modifying lifecycle or registry logic.
+1. Check `registry.db` and `manager.toml` for the current runtime state before modifying lifecycle or registry logic.
 2. Domain logic (lifecycle, registry, scanner, capacity, downloader, config) goes in `core/` — never duplicate it into `api/` or `tui/`.
 3. TUI changes: identify which view is affected (`tui/src/prometheus_manager_tui/views/<name>.py`) and whether any shared widget needs updating.
 4. API changes: check if `/v1/backends` response shape changes — coordinate with gateway consumers.
@@ -59,7 +59,7 @@ other.
 ## Key constraints
 
 - Manager API binds to `127.0.0.1` only — never `0.0.0.0`.
-- `Registry` is the single source of truth — never parse `registry.yaml` directly.
+- `Registry` is the single source of truth — never open `registry.db` directly.
 - Never hardcode paths — always read from `ManagerConfig`.
 - Use `get_tracer("manager.<component>")` for OpenTelemetry spans.
 - CLI must use `structlog` for output — no bare `print()` statements.

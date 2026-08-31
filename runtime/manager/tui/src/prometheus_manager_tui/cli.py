@@ -159,7 +159,8 @@ def cmd_list(ctx: click.Context) -> None:
     for e in entries:
         running_mark = "[green]●[/green]" if e.id in running_aliases else "[dim]○[/dim]"
         dl_mark = "[green]✓[/green]" if e.downloaded else "[yellow]✗[/yellow]"
-        location = e.path if e.path else (f"hf:{e.hf_repo}/{e.hf_filename}" if e.hf_repo else "—")
+        hf_name = e.hf_filenames[0] if e.hf_filenames else ""
+        location = e.path if e.path else (f"hf:{e.hf_repo}/{hf_name}" if e.hf_repo else "—")
         table.add_row(e.id, e.backend, e.modality, str(e.port), dl_mark, running_mark, location)
 
     console.print(table)
@@ -389,7 +390,7 @@ def cmd_register(
         modality=modality,
         mmproj_path=mmproj_path,
         hf_repo=hf_repo,
-        hf_filename=hf_filename,
+        hf_filenames=[hf_filename] if hf_filename else [],
         hf_sha256=hf_sha256,
         downloaded=bool(model_path),
     )
@@ -486,7 +487,7 @@ def cmd_download(ctx: click.Context, model_id: str) -> None:
             dest = _dl(
                 model_id=model_id,
                 hf_repo=entry.hf_repo,
-                hf_filename=entry.hf_filename,
+                hf_filename=entry.hf_filenames[0] if entry.hf_filenames else "",
                 dest_dir=cfg.resolved_downloads_dir,
                 hf_token=cfg.hf_token,
                 expected_sha256=entry.hf_sha256 or None,

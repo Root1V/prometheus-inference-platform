@@ -392,8 +392,7 @@ async def start_download(
             modality=body.get("modality", "text"),
             downloaded=False,
             hf_repo=repo_id,
-            hf_filename=shard_files[0],
-            hf_filenames=shard_files if len(shard_files) > 1 else [],
+            hf_filenames=shard_files,
         )
         try:
             registry.add(entry)
@@ -476,7 +475,7 @@ async def retry_download(
         downloads = _downloads_list(request)
         downloads[:] = [ds for ds in downloads if ds not in _matching(downloads, model_id)]
 
-        shard_files = list(entry.hf_filenames) if entry.hf_filenames else [entry.hf_filename]
+        shard_files = list(entry.hf_filenames)
         asyncio.create_task(
             _kick_download(
                 downloads,
@@ -590,7 +589,7 @@ async def delete_downloaded_model(
                 f"Stop {model_id!r} before deleting its downloaded file.",
             )
 
-        filenames = list(entry.hf_filenames) if entry.hf_filenames else [entry.hf_filename]
+        filenames = list(entry.hf_filenames)
         for fname in filenames:
             if fname:
                 (request.app.state.config.resolved_downloads_dir / fname).unlink(missing_ok=True)

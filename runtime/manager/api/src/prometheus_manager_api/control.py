@@ -57,7 +57,6 @@ _UPDATABLE_FIELDS = frozenset(
         "mmproj_path",
         "discovery",
         "hf_repo",
-        "hf_filename",
         "hf_sha256",
         "port",
     }
@@ -115,7 +114,6 @@ async def register_backend(
                 mmproj_path=body.get("mmproj_path", ""),
                 discovery=bool(body.get("discovery", False)),
                 hf_repo=body.get("hf_repo", ""),
-                hf_filename=body.get("hf_filename", ""),
                 hf_sha256=body.get("hf_sha256", ""),
                 hf_filenames=body.get("hf_filenames", []),
             )

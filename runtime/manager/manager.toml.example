@@ -26,8 +26,10 @@ log_dir = "runtime/logs"
 pid_dir = "runtime/run"
 
 [registry]
-# Path to the manager registry.yaml (source of truth for models)
-path = "runtime/manager/registry.yaml"
+# Path to the manager registry.db — a SQLite database, source of truth for
+# models (RM-49; a legacy registry.yaml next to this path is imported once,
+# automatically, the first time this path doesn't exist yet).
+path = "runtime/manager/registry.db"
 
 [downloads]
 # Directory where GGUF files are downloaded

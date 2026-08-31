@@ -46,7 +46,6 @@ interface FormState {
   mmproj_path: string;
   discovery: boolean;
   hf_repo: string;
-  hf_filename: string;
   hf_sha256: string;
 }
 
@@ -64,7 +63,6 @@ function initialState(defaultNode: string): FormState {
     mmproj_path: "",
     discovery: false,
     hf_repo: "",
-    hf_filename: "",
     hf_sha256: "",
   };
 }
@@ -83,7 +81,6 @@ function stateFromInstance(instance: InstanceEntry): FormState {
     mmproj_path: instance.mmproj_path,
     discovery: instance.discovery,
     hf_repo: instance.hf_repo,
-    hf_filename: instance.hf_filename,
     hf_sha256: instance.hf_sha256,
   };
 }
@@ -147,7 +144,6 @@ export function RegisterModelModal({
       backend: source.backend,
       context_length: String(source.context_length),
       hf_repo: source.hf_repo,
-      hf_filename: source.hf_filename,
       hf_sha256: source.hf_sha256,
     }));
   }
@@ -175,7 +171,6 @@ export function RegisterModelModal({
         quantization: form.quantization,
         mmproj_path: form.modality === "vision" ? form.mmproj_path : "",
         hf_repo: form.hf_repo,
-        hf_filename: form.hf_filename,
         hf_sha256: form.hf_sha256,
       };
       updateModel.mutate(
@@ -204,7 +199,6 @@ export function RegisterModelModal({
     if (form.quantization) body.quantization = form.quantization;
     if (form.modality === "vision" && form.mmproj_path) body.mmproj_path = form.mmproj_path;
     if (form.hf_repo) body.hf_repo = form.hf_repo;
-    if (form.hf_filename) body.hf_filename = form.hf_filename;
     if (form.hf_sha256) body.hf_sha256 = form.hf_sha256;
 
     registerModel.mutate(

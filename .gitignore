@@ -76,6 +76,15 @@ runtime/container-logs/
 # runtime state, not committed.
 *.db
 *.db-journal
+*.db-wal
+*.db-shm
+# RM-49: runtime/manager/registry.db is the one exception — it's this repo's
+# committed demo/seed data (previously registry.yaml), not untracked local
+# runtime state like the others above.
+!runtime/manager/registry.db
+# RM-49: one-time backup left behind when a legacy registry.yaml is migrated
+# to registry.db — never committed.
+registry.yaml.bak
 
 # RM-33: real per-model USD pricing is deployment-specific — only the
 # .example template is committed, same convention as .env/.env.example.

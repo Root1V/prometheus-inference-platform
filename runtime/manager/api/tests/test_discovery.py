@@ -284,7 +284,7 @@ class TestStartDownload:
         assert entry is not None
         assert entry.downloaded is False
         assert entry.hf_repo == "bartowski/Llama-3.2-1B-GGUF"
-        assert entry.hf_filename == "model-Q4_K_M.gguf"
+        assert entry.hf_filenames == ["model-Q4_K_M.gguf"]
 
     def test_duplicate_model_id_returns_409(self, tmp_path: Path):
         client = _authed_write(_make_client(tmp_path))
@@ -414,7 +414,7 @@ class TestPauseAndResume:
                 port=8090,
                 context_length=4096,
                 hf_repo="x/y",
-                hf_filename="m1.gguf",
+                hf_filenames=["m1.gguf"],
             )
         )
         try:
@@ -431,7 +431,7 @@ class TestPauseAndResume:
                 port=8090,
                 context_length=4096,
                 hf_repo="x/y",
-                hf_filename="m1.gguf",
+                hf_filenames=["m1.gguf"],
             )
         )
         app.state.downloads.append(
@@ -492,7 +492,7 @@ class TestDeleteDownloaded:
                 path=str(gguf_path),
                 downloaded=True,
                 hf_repo="x/y",
-                hf_filename="downloaded-model.gguf",
+                hf_filenames=["downloaded-model.gguf"],
             )
         )
         try:
@@ -524,7 +524,7 @@ class TestDeleteDownloaded:
                 path=str(gguf_path),
                 downloaded=True,
                 hf_repo="x/y",
-                hf_filename="running-model.gguf",
+                hf_filenames=["running-model.gguf"],
             )
         )
         fake_proc = ProcessState(
@@ -566,7 +566,7 @@ class TestRunDownload:
                 port=8081,
                 context_length=4096,
                 hf_repo="bartowski/Llama-3.2-1B-GGUF",
-                hf_filename="model-Q4_K_M.gguf",
+                hf_filenames=["model-Q4_K_M.gguf"],
             )
         )
         downloads: list[DownloadState] = []
@@ -615,7 +615,7 @@ class TestRunDownload:
                 port=8081,
                 context_length=4096,
                 hf_repo="x/y",
-                hf_filename="m.gguf",
+                hf_filenames=["m.gguf"],
             )
         )
         downloads: list[DownloadState] = []
@@ -645,7 +645,6 @@ class TestRunDownload:
                 port=8081,
                 context_length=4096,
                 hf_repo="x/y",
-                hf_filename="m-00001-of-00002.gguf",
                 hf_filenames=["m-00001-of-00002.gguf", "m-00002-of-00002.gguf"],
             )
         )
