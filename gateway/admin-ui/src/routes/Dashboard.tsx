@@ -23,6 +23,7 @@ export default function Dashboard() {
   const instances = instancesQuery.data?.instances ?? EMPTY_INSTANCES;
   const unreachableNodes = instancesQuery.data?.unreachable_nodes ?? EMPTY_NODES;
   const nodes = nodesQuery.data ?? EMPTY_NODES;
+  const downloadedModels = useMemo(() => instances.filter((i) => i.downloaded), [instances]);
 
   const stats = useMemo(
     () => ({
@@ -82,6 +83,7 @@ export default function Dashboard() {
         open={modal !== null}
         nodes={nodes}
         editing={modal?.mode === "edit" ? modal.instance : null}
+        downloadedModels={downloadedModels}
         onClose={() => setModal(null)}
       />
     </div>

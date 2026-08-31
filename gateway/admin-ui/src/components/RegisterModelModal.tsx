@@ -22,6 +22,12 @@ interface RegisterModelModalProps {
    * model to a different node or renaming it isn't a field edit, it's a
    * re-registration, out of scope here. */
   editing?: InstanceEntry | null;
+  /** Already-downloaded models to populate the "Model" picker when creating
+   * a new instance — path/family/quantization/modality/mmproj_path are
+   * derived from the selection instead of typed by hand, since those
+   * describe the file on disk, not a choice the operator is free to make.
+   * Ignored while editing. */
+  downloadedModels?: InstanceEntry[];
 }
 
 const BACKENDS: Backend[] = ["llama_cpp", "mlx", "vllm", "sglang"];
@@ -97,7 +103,13 @@ function Field({ label, required, children }: { label: string; required?: boolea
   );
 }
 
-export function RegisterModelModal({ open, nodes, onClose, editing = null }: RegisterModelModalProps) {
+export function RegisterModelModal({
+  open,
+  nodes,
+  onClose,
+  editing = null,
+  downloadedModels = [],
+}: RegisterModelModalProps) {
   const { showToast } = useToast();
   const registerModel = useRegisterModel();
   const updateModel = useUpdateModel();
@@ -105,6 +117,7 @@ export function RegisterModelModal({ open, nodes, onClose, editing = null }: Reg
   const [form, setForm] = useState<FormState>(() =>
     editing ? stateFromInstance(editing) : initialState(""),
   );
+  const [selectedSourceId, setSelectedSourceId] = useState("");
 
   if (!open) return null;
 
@@ -113,14 +126,40 @@ export function RegisterModelModal({ open, nodes, onClose, editing = null }: Reg
   // during render rather than synced via an effect (no extra render needed).
   const selectedNode = form.node || nodes[0] || "";
   const isPending = registerModel.isPending || updateModel.isPending;
+  // A downloaded model's file only exists on its own node — offering one
+  // from a different node would register a path that isn't there.
+  const modelsOnNode = downloadedModels.filter((m) => m.node === selectedNode);
 
   const update = <K extends keyof FormState>(key: K, value: FormState[K]) =>
     setForm((current) => ({ ...current, [key]: value }));
+
+  function handleSelectModel(sourceId: string) {
+    setSelectedSourceId(sourceId);
+    const source = modelsOnNode.find((m) => m.id === sourceId);
+    if (!source) return;
+    setForm((current) => ({
+      ...current,
+      path: source.path,
+      family: source.family,
+      quantization: source.quantization,
+      modality: source.modality,
+      mmproj_path: source.mmproj_path,
+      backend: source.backend,
+      context_length: String(source.context_length),
+      hf_repo: source.hf_repo,
+      hf_filename: source.hf_filename,
+      hf_sha256: source.hf_sha256,
+    }));
+  }
 
   const handleSubmit = (event: FormEvent) => {
     event.preventDefault();
     if (!selectedNode) {
       showToast("Select a node", "error");
+      return;
+    }
+    if (!isEditing && !selectedSourceId) {
+      showToast("Select a model", "error");
       return;
     }
 
@@ -197,7 +236,10 @@ export function RegisterModelModal({ open, nodes, onClose, editing = null }: Reg
             <Field label="Node" required>
               <select
                 value={selectedNode}
-                onChange={(e) => update("node", e.target.value)}
+                onChange={(e) => {
+                  update("node", e.target.value);
+                  setSelectedSourceId("");
+                }}
                 required
                 disabled={isEditing}
                 className={cn(inputClass, isEditing && "cursor-not-allowed opacity-60")}
@@ -223,6 +265,32 @@ export function RegisterModelModal({ open, nodes, onClose, editing = null }: Reg
                 className={cn(inputClass, isEditing && "cursor-not-allowed opacity-60")}
               />
             </Field>
+            {!isEditing && (
+              <Field label="Model" required>
+                {modelsOnNode.length === 0 ? (
+                  <p className="rounded-lg border border-dashed border-border px-3 py-2 text-xs text-text-muted">
+                    No downloaded models on this node yet — download one from the Models page
+                    first.
+                  </p>
+                ) : (
+                  <select
+                    value={selectedSourceId}
+                    onChange={(e) => handleSelectModel(e.target.value)}
+                    required
+                    className={inputClass}
+                  >
+                    <option value="" disabled>
+                      Select a downloaded model
+                    </option>
+                    {modelsOnNode.map((m) => (
+                      <option key={m.id} value={m.id}>
+                        {m.id} — {m.family || "?"} · {m.quantization || "?"}
+                      </option>
+                    ))}
+                  </select>
+                )}
+              </Field>
+            )}
             <Field label="Port" required>
               <input
                 type="number"
@@ -257,49 +325,76 @@ export function RegisterModelModal({ open, nodes, onClose, editing = null }: Reg
               </select>
             </Field>
             <Field label="Modality">
-              <select
-                value={form.modality}
-                onChange={(e) => update("modality", e.target.value as Modality)}
-                className={inputClass}
-              >
-                {MODALITIES.map((m) => (
-                  <option key={m} value={m}>
-                    {m}
-                  </option>
-                ))}
-              </select>
+              {isEditing ? (
+                <select
+                  value={form.modality}
+                  onChange={(e) => update("modality", e.target.value as Modality)}
+                  className={inputClass}
+                >
+                  {MODALITIES.map((m) => (
+                    <option key={m} value={m}>
+                      {m}
+                    </option>
+                  ))}
+                </select>
+              ) : (
+                <input
+                  value={form.modality}
+                  disabled
+                  placeholder="From the selected model"
+                  className={cn(inputClass, "cursor-not-allowed opacity-60")}
+                />
+              )}
             </Field>
             <Field label="Family">
-              <input value={form.family} onChange={(e) => update("family", e.target.value)} className={inputClass} />
+              <input
+                value={form.family}
+                onChange={(e) => update("family", e.target.value)}
+                disabled={!isEditing}
+                placeholder={isEditing ? undefined : "From the selected model"}
+                className={cn(inputClass, !isEditing && "cursor-not-allowed opacity-60")}
+              />
             </Field>
             <Field label="Quantization">
               <input
                 value={form.quantization}
                 onChange={(e) => update("quantization", e.target.value)}
-                className={inputClass}
+                disabled={!isEditing}
+                placeholder={isEditing ? undefined : "From the selected model"}
+                className={cn(inputClass, !isEditing && "cursor-not-allowed opacity-60")}
               />
             </Field>
             <Field label="Path (local .gguf)">
-              <input value={form.path} onChange={(e) => update("path", e.target.value)} className={inputClass} />
+              <input
+                value={form.path}
+                onChange={(e) => update("path", e.target.value)}
+                disabled={!isEditing}
+                placeholder={isEditing ? undefined : "From the selected model"}
+                className={cn(inputClass, !isEditing && "cursor-not-allowed opacity-60")}
+              />
             </Field>
             {form.modality === "vision" && (
               <Field label="mmproj path">
                 <input
                   value={form.mmproj_path}
                   onChange={(e) => update("mmproj_path", e.target.value)}
-                  className={inputClass}
+                  disabled={!isEditing}
+                  placeholder={isEditing ? undefined : "From the selected model"}
+                  className={cn(inputClass, !isEditing && "cursor-not-allowed opacity-60")}
                 />
               </Field>
             )}
           </div>
-          <p className="text-xs text-text-muted">
-            Downloading a model from Hugging Face? Use the{" "}
-            <a href="#/models" className="text-primary hover:underline">
-              Models
-            </a>{" "}
-            page instead — it searches, shows the model card, and registers the finished
-            download automatically.
-          </p>
+          {!isEditing && (
+            <p className="text-xs text-text-muted">
+              Don't see the model you want? Download it from the{" "}
+              <a href="#/models" className="text-primary hover:underline">
+                Models
+              </a>{" "}
+              page first — it searches Hugging Face, shows the model card, and registers the
+              finished download automatically.
+            </p>
+          )}
           <label className="flex items-center gap-2 text-sm text-text">
             <input
               type="checkbox"

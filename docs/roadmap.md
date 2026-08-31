@@ -1696,6 +1696,35 @@ edit action — plus resolving where a model's name can be set at all.
   correctly reset between two different models (the bug above); typed a custom name into
   the new Discover-tab field and confirmed it renders next to the file list.
 
+**Follow-up**: a data-quality pass surfaced two more issues, closing the loop on this
+item's original "Why" (the Instances page's Register-model flow was still pure free-text,
+letting an operator type any `path`/`family`/`modality`/`quantization` regardless of what's
+actually downloaded).
+- **Modality corrections**: reviewed all 30 registry entries — two are real vision-language
+  architectures (`llava-mistral-7b-q5` — LLaVA; `qwen3vl-32B-Q4` — Qwen's VL line) that were
+  tagged `modality: text`, and one is an embedding model (`qwen3-embedding-0-6b-q8-0-local`,
+  repo literally `Qwen3-Embedding-0.6B-GGUF`) also tagged `text`. This wasn't cosmetic:
+  `lifecycle.py`'s `_build_llama_cpp_cmd` only appends `--embedding` (or `--mmproj`) based
+  on this field, so the embedding model would have started as a plain completion server.
+  Fixed all three via the Library tab's edit action.
+- **Instances page create flow, model picker**: `RegisterModelModal`'s create mode replaced
+  free-text Path/Family/Quantization/Modality/mmproj-path inputs with a "Model" `<select>`
+  populated from already-downloaded models on the chosen node (`Dashboard.tsx` now derives
+  `downloadedModels` from its existing `useInstances()` call and passes it down — no new
+  fetch). Picking one derives those fields plus `backend`/`context_length`/`hf_repo`/
+  `hf_filename`/`hf_sha256` into the form; they render as disabled inputs so the operator
+  can see what was inherited but not drift it from what the file actually is. Edit mode is
+  untouched — this only applies to registering a *new* entry, matching the existing
+  registry-key-is-immutable stance. The picker is filtered to the selected node (a
+  downloaded file only exists on its own node) and resets when the node changes; an empty
+  list shows a hint pointing at the Models page instead of a dead-end dropdown.
+- **Verified**: full `.githooks/pre-push` green. Live in the browser: switched node from an
+  unreachable one (empty picker, correct hint) to `local` (all 30 models listed); selected
+  `llava-mistral-7b-q5` and confirmed every derived field populated correctly (including
+  `vision` modality and the empty mmproj hint, matching its real gap); registered a second
+  instance of that same file end-to-end, confirmed it appeared in the instance count, then
+  deleted it to keep the demo registry clean.
+
 **Verified**: `downloader.py` — new tests for pause-keeps-partial-file, resume sends the
 correct `Range` header and appends, resume with nothing on disk behaves like a fresh
 download, and resume falls back to a full restart when the server ignores Range (200
