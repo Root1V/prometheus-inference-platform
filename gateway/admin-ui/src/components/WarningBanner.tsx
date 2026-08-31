@@ -7,7 +7,7 @@ export function WarningBanner({ nodes }: { nodes: string[] }) {
   if (dismissed || nodes.length === 0) return null;
 
   return (
-    <div className="flex items-start justify-between gap-4 rounded-lg border border-yellow-200 bg-yellow-50 px-4 py-3 text-sm text-yellow-800">
+    <div className="flex items-start justify-between gap-4 rounded-lg border border-yellow-200 bg-yellow-50 px-4 py-3 text-sm text-yellow-800 dark:border-yellow-900 dark:bg-yellow-500/10 dark:text-yellow-300">
       <div className="flex items-start gap-2">
         <AlertTriangle size={18} className="mt-0.5 shrink-0" />
         <span>

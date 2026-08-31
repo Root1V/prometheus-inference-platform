@@ -1,6 +1,17 @@
 @import "tailwindcss";
 
 /*
+ * RM-44 follow-up: enables `dark:` utility variants, matched by the same
+ * `.dark` class on <html> that the token overrides below key off. Needed
+ * for the handful of components that carry their own fixed semantic color
+ * (status/circuit/modality badges, warning banners, toasts) rather than
+ * resolving through the --color-* tokens above — a light-mode chip color
+ * like bg-green-100 doesn't (and shouldn't) change meaning by itself, so
+ * those get an explicit dark: pair instead of a token.
+ */
+@custom-variant dark (&:where(.dark, .dark *));
+
+/*
  * Centralized color palette as Tailwind v4 @theme tokens, so it's easy to
  * retheme later without touching component classes (e.g. bg-surface,
  * text-text-muted, bg-primary are generated from these).

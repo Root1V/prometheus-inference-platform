@@ -1455,6 +1455,37 @@ Overview, Instances, and Models/Library (including a table with badges/pills and
 modal) — every surface repainted correctly with no light-mode remnants; switched back to
 Light and to System; confirmed the choice persists in `localStorage` across a reload.
 
+**Follow-up**: the user caught what the first verification pass missed — status/modality/
+quantization badges (`StatusBadge`, `Badge`/`ModalityBadge`, `CircuitBadge`,
+`UserStatusBadge`) plus a few banners/toasts (`WarningBanner`, `ToastContext`, two error
+boxes in `Playground.tsx`) carry their own fixed semantic color (`bg-green-100
+text-green-700` and similar) rather than resolving through the `--color-*` tokens — by
+design, since a badge's meaning (success/warning/error) is independent of theme, so it was
+never going to be a token. In dark mode these rendered as light pastel chips sitting on the
+new dark surfaces — legible, but visually disconnected from everything else, exactly what
+RM-44's original scope note called "meaningfully easier... without touching individual
+components at all, unless some inline literal color turns up" — one did.
+- Added `@custom-variant dark (&:where(.dark, .dark *));` to `index.css` (Tailwind v4's
+  equivalent of `darkMode: 'class'`) so `dark:` utilities work, keyed off the same `.dark`
+  class the token overrides already use.
+- Every affected file got a `dark:bg-{color}-500/15 dark:text-{color}-400`-style pair
+  alongside its existing light classes — a translucent tinted background at reduced
+  opacity plus a brighter text shade, rather than solid dark-shade swatches guessed by eye;
+  reads as an intentional, cohesive "dark badge" treatment rather than a token inversion.
+  Banners/toasts (larger surfaces, not tiny pills) got the analogous
+  `dark:border-{color}-900 dark:bg-{color}-500/10 dark:text-{color}-300` treatment.
+- Deliberately left alone: plain colored text with no background (`text-red-600` etc. used
+  for inline error messages across several routes) — already reads fine against a dark
+  surface, and hover-only light-tint backgrounds on icon buttons (delete/edit affordances
+  in `InstanceRow.tsx`/`UserRow.tsx`/`NodeRow.tsx`/`DownloadedModelsTable.tsx`) — a brief
+  hover flash is far less visually disruptive than the permanently-visible badges that
+  prompted this, so left as a lower-priority follow-up rather than expanding this change
+  into every hover state across four more files.
+- **Verified**: full `.githooks/pre-push` green again. Live in the browser: Library table
+  badges (Text/Vision modality, quantization, Ready/Stopped status) now sit correctly on
+  the dark surface; confirmed light mode is pixel-identical to before (the `dark:` classes
+  are additive, inert unless `.dark` is present).
+
 ## RM-45 — Let a client list which models it's actually allowed to use (done)
 
 **Why**: `GET /v1/models` (`gateway/src/prometheus_gateway/router.py`) is unauthenticated

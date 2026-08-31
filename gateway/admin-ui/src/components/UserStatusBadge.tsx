@@ -1,8 +1,8 @@
 import { cn } from "../lib/cn";
 
 const STATUS_STYLES = {
-  active: "bg-green-100 text-green-700",
-  inactive: "bg-gray-100 text-gray-700",
+  active: "bg-green-100 text-green-700 dark:bg-green-500/15 dark:text-green-400",
+  inactive: "bg-gray-100 text-gray-700 dark:bg-gray-500/15 dark:text-gray-300",
 } as const;
 
 export function UserStatusBadge({ isActive }: { isActive: boolean }) {

@@ -2,10 +2,10 @@ import type { ReactNode } from "react";
 import { cn } from "../lib/cn";
 
 const TONE_STYLES = {
-  neutral: "bg-gray-100 text-gray-700",
-  blue: "bg-blue-100 text-blue-700",
-  purple: "bg-purple-100 text-purple-700",
-  amber: "bg-amber-100 text-amber-700",
+  neutral: "bg-gray-100 text-gray-700 dark:bg-gray-500/15 dark:text-gray-300",
+  blue: "bg-blue-100 text-blue-700 dark:bg-blue-500/15 dark:text-blue-400",
+  purple: "bg-purple-100 text-purple-700 dark:bg-purple-500/15 dark:text-purple-400",
+  amber: "bg-amber-100 text-amber-700 dark:bg-amber-500/15 dark:text-amber-400",
 } as const;
 
 export function Badge({
