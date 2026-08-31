@@ -5,6 +5,21 @@
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Prometheus Admin</title>
+    <!-- RM-44: apply the theme before first paint to avoid a light/dark
+         flash. Keep the storage key and mode values in sync with
+         src/context/ThemeContext.tsx. -->
+    <script>
+      (function () {
+        try {
+          var stored = localStorage.getItem("prometheus-theme");
+          var mode = stored === "light" || stored === "dark" || stored === "system" ? stored : "system";
+          var isDark =
+            mode === "dark" ||
+            (mode === "system" && window.matchMedia("(prefers-color-scheme: dark)").matches);
+          if (isDark) document.documentElement.classList.add("dark");
+        } catch (e) {}
+      })();
+    </script>
   </head>
   <body>
     <div id="root"></div>

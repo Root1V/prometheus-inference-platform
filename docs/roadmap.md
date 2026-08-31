@@ -1406,26 +1406,54 @@ non-streaming path (both share the same payload construction).
 a system message now reaches the mocked backend intact. Full gateway suite green
 (209/209), full `.githooks/pre-push` green.
 
-## RM-44 — Dashboard: light/dark mode, auto-detected + manual toggle (added)
+## RM-44 — Dashboard: light/dark mode, auto-detected + manual toggle (done)
 
-**Why**: the admin-ui only has one (light) palette today — no dark mode at all, and no way
-to tell what the user's OS is set to.
+**Why**: the admin-ui only had one (light) palette — no dark mode, and no way to tell what
+the user's OS is set to.
 
-**Scope (not yet designed in detail)**: on load, read `prefers-color-scheme` and apply
-light/dark accordingly; add a toggle button (sidebar, near Logout, is the obvious spot)
-that lets the operator override it on demand, persisted (localStorage) so it survives a
-reload, and the toggle's own visual state must stay in sync with whichever mode is
-actually applied at any given time — including if the OS-level preference changes while
-the toggle hasn't been touched.
+**Scope**: confirmed easier than a typical retrofit, as anticipated when this item was
+added — `src/index.css` already centralized every color as a semantic Tailwind v4 `@theme`
+token (`--color-background`, `--color-surface`, `--color-text`, `--color-text-muted`,
+`--color-primary`, `--color-primary-foreground`) and every component consumes those tokens
+rather than literal color utilities, so dark mode needed **zero changes to any page or
+table component** — only the token definitions and the toggle itself.
+- `index.css`: a `.dark { --color-*: ... }` block redefines the same 7 tokens. Not a naive
+  inversion — `surface` sits one step lighter than `background` so cards still read as
+  raised panels, and `primary` is bumped from `#ea580c` to `#f97316` (one Tailwind orange
+  step brighter) since saturated accent colors read muddier against dark backgrounds at
+  the same lightness. A `dark:` Tailwind variant (`@custom-variant`) wasn't needed at all —
+  since every component already resolves color through the CSS custom properties, toggling
+  a `.dark` class on `<html>` cascades everywhere automatically.
+  `Sidebar.tsx` was deliberately left on its existing hardcoded dark navy (`bg-gray-900`
+  etc.) rather than converted to tokens — it already reads as fixed "chrome" today, a
+  legitimate pattern (persistent dark sidebar regardless of content theme, same as several
+  real dashboards), and touching it wasn't necessary for the ask.
+- `context/ThemeContext.tsx` (new): three-way `mode` (`"light" | "dark" | "system"`,
+  persisted to `localStorage`), matching the existing `AuthContext`/`ToastContext`
+  provider-hook shape. `resolvedTheme` is a plain derived value computed during render
+  (`mode === "system" ? (systemPrefersDark ? "dark" : "light") : mode`) rather than synced
+  via an effect — the codebase's lint rules (`react-hooks/set-state-in-effect`) reject
+  `setState` calls driven by a prop/state change inside an effect, a pattern hit twice
+  earlier this session (RM-48's settings modal, badge component) and avoided here from the
+  start. The one genuine effect subscribes to `matchMedia("(prefers-color-scheme: dark)")`
+  and updates a `systemPrefersDark` boolean — a real external-system subscription, not a
+  derived value — so the OS theme changing live while "system" is selected re-resolves
+  immediately, no reload needed.
+- `index.html`: a small inline script (before any React code loads) reads the stored mode
+  and applies the `dark` class synchronously, to avoid a light-to-dark flash on first
+  paint — the standard technique for this exact problem, since React's own effect only
+  runs after first render/paint.
+- `Sidebar.tsx`: a 3-icon segmented control (`Sun`/`Monitor`/`Moon` from the already-used
+  `lucide-react`) in the existing bottom `border-t` section, above Logout — the active mode
+  highlighted, `role="radiogroup"` for accessibility.
+- `main.tsx`: `ThemeProvider` wraps the whole tree (outermost, above `QueryClientProvider`)
+  so theming also applies to the unauthenticated `/login` screen.
 
-Meaningfully easier than a typical retrofit: `src/index.css` already centralizes every
-color as a semantic Tailwind v4 `@theme` token (`--color-background`, `--color-surface`,
-`--color-text`, etc.) and every component consumes those tokens (`bg-background`,
-`text-text-muted`, ...) rather than literal Tailwind color utilities scattered around. A
-dark palette can likely be added by redefining those same tokens under a
-`prefers-color-scheme: dark` media query plus a `[data-theme]` attribute override (the
-toggle just sets `data-theme` on `<html>`) — without touching individual components at
-all, unless some inline literal color turns up during implementation.
+**Verified**: `tsc`/`eslint`/`vite build` clean. Full `.githooks/pre-push` green. Live in
+the browser: confirmed System is the default on first load; switched to Dark and checked
+Overview, Instances, and Models/Library (including a table with badges/pills and an Edit
+modal) — every surface repainted correctly with no light-mode remnants; switched back to
+Light and to System; confirmed the choice persists in `localStorage` across a reload.
 
 ## RM-45 — Let a client list which models it's actually allowed to use (done)
 

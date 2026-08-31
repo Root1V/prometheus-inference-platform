@@ -49,7 +49,7 @@ Status: `done` · `todo`
 | RM-41 | Playground: show which model answered | todo | Small label next to the copy button per response — matters once you switch models mid-conversation |
 | RM-42 | Playground: animate the "waiting for a response" state | todo | Replace the static text with something that reads as active waiting |
 | RM-43 | Stop stripping client-supplied system messages | done | Found while scoping RM-35 — broke the RM-14 Playground's own System prompt field |
-| RM-44 | Dashboard: light/dark mode, auto-detected + manual toggle | todo | System `prefers-color-scheme` on load, synced toggle button, persists the manual choice |
+| RM-44 | Dashboard: light/dark mode, auto-detected + manual toggle | done | 3-way sidebar toggle (Light/System/Dark), live OS-preference sync, persisted choice, no per-component changes needed |
 | RM-45 | Let a client list which models it's actually allowed to use | done | New `GET /v1/models/mine` — authenticated, filtered to the caller's own `model:<id>` grants |
 | RM-46 | Per-model performance metrics: avg response time, TTFT, inter-token latency | todo | New instrumentation — nothing like this is tracked today, only overall request latency |
 | RM-47 | Evaluate whether `GET /v1/models` should stay unauthenticated | todo | Raised while building RM-45 — confirm nothing depends on public access before considering any change |

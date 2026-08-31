@@ -15,6 +15,25 @@
   --color-primary-foreground: #ffffff;
 }
 
+/*
+ * RM-44: dark-mode overrides for the same tokens. Applied via a `.dark`
+ * class on <html>, toggled by ThemeContext — kept out of the @theme block
+ * above so these stay plain runtime-overridable custom properties rather
+ * than a second build-time theme. Not a naive inversion: surface sits one
+ * step above background (cards read as raised panels), and primary is
+ * bumped a shade brighter than the light-mode value since saturated accent
+ * colors read as muddier against dark backgrounds at the same lightness.
+ */
+.dark {
+  --color-background: #0d0f12;
+  --color-surface: #15181d;
+  --color-border: #262b33;
+  --color-text: #e5e7eb;
+  --color-text-muted: #8b93a1;
+  --color-primary: #f97316;
+  --color-primary-foreground: #ffffff;
+}
+
 body {
-  @apply bg-background text-text antialiased;
+  @apply bg-background text-text antialiased transition-colors duration-150;
 }
