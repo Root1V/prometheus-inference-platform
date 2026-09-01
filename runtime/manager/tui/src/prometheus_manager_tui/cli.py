@@ -323,7 +323,7 @@ def cmd_restart(ctx: click.Context, model_id: str) -> None:
 @click.option("--id", "model_id", prompt="Model ID", help="Unique model identifier.")
 @click.option(
     "--backend",
-    type=click.Choice(["llama_cpp", "mlx", "vllm", "sglang"]),
+    type=click.Choice(["llama_cpp", "mlx", "vllm", "sglang", "sd_cpp"]),
     default="llama_cpp",
     prompt="Backend",
     help="Inference engine — see memory/wiki/inference-engines.md (RM-06).",

@@ -15,6 +15,7 @@ from prometheus_manager_core.lifecycle import (
     LifecycleError,
     _build_llama_cpp_cmd,
     _build_mlx_cmd,
+    _build_sd_cpp_cmd,
     _build_sglang_cmd,
     _build_vllm_cmd,
     _verify_pid_file,
@@ -115,6 +116,21 @@ class TestBackendCommandBuilders:
         assert "--embedding" not in _build_vllm_cmd("vllm", entry, 9090, "127.0.0.1")
         assert "--embedding" not in _build_sglang_cmd("python3", entry, 9090, "127.0.0.1")
 
+    def test_sd_cpp_cmd_uses_listen_ip_and_listen_port_flags(self):
+        """sd-server (verified via --help) uses --listen-ip/--listen-port, not --host/--port."""
+        cmd = _build_sd_cpp_cmd("sd-server", self._entry(), 9090, "127.0.0.1")
+        assert cmd == [
+            "sd-server",
+            "--model",
+            "/models/test-model",
+            "--listen-ip",
+            "127.0.0.1",
+            "--listen-port",
+            "9090",
+        ]
+        assert "--alias" not in cmd
+        assert "--ctx-size" not in cmd
+
     def test_start_instance_dispatches_on_backend(self, default_config, populated_registry):
         """start_instance picks the command builder matching entry.backend."""
         populated_registry.update("test-model", backend="mlx", path="mlx-community/model-4bit")
@@ -138,6 +154,32 @@ class TestBackendCommandBuilders:
             cmd = mock_popen.call_args[0][0]
             assert cmd[0] == "mlx_lm.server"
             assert "mlx-community/model-4bit" in cmd
+
+    def test_start_instance_dispatches_on_sd_cpp_backend(self, default_config, populated_registry):
+        """sd_cpp uses its own command builder, same dispatch path as every other backend."""
+        populated_registry.update(
+            "test-model", backend="sd_cpp", path="/models/sd_turbo.gguf", modality="image"
+        )
+        mock_state = MagicMock(pid=42, port=9090, alias="test-model", model_id="test-model")
+
+        with (
+            patch("prometheus_manager_core.lifecycle._find_running", return_value=None),
+            patch("prometheus_manager_core.lifecycle._find_free_port", return_value=9090),
+            patch("prometheus_manager_core.lifecycle.subprocess.Popen") as mock_popen,
+            patch("prometheus_manager_core.lifecycle.httpx.get") as mock_get,
+            patch("prometheus_manager_core.lifecycle.scan", return_value=[mock_state]),
+        ):
+            mock_proc = MagicMock()
+            mock_proc.pid = 42
+            mock_proc.poll.return_value = None
+            mock_popen.return_value = mock_proc
+            mock_get.return_value = MagicMock(status_code=200)
+
+            start_instance("test-model", default_config, populated_registry)
+
+            cmd = mock_popen.call_args[0][0]
+            assert cmd[0] == "sd-server"
+            assert "/models/sd_turbo.gguf" in cmd
 
     def test_start_instance_rejects_unknown_backend(self, default_config, populated_registry):
         populated_registry.update("test-model", backend="does-not-exist")

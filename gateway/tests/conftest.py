@@ -214,6 +214,13 @@ def modality_registry(tmp_path):
     quantization: F16
     backend_url: "http://127.0.0.1:18083"
     modality: embedding
+  - id: image-model
+    path: /dev/null
+    context_length: 0
+    family: sd-turbo
+    quantization: Q8_0
+    backend_url: "http://127.0.0.1:18084"
+    modality: image
 """
     registry_file = tmp_path / "registry.yaml"
     registry_file.write_text(yaml_content)

@@ -4,6 +4,7 @@ import { useInstances } from "../api/instances";
 import {
   streamPlaygroundChat,
   useEmbeddings,
+  useImageGenerations,
   usePlaygroundChat,
   type ChatMessage,
   type ToolCall,
@@ -66,18 +67,30 @@ interface EmbeddingResult {
   latencyMs: number;
 }
 
+interface ImageResult {
+  prompt: string;
+  b64Json: string;
+  latencyMs: number;
+}
+
 const EMBEDDING_PREVIEW_COUNT = 8;
 
 export default function Playground() {
   const instancesQuery = useInstances();
   const chat = usePlaygroundChat();
   const embeddings = useEmbeddings();
+  const imageGenerations = useImageGenerations();
 
-  const [mode, setMode] = useState<"chat" | "embeddings">("chat");
+  const [mode, setMode] = useState<"chat" | "embeddings" | "images">("chat");
   const [embedModel, setEmbedModel] = useState("");
   const [embedInput, setEmbedInput] = useState("");
   const [embedResults, setEmbedResults] = useState<EmbeddingResult[]>([]);
   const [embedError, setEmbedError] = useState<string | null>(null);
+
+  const [imageModel, setImageModel] = useState("");
+  const [imagePrompt, setImagePrompt] = useState("");
+  const [imageResults, setImageResults] = useState<ImageResult[]>([]);
+  const [imageError, setImageError] = useState<string | null>(null);
 
   const [model, setModel] = useState("");
   const [systemPrompt, setSystemPrompt] = useState("");
@@ -109,6 +122,11 @@ export default function Playground() {
   );
   const selectedEmbedModel = embedModel || runningEmbeddingModels[0]?.id || "";
 
+  const runningImageModels = (instancesQuery.data?.instances ?? []).filter(
+    (i) => i.state === "ready" && i.modality === "image",
+  );
+  const selectedImageModel = imageModel || runningImageModels[0]?.id || "";
+
   async function handleGetEmbedding() {
     if (!selectedEmbedModel || !embedInput.trim() || embeddings.isPending) return;
     setEmbedError(null);
@@ -132,6 +150,29 @@ export default function Playground() {
 
   async function handleCopyEmbedding(embedding: number[]) {
     await navigator.clipboard.writeText(JSON.stringify(embedding));
+  }
+
+  async function handleGenerateImage() {
+    if (!selectedImageModel || !imagePrompt.trim() || imageGenerations.isPending) return;
+    setImageError(null);
+    const startedAt = performance.now();
+    try {
+      const data = await imageGenerations.mutateAsync({
+        model: selectedImageModel,
+        prompt: imagePrompt,
+      });
+      setImageResults((prev) => [
+        ...prev,
+        {
+          prompt: imagePrompt,
+          b64Json: data.data[0]?.b64_json ?? "",
+          latencyMs: Math.round(performance.now() - startedAt),
+        },
+      ]);
+      setImagePrompt("");
+    } catch (error) {
+      setImageError(getErrorMessage(error));
+    }
   }
 
   /** Returns null (and sets toolsError) if the JSON is present but invalid. */
@@ -299,9 +340,12 @@ export default function Playground() {
     if (mode === "chat") {
       setTurns([]);
       setSendError(null);
-    } else {
+    } else if (mode === "embeddings") {
       setEmbedResults([]);
       setEmbedError(null);
+    } else {
+      setImageResults([]);
+      setImageError(null);
     }
   }
 
@@ -330,7 +374,13 @@ export default function Playground() {
             <button
               type="button"
               onClick={handleClear}
-              disabled={mode === "chat" ? turns.length === 0 : embedResults.length === 0}
+              disabled={
+                mode === "chat"
+                  ? turns.length === 0
+                  : mode === "embeddings"
+                    ? embedResults.length === 0
+                    : imageResults.length === 0
+              }
               className="flex items-center gap-1.5 rounded-lg border border-border px-3 py-1.5 text-sm text-text-muted hover:bg-surface disabled:cursor-not-allowed disabled:opacity-40"
             >
               <Trash2 size={14} />
@@ -362,6 +412,18 @@ export default function Playground() {
               )}
             >
               Embeddings
+            </button>
+            <button
+              type="button"
+              onClick={() => setMode("images")}
+              className={cn(
+                "border-b-2 px-3 py-2 text-sm font-medium",
+                mode === "images"
+                  ? "border-primary text-text"
+                  : "border-transparent text-text-muted hover:text-text",
+              )}
+            >
+              Images
             </button>
           </div>
 
@@ -606,7 +668,7 @@ export default function Playground() {
             </button>
           </div>
           </>
-          ) : (
+          ) : mode === "embeddings" ? (
           <>
           <div className="mt-4 min-h-0 flex-1 space-y-3 overflow-y-auto rounded-xl border border-border bg-surface p-4">
             {embedResults.length === 0 ? (
@@ -678,6 +740,69 @@ export default function Playground() {
             >
               <Send size={16} />
               Get embedding
+            </button>
+          </div>
+          </>
+          ) : (
+          <>
+          <div className="mt-4 min-h-0 flex-1 space-y-3 overflow-y-auto rounded-xl border border-border bg-surface p-4">
+            {imageResults.length === 0 ? (
+              <p className="text-sm text-text-muted">
+                No images yet — send a prompt to generate one.
+              </p>
+            ) : (
+              imageResults.map((result, i) => (
+                <div
+                  key={i}
+                  className="rounded-xl border border-border bg-background px-4 py-3 text-sm text-text"
+                >
+                  <p className="whitespace-pre-wrap text-text-muted">"{result.prompt}"</p>
+                  <img
+                    src={`data:image/png;base64,${result.b64Json}`}
+                    alt={result.prompt}
+                    className="mt-2 max-w-xs rounded-lg border border-border"
+                  />
+                  <div className="mt-2 flex items-center gap-3 border-t border-border pt-2 text-xs text-text-muted">
+                    <span>{result.latencyMs} ms</span>
+                  </div>
+                </div>
+              ))
+            )}
+          </div>
+
+          {imageError && (
+            <div className="mt-3 rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-red-700 dark:border-red-900 dark:bg-red-500/10 dark:text-red-300">
+              {imageError}
+            </div>
+          )}
+
+          <div className="mt-4 flex items-end gap-2">
+            <textarea
+              rows={2}
+              value={imagePrompt}
+              onChange={(e) => setImagePrompt(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter" && !e.shiftKey) {
+                  e.preventDefault();
+                  void handleGenerateImage();
+                }
+              }}
+              placeholder={
+                runningImageModels.length === 0
+                  ? "No running image models — start one from Instances first."
+                  : "Describe the image to generate… (Enter to send, Shift+Enter for a new line)"
+              }
+              disabled={runningImageModels.length === 0}
+              className={cn(inputClass, "flex-1")}
+            />
+            <button
+              type="button"
+              onClick={() => void handleGenerateImage()}
+              disabled={!selectedImageModel || !imagePrompt.trim() || imageGenerations.isPending}
+              className="flex items-center gap-2 rounded-lg bg-primary px-4 py-2.5 text-sm font-medium text-primary-foreground hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-40"
+            >
+              <Send size={16} />
+              Generate
             </button>
           </div>
           </>
@@ -824,7 +949,7 @@ export default function Playground() {
             )}
           </div>
           </>
-          ) : (
+          ) : mode === "embeddings" ? (
           <div>
             <label htmlFor="playground-embed-model" className="mb-1.5 block text-sm font-medium text-text">
               Model
@@ -848,6 +973,32 @@ export default function Playground() {
             <p className="mt-3 text-xs text-text-muted">
               Embeddings are single-shot — each request is independent, there's no
               conversation history to carry over between them.
+            </p>
+          </div>
+          ) : (
+          <div>
+            <label htmlFor="playground-image-model" className="mb-1.5 block text-sm font-medium text-text">
+              Model
+            </label>
+            {runningImageModels.length === 0 ? (
+              <p className="text-sm text-text-muted">No running image models.</p>
+            ) : (
+              <select
+                id="playground-image-model"
+                value={selectedImageModel}
+                onChange={(e) => setImageModel(e.target.value)}
+                className={inputClass}
+              >
+                {runningImageModels.map((i) => (
+                  <option key={i.id} value={i.id}>
+                    {i.id}
+                  </option>
+                ))}
+              </select>
+            )}
+            <p className="mt-3 text-xs text-text-muted">
+              Each prompt is single-shot — there's no conversation history to carry over
+              between generations.
             </p>
           </div>
           )}

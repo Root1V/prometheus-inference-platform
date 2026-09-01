@@ -1,5 +1,7 @@
 /** RM-48 — Models page: discover/download/manage models from Hugging Face. */
 
+import type { Modality } from "./instance";
+
 export interface HfSearchResult {
   id: string;
   downloads: number | null;
@@ -50,7 +52,7 @@ export interface StartDownloadRequest {
   context_length?: number;
   family?: string;
   quantization?: string;
-  modality?: "text" | "vision" | "embedding";
+  modality?: Modality;
 }
 
 export interface StartDownloadResult {

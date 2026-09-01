@@ -97,7 +97,8 @@ async def list_backends(
             if live:
                 # We have live ProcessState entries visible via psutil; merge them.
                 backends = [
-                    _merge(entry.__dict__, live.get(entry.id), pid_dir=pid_dir) for entry in entries
+                    _merge(entry.to_dict(), live.get(entry.id), pid_dir=pid_dir)
+                    for entry in entries
                 ]
             else:
                 # Fallback: HTTP probing when psutil cannot see host processes.
@@ -108,7 +109,7 @@ async def list_backends(
                         probe_span.set_attribute("model_count", len(entries))
                         backends = [
                             _merge(
-                                entry.__dict__, await _probe_state(entry, proxy_host), proxy_host
+                                entry.to_dict(), await _probe_state(entry, proxy_host), proxy_host
                             )
                             for entry in entries
                         ]
@@ -121,7 +122,7 @@ async def list_backends(
                             probe_span.set_attribute("model_id", entry.id)
                             state = await _probe_state(entry, proxy_host)
                             probe_span.set_attribute("probe_result", state)
-                            backends.append(_merge(entry.__dict__, state, proxy_host))
+                            backends.append(_merge(entry.to_dict(), state, proxy_host))
         else:
             # Bare-metal mode: psutil-based process scanning.
             pid_dir = request.app.state.pid_dir
@@ -148,7 +149,7 @@ async def list_backends(
                         probe_span.set_attribute("model_id", entry.id)
                         probe_span.set_attribute("probe_result", state_str)
             backends = [
-                _merge(entry.__dict__, live.get(entry.id), pid_dir=pid_dir) for entry in entries
+                _merge(entry.to_dict(), live.get(entry.id), pid_dir=pid_dir) for entry in entries
             ]
 
         span.set_attribute("backend_count", len(backends))
@@ -210,9 +211,9 @@ async def get_backend(
             live = {proc.model_id: proc for proc in live_procs if proc.model_id}
             proc = live.get(model_id)
             if proc is not None:
-                result = _merge(entry.__dict__, proc, pid_dir=pid_dir)
+                result = _merge(entry.to_dict(), proc, pid_dir=pid_dir)
             else:
-                result = _merge(entry.__dict__, await _probe_state(entry, proxy_host), proxy_host)
+                result = _merge(entry.to_dict(), await _probe_state(entry, proxy_host), proxy_host)
         else:
             pid_dir = request.app.state.pid_dir
             live = {
@@ -220,7 +221,7 @@ async def get_backend(
                 for proc in await asyncio.to_thread(scan, pid_dir, {model_id})
                 if proc.model_id
             }
-            result = _merge(entry.__dict__, live.get(model_id), pid_dir=pid_dir)
+            result = _merge(entry.to_dict(), live.get(model_id), pid_dir=pid_dir)
 
         span.set_attribute("backend_state", result.get("state", "unknown"))
         span.set_attribute("http.status_code", 200)
@@ -355,6 +356,13 @@ def _merge(
     "{model_id}.error" marker written by lifecycle.py on a failed start —
     without it, a crashed-on-start model is indistinguishable from one
     that's simply never been started ("stopped" either way).
+
+    Callers must pass entry.to_dict(), not entry.__dict__ — RM-49 turned
+    backend_url into a derived @property (it's always http://127.0.0.1:<port>,
+    never a stored field), and a bare dataclass __dict__ omits properties
+    entirely. Passing __dict__ here silently drops backend_url from every
+    /v1/backends response, which is what the gateway's manager_sync relies on
+    to route requests at all (found while verifying RM-38 end-to-end).
     """
     result: dict[str, Any] = dict(entry)
     result["file_size_bytes"] = _file_size_bytes(entry)

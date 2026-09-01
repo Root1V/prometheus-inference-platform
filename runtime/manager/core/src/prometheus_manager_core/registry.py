@@ -20,13 +20,19 @@ import yaml
 _ID_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{1,62}[a-z0-9]$")
 
 # See memory/wiki/inference-engines.md (RM-06) for the comparison behind this list.
-BACKENDS = ("llama_cpp", "mlx", "vllm", "sglang")
+# RM-38: sd_cpp (stable-diffusion.cpp's sd-server) is the odd one out — it
+# generates images rather than serving LLM completions, so it deviates from
+# the other four in lifecycle.py's command-building and scanner.py's
+# process-recognition (its own --listen-ip/--listen-port flags, no /health
+# endpoint). See lifecycle.py's _build_sd_cpp_cmd for specifics.
+BACKENDS = ("llama_cpp", "mlx", "vllm", "sglang", "sd_cpp")
 
 # RM-09: what kind of requests this model serves. Determines which flags
 # lifecycle.py adds to the launch command and how the gateway routes requests
 # (text -> /v1/chat/completions, embedding -> /v1/embeddings, vision -> chat
 # completions with image content parts). See memory/wiki/model-registry.md.
-MODALITIES = ("text", "embedding", "vision")
+# RM-38: "image" -> POST /v1/images/generations (sd_cpp only).
+MODALITIES = ("text", "embedding", "vision", "image")
 
 _SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS models (

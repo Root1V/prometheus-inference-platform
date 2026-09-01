@@ -143,6 +143,10 @@ class TestScopeEnforcement:
         assert "backends" in body
         assert len(body["backends"]) == 1
         assert body["backends"][0]["id"] == "llama3-test"
+        # backend_url is a RegistryEntry @property, not a dataclass field — a
+        # regression that reads entry.__dict__ instead of entry.to_dict() drops
+        # it silently, which breaks gateway routing (found while verifying RM-38).
+        assert body["backends"][0]["backend_url"] == "http://127.0.0.1:8080"
 
     def test_AC13_get_single_backend_requires_auth(self, tmp_path: Path):
         """AC-13: GET /v1/backends/{id} without auth → 401."""

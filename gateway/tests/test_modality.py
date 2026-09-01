@@ -16,6 +16,7 @@ from tests.conftest import make_token
 TEXT_URL = "http://127.0.0.1:18080"
 VLM_URL = "http://127.0.0.1:18082"
 EMBED_URL = "http://127.0.0.1:18083"
+IMAGE_URL = "http://127.0.0.1:18084"
 
 TINY_PNG_DATA_URI = (
     "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBA"
@@ -268,6 +269,108 @@ async def test_embeddings_backend_unreachable_returns_503(gw, rsa_keys):
         respx.post(f"{EMBED_URL}/v1/embeddings").mock(side_effect=httpx.ConnectError("refused"))
         resp = await gw.post(
             "/v1/embeddings", json={"model": "embed-model", "input": "hi"}, headers=headers
+        )
+    assert resp.status_code == 503
+    assert resp.json()["type"].endswith("backend-unavailable")
+
+
+# ── /v1/images/generations ───────────────────────────────────────────────────
+
+
+async def test_images_unknown_model_returns_400(gw, rsa_keys):
+    headers = _headers(rsa_keys, "inference:read model:image-model")
+    resp = await gw.post(
+        "/v1/images/generations",
+        json={"model": "no-such-model", "prompt": "a fox in snow"},
+        headers=headers,
+    )
+    assert resp.status_code == 400
+    assert resp.json()["type"].endswith("unknown-model")
+
+
+async def test_images_on_text_model_returns_modality_mismatch(gw, rsa_keys):
+    headers = _headers(rsa_keys, "inference:read model:llama3-8b-q4")
+    resp = await gw.post(
+        "/v1/images/generations",
+        json={"model": "llama3-8b-q4", "prompt": "a fox in snow"},
+        headers=headers,
+    )
+    assert resp.status_code == 400
+    assert resp.json()["type"].endswith("modality-mismatch")
+
+
+async def test_images_without_inference_scope_returns_403(gw, rsa_keys):
+    headers = _headers(rsa_keys, "model:image-model")
+    resp = await gw.post(
+        "/v1/images/generations",
+        json={"model": "image-model", "prompt": "a fox in snow"},
+        headers=headers,
+    )
+    assert resp.status_code == 403
+
+
+async def test_images_without_model_scope_returns_403(gw, rsa_keys):
+    """RM-07 deny-by-default applies to images too."""
+    headers = _headers(rsa_keys, "inference:read")
+    resp = await gw.post(
+        "/v1/images/generations",
+        json={"model": "image-model", "prompt": "a fox in snow"},
+        headers=headers,
+    )
+    assert resp.status_code == 403
+    assert "not authorized to use model" in resp.json()["detail"]
+
+
+async def test_images_success_forwards_and_returns_backend_response(gw, rsa_keys):
+    headers = _headers(rsa_keys, "inference:read model:image-model")
+    backend_response = {
+        "created": 1700000000,
+        "data": [{"b64_json": "aGVsbG8="}],
+        "output_format": "png",
+    }
+    with respx.mock:
+        route = respx.post(f"{IMAGE_URL}/v1/images/generations").mock(
+            return_value=Response(200, json=backend_response)
+        )
+        resp = await gw.post(
+            "/v1/images/generations",
+            json={"model": "image-model", "prompt": "a fox in snow"},
+            headers=headers,
+        )
+    assert resp.status_code == 200
+    assert resp.json() == backend_response
+    assert route.calls[0].request.method == "POST"
+
+
+async def test_images_admin_write_bypasses_scope_checks(gw, rsa_keys):
+    """Same admin:write carve-out as chat/embeddings — the Playground's Images
+    tab runs under the admin dashboard's session."""
+    headers = _headers(rsa_keys, "admin:write")
+    backend_response = {"created": 1700000000, "data": [{"b64_json": "aGVsbG8="}]}
+    with respx.mock:
+        respx.post(f"{IMAGE_URL}/v1/images/generations").mock(
+            return_value=Response(200, json=backend_response)
+        )
+        resp = await gw.post(
+            "/v1/images/generations",
+            json={"model": "image-model", "prompt": "a fox in snow"},
+            headers=headers,
+        )
+    assert resp.status_code == 200
+
+
+async def test_images_backend_unreachable_returns_503(gw, rsa_keys):
+    import httpx
+
+    headers = _headers(rsa_keys, "inference:read model:image-model")
+    with respx.mock:
+        respx.post(f"{IMAGE_URL}/v1/images/generations").mock(
+            side_effect=httpx.ConnectError("refused")
+        )
+        resp = await gw.post(
+            "/v1/images/generations",
+            json={"model": "image-model", "prompt": "a fox in snow"},
+            headers=headers,
         )
     assert resp.status_code == 503
     assert resp.json()["type"].endswith("backend-unavailable")

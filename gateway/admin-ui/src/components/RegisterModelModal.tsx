@@ -30,8 +30,8 @@ interface RegisterModelModalProps {
   downloadedModels?: InstanceEntry[];
 }
 
-const BACKENDS: Backend[] = ["llama_cpp", "mlx", "vllm", "sglang"];
-const MODALITIES: Modality[] = ["text", "vision", "embedding"];
+const BACKENDS: Backend[] = ["llama_cpp", "mlx", "vllm", "sglang", "sd_cpp"];
+const MODALITIES: Modality[] = ["text", "vision", "embedding", "image"];
 
 interface FormState {
   node: string;

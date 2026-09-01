@@ -41,6 +41,13 @@ start_timeout_s = 300
 binary = "python3"
 start_timeout_s = 300
 
+# RM-38: stable-diffusion.cpp's sd-server — image generation, not LLM
+# completions. Model load + Metal shader compile is quick (a few seconds for
+# a ~2GB model in local testing); 60s matches llama_cpp's own default.
+[backends.sd_cpp]
+binary = "sd-server"
+start_timeout_s = 60
+
 [registry]
 path = "runtime/manager/registry.db"
 
@@ -110,6 +117,9 @@ class BackendsConfig:
     )
     sglang: BackendConfig = field(
         default_factory=lambda: BackendConfig(binary="python3", start_timeout_s=300)
+    )
+    sd_cpp: BackendConfig = field(
+        default_factory=lambda: BackendConfig(binary="sd-server", start_timeout_s=60)
     )
 
 
@@ -215,6 +225,7 @@ class ManagerConfig:
             "mlx": self.backends.mlx,
             "vllm": self.backends.vllm,
             "sglang": self.backends.sglang,
+            "sd_cpp": self.backends.sd_cpp,
         }
         cfg = by_name.get(backend)
         if cfg is None:
@@ -257,6 +268,7 @@ def load_config(path: Path | None = None) -> ManagerConfig:
             mlx=BackendConfig(**backends_raw.get("mlx", {})),
             vllm=BackendConfig(**backends_raw.get("vllm", {})),
             sglang=BackendConfig(**backends_raw.get("sglang", {})),
+            sd_cpp=BackendConfig(**backends_raw.get("sd_cpp", {})),
         ),
         registry=RegistryConfig(**raw.get("registry", {})),
         downloads=DownloadsConfig(**raw.get("downloads", {})),

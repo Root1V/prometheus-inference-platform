@@ -43,7 +43,7 @@ Status: `done` · `todo`
 | RM-35 | Native tool-calling (OpenAI-style function calling) | done | `tools`/`tool_calls` on `/v1/chat/completions` — new backend surface, not just a UI |
 | RM-36 | Playground: streaming responses | done | Gateway already supports `stream:true`; Playground deliberately shipped non-streaming first |
 | RM-37 | Playground: embedding model testing | done | New "Embeddings" tab — single input, vector preview + dims; also fixed a missing admin:write bypass on `/v1/embeddings` |
-| RM-38 | Image generation model support | todo | Speculative — new modality, new backend integration, no known model/backend chosen yet |
+| RM-38 | Image generation model support | done | New `sd_cpp` backend (stable-diffusion.cpp) + `image` modality, gateway endpoint, Playground UI |
 | RM-39 | Video generation model support | todo | Speculative — same as RM-38, even less proven for self-hosted use |
 | RM-40 | Playground: image upload for Vision/VLM models | todo | Builds on RM-09's vision content parts; upload only enabled when the selected model's modality is vision |
 | RM-41 | Playground: show which model answered | todo | Small label next to the copy button per response — matters once you switch models mid-conversation |

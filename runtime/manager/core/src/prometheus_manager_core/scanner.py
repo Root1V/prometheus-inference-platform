@@ -64,15 +64,19 @@ _proc_cache: dict[int, psutil.Process] = {}
 class _BackendSignature:
     """How to recognize and parse the cmdline of one backend's process.
 
-    port/host use --port/--host for all four backends (verified for
-    llama.cpp and mlx_lm.server; documented convention for vllm/sglang —
-    see memory/wiki/inference-engines.md RM-06). Only the model-path flag
-    (or lack of one, for vLLM's positional arg) differs.
+    port/host use --port/--host for llama.cpp, mlx_lm.server, sglang, and
+    vLLM (verified for llama.cpp/mlx_lm.server; documented convention for
+    vllm/sglang — see memory/wiki/inference-engines.md RM-06). sd-server
+    (RM-38) is the exception — its own flags are --listen-port/--listen-ip —
+    hence port_flag/host_flag being per-signature rather than hardcoded in
+    scan() itself.
     """
 
     backend: str
     name_hints: tuple[str, ...]
     model_flag: str | None  # None means positional (vLLM: `vllm serve <model>`)
+    port_flag: str = "--port"
+    host_flag: str = "--host"
 
 
 _BACKEND_SIGNATURES: tuple[_BackendSignature, ...] = (
@@ -82,7 +86,23 @@ _BACKEND_SIGNATURES: tuple[_BackendSignature, ...] = (
     # vLLM's own name is broad ("vllm") — matching also requires the `serve`
     # subcommand token to avoid false positives on unrelated processes.
     _BackendSignature("vllm", ("vllm",), None),
+    _BackendSignature(
+        "sd_cpp", ("sd-server",), "--model", port_flag="--listen-port", host_flag="--listen-ip"
+    ),
 )
+
+# RM-38: sd-server has no /health endpoint at all (confirmed against its
+# source — examples/server/ has no such route). Model load happens
+# synchronously before the HTTP server starts listening (main.cpp: new_sd_ctx
+# runs before svr.listen()), so any 200 response — including this cheap,
+# always-200-once-serving capabilities endpoint — is a valid readiness
+# signal. Falls back to "/health" for every other backend, unchanged.
+_HEALTH_PATHS: dict[str, str] = {"sd_cpp": "/sdcpp/v1/capabilities"}
+_DEFAULT_HEALTH_PATH = "/health"
+
+
+def _health_path(backend: str) -> str:
+    return _HEALTH_PATHS.get(backend, _DEFAULT_HEALTH_PATH)
 
 
 def _match_backend(name: str, cmdline: list[str]) -> _BackendSignature | None:
@@ -189,10 +209,10 @@ def scan(
                 or _extract_arg(cmdline, "--alias")
                 or _extract_arg(cmdline, "--served-model-name")
             )
-            port_str = _extract_arg(cmdline, "--port")
+            port_str = _extract_arg(cmdline, sig.port_flag)
             port = int(port_str) if port_str.isdigit() else 0
             model_path = _extract_model_path(cmdline, sig)
-            host = _extract_arg(cmdline, "--host") or "127.0.0.1"
+            host = _extract_arg(cmdline, sig.host_flag) or "127.0.0.1"
 
             # cpu_percent(interval=None) returns 0.0 on the first call for a
             # Process object (it only stores the baseline).  Subsequent calls
@@ -236,7 +256,7 @@ def scan(
             if ps_status == psutil.STATUS_STOPPED:
                 state: State = "paused"
             else:
-                state = _probe_health(host, port, create_time, proxy_host)
+                state = _probe_health(host, port, create_time, proxy_host, sig.backend)
 
             states.append(
                 ProcessState(
@@ -285,13 +305,15 @@ def _is_managed(pid_file: Path, pid: int) -> bool:
         return False
 
 
-def _probe_health(host: str, port: int, create_time: float, proxy_host: str = "") -> State:
+def _probe_health(
+    host: str, port: int, create_time: float, proxy_host: str = "", backend: str = ""
+) -> State:
     if port == 0:
         return "unknown"
     probe_host = _normalize_probe_host(host, proxy_host)
     try:
         resp = httpx.get(
-            f"http://{probe_host}:{port}/health",
+            f"http://{probe_host}:{port}{_health_path(backend)}",
             timeout=_HEALTH_TIMEOUT,
         )
         if resp.status_code == 200:

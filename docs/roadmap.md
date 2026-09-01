@@ -1334,15 +1334,54 @@ environment — verified via Instances showing 0 registered models), no new cons
 existing Chat mode unaffected. Could not verify a real embeddings round-trip end-to-end —
 no embedding-modality backend instance is running locally to test against.
 
-## RM-38 — Image generation model support (added, speculative)
+## RM-38 — Image generation model support (done)
 
-**Why**: identified as a gap while extending the Playground, but Prometheus has no image-
-generation backend, endpoint, or modality today — recorded because it came up, not
-because a concrete need or backend choice exists yet.
+**Why**: RM-38 started as a speculative backlog stub with no backend chosen. Backend
+research settled on `stable-diffusion.cpp`'s `sd-server` — the ggml/GGUF sibling of
+llama.cpp (single compiled C++ binary, CMake build, Metal/CUDA via build flags) that ships
+a native OpenAI-images-compatible HTTP server (`POST /v1/images/generations`), unlike
+ComfyUI/A1111's full Python+CUDA stacks with no maintained OpenAI-compatible surface.
 
-**Scope**: undefined. Would need a new `modality` value, a chosen backend (e.g. an
-OpenAI-images-compatible server), a new gateway endpoint, and Playground UI to render
-generated images. Revisit only once a specific backend/model is chosen.
+**Scope**: full feature — new `sd_cpp` backend + `image` modality in manager-core, a
+`POST /v1/images/generations` gateway route, and a Playground Images tab. Registering an
+image model uses the existing manual per-node registration API (path-based, like any
+locally-placed model file) — this does **not** extend the Models page's
+Hugging-Face-discovery/download flow to understand diffusion model shapes (multi-file
+weight sets, VAE/text-encoder companions); that flow is tuned for single/sharded-LLM-GGUF
+search and would need its own design pass.
+
+**Real deviations confirmed by building the actual binary** (not assumed from docs):
+`sd-server` takes `-l/--listen-ip` + `--listen-port`, not `--host`/`--port` like every
+other backend here — `scanner.py`'s `_BackendSignature` gained per-signature
+`port_flag`/`host_flag` fields to accommodate it. It also has no `/health` endpoint at all
+(confirmed against the source, not just "unreliable" as one third-party report suggested)
+— `/sdcpp/v1/capabilities` is used instead as the readiness probe, since model loading
+happens synchronously before the HTTP server starts listening, making any 200 response a
+valid readiness signal (`scanner.py`'s new `_health_path()` helper, shared by
+`lifecycle.py`'s start-up polling).
+
+**Verified end-to-end through the real running stack**, not mocks: built
+stable-diffusion.cpp from source (`-DSD_METAL=ON`), downloaded a real model
+(`Green-Sky/SD-Turbo-GGUF`), registered it on the local node via the admin API with
+backend `sd_cpp` / modality `image`, started the instance from the dashboard (exercising
+`_build_sd_cpp_cmd`, the new `_BackendSignature`, and `_health_path` for real — reached
+`ready`), then generated a real image from a prompt through the full stack (browser →
+gateway's new route → manager-api → `sd-server`) and confirmed it rendered in the
+Playground's Images tab (~13s at default settings, real Metal-accelerated inference).
+
+**Bug found and fixed while verifying** (pre-existing, unrelated to RM-38's own code):
+`runtime/manager/api/src/prometheus_manager_api/routes.py`'s `_merge()` read
+`entry.__dict__` instead of `entry.to_dict()` — RM-49 turned `backend_url` into a derived
+`@property` on `RegistryEntry`, but a bare dataclass `__dict__` omits properties entirely,
+so `GET /v1/backends` had been silently dropping `backend_url` for every backend since
+RM-49, breaking the gateway's `manager_sync` routing regardless of modality. Fixed at all
+7 call sites; added a regression assertion to `test_AC13_correct_scope_returns_list`.
+
+**Verified**: `runtime/manager/core` — 164 tests, mypy, ruff clean. `gateway` — 241 tests
+(8 new for `/v1/images/generations`, mirroring the embeddings test set), mypy, ruff clean.
+`runtime/manager/api` — 78 tests (extended with the `backend_url` regression check), mypy,
+ruff clean. Frontend — `tsc --noEmit`, `npm run build`, `npm run lint` all clean. Full
+`.githooks/pre-push` green before pushing.
 
 ## RM-39 — Video generation model support (added, speculative)
 

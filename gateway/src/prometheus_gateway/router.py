@@ -21,7 +21,7 @@ from fastapi.responses import JSONResponse, StreamingResponse
 
 from . import db, pricing
 from .models.registry import ModelRegistry
-from .models.schemas import ChatCompletionRequest, EmbeddingsRequest
+from .models.schemas import ChatCompletionRequest, EmbeddingsRequest, ImageGenerationRequest
 from .telemetry import get_logger, get_tracer, metrics_store
 
 if TYPE_CHECKING:
@@ -857,6 +857,144 @@ def create_router(registry: ModelRegistry, pool: "BackendPool") -> APIRouter:
             resp_body = {}
         return JSONResponse(
             content=resp_body, status_code=resp.status_code, media_type="application/json"
+        )
+
+    # ── POST /v1/images/generations ─────────────────────────────────────────
+    # Implements: docs/roadmap.md — RM-38 (image generation)
+    @router.post("/v1/images/generations")
+    async def images_generations(body: ImageGenerationRequest, request: Request) -> Any:
+        """Proxy image-generation requests to an image-capable backend.
+
+        Mirrors /v1/embeddings exactly: buffered, no streaming, no usage/cost
+        accounting (there's no token count to log for an image response).
+        """
+        claims = getattr(getattr(request, "state", None), "claims", None)
+        request_id = getattr(getattr(request, "state", None), "request_id", "unknown")
+
+        entry = registry.get(body.model)
+        if entry is None:
+            return _problem(
+                request,
+                400,
+                "unknown-model",
+                "Unknown Model",
+                f"Model {body.model!r} is not registered. "
+                f"Use GET /v1/models for the list of available models.",
+            )
+
+        if entry.modality != "image":
+            return _problem(
+                request,
+                400,
+                "modality-mismatch",
+                "Modality Mismatch",
+                f"Model {body.model!r} is not an image model (modality={entry.modality!r}). "
+                f"Use GET /v1/models to find an image-capable model.",
+            )
+
+        is_admin_bypass = claims is not None and claims.has_scope("admin:write")
+        if claims is None or not (claims.has_scope("inference:read") or is_admin_bypass):
+            return _problem(
+                request,
+                403,
+                "forbidden",
+                "Forbidden",
+                "This endpoint requires inference:read scope.",
+            )
+
+        if not (claims.has_model_scope(body.model) or is_admin_bypass):
+            return _problem(
+                request,
+                403,
+                "forbidden",
+                "Forbidden",
+                f"This client is not authorized to use model {body.model!r}. "
+                "Contact the platform operator to request access.",
+            )
+
+        if entry.backend_url is None:
+            return _problem(
+                request,
+                503,
+                "model-not-loaded",
+                "Model Not Loaded",
+                f"Model {body.model!r} is registered but has no active backend. "
+                "Contact the platform operator.",
+            )
+
+        cb = pool.get_circuit_breaker(entry.id)
+        if cb is not None:
+            try:
+                if not await cb.allow_request():
+                    cb_state = await cb.get_state()
+                    retry_after = max(1, int((cb_state.recovery_at or 0) - time.time()))
+                    return _problem(
+                        request,
+                        503,
+                        "backend-unavailable",
+                        "Backend Unavailable",
+                        f"Backend '{entry.id}' circuit is {cb_state.state}.",
+                        extra_headers={"Retry-After": str(retry_after)},
+                    )
+            except Exception as exc:
+                logger.warning("circuit_breaker.check_error", backend_id=entry.id, error=str(exc))
+
+        target_url = f"{entry.backend_url.rstrip('/')}/v1/images/generations"
+        trace_id = getattr(getattr(request, "state", None), "trace_id", None)
+        if trace_id is None:
+            trace_id = structlog.contextvars.get_contextvars().get("trace_id", "none")
+
+        logger.info(
+            "images_generations.forwarding",
+            model=body.model,
+            backend_url=entry.backend_url,
+            request_id=request_id,
+        )
+
+        client = pool.get(entry.backend_url)
+        try:
+            resp = await pool.forward(
+                entry.id,
+                client,
+                target_url,
+                body.to_backend_payload(),
+                extra_headers={"X-Trace-ID": trace_id},
+            )
+        except (httpx.ConnectError, httpx.ConnectTimeout, httpx.RemoteProtocolError) as exc:
+            logger.error(
+                "images_generations.unreachable",
+                model=body.model,
+                backend_url=entry.backend_url,
+                error=str(exc),
+            )
+            return _problem(
+                request,
+                503,
+                "backend-unavailable",
+                "Backend Unavailable",
+                "The inference backend is currently unreachable. Please try again later.",
+            )
+        except Exception as exc:
+            logger.error(
+                "images_generations.upstream_error",
+                model=body.model,
+                backend_url=entry.backend_url,
+                error=str(exc),
+            )
+            return _problem(
+                request,
+                502,
+                "upstream-error",
+                "Upstream Error",
+                "The inference backend returned an unrecoverable error after retries.",
+            )
+
+        try:
+            resp_body_images: Any = resp.json()
+        except Exception:
+            resp_body_images = {}
+        return JSONResponse(
+            content=resp_body_images, status_code=resp.status_code, media_type="application/json"
         )
 
     return router

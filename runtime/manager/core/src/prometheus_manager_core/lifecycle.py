@@ -21,7 +21,7 @@ import psutil
 
 from .config import ManagerConfig
 from .registry import Registry, RegistryEntry
-from .scanner import ProcessState, _normalize_probe_host, scan
+from .scanner import ProcessState, _health_path, _normalize_probe_host, scan
 from .telemetry import get_logger
 
 logger = get_logger(__name__)
@@ -179,11 +179,28 @@ def _build_sglang_cmd(binary: str, entry: RegistryEntry, port: int, bind_host: s
     ]
 
 
+def _build_sd_cpp_cmd(binary: str, entry: RegistryEntry, port: int, bind_host: str) -> list[str]:
+    """sd-server (stable-diffusion.cpp) — RM-38, image generation.
+
+    Verified against a real build + a real generation request this session,
+    not guessed from docs. Two real deviations from every other backend
+    here: its own --listen-ip/--listen-port flags (not --host/--port — see
+    scanner.py's per-signature port_flag/host_flag), and no --alias/
+    served-model-name equivalent, same as mlx_lm.server — identity is
+    tracked via the PID file instead. No context-length flag either:
+    sd-server has no LLM-style context-window concept, so entry.context_length
+    (required by RegistryEntry but not meaningful for a diffusion model) is
+    unused here, same as mlx's own --ctx-size omission.
+    """
+    return [binary, "--model", entry.path, "--listen-ip", bind_host, "--listen-port", str(port)]
+
+
 _COMMAND_BUILDERS = {
     "llama_cpp": _build_llama_cpp_cmd,
     "mlx": _build_mlx_cmd,
     "vllm": _build_vllm_cmd,
     "sglang": _build_sglang_cmd,
+    "sd_cpp": _build_sd_cpp_cmd,
 }
 
 
@@ -262,7 +279,9 @@ def start_instance(
     # Write PID file
     pid_path.write_text(str(proc.pid))
 
-    # AC-5: wait for /health to return 200 within start_timeout_s
+    # AC-5: wait for the readiness endpoint to return 200 within start_timeout_s
+    # (RM-38: sd-server has no /health at all — _health_path resolves the
+    # right path per backend, "/health" for everything else, unchanged).
     deadline = time.monotonic() + start_timeout_s
     # Resolve probe host using the same logic as the scanner so both paths
     # behave identically: proxy_host (PMGR_PROXY_HOST / manager.toml [api])
@@ -279,7 +298,7 @@ def start_instance(
             raise LifecycleError(message)
         try:
             resp = httpx.get(
-                f"http://{probe_host}:{port}/health",
+                f"http://{probe_host}:{port}{_health_path(entry.backend)}",
                 timeout=_HEALTH_TIMEOUT,
             )
             if resp.status_code == 200:

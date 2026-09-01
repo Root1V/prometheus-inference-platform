@@ -137,3 +137,24 @@ class EmbeddingsRequest(BaseModel):
 
     def to_llama_payload(self) -> dict[str, object]:
         return {"model": self.model, "input": self.input}
+
+
+class ImageGenerationRequest(BaseModel):
+    """Allowlist schema for /v1/images/generations — RM-38.
+
+    Mirrors OpenAI's images request shape (model/prompt plus the optional
+    n/size the sd-server backend also accepts).
+    """
+
+    model: str
+    prompt: str
+    n: int | None = None
+    size: str | None = None
+
+    def to_backend_payload(self) -> dict[str, object]:
+        payload: dict[str, object] = {"model": self.model, "prompt": self.prompt}
+        if self.n is not None:
+            payload["n"] = self.n
+        if self.size is not None:
+            payload["size"] = self.size
+        return payload

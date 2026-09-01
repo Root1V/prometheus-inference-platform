@@ -91,6 +91,25 @@ export function useEmbeddings() {
   });
 }
 
+interface ImageGenerationResponse {
+  created: number;
+  data: { b64_json: string }[];
+  output_format?: string;
+}
+
+/**
+ * RM-38: calls the gateway's real POST /v1/images/generations with the admin
+ * dashboard's own session token — same real-usage rationale as
+ * usePlaygroundChat (RM-14) and useEmbeddings (RM-37).
+ */
+export function useImageGenerations() {
+  return useMutation({
+    mutationFn: async ({ model, prompt }: { model: string; prompt: string }) =>
+      (await rootClient.post<ImageGenerationResponse>("/v1/images/generations", { model, prompt }))
+        .data,
+  });
+}
+
 /** A partial tool_calls entry as it arrives in a streaming delta — same shape
  * OpenAI/llama.cpp use: only `index` is guaranteed on every chunk; `id`/
  * `function.name` arrive once, `function.arguments` arrives in fragments. */
