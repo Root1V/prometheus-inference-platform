@@ -1974,6 +1974,42 @@ undercounted models now show their real combined size in the Library table —
 `qwen25-32b-q4` 4.0 GB → 18.5 GB (the worst case), `deepseek-v25-1210-iq1m` 39.9 GB →
 49.1 GB, `qwen2.5-7b-q4` 4.0 GB → 4.4 GB.
 
+## RM-51 — fix: Separate the model catalog from running instances (todo)
+
+**Why**: found live, mid-session, while verifying RM-38 — an operator cleanup pass deleted
+what it believed were unused *instances* through the dashboard, and it wiped 27 *model*
+registrations along with them (down from 30 to 5 live rows). Root cause: today's
+`registry.db` `models` table conflates two concepts into one row — "a model that's been
+downloaded/known" and "a specific running instance of it, on some node, some port, some
+backend" — so there's no way to remove an instance without also removing the model it came
+from. The intended flow (per the operator): download a model → it's added to a models
+catalog → the operator creates one or more instances of that model (different nodes/ports)
+→ deleting an instance must not touch the catalog entry, but deleting a model *should*
+cascade — stop and remove every instance of it — behind a strong confirmation, since it's
+destructive across potentially multiple nodes.
+
+**Impact confirmed**: the incident was recovered from `runtime/manager/registry.db`'s last
+git commit (SQLite, tracked since RM-49) — 25 of the 27 deleted rows had a real path and
+were re-inserted; 2 already had an empty path in that commit (pre-existing broken/duplicate
+entries, left out). No data was permanently lost this time only because the tracked file
+happened to still hold a recent-enough snapshot — the schema gap itself is still open.
+
+**Scope** (not yet designed in detail — this entry exists to not lose the finding, not as
+a committed design):
+- Likely a real schema split in `runtime/manager/core/registry.py`: a `models` table
+  (path, family, quantization, hf_repo/sha256/filenames, downloaded) and an `instances`
+  table (model_id FK, node, port, backend, modality override, discovery) — a 1-to-many
+  relationship, not today's 1-to-1 row.
+- `runtime/manager/api` routes and `gateway/admin-ui`'s Models/Instances pages and
+  `RegisterModelModal` all assume today's single-table shape and would need reworking.
+- Delete semantics: removing an instance leaves the model catalog entry untouched, no
+  confirmation needed beyond today's. Removing a model must show what it cascades to
+  (every instance, on every node) and require an explicit strong confirmation before
+  stopping and removing them.
+- Migration path for the existing single-table `registry.db` data into the new shape —
+  needs its own plan given the file is git-tracked and already has real production data
+  in it (30 entries as of this writing).
+
 ## Adding new items
 
 Append a new row to the table with the next `RM-NN` id and a new `## RM-NN — ...` section

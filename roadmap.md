@@ -56,6 +56,7 @@ Status: `done` · `todo`
 | RM-48 | Dashboard: Models page — discover, download, and manage the model lifecycle | done | Search Hugging Face, read the model card, download with live progress/cancel/retry, delete removes the file too |
 | RM-49 | Model registry: migrate registry.yaml → SQLite | done | Fixes a real non-atomic-write bug; sync stdlib sqlite3 (no async, no new dependency); dropped dead `log_level`/redundant `backend_url` fields, consolidated `hf_filename`/`hf_filenames` |
 | RM-50 | fix: Registry data-quality cleanup — ghost downloads, port collision, size-undercounted shards | done | Deleted 3 broken entries + 1 orphan partial file, fixed the port collision, fixed `_file_size_bytes()` to sum all shards for manually-registered multi-part models |
+| RM-51 | fix: Separate the model catalog from running instances; confirm before deleting a model | todo | Deleting an instance currently deletes the model row too — found when a cleanup pass wiped 27 model registrations |
 
 Adding an item: append the next `RM-NN` row here with a one-liner, then add the full
 Why/Scope writeup to `docs/roadmap.md`.
