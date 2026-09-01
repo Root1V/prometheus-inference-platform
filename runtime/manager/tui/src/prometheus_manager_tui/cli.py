@@ -340,7 +340,7 @@ def cmd_restart(ctx: click.Context, model_id: str) -> None:
 @click.option("--quantization", default="", prompt="Quantization (e.g. Q4_0, mlx-4bit, awq)")
 @click.option(
     "--modality",
-    type=click.Choice(["text", "embedding", "vision"]),
+    type=click.Choice(["text", "embedding", "vision", "image"]),
     default="text",
     help="What this model serves — see memory/wiki/model-registry.md (RM-09).",
 )
