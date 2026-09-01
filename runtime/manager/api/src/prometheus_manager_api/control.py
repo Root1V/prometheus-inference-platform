@@ -62,6 +62,7 @@ _UPDATABLE_FIELDS = frozenset(
         "vae_path",
         "clip_l_path",
         "t5xxl_path",
+        "cfg_scale",
     }
 )
 
@@ -122,6 +123,7 @@ async def register_backend(
                 vae_path=body.get("vae_path", ""),
                 clip_l_path=body.get("clip_l_path", ""),
                 t5xxl_path=body.get("t5xxl_path", ""),
+                cfg_scale=body.get("cfg_scale"),
             )
             registry.add(entry)
         except (ValueError, TypeError) as exc:

@@ -358,6 +358,16 @@ def cmd_restart(ctx: click.Context, model_id: str) -> None:
 )
 @click.option("--clip-l-path", default="", help="RM-52: clip-l text encoder — sd_cpp only.")
 @click.option("--t5xxl-path", default="", help="RM-52: t5xxl text encoder — sd_cpp only.")
+@click.option(
+    "--cfg-scale",
+    "cfg_scale",
+    type=float,
+    default=None,
+    help="RM-52: sd_cpp guidance scale — sd-server's own default (7.0) is wrong for "
+    "guidance-distilled models (FLUX.1, SD3.5-Turbo, SD-Turbo): use ~1.0 for those, "
+    "confirmed empirically (cfg=7.0 against FLUX.1-dev produced a blown-out solid-"
+    "color image). Leave unset to use sd-server's default.",
+)
 @click.option("--hf-repo", default="", help="HuggingFace repo id.")
 @click.option("--hf-filename", default="", help="Filename within the HF repo.")
 @click.option("--hf-sha256", default="", help="Expected SHA-256 of the GGUF.")
@@ -376,6 +386,7 @@ def cmd_register(
     vae_path: str,
     clip_l_path: str,
     t5xxl_path: str,
+    cfg_scale: float | None,
     hf_repo: str,
     hf_filename: str,
     hf_sha256: str,
@@ -404,6 +415,7 @@ def cmd_register(
         vae_path=vae_path,
         clip_l_path=clip_l_path,
         t5xxl_path=t5xxl_path,
+        cfg_scale=cfg_scale,
         hf_repo=hf_repo,
         hf_filenames=[hf_filename] if hf_filename else [],
         hf_sha256=hf_sha256,

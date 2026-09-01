@@ -145,6 +145,36 @@ class TestRegister:
         assert body["clip_l_path"] == "/models/clip_l.safetensors"
         assert body["t5xxl_path"] == "/models/t5xxl.safetensors"
 
+    def test_register_and_update_cfg_scale(self, tmp_path: Path):
+        """RM-52: sd-server's own --cfg-scale default (7.0) is wrong for
+        guidance-distilled models (FLUX.1) — confirmed empirically."""
+        client = _authed(_make_client(tmp_path))
+        try:
+            resp = client.post(
+                "/v1/backends",
+                json={
+                    "id": "flux-model",
+                    "port": 8199,
+                    "path": "/models/flux1-dev-q8_0.gguf",
+                    "backend": "sd_cpp",
+                    "cfg_scale": 1.0,
+                },
+                headers={"Authorization": "Bearer dummy"},
+            )
+            assert resp.status_code == 201
+            assert resp.json()["cfg_scale"] == 1.0
+
+            patch_resp = client.patch(
+                "/v1/backends/flux-model",
+                json={"cfg_scale": 3.5},
+                headers={"Authorization": "Bearer dummy"},
+            )
+            assert patch_resp.status_code == 200
+            assert patch_resp.json()["cfg_scale"] == 3.5
+            assert app.state.registry.get("flux-model").cfg_scale == 3.5
+        finally:
+            _clear_override()
+
     def test_register_invalid_id_returns_400(self, tmp_path: Path):
         client = _authed(_make_client(tmp_path))
         try:

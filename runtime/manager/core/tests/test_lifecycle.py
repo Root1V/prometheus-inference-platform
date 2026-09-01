@@ -157,6 +157,21 @@ class TestBackendCommandBuilders:
         ]
         assert "--model" not in cmd
 
+    def test_sd_cpp_cmd_adds_cfg_scale_flag_when_set(self):
+        """RM-52: sd-server's own --cfg-scale default (7.0) is wrong for
+        guidance-distilled models like FLUX.1 — confirmed empirically (7.0
+        produced a blown-out solid-color image, 1.0 a real one)."""
+        entry = self._entry(cfg_scale=1.0)
+        cmd = _build_sd_cpp_cmd("sd-server", entry, 9090, "127.0.0.1")
+        assert "--cfg-scale" in cmd
+        assert cmd[cmd.index("--cfg-scale") + 1] == "1.0"
+
+    def test_sd_cpp_cmd_omits_cfg_scale_flag_by_default(self):
+        """None (the default) leaves sd-server's own default in place —
+        doesn't change existing single-file registrations like SD-Turbo."""
+        cmd = _build_sd_cpp_cmd("sd-server", self._entry(), 9090, "127.0.0.1")
+        assert "--cfg-scale" not in cmd
+
     def test_sd_cpp_cmd_split_mode_omits_unset_companion_flags(self):
         """Only vae_path set (no clip_l/t5xxl) — e.g. an SD3.5-style split without
         a separate clip_l file — must not emit empty --clip_l/--t5xxl flags."""

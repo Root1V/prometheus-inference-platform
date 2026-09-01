@@ -2010,6 +2010,73 @@ a committed design):
   needs its own plan given the file is git-tracked and already has real production data
   in it (30 entries as of this writing).
 
+## RM-52 — sd_cpp: support split-file diffusion models (done)
+
+**Why**: RM-38's `sd_cpp` backend only supported a single merged `.gguf` file (via
+`-m/--model`) — fine for SD-Turbo, but the user asked for FLUX.1 [dev]-quality output
+after finding SD-Turbo's results too basic/inconsistent. FLUX.1 (and SD3.5) ship as
+separate files instead — a standalone diffusion model, a VAE, and text encoder(s)
+(clip_l + t5xxl for FLUX.1) — which sd-server loads via `--diffusion-model` + `--vae` +
+`--clip_l` + `--t5xxl` instead of a single `--model`. Confirmed against the real
+installed `sd-server --help`, not just docs.
+
+**Scope**: four new optional `RegistryEntry` fields — `vae_path`, `clip_l_path`,
+`t5xxl_path`, `cfg_scale` — all sd_cpp-only, empty/`None` by default (single-file models,
+including the existing SD-Turbo registration, are unaffected). Setting any of the first
+three switches `lifecycle.py`'s `_build_sd_cpp_cmd` from `-m/--model <path>` to
+`--diffusion-model <path>` + whichever of `--vae`/`--clip_l`/`--t5xxl` are non-empty.
+`path` keeps meaning "the diffusion model file" in both modes — no new field needed for
+that. `cfg_scale`, when set, becomes `--cfg-scale` at process startup. Wired through
+`pmgr register`'s CLI flags, the manager REST API's `POST /v1/backends` and
+`PATCH /v1/backends/{id}` (found and fixed a real gap while wiring this in: `PATCH`
+re-validates `path` against path-traversal on update but had never been extended to the
+new path fields — fixed alongside them, not left for later). Did **not** touch the admin
+dashboard's Register/Edit modal — it still has no manual-path flow for new instances (a
+pre-existing gap noted in RM-38's writeup), so split-file registration goes through
+`pmgr register` or the REST API directly, same as any other manually-placed model today.
+
+**Two more real bugs found only by actually running FLUX.1-dev, not by code review**:
+1. sd-server's `--cfg-scale` defaults to 7.0 (tuned for classic non-distilled SD).
+   FLUX.1/SD3.5 are guidance-distilled and need ~1.0 — cfg=7.0 against FLUX.1-dev
+   returned a uniform-color solid-brown PNG (not an error, not a crash — a "successful"
+   response that was actually garbage). Confirmed cfg=1.0 fixes it with a real generated
+   image. Also confirmed empirically that `/v1/images/generations`'s JSON body does
+   **not** honor a per-request `cfg_scale`/`steps` override on this sd-server build —
+   only the process's own startup flag takes effect, which is why `cfg_scale` had to be
+   a registry field (baked into the launch command), not a gateway request parameter.
+2. The gateway's backend-forwarding httpx client had a flat 120s timeout
+   (`gateway/src/prometheus_gateway/models/backends.py`) — fine for chat completions, far
+   too short for a real FLUX.1-dev generation (~120-500s at 20 steps on Metal, varying
+   with system load). A slow-but-working request was timing out client-side, then being
+   retried by `BackendPool.forward()`'s own retry loop into an even longer wait, since
+   sd-server keeps computing a request server-side even after the client gives up —
+   surfaced to the user as "Upstream Error" despite the backend being perfectly healthy.
+   Fixed by raising the timeout to 600s; harmless for already-fast backends since it's a
+   ceiling, not a delay.
+
+**t5xxl format note**: the fp8 (`t5xxl_fp8_e4m3fn.safetensors`) text encoder crashes
+sd-server on this Mac (Apple M4 Max) — `ggml_metal_library_compile_pipeline: Function
+kernel_mul_mm_f8_e4m3_f32 was not found in the library`, an fp8 Metal kernel gap on this
+GPU generation. Switched to the GGUF-quantized encoder (`city96/t5-v1_1-xxl-encoder-gguf`,
+`Q8_0`) instead, which loads and runs fine — worth remembering for any future guidance
+here or in RM-06's inference-engine notes.
+
+**Verified**: `runtime/manager/core` — 173 tests (9 new: split-file command-shape tests,
+`cfg_scale` command-flag tests, round-trip persistence for both, a path-traversal
+rejection, a schema-migration test for an existing pre-RM-52 `registry.db`), mypy, ruff
+clean. `runtime/manager/api` — 81 tests (3 new: register + PATCH round-trip for the
+split-file fields and for `cfg_scale`), mypy, ruff clean. `runtime/manager/tui` — 38 tests
+(unchanged), mypy, ruff clean. `gateway` — 241 tests (unchanged; the timeout fix needed no
+new test, it's a constant), mypy, ruff clean. Real end-to-end, through the actual running
+stack: downloaded FLUX.1-dev Q8_0 GGUF (`city96/FLUX.1-dev-gguf`, 12.7GB) + VAE
+(`auroraintech/flux-vae`) + clip_l (`comfyanonymous/flux_text_encoders`) + the GGUF t5xxl
+encoder above (~23GB total), registered via `pmgr register --backend sd_cpp
+--vae-path ... --clip-l-path ... --t5xxl-path ... --cfg-scale 1.0`, started the instance,
+generated a real image from a prompt through the full stack (browser → gateway → manager-
+api → sd-server) in the Playground's Images tab, confirmed a genuinely high-quality,
+coherent image rendered (118.9s at cfg=1.0/20 steps) — a real, visible quality jump over
+SD-Turbo, not just "the process started."
+
 ## Adding new items
 
 Append a new row to the table with the next `RM-NN` id and a new `## RM-NN — ...` section

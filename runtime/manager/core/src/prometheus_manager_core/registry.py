@@ -54,6 +54,7 @@ CREATE TABLE IF NOT EXISTS models (
     vae_path TEXT NOT NULL DEFAULT '',
     clip_l_path TEXT NOT NULL DEFAULT '',
     t5xxl_path TEXT NOT NULL DEFAULT '',
+    cfg_scale REAL,
     created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 """
@@ -65,6 +66,7 @@ _MIGRATION_COLUMNS = (
     ("vae_path", "TEXT NOT NULL DEFAULT ''"),
     ("clip_l_path", "TEXT NOT NULL DEFAULT ''"),
     ("t5xxl_path", "TEXT NOT NULL DEFAULT ''"),
+    ("cfg_scale", "REAL"),
 )
 
 _COLUMNS = (
@@ -86,6 +88,7 @@ _COLUMNS = (
     "vae_path",
     "clip_l_path",
     "t5xxl_path",
+    "cfg_scale",
 )
 
 
@@ -125,6 +128,13 @@ class RegistryEntry:
     vae_path: str = ""
     clip_l_path: str = ""
     t5xxl_path: str = ""
+    # RM-52: sd-server's --cfg-scale defaults to 7.0 (classic SD). FLUX.1/SD3.5
+    # are guidance-distilled and need ~1.0 — anything close to the SD default
+    # produces a blown-out/solid-color image (confirmed empirically: cfg=7.0
+    # against FLUX.1-dev returned a uniform dark blob; cfg=1.0 returned a real
+    # image). None means "let sd-server use its own default" — needed for
+    # backends/models that DO want it (unchanged SD-Turbo behavior).
+    cfg_scale: float | None = None
 
     @property
     def backend_url(self) -> str:
@@ -154,6 +164,7 @@ class RegistryEntry:
             "vae_path": self.vae_path,
             "clip_l_path": self.clip_l_path,
             "t5xxl_path": self.t5xxl_path,
+            "cfg_scale": self.cfg_scale,
         }
 
 
@@ -275,6 +286,7 @@ class Registry:
                 vae_path=raw["vae_path"],
                 clip_l_path=raw["clip_l_path"],
                 t5xxl_path=raw["t5xxl_path"],
+                cfg_scale=raw["cfg_scale"],
             )
             self._entries[entry.id] = entry
 
@@ -336,6 +348,7 @@ def _row_params(entry: RegistryEntry, skip_id: bool = False) -> tuple[Any, ...]:
         "vae_path": entry.vae_path,
         "clip_l_path": entry.clip_l_path,
         "t5xxl_path": entry.t5xxl_path,
+        "cfg_scale": entry.cfg_scale,
     }
     cols = [c for c in _COLUMNS if c != "id"] if skip_id else _COLUMNS
     return tuple(values[c] for c in cols)
@@ -367,6 +380,7 @@ def _entry_from_legacy_yaml(raw: dict[str, Any]) -> RegistryEntry:
         vae_path=raw.get("vae_path", ""),
         clip_l_path=raw.get("clip_l_path", ""),
         t5xxl_path=raw.get("t5xxl_path", ""),
+        cfg_scale=raw.get("cfg_scale"),
     )
 
 

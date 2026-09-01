@@ -152,6 +152,24 @@ class TestSplitFileFields:
         assert entry.clip_l_path == "/models/clip_l.safetensors"
         assert entry.t5xxl_path == "/models/t5xxl.safetensors"
 
+    def test_cfg_scale_defaults_to_none_and_round_trips(self, registry_path: Path):
+        """RM-52: sd-server's own default (7.0) is wrong for guidance-distilled
+        models (FLUX.1) — None means "leave sd-server's default alone"."""
+        assert RegistryEntry(id="m", port=8080, context_length=4096).cfg_scale is None
+
+        registry = Registry(registry_path)
+        registry.add(
+            RegistryEntry(
+                id="flux-model",
+                port=8199,
+                context_length=0,
+                backend="sd_cpp",
+                cfg_scale=1.0,
+            )
+        )
+        reloaded = Registry(registry_path)
+        assert reloaded.get("flux-model").cfg_scale == 1.0
+
     def test_path_traversal_rejected_for_vae_path(self, registry_path: Path):
         registry = Registry(registry_path)
         with pytest.raises(ValueError, match="[Tt]raversal"):
@@ -178,6 +196,7 @@ class TestSplitFileFields:
         conn.execute("ALTER TABLE models DROP COLUMN vae_path")
         conn.execute("ALTER TABLE models DROP COLUMN clip_l_path")
         conn.execute("ALTER TABLE models DROP COLUMN t5xxl_path")
+        conn.execute("ALTER TABLE models DROP COLUMN cfg_scale")
         conn.commit()
         conn.close()
 

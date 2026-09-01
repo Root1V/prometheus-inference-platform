@@ -197,6 +197,17 @@ def _build_sd_cpp_cmd(binary: str, entry: RegistryEntry, port: int, bind_host: s
     installed sd-server --help. entry.vae_path set (or clip_l_path/
     t5xxl_path) switches from -m/--model (path) to --diffusion-model (path)
     + --vae/--clip_l/--t5xxl for whichever of those three are non-empty.
+
+    RM-52: entry.cfg_scale, when set, becomes --cfg-scale. sd-server's own
+    default (7.0, tuned for classic non-distilled SD) produces a blown-out,
+    uniform-color image on FLUX.1-dev — confirmed empirically: cfg=7.0
+    returned a solid-color PNG, cfg=1.0 (FLUX's own recommended value, its
+    guidance is baked into the distilled weights) returned a real image.
+    Also confirmed this is a request-time-JSON-vs-startup-flag distinction:
+    sd-server's /v1/images/generations body does NOT honor a per-request
+    cfg_scale override — only the process's own --cfg-scale startup flag
+    takes effect. None leaves sd-server's default in place, unchanged for
+    every existing single-file registration (e.g. SD-Turbo).
     """
     cmd = [binary]
     if entry.vae_path or entry.clip_l_path or entry.t5xxl_path:
@@ -209,6 +220,8 @@ def _build_sd_cpp_cmd(binary: str, entry: RegistryEntry, port: int, bind_host: s
             cmd += ["--t5xxl", entry.t5xxl_path]
     else:
         cmd += ["--model", entry.path]
+    if entry.cfg_scale is not None:
+        cmd += ["--cfg-scale", str(entry.cfg_scale)]
     cmd += ["--listen-ip", bind_host, "--listen-port", str(port)]
     return cmd
 
