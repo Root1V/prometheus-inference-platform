@@ -1,5 +1,6 @@
-import { Copy, RotateCcw, Send, Trash2, Wrench } from "lucide-react";
+import { Copy, Download, RotateCcw, Send, Trash2, Wrench, X } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { useInstances } from "../api/instances";
 import {
   streamPlaygroundChat,
@@ -91,6 +92,7 @@ export default function Playground() {
   const [imagePrompt, setImagePrompt] = useState("");
   const [imageResults, setImageResults] = useState<ImageResult[]>([]);
   const [imageError, setImageError] = useState<string | null>(null);
+  const [expandedImage, setExpandedImage] = useState<ImageResult | null>(null);
 
   const [model, setModel] = useState("");
   const [systemPrompt, setSystemPrompt] = useState("");
@@ -111,6 +113,15 @@ export default function Playground() {
   const [inProgress, setInProgress] = useState<InProgress | null>(null);
 
   const bottomRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!expandedImage) return;
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setExpandedImage(null);
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [expandedImage]);
 
   const runningTextModels = (instancesQuery.data?.instances ?? []).filter(
     (i) => i.state === "ready" && i.modality === "text",
@@ -173,6 +184,13 @@ export default function Playground() {
     } catch (error) {
       setImageError(getErrorMessage(error));
     }
+  }
+
+  function handleDownloadImage(result: ImageResult, index: number) {
+    const link = document.createElement("a");
+    link.href = `data:image/png;base64,${result.b64Json}`;
+    link.download = `prometheus-image-${index + 1}.png`;
+    link.click();
   }
 
   /** Returns null (and sets toolsError) if the JSON is present but invalid. */
@@ -757,13 +775,28 @@ export default function Playground() {
                   className="rounded-xl border border-border bg-background px-4 py-3 text-sm text-text"
                 >
                   <p className="whitespace-pre-wrap text-text-muted">"{result.prompt}"</p>
-                  <img
-                    src={`data:image/png;base64,${result.b64Json}`}
-                    alt={result.prompt}
-                    className="mt-2 max-w-xs rounded-lg border border-border"
-                  />
+                  <button
+                    type="button"
+                    onClick={() => setExpandedImage(result)}
+                    className="mt-2 block cursor-zoom-in"
+                    title="Click to view full size"
+                  >
+                    <img
+                      src={`data:image/png;base64,${result.b64Json}`}
+                      alt={result.prompt}
+                      className="max-w-xs rounded-lg border border-border"
+                    />
+                  </button>
                   <div className="mt-2 flex items-center gap-3 border-t border-border pt-2 text-xs text-text-muted">
                     <span>{result.latencyMs} ms</span>
+                    <button
+                      type="button"
+                      onClick={() => handleDownloadImage(result, i)}
+                      title="Download image"
+                      className="ml-auto text-text-muted hover:text-text"
+                    >
+                      <Download size={14} />
+                    </button>
                   </div>
                 </div>
               ))
@@ -1004,6 +1037,29 @@ export default function Playground() {
           )}
         </aside>
       </main>
+      {expandedImage &&
+        createPortal(
+          <div
+            className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 p-8"
+            onClick={() => setExpandedImage(null)}
+          >
+            <button
+              type="button"
+              onClick={() => setExpandedImage(null)}
+              aria-label="Close"
+              className="absolute right-6 top-6 text-white/80 hover:text-white"
+            >
+              <X size={28} />
+            </button>
+            <img
+              src={`data:image/png;base64,${expandedImage.b64Json}`}
+              alt={expandedImage.prompt}
+              onClick={(e) => e.stopPropagation()}
+              className="max-h-full max-w-full rounded-lg object-contain"
+            />
+          </div>,
+          document.body,
+        )}
     </div>
   );
 }

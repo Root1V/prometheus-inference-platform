@@ -1383,6 +1383,13 @@ RM-49, breaking the gateway's `manager_sync` routing regardless of modality. Fix
 ruff clean. Frontend — `tsc --noEmit`, `npm run build`, `npm run lint` all clean. Full
 `.githooks/pre-push` green before pushing.
 
+**Follow-up (Playground Images UX)**: each generated image now has a download button
+(client-side `data:` URI → `<a download>`, no new endpoint needed) and opens a full-size
+lightbox on click (Escape or backdrop click to close), matching the `createPortal` pattern
+already used by `RegisterModelModal.tsx` and friends. Verified live: generated a real
+image, opened the lightbox, closed it with Escape, triggered the download with no console
+errors.
+
 ## RM-39 — Video generation model support (added, speculative)
 
 **Why**: same origin as RM-38 — flagged, not scoped. Self-hosted video generation is far
