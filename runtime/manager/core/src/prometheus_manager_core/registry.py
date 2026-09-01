@@ -51,9 +51,21 @@ CREATE TABLE IF NOT EXISTS models (
     hf_repo TEXT NOT NULL DEFAULT '',
     hf_sha256 TEXT NOT NULL DEFAULT '',
     hf_filenames TEXT NOT NULL DEFAULT '[]',
+    vae_path TEXT NOT NULL DEFAULT '',
+    clip_l_path TEXT NOT NULL DEFAULT '',
+    t5xxl_path TEXT NOT NULL DEFAULT '',
     created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 """
+
+# RM-52: added after the table already existed in the wild — CREATE TABLE IF
+# NOT EXISTS above only takes effect for a brand-new registry.db, so an
+# existing one needs these columns backfilled explicitly.
+_MIGRATION_COLUMNS = (
+    ("vae_path", "TEXT NOT NULL DEFAULT ''"),
+    ("clip_l_path", "TEXT NOT NULL DEFAULT ''"),
+    ("t5xxl_path", "TEXT NOT NULL DEFAULT ''"),
+)
 
 _COLUMNS = (
     "id",
@@ -71,6 +83,9 @@ _COLUMNS = (
     "hf_repo",
     "hf_sha256",
     "hf_filenames",
+    "vae_path",
+    "clip_l_path",
+    "t5xxl_path",
 )
 
 
@@ -101,6 +116,15 @@ class RegistryEntry:
     # single-file models, multiple for sharded ones. Always populated once a
     # file is known (never a separate "first filename" field — RM-49).
     hf_filenames: list[str] = field(default_factory=list)
+    # RM-52: split-file diffusion models (FLUX.1, SD3.5) ship their diffusion
+    # weights, VAE, and text encoder(s) as separate files instead of one
+    # merged .gguf like SD-Turbo. sd_cpp-only — set any of these three and
+    # lifecycle.py's _build_sd_cpp_cmd switches from -m/--model (single file,
+    # `path`) to --diffusion-model (`path`) + --vae/--clip_l/--t5xxl. Leave
+    # all three empty for a merged single-file model.
+    vae_path: str = ""
+    clip_l_path: str = ""
+    t5xxl_path: str = ""
 
     @property
     def backend_url(self) -> str:
@@ -127,6 +151,9 @@ class RegistryEntry:
             "hf_repo": self.hf_repo,
             "hf_sha256": self.hf_sha256,
             "hf_filenames": self.hf_filenames,
+            "vae_path": self.vae_path,
+            "clip_l_path": self.clip_l_path,
+            "t5xxl_path": self.t5xxl_path,
         }
 
 
@@ -146,6 +173,7 @@ class Registry:
         self._conn.execute("PRAGMA journal_mode=WAL")
         self._conn.execute("PRAGMA synchronous=NORMAL")
         self._conn.executescript(_SCHEMA_SQL)
+        self._migrate_columns()
         self._conn.commit()
         self._load()
 
@@ -166,6 +194,9 @@ class Registry:
         _validate_backend(entry.backend)
         _validate_modality(entry.modality)
         _validate_path(entry.path, entry.backend)
+        _validate_path(entry.vae_path, entry.backend)
+        _validate_path(entry.clip_l_path, entry.backend)
+        _validate_path(entry.t5xxl_path, entry.backend)
         _validate_port(entry.port)
         with self._lock:
             self._entries[entry.id] = entry
@@ -208,6 +239,18 @@ class Registry:
 
     # ── persistence ──────────────────────────────────────────────────────────
 
+    def _migrate_columns(self) -> None:
+        """Backfill columns added after models.db already existed elsewhere.
+
+        CREATE TABLE IF NOT EXISTS in _SCHEMA_SQL only applies to a brand-new
+        file — an existing registry.db needs each new column ALTER-ed in
+        explicitly, once, idempotently (checked against PRAGMA table_info).
+        """
+        existing = {row[1] for row in self._conn.execute("PRAGMA table_info(models)")}
+        for name, col_def in _MIGRATION_COLUMNS:
+            if name not in existing:
+                self._conn.execute(f"ALTER TABLE models ADD COLUMN {name} {col_def}")
+
     def _load(self) -> None:
         cursor = self._conn.execute(f"SELECT {', '.join(_COLUMNS)} FROM models ORDER BY rowid")
         self._entries = {}
@@ -229,6 +272,9 @@ class Registry:
                 hf_repo=raw["hf_repo"],
                 hf_sha256=raw["hf_sha256"],
                 hf_filenames=json.loads(raw["hf_filenames"]),
+                vae_path=raw["vae_path"],
+                clip_l_path=raw["clip_l_path"],
+                t5xxl_path=raw["t5xxl_path"],
             )
             self._entries[entry.id] = entry
 
@@ -287,6 +333,9 @@ def _row_params(entry: RegistryEntry, skip_id: bool = False) -> tuple[Any, ...]:
         "hf_repo": entry.hf_repo,
         "hf_sha256": entry.hf_sha256,
         "hf_filenames": json.dumps(entry.hf_filenames),
+        "vae_path": entry.vae_path,
+        "clip_l_path": entry.clip_l_path,
+        "t5xxl_path": entry.t5xxl_path,
     }
     cols = [c for c in _COLUMNS if c != "id"] if skip_id else _COLUMNS
     return tuple(values[c] for c in cols)
@@ -315,6 +364,9 @@ def _entry_from_legacy_yaml(raw: dict[str, Any]) -> RegistryEntry:
         hf_repo=raw.get("hf_repo", ""),
         hf_sha256=raw.get("hf_sha256", ""),
         hf_filenames=hf_filenames,
+        vae_path=raw.get("vae_path", ""),
+        clip_l_path=raw.get("clip_l_path", ""),
+        t5xxl_path=raw.get("t5xxl_path", ""),
     )
 
 

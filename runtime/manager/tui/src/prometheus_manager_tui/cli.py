@@ -349,6 +349,15 @@ def cmd_restart(ctx: click.Context, model_id: str) -> None:
     default="",
     help="Vision projector .gguf file — required for --modality vision on llama_cpp.",
 )
+@click.option(
+    "--vae-path",
+    default="",
+    help="RM-52: standalone VAE file — split-file sd_cpp models (FLUX.1, SD3.5) only. "
+    "Setting this (or --clip-l-path/--t5xxl-path) switches --path to mean "
+    "--diffusion-model instead of a merged -m/--model file.",
+)
+@click.option("--clip-l-path", default="", help="RM-52: clip-l text encoder — sd_cpp only.")
+@click.option("--t5xxl-path", default="", help="RM-52: t5xxl text encoder — sd_cpp only.")
 @click.option("--hf-repo", default="", help="HuggingFace repo id.")
 @click.option("--hf-filename", default="", help="Filename within the HF repo.")
 @click.option("--hf-sha256", default="", help="Expected SHA-256 of the GGUF.")
@@ -364,6 +373,9 @@ def cmd_register(
     quantization: str,
     modality: str,
     mmproj_path: str,
+    vae_path: str,
+    clip_l_path: str,
+    t5xxl_path: str,
     hf_repo: str,
     hf_filename: str,
     hf_sha256: str,
@@ -389,6 +401,9 @@ def cmd_register(
         quantization=quantization,
         modality=modality,
         mmproj_path=mmproj_path,
+        vae_path=vae_path,
+        clip_l_path=clip_l_path,
+        t5xxl_path=t5xxl_path,
         hf_repo=hf_repo,
         hf_filenames=[hf_filename] if hf_filename else [],
         hf_sha256=hf_sha256,

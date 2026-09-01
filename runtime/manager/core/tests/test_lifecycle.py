@@ -131,6 +131,51 @@ class TestBackendCommandBuilders:
         assert "--alias" not in cmd
         assert "--ctx-size" not in cmd
 
+    def test_sd_cpp_cmd_uses_diffusion_model_when_split_files_given(self):
+        """RM-52: FLUX.1-class split models switch --model -> --diffusion-model
+        and add --vae/--clip_l/--t5xxl for whichever companion paths are set."""
+        entry = self._entry(
+            vae_path="/models/ae.safetensors",
+            clip_l_path="/models/clip_l.safetensors",
+            t5xxl_path="/models/t5xxl.safetensors",
+        )
+        cmd = _build_sd_cpp_cmd("sd-server", entry, 9090, "127.0.0.1")
+        assert cmd == [
+            "sd-server",
+            "--diffusion-model",
+            "/models/test-model",
+            "--vae",
+            "/models/ae.safetensors",
+            "--clip_l",
+            "/models/clip_l.safetensors",
+            "--t5xxl",
+            "/models/t5xxl.safetensors",
+            "--listen-ip",
+            "127.0.0.1",
+            "--listen-port",
+            "9090",
+        ]
+        assert "--model" not in cmd
+
+    def test_sd_cpp_cmd_split_mode_omits_unset_companion_flags(self):
+        """Only vae_path set (no clip_l/t5xxl) — e.g. an SD3.5-style split without
+        a separate clip_l file — must not emit empty --clip_l/--t5xxl flags."""
+        entry = self._entry(vae_path="/models/ae.safetensors")
+        cmd = _build_sd_cpp_cmd("sd-server", entry, 9090, "127.0.0.1")
+        assert cmd == [
+            "sd-server",
+            "--diffusion-model",
+            "/models/test-model",
+            "--vae",
+            "/models/ae.safetensors",
+            "--listen-ip",
+            "127.0.0.1",
+            "--listen-port",
+            "9090",
+        ]
+        assert "--clip_l" not in cmd
+        assert "--t5xxl" not in cmd
+
     def test_start_instance_dispatches_on_backend(self, default_config, populated_registry):
         """start_instance picks the command builder matching entry.backend."""
         populated_registry.update("test-model", backend="mlx", path="mlx-community/model-4bit")

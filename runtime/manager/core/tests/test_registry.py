@@ -119,6 +119,82 @@ class TestModalityField:
         assert entry.to_dict()["mmproj_path"] == ""
 
 
+# ── RM-52: split-file sd_cpp models (FLUX.1, SD3.5) ─────────────────────────────
+
+
+class TestSplitFileFields:
+    """vae_path/clip_l_path/t5xxl_path — sd_cpp-only, empty by default."""
+
+    def test_default_to_empty(self):
+        entry = RegistryEntry(id="m", port=8080, context_length=4096)
+        assert entry.vae_path == ""
+        assert entry.clip_l_path == ""
+        assert entry.t5xxl_path == ""
+
+    def test_persisted_through_save_and_reload(self, registry_path: Path):
+        registry = Registry(registry_path)
+        registry.add(
+            RegistryEntry(
+                id="flux-model",
+                port=8199,
+                context_length=0,
+                path="/models/flux1-dev-q8_0.gguf",
+                backend="sd_cpp",
+                modality="image",
+                vae_path="/models/ae.safetensors",
+                clip_l_path="/models/clip_l.safetensors",
+                t5xxl_path="/models/t5xxl.safetensors",
+            )
+        )
+        reloaded = Registry(registry_path)
+        entry = reloaded.get("flux-model")
+        assert entry.vae_path == "/models/ae.safetensors"
+        assert entry.clip_l_path == "/models/clip_l.safetensors"
+        assert entry.t5xxl_path == "/models/t5xxl.safetensors"
+
+    def test_path_traversal_rejected_for_vae_path(self, registry_path: Path):
+        registry = Registry(registry_path)
+        with pytest.raises(ValueError, match="[Tt]raversal"):
+            registry.add(
+                RegistryEntry(
+                    id="flux-model",
+                    port=8199,
+                    context_length=0,
+                    path="/models/flux1-dev-q8_0.gguf",
+                    backend="sd_cpp",
+                    vae_path="../../etc/passwd",
+                )
+            )
+
+    def test_existing_db_gets_new_columns_migrated(self, registry_path: Path):
+        """A registry.db created before RM-52 (no vae_path/clip_l_path/
+        t5xxl_path columns) must load cleanly and accept them once reopened —
+        CREATE TABLE IF NOT EXISTS alone doesn't backfill an existing table."""
+        import sqlite3
+
+        pre_rm52 = Registry(registry_path)
+        pre_rm52.add(RegistryEntry(id="old-model", port=8080, context_length=4096))
+        conn = sqlite3.connect(str(registry_path))
+        conn.execute("ALTER TABLE models DROP COLUMN vae_path")
+        conn.execute("ALTER TABLE models DROP COLUMN clip_l_path")
+        conn.execute("ALTER TABLE models DROP COLUMN t5xxl_path")
+        conn.commit()
+        conn.close()
+
+        reopened = Registry(registry_path)
+        assert reopened.get("old-model").vae_path == ""
+        reopened.add(
+            RegistryEntry(
+                id="new-flux-model",
+                port=8199,
+                context_length=0,
+                backend="sd_cpp",
+                vae_path="/models/ae.safetensors",
+            )
+        )
+        assert reopened.get("new-flux-model").vae_path == "/models/ae.safetensors"
+
+
 # ── AC-3: Registry CRUD ────────────────────────────────────────────────────────
 
 

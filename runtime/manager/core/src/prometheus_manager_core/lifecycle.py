@@ -191,8 +191,26 @@ def _build_sd_cpp_cmd(binary: str, entry: RegistryEntry, port: int, bind_host: s
     sd-server has no LLM-style context-window concept, so entry.context_length
     (required by RegistryEntry but not meaningful for a diffusion model) is
     unused here, same as mlx's own --ctx-size omission.
+
+    RM-52: FLUX.1/SD3.5-class models ship as separate diffusion/VAE/text-
+    encoder files rather than one merged .gguf — confirmed against the real
+    installed sd-server --help. entry.vae_path set (or clip_l_path/
+    t5xxl_path) switches from -m/--model (path) to --diffusion-model (path)
+    + --vae/--clip_l/--t5xxl for whichever of those three are non-empty.
     """
-    return [binary, "--model", entry.path, "--listen-ip", bind_host, "--listen-port", str(port)]
+    cmd = [binary]
+    if entry.vae_path or entry.clip_l_path or entry.t5xxl_path:
+        cmd += ["--diffusion-model", entry.path]
+        if entry.vae_path:
+            cmd += ["--vae", entry.vae_path]
+        if entry.clip_l_path:
+            cmd += ["--clip_l", entry.clip_l_path]
+        if entry.t5xxl_path:
+            cmd += ["--t5xxl", entry.t5xxl_path]
+    else:
+        cmd += ["--model", entry.path]
+    cmd += ["--listen-ip", bind_host, "--listen-port", str(port)]
+    return cmd
 
 
 _COMMAND_BUILDERS = {

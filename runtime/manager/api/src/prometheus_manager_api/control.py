@@ -59,6 +59,9 @@ _UPDATABLE_FIELDS = frozenset(
         "hf_repo",
         "hf_sha256",
         "port",
+        "vae_path",
+        "clip_l_path",
+        "t5xxl_path",
     }
 )
 
@@ -116,6 +119,9 @@ async def register_backend(
                 hf_repo=body.get("hf_repo", ""),
                 hf_sha256=body.get("hf_sha256", ""),
                 hf_filenames=body.get("hf_filenames", []),
+                vae_path=body.get("vae_path", ""),
+                clip_l_path=body.get("clip_l_path", ""),
+                t5xxl_path=body.get("t5xxl_path", ""),
             )
             registry.add(entry)
         except (ValueError, TypeError) as exc:
@@ -158,11 +164,17 @@ async def update_backend(
         merged_path = updates.get("path", entry.path)
         merged_port = updates.get("port", entry.port)
         merged_modality = updates.get("modality", entry.modality)
+        merged_vae_path = updates.get("vae_path", entry.vae_path)
+        merged_clip_l_path = updates.get("clip_l_path", entry.clip_l_path)
+        merged_t5xxl_path = updates.get("t5xxl_path", entry.t5xxl_path)
 
         try:
             _validate_backend(merged_backend)
             _validate_modality(merged_modality)
             _validate_path(merged_path, merged_backend)
+            _validate_path(merged_vae_path, merged_backend)
+            _validate_path(merged_clip_l_path, merged_backend)
+            _validate_path(merged_t5xxl_path, merged_backend)
             _validate_port(int(merged_port))
         except (ValueError, TypeError) as exc:
             span.set_attribute("http.status_code", 400)

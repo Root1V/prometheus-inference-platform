@@ -115,6 +115,36 @@ class TestRegister:
         assert body["modality"] == "vision"
         assert body["mmproj_path"] == "/models/mmproj.gguf"
 
+    def test_register_split_file_fields(self, tmp_path: Path):
+        """RM-52: vae_path/clip_l_path/t5xxl_path — FLUX.1-class split models.
+        Regression: register_backend() builds RegistryEntry field-by-field
+        rather than **body, so a new field is easy to add here and forget
+        to wire into that constructor call."""
+        client = _authed(_make_client(tmp_path))
+        try:
+            resp = client.post(
+                "/v1/backends",
+                json={
+                    "id": "flux-model",
+                    "port": 8199,
+                    "path": "/models/flux1-dev-q8_0.gguf",
+                    "context_length": 0,
+                    "backend": "sd_cpp",
+                    "modality": "image",
+                    "vae_path": "/models/ae.safetensors",
+                    "clip_l_path": "/models/clip_l.safetensors",
+                    "t5xxl_path": "/models/t5xxl.safetensors",
+                },
+                headers={"Authorization": "Bearer dummy"},
+            )
+        finally:
+            _clear_override()
+        assert resp.status_code == 201
+        body = resp.json()
+        assert body["vae_path"] == "/models/ae.safetensors"
+        assert body["clip_l_path"] == "/models/clip_l.safetensors"
+        assert body["t5xxl_path"] == "/models/t5xxl.safetensors"
+
     def test_register_invalid_id_returns_400(self, tmp_path: Path):
         client = _authed(_make_client(tmp_path))
         try:
@@ -179,6 +209,39 @@ class TestUpdate:
         assert body["port"] == 8099
         # persisted, not just returned in the response
         assert app.state.registry.get("llama3-test").context_length == 16384
+
+    def test_update_split_file_fields_persists_and_validates(self, tmp_path: Path):
+        """RM-52: vae_path/clip_l_path/t5xxl_path are PATCH-able and path-
+        traversal-validated the same way `path` already is."""
+        client = _authed(_make_client(tmp_path))
+        try:
+            app.state.registry.add(
+                RegistryEntry(
+                    id="flux-model",
+                    port=8199,
+                    context_length=0,
+                    path="/models/flux1-dev-q8_0.gguf",
+                    backend="sd_cpp",
+                    modality="image",
+                )
+            )
+            resp = client.patch(
+                "/v1/backends/flux-model",
+                json={"vae_path": "/models/ae.safetensors"},
+                headers={"Authorization": "Bearer dummy"},
+            )
+            assert resp.status_code == 200
+            assert resp.json()["vae_path"] == "/models/ae.safetensors"
+            assert app.state.registry.get("flux-model").vae_path == "/models/ae.safetensors"
+
+            bad_resp = client.patch(
+                "/v1/backends/flux-model",
+                json={"clip_l_path": "../../etc/passwd"},
+                headers={"Authorization": "Bearer dummy"},
+            )
+            assert bad_resp.status_code == 400
+        finally:
+            _clear_override()
 
     def test_update_id_field_is_ignored(self, tmp_path: Path):
         """id is the registry key — PATCH cannot rename an entry."""
