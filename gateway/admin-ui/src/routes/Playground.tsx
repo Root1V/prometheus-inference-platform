@@ -772,19 +772,19 @@ export default function Playground() {
               imageResults.map((result, i) => (
                 <div
                   key={i}
-                  className="w-fit max-w-xs rounded-xl border border-border bg-background px-4 py-3 text-sm text-text"
+                  className="max-w-xs rounded-xl border border-border bg-background px-4 py-3 text-sm text-text"
                 >
                   <p className="whitespace-pre-wrap text-text-muted">"{result.prompt}"</p>
                   <button
                     type="button"
                     onClick={() => setExpandedImage(result)}
-                    className="mt-2 block cursor-pointer"
+                    className="mt-2 block cursor-zoom-in"
                     title="Click to view full size"
                   >
                     <img
                       src={`data:image/png;base64,${result.b64Json}`}
                       alt={result.prompt}
-                      className="max-w-xs rounded-lg border border-border"
+                      className="w-full rounded-lg border border-border"
                     />
                   </button>
                   <div className="mt-2 flex items-center gap-3 border-t border-border pt-2 text-xs text-text-muted">
@@ -1043,14 +1043,28 @@ export default function Playground() {
             className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 p-8"
             onClick={() => setExpandedImage(null)}
           >
-            <button
-              type="button"
-              onClick={() => setExpandedImage(null)}
-              aria-label="Close"
-              className="absolute right-6 top-6 cursor-pointer text-white/80 hover:text-white"
-            >
-              <X size={28} />
-            </button>
+            <div className="absolute right-6 top-6 flex items-center gap-4">
+              <button
+                type="button"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  handleDownloadImage(expandedImage, imageResults.indexOf(expandedImage));
+                }}
+                aria-label="Download"
+                title="Download image"
+                className="cursor-pointer text-white/80 hover:text-white"
+              >
+                <Download size={24} />
+              </button>
+              <button
+                type="button"
+                onClick={() => setExpandedImage(null)}
+                aria-label="Close"
+                className="cursor-pointer text-white/80 hover:text-white"
+              >
+                <X size={28} />
+              </button>
+            </div>
             <img
               src={`data:image/png;base64,${expandedImage.b64Json}`}
               alt={expandedImage.prompt}
