@@ -1419,16 +1419,20 @@ model actually produced which answer.
 (the model used for that specific call is already known client-side at response time, no
 backend change needed).
 
-**What shipped**: `Turn` gained a `model` field, captured from `selectedModel` at send time
-in both `sendNonStreaming` and `sendStreaming` (not read back from the response later — the
-gateway's chat-completions response doesn't echo it reliably enough to rely on, and capturing
-at send time is correct by construction even if a later turn changes the selection). Rendered
-as a small `font-mono` label next to the Copy button.
+**What shipped**: applied to all three Playground tabs, not just Chat — `Turn`,
+`EmbeddingResult`, and `ImageResult` each gained a `model` field, captured from the tab's
+own selected-model variable at send time (not read back from the response later — the
+gateway's response shapes don't echo it reliably enough to rely on, and capturing at send
+time is correct by construction even if a later call changes the selection). Rendered as a
+small `font-mono` label next to each result's action button (Copy for chat/embeddings,
+Download for images); truncates on the width-constrained image cards, with the full id in
+a hover title.
 
-**Verified**: live in the browser — sent one turn on `gpt-oss-20b-mxfp4`, switched to
-`qwen3-0-6b-iq4-nl-local-2`, sent another (both non-streaming and with Stream response
-enabled) — each turn kept showing the model that actually produced it, not the
-currently-selected one.
+**Verified**: live in the browser, all three tabs — Chat: sent one turn on
+`gpt-oss-20b-mxfp4`, switched to `qwen3-0-6b-iq4-nl-local-2`, sent another (both
+non-streaming and with Stream response enabled) — each turn kept showing the model that
+actually produced it. Embeddings: `qwen3-embedding-0-6b-q8-0-local` shown correctly.
+Images: `sd-turbo-test` shown correctly, no layout overflow on the narrow image card.
 
 ## RM-42 — Playground: animate the "waiting for a response" state (added)
 

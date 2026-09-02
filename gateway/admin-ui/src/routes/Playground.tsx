@@ -71,12 +71,14 @@ interface EmbeddingResult {
   embedding: number[];
   usage: { prompt_tokens: number; total_tokens: number };
   latencyMs: number;
+  model: string;
 }
 
 interface ImageResult {
   prompt: string;
   b64Json: string;
   latencyMs: number;
+  model: string;
 }
 
 const EMBEDDING_PREVIEW_COUNT = 8;
@@ -156,6 +158,7 @@ export default function Playground() {
           embedding: data.data[0]?.embedding ?? [],
           usage: data.usage,
           latencyMs: Math.round(performance.now() - startedAt),
+          model: selectedEmbedModel,
         },
       ]);
       setEmbedInput("");
@@ -183,6 +186,7 @@ export default function Playground() {
           prompt: imagePrompt,
           b64Json: data.data[0]?.b64_json ?? "",
           latencyMs: Math.round(performance.now() - startedAt),
+          model: selectedImageModel,
         },
       ]);
       setImagePrompt("");
@@ -720,11 +724,14 @@ export default function Playground() {
                     <span>{result.embedding.length} dimensions</span>
                     <span>{result.usage.total_tokens} tokens</span>
                     <span>{result.latencyMs} ms</span>
+                    <span className="ml-auto font-mono" title="Model that produced this embedding">
+                      {result.model}
+                    </span>
                     <button
                       type="button"
                       onClick={() => handleCopyEmbedding(result.embedding)}
                       title="Copy full vector as JSON"
-                      className="ml-auto text-text-muted hover:text-text"
+                      className="text-text-muted hover:text-text"
                     >
                       <Copy size={14} />
                     </button>
@@ -797,12 +804,18 @@ export default function Playground() {
                     />
                   </button>
                   <div className="mt-2 flex items-center gap-3 border-t border-border pt-2 text-xs text-text-muted">
-                    <span>{result.latencyMs} ms</span>
+                    <span className="shrink-0">{result.latencyMs} ms</span>
+                    <span
+                      className="ml-auto truncate font-mono"
+                      title={`Model that generated this image: ${result.model}`}
+                    >
+                      {result.model}
+                    </span>
                     <button
                       type="button"
                       onClick={() => handleDownloadImage(result, i)}
                       title="Download image"
-                      className="ml-auto cursor-pointer text-text-muted hover:text-text"
+                      className="shrink-0 cursor-pointer text-text-muted hover:text-text"
                     >
                       <Download size={14} />
                     </button>
