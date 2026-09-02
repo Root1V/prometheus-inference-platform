@@ -772,13 +772,13 @@ export default function Playground() {
               imageResults.map((result, i) => (
                 <div
                   key={i}
-                  className="rounded-xl border border-border bg-background px-4 py-3 text-sm text-text"
+                  className="w-fit max-w-xs rounded-xl border border-border bg-background px-4 py-3 text-sm text-text"
                 >
                   <p className="whitespace-pre-wrap text-text-muted">"{result.prompt}"</p>
                   <button
                     type="button"
                     onClick={() => setExpandedImage(result)}
-                    className="mt-2 block cursor-zoom-in"
+                    className="mt-2 block cursor-pointer"
                     title="Click to view full size"
                   >
                     <img
@@ -793,7 +793,7 @@ export default function Playground() {
                       type="button"
                       onClick={() => handleDownloadImage(result, i)}
                       title="Download image"
-                      className="ml-auto text-text-muted hover:text-text"
+                      className="ml-auto cursor-pointer text-text-muted hover:text-text"
                     >
                       <Download size={14} />
                     </button>
@@ -1047,7 +1047,7 @@ export default function Playground() {
               type="button"
               onClick={() => setExpandedImage(null)}
               aria-label="Close"
-              className="absolute right-6 top-6 text-white/80 hover:text-white"
+              className="absolute right-6 top-6 cursor-pointer text-white/80 hover:text-white"
             >
               <X size={28} />
             </button>
