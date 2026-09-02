@@ -52,6 +52,11 @@ interface Turn {
   // in the UI) rather than discarded, especially useful when it ran out of
   // max_tokens before producing a visible answer.
   reasoning: string;
+  // RM-41: which model produced this turn's response — captured at send time,
+  // so switching models mid-conversation still shows the right label on each
+  // earlier turn instead of relying on the (possibly since-changed) current
+  // selection.
+  model: string;
 }
 
 interface InProgress {
@@ -253,6 +258,7 @@ export default function Playground() {
         latencyMs,
         finishReason: data.choices[0]?.finish_reason ?? null,
         reasoning: responseMessage?.reasoning_content ?? "",
+        model: selectedModel,
       },
     ]);
   }
@@ -300,7 +306,7 @@ export default function Playground() {
     setInProgress(null);
     setTurns((prev) => [
       ...prev,
-      { messages: [...leadingMessages, assistantMessage], usage, latencyMs, finishReason, reasoning },
+      { messages: [...leadingMessages, assistantMessage], usage, latencyMs, finishReason, reasoning, model: selectedModel },
     ]);
   }
 
@@ -540,11 +546,14 @@ export default function Playground() {
                           : "tokens not reported (streamed)"}
                       </span>
                       <span>{turn.latencyMs} ms</span>
+                      <span className="ml-auto font-mono" title="Model that answered this turn">
+                        {turn.model}
+                      </span>
                       <button
                         type="button"
                         onClick={() => handleCopy(assistantMessage)}
                         title="Copy response"
-                        className="ml-auto text-text-muted hover:text-text"
+                        className="text-text-muted hover:text-text"
                       >
                         <Copy size={14} />
                       </button>

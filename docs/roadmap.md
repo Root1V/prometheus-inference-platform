@@ -1409,7 +1409,7 @@ only when the selected model's `modality` is `"vision"` (disabled/hidden otherwi
 never offered for a model that would just reject it). Sends the image as a `image_url`
 content part alongside the text prompt, matching what `router.py` already expects.
 
-## RM-41 — Playground: show which model answered (added)
+## RM-41 — Playground: show which model answered (done)
 
 **Why**: identified during the Playground redesign — once you can switch models mid-
 conversation, a response with no visible model label makes it easy to lose track of which
@@ -1418,6 +1418,17 @@ model actually produced which answer.
 **Scope**: small — render the model id next to the Copy button on each assistant response
 (the model used for that specific call is already known client-side at response time, no
 backend change needed).
+
+**What shipped**: `Turn` gained a `model` field, captured from `selectedModel` at send time
+in both `sendNonStreaming` and `sendStreaming` (not read back from the response later — the
+gateway's chat-completions response doesn't echo it reliably enough to rely on, and capturing
+at send time is correct by construction even if a later turn changes the selection). Rendered
+as a small `font-mono` label next to the Copy button.
+
+**Verified**: live in the browser — sent one turn on `gpt-oss-20b-mxfp4`, switched to
+`qwen3-0-6b-iq4-nl-local-2`, sent another (both non-streaming and with Stream response
+enabled) — each turn kept showing the model that actually produced it, not the
+currently-selected one.
 
 ## RM-42 — Playground: animate the "waiting for a response" state (added)
 
