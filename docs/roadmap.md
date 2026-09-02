@@ -1434,7 +1434,7 @@ non-streaming and with Stream response enabled) — each turn kept showing the m
 actually produced it. Embeddings: `qwen3-embedding-0-6b-q8-0-local` shown correctly.
 Images: `sd-turbo-test` shown correctly, no layout overflow on the narrow image card.
 
-## RM-42 — Playground: animate the "waiting for a response" state (added)
+## RM-42 — Playground: animate the "waiting for a response" state (done)
 
 **Why**: identified during the Playground redesign — the current "Waiting for a
 response…" text is static and doesn't read as active/alive while a real (sometimes
@@ -1442,6 +1442,19 @@ multi-second) inference call is in flight.
 
 **Scope**: small, purely cosmetic — replace the static string with something that visibly
 animates (e.g. an ellipsis cycle, a subtle pulse) so a slow response doesn't look stalled.
+
+**What shipped**: a small `WaitingIndicator` component — the label text followed by three
+`animate-pulse` dots with staggered `animationDelay` (0ms/200ms/400ms), reusing Tailwind's
+existing `pulse` keyframe (already used elsewhere in this file, e.g. the streaming cursor
+`▍`) rather than adding new CSS. Used for both static-text spots that had the same problem:
+non-streaming's "Waiting for a response" and streaming's pre-first-token "Streaming" state.
+
+**Verified**: `tsc --noEmit`, `npm run build`, `npm run lint` clean. Live in the browser
+(non-streaming): triggered a real ~70s generation (4000 max_tokens) and inspected the DOM
+mid-flight — confirmed 3 `span.animate-pulse` dots with the exact staggered delays. The
+streaming variant reuses the identical component/condition shape; its pre-first-token
+window proved too short to catch mid-flight in an automated screenshot, but the code path
+is the same one already verified.
 
 ## RM-43 — Stop stripping client-supplied system messages (added) — `done`
 

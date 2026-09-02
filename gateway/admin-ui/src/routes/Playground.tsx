@@ -36,6 +36,28 @@ function ReasoningBox({ text }: { text: string }) {
   );
 }
 
+/** RM-42: a static "Waiting…" string reads as stalled during a real
+ * multi-second inference call — three dots pulsing in sequence signal it's
+ * still actively working. */
+function WaitingIndicator({ label }: { label: string }) {
+  return (
+    <p className="flex items-center gap-1 text-sm text-text-muted">
+      {label}
+      <span className="flex gap-0.5">
+        <span className="animate-pulse" style={{ animationDelay: "0ms" }}>
+          .
+        </span>
+        <span className="animate-pulse" style={{ animationDelay: "200ms" }}>
+          .
+        </span>
+        <span className="animate-pulse" style={{ animationDelay: "400ms" }}>
+          .
+        </span>
+      </span>
+    </p>
+  );
+}
+
 const inputClass =
   "w-full rounded-lg border border-border bg-background px-3 py-2 text-sm text-text focus:border-primary focus:outline-none";
 
@@ -610,9 +632,7 @@ export default function Playground() {
                 );
               })
             )}
-            {isSending && !inProgress && (
-              <p className="text-sm text-text-muted">Waiting for a response…</p>
-            )}
+            {isSending && !inProgress && <WaitingIndicator label="Waiting for a response" />}
             {inProgress &&
               inProgress.leading.map((m, j) =>
                 m.role === "tool" ? (
@@ -658,7 +678,7 @@ export default function Playground() {
               </div>
             )}
             {inProgress && !inProgress.content && !inProgress.reasoning && inProgress.toolCalls.length === 0 && (
-              <p className="text-sm text-text-muted">Streaming…</p>
+              <WaitingIndicator label="Streaming" />
             )}
             <div ref={bottomRef} />
           </div>
