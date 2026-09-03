@@ -48,3 +48,27 @@
 body {
   @apply bg-background text-text antialiased transition-colors duration-150;
 }
+
+/*
+ * RM-42: Playground's "waiting for a response" dots. Tailwind's built-in
+ * animate-pulse (2s cycle) was too slow/subtle for 3 dots only 200ms apart —
+ * they read as nearly synchronous instead of a rolling "typing" wave. This
+ * is a faster, purpose-built bounce, same idea as WhatsApp/iMessage's
+ * typing indicator.
+ */
+@keyframes bounce-dot {
+  0%,
+  60%,
+  100% {
+    transform: translateY(0);
+    opacity: 0.4;
+  }
+  30% {
+    transform: translateY(-3px);
+    opacity: 1;
+  }
+}
+
+.animate-bounce-dot {
+  animation: bounce-dot 1.2s ease-in-out infinite;
+}

@@ -1444,17 +1444,20 @@ multi-second) inference call is in flight.
 animates (e.g. an ellipsis cycle, a subtle pulse) so a slow response doesn't look stalled.
 
 **What shipped**: a small `WaitingIndicator` component — the label text followed by three
-`animate-pulse` dots with staggered `animationDelay` (0ms/200ms/400ms), reusing Tailwind's
-existing `pulse` keyframe (already used elsewhere in this file, e.g. the streaming cursor
-`▍`) rather than adding new CSS. Used for both static-text spots that had the same problem:
-non-streaming's "Waiting for a response" and streaming's pre-first-token "Streaming" state.
+bouncing dots. First cut reused Tailwind's built-in `animate-pulse` (2s cycle) with 200ms
+stagger between dots — shipped, then found live to be too subtle to notice, especially on a
+fast response: a 2s opacity fade with only 200ms offset between dots reads as near-
+synchronous, not a rolling wave. Replaced with a purpose-built `@keyframes bounce-dot`
+(`index.css`) — 1.2s cycle, translateY + opacity — used via a new `.animate-bounce-dot`
+utility class with 150ms stagger, same idea as WhatsApp/iMessage's typing indicator. Used
+for both static-text spots that had the same problem: non-streaming's "Waiting for a
+response" and streaming's pre-first-token "Streaming" state.
 
-**Verified**: `tsc --noEmit`, `npm run build`, `npm run lint` clean. Live in the browser
-(non-streaming): triggered a real ~70s generation (4000 max_tokens) and inspected the DOM
-mid-flight — confirmed 3 `span.animate-pulse` dots with the exact staggered delays. The
-streaming variant reuses the identical component/condition shape; its pre-first-token
-window proved too short to catch mid-flight in an automated screenshot, but the code path
-is the same one already verified.
+**Verified**: `tsc --noEmit`, `npm run build`, `npm run lint` clean. Live in the browser:
+triggered a real generation, read `getComputedStyle` on the three dots mid-flight —
+confirmed three distinct `transform: translateY(...)` / `opacity` values at the same
+instant (-0.2px/0.44, -2.0px/0.80, -3.0px/1.0), proving the wave is actually visible frame
+to frame rather than near-simultaneous like the first cut.
 
 ## RM-43 — Stop stripping client-supplied system messages (added) — `done`
 

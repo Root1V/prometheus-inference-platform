@@ -41,17 +41,17 @@ function ReasoningBox({ text }: { text: string }) {
  * still actively working. */
 function WaitingIndicator({ label }: { label: string }) {
   return (
-    <p className="flex items-center gap-1 text-sm text-text-muted">
+    <p className="flex items-center gap-2 text-sm text-text-muted">
       {label}
-      <span className="flex gap-0.5">
-        <span className="animate-pulse" style={{ animationDelay: "0ms" }}>
-          .
+      <span className="flex gap-1">
+        <span className="animate-bounce-dot" style={{ animationDelay: "0ms" }}>
+          •
         </span>
-        <span className="animate-pulse" style={{ animationDelay: "200ms" }}>
-          .
+        <span className="animate-bounce-dot" style={{ animationDelay: "150ms" }}>
+          •
         </span>
-        <span className="animate-pulse" style={{ animationDelay: "400ms" }}>
-          .
+        <span className="animate-bounce-dot" style={{ animationDelay: "300ms" }}>
+          •
         </span>
       </span>
     </p>
