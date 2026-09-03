@@ -1467,6 +1467,22 @@ real result. Embeddings — completes too fast (~100-150ms) to catch the indicat
 automated screenshot, but it's the identical gated-render pattern already verified
 elsewhere, and the result rendered correctly afterward.
 
+**Follow-up (send-time feedback)**: found live — non-streaming Chat never set `inProgress`
+at all, so the user's own message stayed invisible until the *entire* round-trip finished
+(the streaming path already showed it immediately via `inProgress.leading`). Fixed by
+having `sendNonStreaming` set `inProgress` up front too, same as streaming — the existing
+render logic (leading-message bubble + `WaitingIndicator`) then works for both paths
+uniformly, so the old separate `isSending && !inProgress` branch became dead and was
+removed; the `WaitingIndicator`'s label now reads `streamingEnabled` to say "Streaming" vs
+"Waiting for a response". Also: all three tabs cleared their input on *success* rather than
+immediately on send, and none of the three disabled their textarea while a request was in
+flight — both fixed (input cleared up front, textarea `disabled` while pending) so the
+prompt reads as sent right away and can't be edited mid-flight.
+
+**Verified**: live in the browser (non-streaming) — sent a long-response prompt, confirmed
+the user's bubble plus the bouncing-dots indicator appeared immediately below it, and
+`textarea.value === ""` / `disabled === true` while pending.
+
 ## RM-43 — Stop stripping client-supplied system messages (added) — `done`
 
 **Why**: found while scoping RM-35 (tool-calling) — `router.py`'s `_sanitise_messages()`

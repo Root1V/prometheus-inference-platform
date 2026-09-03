@@ -173,20 +173,24 @@ export default function Playground() {
   async function handleGetEmbedding() {
     if (!selectedEmbedModel || !embedInput.trim() || embeddings.isPending) return;
     setEmbedError(null);
+    // Captured before clearing so the result still records what was actually
+    // sent, and cleared immediately (not on success) so the input reads as
+    // sent right away instead of lingering, editable, during the wait.
+    const input = embedInput;
+    setEmbedInput("");
     const startedAt = performance.now();
     try {
-      const data = await embeddings.mutateAsync({ model: selectedEmbedModel, input: embedInput });
+      const data = await embeddings.mutateAsync({ model: selectedEmbedModel, input });
       setEmbedResults((prev) => [
         ...prev,
         {
-          input: embedInput,
+          input,
           embedding: data.data[0]?.embedding ?? [],
           usage: data.usage,
           latencyMs: Math.round(performance.now() - startedAt),
           model: selectedEmbedModel,
         },
       ]);
-      setEmbedInput("");
     } catch (error) {
       setEmbedError(getErrorMessage(error));
     }
@@ -199,22 +203,23 @@ export default function Playground() {
   async function handleGenerateImage() {
     if (!selectedImageModel || !imagePrompt.trim() || imageGenerations.isPending) return;
     setImageError(null);
+    // Same rationale as handleGetEmbedding: capture before clearing so the
+    // result still records the real prompt, and clear immediately rather
+    // than on success so the input reads as sent right away.
+    const prompt = imagePrompt;
+    setImagePrompt("");
     const startedAt = performance.now();
     try {
-      const data = await imageGenerations.mutateAsync({
-        model: selectedImageModel,
-        prompt: imagePrompt,
-      });
+      const data = await imageGenerations.mutateAsync({ model: selectedImageModel, prompt });
       setImageResults((prev) => [
         ...prev,
         {
-          prompt: imagePrompt,
+          prompt,
           b64Json: data.data[0]?.b64_json ?? "",
           latencyMs: Math.round(performance.now() - startedAt),
           model: selectedImageModel,
         },
       ]);
-      setImagePrompt("");
     } catch (error) {
       setImageError(getErrorMessage(error));
     }
@@ -267,6 +272,10 @@ export default function Playground() {
 
   async function sendNonStreaming(leadingMessages: ChatMessage[], messages: ChatMessage[], tools: ToolDefinition[] | undefined) {
     const startedAt = performance.now();
+    // Show the user's own message immediately instead of leaving it
+    // invisible until the whole round-trip completes — same treatment the
+    // streaming path already gives it via inProgress.leading.
+    setInProgress({ leading: leadingMessages, content: "", reasoning: "", toolCalls: [] });
     const data = await chat.mutateAsync({ model: selectedModel, messages, params: buildParams(tools) });
     const latencyMs = Math.round(performance.now() - startedAt);
     const responseMessage = data.choices[0]?.message;
@@ -279,6 +288,7 @@ export default function Playground() {
       content: hasToolCalls ? null : (responseMessage?.content ?? ""),
       tool_calls: responseMessage?.tool_calls,
     };
+    setInProgress(null);
     setTurns((prev) => [
       ...prev,
       {
@@ -635,7 +645,6 @@ export default function Playground() {
                 );
               })
             )}
-            {isSending && !inProgress && <WaitingIndicator label="Waiting for a response" />}
             {inProgress &&
               inProgress.leading.map((m, j) =>
                 m.role === "tool" ? (
@@ -681,7 +690,7 @@ export default function Playground() {
               </div>
             )}
             {inProgress && !inProgress.content && !inProgress.reasoning && inProgress.toolCalls.length === 0 && (
-              <WaitingIndicator label="Streaming" />
+              <WaitingIndicator label={streamingEnabled ? "Streaming" : "Waiting for a response"} />
             )}
             <div ref={bottomRef} />
           </div>
@@ -708,7 +717,7 @@ export default function Playground() {
                   ? "No running text models — start one from Instances first."
                   : "Ask something… (Enter to send, Shift+Enter for a new line)"
               }
-              disabled={runningTextModels.length === 0}
+              disabled={runningTextModels.length === 0 || isSending}
               className={cn(inputClass, "flex-1")}
             />
             <button
@@ -789,7 +798,7 @@ export default function Playground() {
                   ? "No running embedding models — start one from Instances first."
                   : "Text to embed… (Enter to send, Shift+Enter for a new line)"
               }
-              disabled={runningEmbeddingModels.length === 0}
+              disabled={runningEmbeddingModels.length === 0 || embeddings.isPending}
               className={cn(inputClass, "flex-1")}
             />
             <button
@@ -876,7 +885,7 @@ export default function Playground() {
                   ? "No running image models — start one from Instances first."
                   : "Describe the image to generate… (Enter to send, Shift+Enter for a new line)"
               }
-              disabled={runningImageModels.length === 0}
+              disabled={runningImageModels.length === 0 || imageGenerations.isPending}
               className={cn(inputClass, "flex-1")}
             />
             <button
