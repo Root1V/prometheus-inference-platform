@@ -1483,6 +1483,16 @@ prompt reads as sent right away and can't be edited mid-flight.
 the user's bubble plus the bouncing-dots indicator appeared immediately below it, and
 `textarea.value === ""` / `disabled === true` while pending.
 
+**Follow-up (visual consistency across tabs)**: Embeddings and Images rendered the sent
+input as plain muted text *inside* the same card as the result — Chat was the only tab with
+a distinct question/answer split (an orange `bg-primary` bubble, then a separate card).
+Restructured both to match: each result is now a `space-y-3` pair — an `ml-auto w-fit
+max-w-[80%] bg-primary` bubble for the input/prompt, then the existing result card
+(vector/image + meta row) below it, unchanged otherwise.
+
+**Verified**: live in the browser, both tabs — Embeddings and Images now show the same
+bubble-then-card shape as Chat.
+
 ## RM-43 — Stop stripping client-supplied system messages (added) — `done`
 
 **Why**: found while scoping RM-35 (tool-calling) — `router.py`'s `_sanitise_messages()`

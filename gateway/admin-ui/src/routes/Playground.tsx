@@ -741,33 +741,34 @@ export default function Playground() {
             ) : (
               <>
                 {embedResults.map((result, i) => (
-                  <div
-                    key={i}
-                    className="rounded-xl border border-border bg-background px-4 py-3 text-sm text-text"
-                  >
-                    <p className="whitespace-pre-wrap text-text-muted">"{result.input}"</p>
-                    <p className="mt-2 font-mono text-xs text-text">
-                      [{result.embedding
-                        .slice(0, EMBEDDING_PREVIEW_COUNT)
-                        .map((v) => v.toFixed(4))
-                        .join(", ")}
-                      {result.embedding.length > EMBEDDING_PREVIEW_COUNT ? ", …" : ""}]
-                    </p>
-                    <div className="mt-2 flex items-center gap-3 border-t border-border pt-2 text-xs text-text-muted">
-                      <span>{result.embedding.length} dimensions</span>
-                      <span>{result.usage.total_tokens} tokens</span>
-                      <span>{result.latencyMs} ms</span>
-                      <span className="ml-auto font-mono" title="Model that produced this embedding">
-                        {result.model}
-                      </span>
-                      <button
-                        type="button"
-                        onClick={() => handleCopyEmbedding(result.embedding)}
-                        title="Copy full vector as JSON"
-                        className="text-text-muted hover:text-text"
-                      >
-                        <Copy size={14} />
-                      </button>
+                  <div key={i} className="space-y-3">
+                    <div className="ml-auto w-fit max-w-[80%] rounded-xl bg-primary px-4 py-2 text-sm text-primary-foreground">
+                      {result.input}
+                    </div>
+                    <div className="rounded-xl border border-border bg-background px-4 py-3 text-sm text-text">
+                      <p className="font-mono text-xs text-text">
+                        [{result.embedding
+                          .slice(0, EMBEDDING_PREVIEW_COUNT)
+                          .map((v) => v.toFixed(4))
+                          .join(", ")}
+                        {result.embedding.length > EMBEDDING_PREVIEW_COUNT ? ", …" : ""}]
+                      </p>
+                      <div className="mt-2 flex items-center gap-3 border-t border-border pt-2 text-xs text-text-muted">
+                        <span>{result.embedding.length} dimensions</span>
+                        <span>{result.usage.total_tokens} tokens</span>
+                        <span>{result.latencyMs} ms</span>
+                        <span className="ml-auto font-mono" title="Model that produced this embedding">
+                          {result.model}
+                        </span>
+                        <button
+                          type="button"
+                          onClick={() => handleCopyEmbedding(result.embedding)}
+                          title="Copy full vector as JSON"
+                          className="text-text-muted hover:text-text"
+                        >
+                          <Copy size={14} />
+                        </button>
+                      </div>
                     </div>
                   </div>
                 ))}
@@ -822,39 +823,40 @@ export default function Playground() {
             ) : (
               <>
                 {imageResults.map((result, i) => (
-                  <div
-                    key={i}
-                    className="max-w-xs rounded-xl border border-border bg-background px-4 py-3 text-sm text-text"
-                  >
-                    <p className="whitespace-pre-wrap text-text-muted">"{result.prompt}"</p>
-                    <button
-                      type="button"
-                      onClick={() => setExpandedImage(result)}
-                      className="mt-2 block cursor-zoom-in"
-                      title="Click to view full size"
-                    >
-                      <img
-                        src={`data:image/png;base64,${result.b64Json}`}
-                        alt={result.prompt}
-                        className="w-full rounded-lg border border-border"
-                      />
-                    </button>
-                    <div className="mt-2 flex items-center gap-3 border-t border-border pt-2 text-xs text-text-muted">
-                      <span className="shrink-0">{result.latencyMs} ms</span>
-                      <span
-                        className="ml-auto truncate font-mono"
-                        title={`Model that generated this image: ${result.model}`}
-                      >
-                        {result.model}
-                      </span>
+                  <div key={i} className="space-y-3">
+                    <div className="ml-auto w-fit max-w-[80%] rounded-xl bg-primary px-4 py-2 text-sm text-primary-foreground">
+                      {result.prompt}
+                    </div>
+                    <div className="max-w-xs rounded-xl border border-border bg-background px-4 py-3 text-sm text-text">
                       <button
                         type="button"
-                        onClick={() => handleDownloadImage(result, i)}
-                        title="Download image"
-                        className="shrink-0 cursor-pointer text-text-muted hover:text-text"
+                        onClick={() => setExpandedImage(result)}
+                        className="block cursor-zoom-in"
+                        title="Click to view full size"
                       >
-                        <Download size={14} />
+                        <img
+                          src={`data:image/png;base64,${result.b64Json}`}
+                          alt={result.prompt}
+                          className="w-full rounded-lg border border-border"
+                        />
                       </button>
+                      <div className="mt-2 flex items-center gap-3 border-t border-border pt-2 text-xs text-text-muted">
+                        <span className="shrink-0">{result.latencyMs} ms</span>
+                        <span
+                          className="ml-auto truncate font-mono"
+                          title={`Model that generated this image: ${result.model}`}
+                        >
+                          {result.model}
+                        </span>
+                        <button
+                          type="button"
+                          onClick={() => handleDownloadImage(result, i)}
+                          title="Download image"
+                          className="shrink-0 cursor-pointer text-text-muted hover:text-text"
+                        >
+                          <Download size={14} />
+                        </button>
+                      </div>
                     </div>
                   </div>
                 ))}
