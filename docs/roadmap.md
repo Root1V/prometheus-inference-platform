@@ -1493,7 +1493,17 @@ max-w-[80%] bg-primary` bubble for the input/prompt, then the existing result ca
 **Verified**: live in the browser, both tabs — Embeddings and Images now show the same
 bubble-then-card shape as Chat.
 
-## RM-43 — Stop stripping client-supplied system messages (added) — `done`
+**Follow-up (prompt history)**: added shell-style ArrowUp/ArrowDown history recall to all
+three tabs' input textareas — a new `usePromptHistory()` hook (history array + browse
+index + a stash of whatever was being typed before browsing started), one instance per
+tab. ArrowUp only recalls when the caret is on the first line, ArrowDown only when it's on
+the last, so multi-line drafts (Shift+Enter) keep normal cursor navigation. Each tab's send
+handler records the sent text into its own history right before clearing the input.
+
+**Verified**: live in the browser — Chat: sent two messages, ArrowUp recalled the most
+recent then the older one, a third ArrowUp stayed put (no more history), ArrowDown walked
+back down to the most recent then to the empty original draft. Embeddings: same recall
+confirmed for one sent input.
 
 **Why**: found while scoping RM-35 (tool-calling) — `router.py`'s `_sanitise_messages()`
 unconditionally deleted every `role: "system"` message from the client's request before

@@ -1,5 +1,5 @@
 import { Copy, Download, RotateCcw, Send, Trash2, Wrench, X } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from "react";
 import { createPortal } from "react-dom";
 import { useInstances } from "../api/instances";
 import {
@@ -61,6 +61,53 @@ function WaitingIndicator({ label }: { label: string }) {
   );
 }
 
+/** RM-42 follow-up: shell-style prompt history — ArrowUp/ArrowDown recall
+ * previously sent prompts, same idea as a terminal's up-arrow history.
+ * Only fires when the caret is on the first line (ArrowUp) or last line
+ * (ArrowDown), so it doesn't hijack cursor movement inside a multi-line
+ * draft. One instance per tab (each keeps its own history/draft). */
+function usePromptHistory() {
+  const [history, setHistory] = useState<string[]>([]);
+  const [index, setIndex] = useState(-1); // -1 = not browsing, editing a live draft
+  const [stash, setStash] = useState("");
+
+  function record(value: string) {
+    setHistory((prev) => [...prev, value]);
+    setIndex(-1);
+  }
+
+  function handleKeyDown(
+    e: ReactKeyboardEvent<HTMLTextAreaElement>,
+    value: string,
+    setValue: (v: string) => void,
+  ) {
+    const el = e.currentTarget;
+    const caretStart = el.selectionStart ?? 0;
+    const caretEnd = el.selectionEnd ?? el.value.length;
+    if (e.key === "ArrowUp" && !el.value.slice(0, caretStart).includes("\n")) {
+      if (history.length === 0) return;
+      e.preventDefault();
+      if (index === -1) setStash(value);
+      const nextIndex = index === -1 ? history.length - 1 : Math.max(0, index - 1);
+      setIndex(nextIndex);
+      setValue(history[nextIndex]);
+    } else if (e.key === "ArrowDown" && !el.value.slice(caretEnd).includes("\n")) {
+      if (index === -1) return;
+      e.preventDefault();
+      if (index >= history.length - 1) {
+        setIndex(-1);
+        setValue(stash);
+      } else {
+        const nextIndex = index + 1;
+        setIndex(nextIndex);
+        setValue(history[nextIndex]);
+      }
+    }
+  }
+
+  return { record, handleKeyDown };
+}
+
 const inputClass =
   "w-full rounded-lg border border-border bg-background px-3 py-2 text-sm text-text focus:border-primary focus:outline-none";
 
@@ -113,6 +160,9 @@ export default function Playground() {
   const chat = usePlaygroundChat();
   const embeddings = useEmbeddings();
   const imageGenerations = useImageGenerations();
+  const chatHistory = usePromptHistory();
+  const embedHistory = usePromptHistory();
+  const imageHistory = usePromptHistory();
 
   const [mode, setMode] = useState<"chat" | "embeddings" | "images">("chat");
   const [embedModel, setEmbedModel] = useState("");
@@ -177,6 +227,7 @@ export default function Playground() {
     // sent, and cleared immediately (not on success) so the input reads as
     // sent right away instead of lingering, editable, during the wait.
     const input = embedInput;
+    embedHistory.record(input);
     setEmbedInput("");
     const startedAt = performance.now();
     try {
@@ -207,6 +258,7 @@ export default function Playground() {
     // result still records the real prompt, and clear immediately rather
     // than on success so the input reads as sent right away.
     const prompt = imagePrompt;
+    imageHistory.record(prompt);
     setImagePrompt("");
     const startedAt = performance.now();
     try {
@@ -374,6 +426,7 @@ export default function Playground() {
   function handleSend() {
     if (!draft.trim() || isSending) return;
     const userMessage: ChatMessage = { role: "user", content: draft };
+    chatHistory.record(draft);
     setDraft("");
     void sendMessages([userMessage]);
   }
@@ -710,7 +763,9 @@ export default function Playground() {
                 if (e.key === "Enter" && !e.shiftKey) {
                   e.preventDefault();
                   handleSend();
+                  return;
                 }
+                chatHistory.handleKeyDown(e, draft, setDraft);
               }}
               placeholder={
                 runningTextModels.length === 0
@@ -792,7 +847,9 @@ export default function Playground() {
                 if (e.key === "Enter" && !e.shiftKey) {
                   e.preventDefault();
                   void handleGetEmbedding();
+                  return;
                 }
+                embedHistory.handleKeyDown(e, embedInput, setEmbedInput);
               }}
               placeholder={
                 runningEmbeddingModels.length === 0
@@ -880,7 +937,9 @@ export default function Playground() {
                 if (e.key === "Enter" && !e.shiftKey) {
                   e.preventDefault();
                   void handleGenerateImage();
+                  return;
                 }
+                imageHistory.handleKeyDown(e, imagePrompt, setImagePrompt);
               }}
               placeholder={
                 runningImageModels.length === 0
