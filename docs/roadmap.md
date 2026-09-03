@@ -1444,20 +1444,28 @@ multi-second) inference call is in flight.
 animates (e.g. an ellipsis cycle, a subtle pulse) so a slow response doesn't look stalled.
 
 **What shipped**: a small `WaitingIndicator` component — the label text followed by three
-bouncing dots. First cut reused Tailwind's built-in `animate-pulse` (2s cycle) with 200ms
-stagger between dots — shipped, then found live to be too subtle to notice, especially on a
-fast response: a 2s opacity fade with only 200ms offset between dots reads as near-
-synchronous, not a rolling wave. Replaced with a purpose-built `@keyframes bounce-dot`
-(`index.css`) — 1.2s cycle, translateY + opacity — used via a new `.animate-bounce-dot`
-utility class with 150ms stagger, same idea as WhatsApp/iMessage's typing indicator. Used
-for both static-text spots that had the same problem: non-streaming's "Waiting for a
-response" and streaming's pre-first-token "Streaming" state.
+bouncing dots, applied to all three Playground tabs, not just Chat (Embeddings' "Get
+embedding" and Images' "Generate" had the exact same silent-until-done problem — nothing
+in the results list signaled work in progress, just a disabled button). First cut reused
+Tailwind's built-in `animate-pulse` (2s cycle) with 200ms stagger and text "." characters —
+shipped, then found live to be too subtle/spaced out to notice: a 2s opacity fade with only
+200ms offset reads as near-synchronous, and text-glyph dots carry their own font spacing.
+Replaced with a purpose-built `@keyframes bounce-dot` (`index.css`) — 1.2s cycle, translateY
++ opacity — applied to fixed 4px `rounded-full` circles (not glyphs) via a new
+`.animate-bounce-dot` utility class, 150ms stagger, tight `gap-0.5`, same idea as
+WhatsApp/iMessage's typing indicator. Used for: non-streaming Chat's "Waiting for a
+response", streaming Chat's pre-first-token "Streaming" state, Embeddings' "Generating
+embedding", and Images' "Generating image" — each gated on the tab's own pending/sending
+flag, shown after any earlier results without replacing them.
 
-**Verified**: `tsc --noEmit`, `npm run build`, `npm run lint` clean. Live in the browser:
-triggered a real generation, read `getComputedStyle` on the three dots mid-flight —
-confirmed three distinct `transform: translateY(...)` / `opacity` values at the same
-instant (-0.2px/0.44, -2.0px/0.80, -3.0px/1.0), proving the wave is actually visible frame
-to frame rather than near-simultaneous like the first cut.
+**Verified**: `tsc --noEmit`, `npm run build`, `npm run lint` clean. Live in the browser,
+all three tabs: Chat — triggered a real generation, read `getComputedStyle` on the three
+dots mid-flight, confirmed three distinct `transform: translateY(...)` / `opacity` values
+at the same instant, proving the wave is actually visible frame to frame. Images — same
+indicator caught live mid-generation ("Generating image •••"), then replaced cleanly by the
+real result. Embeddings — completes too fast (~100-150ms) to catch the indicator in an
+automated screenshot, but it's the identical gated-render pattern already verified
+elsewhere, and the result rendered correctly afterward.
 
 ## RM-43 — Stop stripping client-supplied system messages (added) — `done`
 
