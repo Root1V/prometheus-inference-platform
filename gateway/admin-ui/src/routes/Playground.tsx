@@ -1,5 +1,11 @@
-import { Copy, Download, RotateCcw, Send, Trash2, Wrench, X } from "lucide-react";
-import { useEffect, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from "react";
+import { Copy, Download, Paperclip, RotateCcw, Send, Trash2, Wrench, X } from "lucide-react";
+import {
+  useEffect,
+  useRef,
+  useState,
+  type ChangeEvent,
+  type KeyboardEvent as ReactKeyboardEvent,
+} from "react";
 import { createPortal } from "react-dom";
 import { useInstances } from "../api/instances";
 import {
@@ -8,6 +14,8 @@ import {
   useImageGenerations,
   usePlaygroundChat,
   type ChatMessage,
+  type ImageContentPart,
+  type TextContentPart,
   type ToolCall,
   type ToolDefinition,
 } from "../api/playground";
@@ -108,6 +116,29 @@ function usePromptHistory() {
   return { record, handleKeyDown };
 }
 
+/** RM-40: a message's content is either a plain string (every non-vision
+ * turn, and every assistant response) or an array of content parts (a
+ * user turn that attached an image) — renders either shape the same way. */
+function MessageContent({ content }: { content: ChatMessage["content"] }) {
+  if (typeof content !== "object" || content === null) {
+    return content ? <p className="whitespace-pre-wrap">{content}</p> : null;
+  }
+  const text = content.find((p): p is TextContentPart => p.type === "text")?.text;
+  const image = content.find((p): p is ImageContentPart => p.type === "image_url");
+  return (
+    <>
+      {text && <p className="whitespace-pre-wrap">{text}</p>}
+      {image && (
+        <img
+          src={image.image_url.url}
+          alt="Attached"
+          className="mt-1 max-h-40 rounded-lg border border-border/50"
+        />
+      )}
+    </>
+  );
+}
+
 const inputClass =
   "w-full rounded-lg border border-border bg-background px-3 py-2 text-sm text-text focus:border-primary focus:outline-none";
 
@@ -181,6 +212,12 @@ export default function Playground() {
   const [draft, setDraft] = useState("");
   const [turns, setTurns] = useState<Turn[]>([]);
   const [sendError, setSendError] = useState<string | null>(null);
+  // RM-40: image attached to the next message, vision models only.
+  const [attachedImage, setAttachedImage] = useState<{ dataUrl: string; name: string } | null>(
+    null,
+  );
+  const [attachError, setAttachError] = useState<string | null>(null);
+  const imageInputRef = useRef<HTMLInputElement>(null);
 
   const [temperature, setTemperature] = useState(1.0);
   const [topP, setTopP] = useState(1.0);
@@ -205,10 +242,16 @@ export default function Playground() {
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [expandedImage]);
 
-  const runningTextModels = (instancesQuery.data?.instances ?? []).filter(
-    (i) => i.state === "ready" && i.modality === "text",
+  // RM-40: vision models handle plain text-only chat fine too (confirmed by
+  // the gateway's own vision test suite), so Chat includes both — excluding
+  // vision here would mean a vision-capable model can never be selected in
+  // Chat at all, image upload or not.
+  const runningChatModels = (instancesQuery.data?.instances ?? []).filter(
+    (i) => i.state === "ready" && (i.modality === "text" || i.modality === "vision"),
   );
-  const selectedModel = model || runningTextModels[0]?.id || "";
+  const selectedModel = model || runningChatModels[0]?.id || "";
+  const isVisionModel =
+    runningChatModels.find((i) => i.id === selectedModel)?.modality === "vision";
 
   const runningEmbeddingModels = (instancesQuery.data?.instances ?? []).filter(
     (i) => i.state === "ready" && i.modality === "embedding",
@@ -424,11 +467,45 @@ export default function Playground() {
   }
 
   function handleSend() {
-    if (!draft.trim() || isSending) return;
-    const userMessage: ChatMessage = { role: "user", content: draft };
-    chatHistory.record(draft);
+    if ((!draft.trim() && !attachedImage) || isSending) return;
+    const userMessage: ChatMessage = {
+      role: "user",
+      content: attachedImage
+        ? [
+            ...(draft.trim() ? [{ type: "text" as const, text: draft }] : []),
+            { type: "image_url" as const, image_url: { url: attachedImage.dataUrl } },
+          ]
+        : draft,
+    };
+    if (draft.trim()) chatHistory.record(draft);
     setDraft("");
+    setAttachedImage(null);
     void sendMessages([userMessage]);
+  }
+
+  // RM-40: images are inlined as base64 data: URIs (the gateway rejects
+  // remote http(s) URLs to avoid SSRF), so an oversized image bloats the
+  // request and the in-memory conversation history significantly — 5MB of
+  // raw file bytes is already a very generous prompt image.
+  const MAX_IMAGE_BYTES = 5 * 1024 * 1024;
+
+  function handleImageFileSelected(e: ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    e.target.value = ""; // allow re-selecting the same file later
+    if (!file) return;
+    setAttachError(null);
+    if (file.size > MAX_IMAGE_BYTES) {
+      setAttachError(
+        `Image is too large (${(file.size / 1024 / 1024).toFixed(1)} MB) — 5 MB max.`,
+      );
+      return;
+    }
+    const reader = new FileReader();
+    reader.onload = () => {
+      setAttachedImage({ dataUrl: reader.result as string, name: file.name });
+    };
+    reader.onerror = () => setAttachError("Could not read the selected file.");
+    reader.readAsDataURL(file);
   }
 
   function handleRegenerate() {
@@ -466,7 +543,12 @@ export default function Playground() {
   }
 
   async function handleCopy(message: ChatMessage) {
-    const text = message.content ?? JSON.stringify(message.tool_calls, null, 2);
+    // Only assistant responses are copied here, and a model never replies
+    // with content parts — the array case is just for TypeScript's benefit.
+    const text =
+      typeof message.content === "string"
+        ? message.content
+        : JSON.stringify(message.tool_calls, null, 2);
     await navigator.clipboard.writeText(text ?? "");
   }
 
@@ -575,21 +657,19 @@ export default function Playground() {
                         key={j}
                         className="ml-auto max-w-[80%] rounded-xl border border-dashed border-border bg-surface px-4 py-2 text-xs text-text-muted"
                       >
-                        Tool result: {m.content}
+                        Tool result: {typeof m.content === "string" ? m.content : ""}
                       </div>
                     ) : (
                       <div
                         key={j}
                         className="ml-auto max-w-[80%] rounded-xl bg-primary px-4 py-2 text-sm text-primary-foreground"
                       >
-                        {m.content}
+                        <MessageContent content={m.content} />
                       </div>
                     ),
                   )}
                   <div className="max-w-[80%] rounded-xl border border-border bg-background px-4 py-2 text-sm text-text">
-                    {assistantMessage.content && (
-                      <p className="whitespace-pre-wrap">{assistantMessage.content}</p>
-                    )}
+                    <MessageContent content={assistantMessage.content} />
                     {!assistantMessage.content &&
                       !assistantMessage.tool_calls?.length &&
                       turn.finishReason === "length" && (
@@ -705,14 +785,14 @@ export default function Playground() {
                     key={j}
                     className="ml-auto max-w-[80%] rounded-xl border border-dashed border-border bg-surface px-4 py-2 text-xs text-text-muted"
                   >
-                    Tool result: {m.content}
+                    Tool result: {typeof m.content === "string" ? m.content : ""}
                   </div>
                 ) : (
                   <div
                     key={j}
                     className="ml-auto max-w-[80%] rounded-xl bg-primary px-4 py-2 text-sm text-primary-foreground"
                   >
-                    {m.content}
+                    <MessageContent content={m.content} />
                   </div>
                 ),
               )}
@@ -754,7 +834,52 @@ export default function Playground() {
             </div>
           )}
 
+          {attachError && (
+            <div className="mt-3 rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-red-700 dark:border-red-900 dark:bg-red-500/10 dark:text-red-300">
+              {attachError}
+            </div>
+          )}
+
+          {attachedImage && (
+            <div className="mt-3 flex items-center gap-2 rounded-lg border border-border bg-surface p-2">
+              <img
+                src={attachedImage.dataUrl}
+                alt={attachedImage.name}
+                className="h-12 w-12 rounded object-cover"
+              />
+              <span className="flex-1 truncate text-xs text-text-muted">{attachedImage.name}</span>
+              <button
+                type="button"
+                onClick={() => setAttachedImage(null)}
+                title="Remove image"
+                className="cursor-pointer text-text-muted hover:text-text"
+              >
+                <X size={14} />
+              </button>
+            </div>
+          )}
+
           <div className="mt-4 flex items-end gap-2">
+            {isVisionModel && (
+              <>
+                <input
+                  ref={imageInputRef}
+                  type="file"
+                  accept="image/*"
+                  onChange={handleImageFileSelected}
+                  className="hidden"
+                />
+                <button
+                  type="button"
+                  onClick={() => imageInputRef.current?.click()}
+                  disabled={isSending}
+                  title="Attach an image"
+                  className="flex shrink-0 items-center justify-center rounded-lg border border-border p-2.5 text-text-muted hover:bg-background disabled:cursor-not-allowed disabled:opacity-40"
+                >
+                  <Paperclip size={16} />
+                </button>
+              </>
+            )}
             <textarea
               rows={2}
               value={draft}
@@ -768,17 +893,17 @@ export default function Playground() {
                 chatHistory.handleKeyDown(e, draft, setDraft);
               }}
               placeholder={
-                runningTextModels.length === 0
+                runningChatModels.length === 0
                   ? "No running text models — start one from Instances first."
                   : "Ask something… (Enter to send, Shift+Enter for a new line)"
               }
-              disabled={runningTextModels.length === 0 || isSending}
+              disabled={runningChatModels.length === 0 || isSending}
               className={cn(inputClass, "flex-1")}
             />
             <button
               type="button"
               onClick={handleSend}
-              disabled={!selectedModel || !draft.trim() || isSending}
+              disabled={!selectedModel || (!draft.trim() && !attachedImage) || isSending}
               className="flex items-center gap-2 rounded-lg bg-primary px-4 py-2.5 text-sm font-medium text-primary-foreground hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-40"
             >
               <Send size={16} />
@@ -970,16 +1095,23 @@ export default function Playground() {
             <label htmlFor="playground-model" className="mb-1.5 block text-sm font-medium text-text">
               Model
             </label>
-            {runningTextModels.length === 0 ? (
+            {runningChatModels.length === 0 ? (
               <p className="text-sm text-text-muted">No running text models.</p>
             ) : (
               <select
                 id="playground-model"
                 value={selectedModel}
-                onChange={(e) => setModel(e.target.value)}
+                onChange={(e) => {
+                  setModel(e.target.value);
+                  // RM-40: an attached image is only ever sendable to a
+                  // vision model — drop it rather than leave it staged for
+                  // a model that would just reject it.
+                  const next = runningChatModels.find((i) => i.id === e.target.value);
+                  if (next?.modality !== "vision") setAttachedImage(null);
+                }}
                 className={inputClass}
               >
-                {runningTextModels.map((i) => (
+                {runningChatModels.map((i) => (
                   <option key={i.id} value={i.id}>
                     {i.id}
                   </option>

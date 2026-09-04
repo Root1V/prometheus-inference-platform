@@ -8,9 +8,26 @@ export interface ToolCall {
   function: { name: string; arguments: string };
 }
 
+/** RM-40: the gateway's /v1/chat/completions accepts an array of content
+ * parts instead of a plain string — this is how an image rides alongside
+ * the text prompt for a vision-capable model. Images must be inline data:
+ * URIs (gateway/src/prometheus_gateway/models/schemas.py rejects remote
+ * http(s) URLs to avoid turning the endpoint into an SSRF proxy). */
+export interface TextContentPart {
+  type: "text";
+  text: string;
+}
+
+export interface ImageContentPart {
+  type: "image_url";
+  image_url: { url: string };
+}
+
+export type ContentPart = TextContentPart | ImageContentPart;
+
 export interface ChatMessage {
   role: "system" | "user" | "assistant" | "tool";
-  content: string | null;
+  content: string | ContentPart[] | null;
   tool_calls?: ToolCall[];
   tool_call_id?: string;
 }

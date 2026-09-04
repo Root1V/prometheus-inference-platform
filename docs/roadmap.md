@@ -1398,16 +1398,55 @@ less mature/proven than image generation; even lower priority.
 **Scope**: undefined. Revisit only if a real need and a viable self-hostable model/backend
 both show up.
 
-## RM-40 — Playground: image upload for Vision/VLM models (added)
+## RM-40 — Playground: image upload for Vision/VLM models (done)
 
 **Why**: RM-09 already added vision content-part support to `/v1/chat/completions`
 (`has_image`/modality checks in `router.py`) and the model registry already tracks
-`modality: "vision"` per instance — the Playground just has no way to attach an image today.
+`modality: "vision"` per instance — the Playground just had no way to attach an image, and
+in fact **no way to even select a vision model in Chat at all**: the model picker filtered
+to `modality === "text"` only, excluding vision entirely.
 
 **Scope**: an image upload/attach control in the Playground's message composer, enabled
-only when the selected model's `modality` is `"vision"` (disabled/hidden otherwise, so it's
-never offered for a model that would just reject it). Sends the image as a `image_url`
-content part alongside the text prompt, matching what `router.py` already expects.
+only when the selected model's `modality` is `"vision"` (hidden otherwise, so it's never
+offered for a model that would just reject it). Sends the image as an `image_url` content
+part alongside the text prompt, matching what `router.py` already expects.
+
+**What shipped**:
+- `api/playground.ts`: `ChatMessage.content` broadened from `string | null` to `string |
+  ContentPart[] | null` (`TextContentPart` / `ImageContentPart`, mirroring the gateway's own
+  `schemas.py` shapes exactly — inline `data:image/...;base64,...` only, no remote URLs).
+- `Playground.tsx`: the Chat model picker (`runningTextModels` → renamed
+  `runningChatModels`) now includes `"vision"` alongside `"text"` — vision models handle
+  plain text-only chat fine too (confirmed by the gateway's own `test_modality.py` suite),
+  so this was a real pre-existing gap, not something to guard against.
+- A paperclip button next to the composer, rendered only when the selected model's
+  modality is `"vision"`; picks a file via a hidden `<input type="file" accept="image/*">`,
+  reads it with `FileReader.readAsDataURL`, rejects anything over 5MB (a generous cap for a
+  single prompt image, given the whole thing gets inlined as base64 into the request body
+  and the in-memory conversation history). A thumbnail + filename + remove (×) button shows
+  above the composer while an image is staged; switching to a non-vision model clears it
+  (an attachment can never be sent to a model that would just reject it).
+- `handleSend` builds `content` as a content-parts array only when an image is attached
+  (plain string otherwise, unchanged for every non-vision turn) — allows an image-only send
+  with no caption text.
+- New `MessageContent` component renders either shape (plain string or parts array) the
+  same way, replacing every place a message bubble rendered `{m.content}` directly (both
+  the completed-turn and in-progress leading-message bubbles, plus the assistant response,
+  for type-safety even though a model reply is always a plain string).
+
+**Verified end-to-end through the real running stack**, not mocks: registered a real 8B
+vision model (`Qwen3VL-8B-Instruct-Q4_K_M.gguf` + its `mmproj` projector file, both already
+on disk but unregistered) as `qwen3vl-8b-test`, started it, confirmed it appeared in Chat's
+model picker (previously impossible), confirmed the paperclip button appeared only for it.
+Injected a real PNG into the hidden file input via the DevTools `DataTransfer` technique
+(a small local CORS-enabled HTTP server served the file since a data: URI can't be
+constructed by the test harness directly), got a live thumbnail preview, sent it with the
+prompt "What animal is in this image and what is it wearing?" — the model correctly
+answered "red panda" wearing a "black pointed witch's hat", holding an open book, matching
+the actual test image exactly. Confirmed the message bubble rendered both the prompt text
+and the image. Confirmed switching to a non-vision model hid the paperclip button.
+Deregistered the test instance afterward. `tsc --noEmit`, `npm run lint`, `npm run build`,
+and the full `.githooks/pre-push` (121 tests) all clean.
 
 ## RM-41 — Playground: show which model answered (done)
 

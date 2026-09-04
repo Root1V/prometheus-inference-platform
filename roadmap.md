@@ -45,7 +45,7 @@ Status: `done` · `todo`
 | RM-37 | Playground: embedding model testing | done | New "Embeddings" tab — single input, vector preview + dims; also fixed a missing admin:write bypass on `/v1/embeddings` |
 | RM-38 | Image generation model support | done | New `sd_cpp` backend (stable-diffusion.cpp) + `image` modality, gateway endpoint, Playground UI |
 | RM-39 | Video generation model support | todo | Speculative — same as RM-38, even less proven for self-hosted use |
-| RM-40 | Playground: image upload for Vision/VLM models | todo | Builds on RM-09's vision content parts; upload only enabled when the selected model's modality is vision |
+| RM-40 | Playground: image upload for Vision/VLM models | done | Builds on RM-09's vision content parts; also fixed Chat's model picker excluding vision models entirely |
 | RM-41 | Playground: show which model answered | done | Small label next to the copy button per response — matters once you switch models mid-conversation |
 | RM-42 | Playground: animate the "waiting for a response" state | done | Replace the static text with something that reads as active waiting |
 | RM-43 | Stop stripping client-supplied system messages | done | Found while scoping RM-35 — broke the RM-14 Playground's own System prompt field |
