@@ -2207,6 +2207,40 @@ api → sd-server) in the Playground's Images tab, confirmed a genuinely high-qu
 coherent image rendered (118.9s at cfg=1.0/20 steps) — a real, visible quality jump over
 SD-Turbo, not just "the process started."
 
+## RM-53 — Playground: unify Chat/Embeddings/Images into one adaptive chat (todo)
+
+**Why**: the three tabs are the same "pick a model, send a request, see the result" pattern
+duplicated three times — RM-41 (model label) and RM-42 (waiting indicator, prompt history,
+question/answer bubble layout) each had to be applied to all three separately because
+nothing is shared beyond copy-pasted JSX. A single surface whose configuration adapts to
+the selected model's `modality` would remove that duplication and read more naturally:
+pick a model, the right controls just appear.
+
+**Scope**:
+- One composer, one message/result list, one Model selector — no more mode tabs.
+- Selecting a model switches the visible config to match its `modality`: `text`/`vision` →
+  today's Chat config (system prompt, temperature/top-p/max-tokens, tools, streaming, image
+  attach only if vision); `embedding` → single-shot input + vector preview; `image` →
+  prompt-only + image results (lightbox, download).
+- Out of scope for this entry: the actual migration/component design — this is a backlog
+  placeholder capturing the idea and rationale, not a committed architecture.
+
+## RM-54 — Audio/music generation support (todo)
+
+**Why**: RM-38 (image) established the modality-per-backend pattern (new backend, gateway
+endpoint, Playground UI); audio/music generation is a natural next modality, and covers two
+real, requested use cases — not just prompt-to-music.
+
+**Scope**:
+- Text-to-audio/music: a prompt generates a music/audio clip.
+- Audio-to-audio: upload a reference track and either generate new music matching its
+  style, or restyle it directly (e.g. rock → acoustic).
+- New `audio` modality, a new backend integration, a gateway endpoint, and Playground UI
+  (prompt input, file upload for the audio-to-audio case, an audio player + download for
+  results).
+- Backend/model choice is **not yet decided** — needs its own research pass first, same as
+  RM-38 did for image generation, before any implementation starts.
+
 ## Adding new items
 
 Append a new row to the table with the next `RM-NN` id and a new `## RM-NN — ...` section

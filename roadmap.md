@@ -58,6 +58,8 @@ Status: `done` · `todo`
 | RM-50 | fix: Registry data-quality cleanup — ghost downloads, port collision, size-undercounted shards | done | Deleted 3 broken entries + 1 orphan partial file, fixed the port collision, fixed `_file_size_bytes()` to sum all shards for manually-registered multi-part models |
 | RM-51 | fix: Separate the model catalog from running instances; confirm before deleting a model | todo | Deleting an instance currently deletes the model row too — found when a cleanup pass wiped 27 model registrations |
 | RM-52 | sd_cpp: support split-file diffusion models (FLUX.1, SD3.5) | done | New `vae_path`/`clip_l_path`/`t5xxl_path`/`cfg_scale` fields; also fixed sd-server's wrong cfg-scale default and a too-short gateway backend timeout |
+| RM-53 | Playground: unify Chat/Embeddings/Images into one adaptive chat | todo | One composer whose config switches based on the selected model's modality, instead of 3 separate tabs with duplicated logic |
+| RM-54 | Audio/music generation support (text-to-audio, style transfer) | todo | New modality — prompt-to-music and audio-to-audio (upload a track, restyle or continue it); backend choice needs its own research pass, same as RM-38 |
 
 Adding an item: append the next `RM-NN` row here with a one-liner, then add the full
 Why/Scope writeup to `docs/roadmap.md`.
