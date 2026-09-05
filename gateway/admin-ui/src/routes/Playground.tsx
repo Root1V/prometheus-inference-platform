@@ -119,7 +119,13 @@ function usePromptHistory() {
 /** RM-40: a message's content is either a plain string (every non-vision
  * turn, and every assistant response) or an array of content parts (a
  * user turn that attached an image) — renders either shape the same way. */
-function MessageContent({ content }: { content: ChatMessage["content"] }) {
+function MessageContent({
+  content,
+  onImageClick,
+}: {
+  content: ChatMessage["content"];
+  onImageClick?: (url: string) => void;
+}) {
   if (typeof content !== "object" || content === null) {
     return content ? <p className="whitespace-pre-wrap">{content}</p> : null;
   }
@@ -132,7 +138,11 @@ function MessageContent({ content }: { content: ChatMessage["content"] }) {
         <img
           src={image.image_url.url}
           alt="Attached"
-          className="mt-1 max-h-40 rounded-lg border border-border/50"
+          onClick={() => onImageClick?.(image.image_url.url)}
+          className={cn(
+            "mt-1 max-h-40 rounded-lg border border-border/50",
+            onImageClick && "cursor-zoom-in",
+          )}
         />
       )}
     </>
@@ -218,6 +228,10 @@ export default function Playground() {
   );
   const [attachError, setAttachError] = useState<string | null>(null);
   const imageInputRef = useRef<HTMLInputElement>(null);
+  // RM-40 follow-up: full-size lightbox for an image attached to a chat
+  // message — just the data: URL, unlike Images tab's expandedImage (which
+  // also needs prompt/model for the download button there).
+  const [expandedChatImageUrl, setExpandedChatImageUrl] = useState<string | null>(null);
 
   const [temperature, setTemperature] = useState(1.0);
   const [topP, setTopP] = useState(1.0);
@@ -234,13 +248,16 @@ export default function Playground() {
   const bottomRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
-    if (!expandedImage) return;
+    if (!expandedImage && !expandedChatImageUrl) return;
     const onKeyDown = (e: KeyboardEvent) => {
-      if (e.key === "Escape") setExpandedImage(null);
+      if (e.key === "Escape") {
+        setExpandedImage(null);
+        setExpandedChatImageUrl(null);
+      }
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [expandedImage]);
+  }, [expandedImage, expandedChatImageUrl]);
 
   // RM-40: vision models handle plain text-only chat fine too (confirmed by
   // the gateway's own vision test suite), so Chat includes both — excluding
@@ -664,7 +681,7 @@ export default function Playground() {
                         key={j}
                         className="ml-auto max-w-[80%] rounded-xl bg-primary px-4 py-2 text-sm text-primary-foreground"
                       >
-                        <MessageContent content={m.content} />
+                        <MessageContent content={m.content} onImageClick={setExpandedChatImageUrl} />
                       </div>
                     ),
                   )}
@@ -792,7 +809,7 @@ export default function Playground() {
                     key={j}
                     className="ml-auto max-w-[80%] rounded-xl bg-primary px-4 py-2 text-sm text-primary-foreground"
                   >
-                    <MessageContent content={m.content} />
+                    <MessageContent content={m.content} onImageClick={setExpandedChatImageUrl} />
                   </div>
                 ),
               )}
@@ -874,7 +891,7 @@ export default function Playground() {
                   onClick={() => imageInputRef.current?.click()}
                   disabled={isSending}
                   title="Attach an image"
-                  className="flex shrink-0 items-center justify-center rounded-lg border border-border p-2.5 text-text-muted hover:bg-background disabled:cursor-not-allowed disabled:opacity-40"
+                  className="flex shrink-0 items-center justify-center self-stretch rounded-lg border border-border px-3 text-text-muted hover:bg-background disabled:cursor-not-allowed disabled:opacity-40"
                 >
                   <Paperclip size={16} />
                 </button>
@@ -1321,6 +1338,29 @@ export default function Playground() {
             <img
               src={`data:image/png;base64,${expandedImage.b64Json}`}
               alt={expandedImage.prompt}
+              onClick={(e) => e.stopPropagation()}
+              className="max-h-full max-w-full rounded-lg object-contain"
+            />
+          </div>,
+          document.body,
+        )}
+      {expandedChatImageUrl &&
+        createPortal(
+          <div
+            className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 p-8"
+            onClick={() => setExpandedChatImageUrl(null)}
+          >
+            <button
+              type="button"
+              onClick={() => setExpandedChatImageUrl(null)}
+              aria-label="Close"
+              className="absolute right-6 top-6 cursor-pointer text-white/80 hover:text-white"
+            >
+              <X size={28} />
+            </button>
+            <img
+              src={expandedChatImageUrl}
+              alt="Attached, full size"
               onClick={(e) => e.stopPropagation()}
               className="max-h-full max-w-full rounded-lg object-contain"
             />

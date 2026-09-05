@@ -1448,6 +1448,15 @@ and the image. Confirmed switching to a non-vision model hid the paperclip butto
 Deregistered the test instance afterward. `tsc --noEmit`, `npm run lint`, `npm run build`,
 and the full `.githooks/pre-push` (121 tests) all clean.
 
+**Follow-up (found live)**: the paperclip button sat at the bottom of the composer row
+(`items-end`) instead of matching the textarea's full height — fixed with `self-stretch`.
+Attached images in a message bubble now open a full-size lightbox on click (`cursor-zoom-in`,
+Escape or backdrop to close) — a new `expandedChatImageUrl` state (just the data: URL,
+unlike Images tab's `expandedImage` which also needs prompt/model for its download button),
+wired through a new `onImageClick` prop on `MessageContent`. Verified live: button height
+matches the textarea's `getBoundingClientRect()` exactly (58px, same top/bottom); clicking
+an attached image opened the real uploaded photo full-size, Escape closed it.
+
 ## RM-41 — Playground: show which model answered (done)
 
 **Why**: identified during the Playground redesign — once you can switch models mid-
