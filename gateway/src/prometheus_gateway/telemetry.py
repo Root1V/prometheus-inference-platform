@@ -14,6 +14,7 @@ from __future__ import annotations
 import asyncio
 import time
 from collections import deque
+from collections.abc import Sequence
 from typing import Any
 
 # ── Re-export shared observability core ──────────────────────────────────────
@@ -68,6 +69,14 @@ class MetricsStore:
         self._jwt_failed: int = 0
         # Per-backend counters: {backend_id: {"requests_total": int}}
         self._backends: dict[str, dict[str, Any]] = {}
+        # RM-46: per-backend samples, same sliding-window approach as the
+        # global _latencies deque above. ttft/inter_token are sparse — only
+        # streaming requests report ttft, and only llama.cpp-family backends
+        # report inter_token (from their `timings` object) — so these deques
+        # only grow when a backend actually reports the corresponding value.
+        self._backend_latencies: dict[str, deque[int]] = {}
+        self._backend_ttft: dict[str, deque[int]] = {}
+        self._backend_inter_token: dict[str, deque[float]] = {}
 
     async def inc_requests_active(self) -> None:
         async with self._lock:
@@ -86,6 +95,8 @@ class MetricsStore:
         latency_ms: int,
         backend_id: str,
         error: bool = False,
+        ttft_ms: int | None = None,
+        inter_token_ms: float | None = None,
     ) -> None:
         async with self._lock:
             self._tokens_prompt_total += prompt_tokens
@@ -95,7 +106,15 @@ class MetricsStore:
                 self._errors_total += 1
             if backend_id not in self._backends:
                 self._backends[backend_id] = {"requests_total": 0}
+                self._backend_latencies[backend_id] = deque(maxlen=self._MAX_LATENCY_SAMPLES)
+                self._backend_ttft[backend_id] = deque(maxlen=self._MAX_LATENCY_SAMPLES)
+                self._backend_inter_token[backend_id] = deque(maxlen=self._MAX_LATENCY_SAMPLES)
             self._backends[backend_id]["requests_total"] += 1
+            self._backend_latencies[backend_id].append(latency_ms)
+            if ttft_ms is not None:
+                self._backend_ttft[backend_id].append(ttft_ms)
+            if inter_token_ms is not None:
+                self._backend_inter_token[backend_id].append(inter_token_ms)
 
     async def inc_jwt_ok(self) -> None:
         async with self._lock:
@@ -105,7 +124,7 @@ class MetricsStore:
         async with self._lock:
             self._jwt_failed += 1
 
-    def _percentile(self, samples: list[int], pct: float) -> int:
+    def _percentile(self, samples: Sequence[float], pct: float) -> float:
         if not samples:
             return 0
         sorted_samples = sorted(samples)
@@ -121,6 +140,9 @@ class MetricsStore:
         async with self._lock:
             latencies = list(self._latencies)
             backends_copy = dict(self._backends)
+            backend_latencies_copy = {k: list(v) for k, v in self._backend_latencies.items()}
+            backend_ttft_copy = {k: list(v) for k, v in self._backend_ttft.items()}
+            backend_inter_token_copy = {k: list(v) for k, v in self._backend_inter_token.items()}
 
         uptime = int(time.monotonic() - self._start_time)
         inference: dict[str, Any] = {
@@ -138,6 +160,23 @@ class MetricsStore:
         backends_out: dict[str, Any] = {}
         for bid, counters in backends_copy.items():
             entry: dict[str, Any] = dict(counters)
+            # RM-46: per-model performance metrics — latency mirrors the global
+            # p50/p95/p99 above but scoped to this backend; ttft/inter_token
+            # only populate once a request has actually reported them (ttft
+            # needs streaming, inter_token needs a llama.cpp-family backend's
+            # `timings` object), hence the None default rather than 0 — a
+            # backend with no samples yet shouldn't look like a real 0ms.
+            backend_latency_samples = backend_latencies_copy.get(bid, [])
+            entry["latency_p50_ms"] = self._percentile(backend_latency_samples, 50)
+            entry["latency_p95_ms"] = self._percentile(backend_latency_samples, 95)
+            ttft_samples = backend_ttft_copy.get(bid, [])
+            entry["ttft_p50_ms"] = self._percentile(ttft_samples, 50) if ttft_samples else None
+            inter_token_samples = backend_inter_token_copy.get(bid, [])
+            entry["inter_token_ms_avg"] = (
+                round(sum(inter_token_samples) / len(inter_token_samples), 2)
+                if inter_token_samples
+                else None
+            )
             if pool is not None:
                 cb = pool.get_circuit_breaker(bid)
                 if cb is not None:

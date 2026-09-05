@@ -1,6 +1,7 @@
 import { Boxes, CircleCheck, CirclePause, Plus, Server } from "lucide-react";
 import { useMemo, useState } from "react";
 import { useInstances, useNodes } from "../api/instances";
+import { useMetrics } from "../api/metrics";
 import { InstanceTable } from "../components/InstanceTable";
 import { RegisterModelModal } from "../components/RegisterModelModal";
 import { Sidebar } from "../components/Sidebar";
@@ -17,6 +18,7 @@ type ModalState = { mode: "create" } | { mode: "edit"; instance: InstanceEntry }
 
 export default function Dashboard() {
   const instancesQuery = useInstances();
+  const metricsQuery = useMetrics();
   const nodesQuery = useNodes();
   const [modal, setModal] = useState<ModalState>(null);
 
@@ -72,6 +74,7 @@ export default function Dashboard() {
           ) : (
             <InstanceTable
               instances={instances}
+              backendMetrics={metricsQuery.data?.backends}
               onEdit={(instance) => setModal({ mode: "edit", instance })}
             />
           )}

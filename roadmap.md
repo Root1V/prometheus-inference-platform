@@ -51,7 +51,7 @@ Status: `done` · `todo`
 | RM-43 | Stop stripping client-supplied system messages | done | Found while scoping RM-35 — broke the RM-14 Playground's own System prompt field |
 | RM-44 | Dashboard: light/dark mode, auto-detected + manual toggle | done | 3-way sidebar toggle (Light/System/Dark), live OS-preference sync, persisted choice, no per-component changes needed |
 | RM-45 | Let a client list which models it's actually allowed to use | done | New `GET /v1/models/mine` — authenticated, filtered to the caller's own `model:<id>` grants |
-| RM-46 | Per-model performance metrics: avg response time, TTFT, inter-token latency | todo | New instrumentation — nothing like this is tracked today, only overall request latency |
+| RM-46 | Per-model performance metrics: avg response time, TTFT, inter-token latency | done | New per-backend MetricsStore fields + a Latency column on Instances, verified live against a real request |
 | RM-47 | Evaluate whether `GET /v1/models` should stay unauthenticated | todo | Raised while building RM-45 — confirm nothing depends on public access before considering any change |
 | RM-48 | Dashboard: Models page — discover, download, and manage the model lifecycle | done | Search Hugging Face, read the model card, download with live progress/cancel/retry, delete removes the file too |
 | RM-49 | Model registry: migrate registry.yaml → SQLite | done | Fixes a real non-atomic-write bug; sync stdlib sqlite3 (no async, no new dependency); dropped dead `log_level`/redundant `backend_url` fields, consolidated `hf_filename`/`hf_filenames` |

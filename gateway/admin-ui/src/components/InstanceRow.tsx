@@ -7,6 +7,7 @@ import {
   useStartInstance,
   useStopInstance,
 } from "../api/instances";
+import type { BackendMetrics } from "../api/metrics";
 import { useToast } from "../context/ToastContext";
 import { cn } from "../lib/cn";
 import { formatUptime } from "../lib/format";
@@ -15,7 +16,7 @@ import type { InstanceEntry } from "../types/instance";
 import { ConfirmDialog } from "./ConfirmDialog";
 import { StatusBadge } from "./StatusBadge";
 
-const COLUMN_COUNT = 11; // #, ID, Node, Backend, Modality, State, Port, CPU, RSS, Uptime, Actions
+const COLUMN_COUNT = 12; // #, ID, Node, Backend, Modality, State, Port, CPU, RSS, Latency, Uptime, Actions
 
 function LogTail({ node, modelId }: { node: string; modelId: string }) {
   const logsQuery = useInstanceLogs(node, modelId, true);
@@ -52,10 +53,14 @@ const actionButtonClass =
 export function InstanceRow({
   rowNumber,
   instance,
+  metrics,
   onEdit,
 }: {
   rowNumber: number;
   instance: InstanceEntry;
+  /** RM-46: undefined until GET /metrics's first poll lands, or if this
+   * instance has never actually served a request yet (no samples recorded). */
+  metrics?: BackendMetrics;
   onEdit: (instance: InstanceEntry) => void;
 }) {
   const { showToast } = useToast();
@@ -93,6 +98,26 @@ export function InstanceRow({
         <td className="px-4 py-3 text-text-muted">{instance.port}</td>
         <td className="px-4 py-3 text-text-muted">{instance.cpu_percent.toFixed(1)}%</td>
         <td className="px-4 py-3 text-text-muted">{Math.round(instance.rss_mb)} MB</td>
+        <td className="px-4 py-3 text-text-muted">
+          {metrics && metrics.requests_total > 0 ? (
+            <span
+              title={[
+                `p50: ${metrics.latency_p50_ms}ms`,
+                `p95: ${metrics.latency_p95_ms}ms`,
+                metrics.ttft_p50_ms !== null ? `TTFT: ${metrics.ttft_p50_ms}ms` : null,
+                metrics.inter_token_ms_avg !== null
+                  ? `inter-token: ${metrics.inter_token_ms_avg}ms/tok`
+                  : null,
+              ]
+                .filter(Boolean)
+                .join(" · ")}
+            >
+              {metrics.latency_p50_ms}ms
+            </span>
+          ) : (
+            "—"
+          )}
+        </td>
         <td className="px-4 py-3 text-text-muted">{formatUptime(instance.uptime_s)}</td>
         <td className="px-4 py-3">
           <div className="flex items-center gap-1.5">

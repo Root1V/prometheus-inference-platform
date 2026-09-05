@@ -1683,30 +1683,41 @@ assigned yet), same shape as `GET /v1/models`.
 the granted `model:<id>` scopes, empty list for a token with zero model grants,
 `admin:write` sees every active model. `uv run --project gateway pytest` green.
 
-## RM-46 — Per-model performance metrics: avg response time, TTFT, inter-token latency (added)
+## RM-46 — Per-model performance metrics: avg response time, TTFT, inter-token latency (done)
 
-**Why**: today `GET /metrics` only tracks overall request latency percentiles
-(p50/p95/p99) across all backends combined (`MetricsStore` in
-`gateway/src/prometheus_gateway/telemetry.py`) — nothing per-model, and nothing like
-time-to-first-token (TTFT) or inter-token latency (sometimes called TTIT/ITL) exists
-anywhere in the codebase today. This is real new instrumentation, not a "ship what
-already exists" item like most of the Usage/Overview series.
+**Why**: `GET /metrics` only tracked overall request latency percentiles (p50/p95/p99)
+across all backends combined — nothing per-model, and nothing like time-to-first-token
+(TTFT) or inter-token latency existed anywhere in the codebase.
 
-**Scope (not yet designed)**: needs, at minimum, per-backend (not just global) latency
-tracking in `MetricsStore`, plus two new measurements neither the gateway nor
-`MetricsStore` currently take:
-- **TTFT**: for a streaming request, the time between sending the request and receiving
-  the *first* content chunk — needs a timestamp captured at that point in
-  `_stream_response()` (`router.py`).
-- **Inter-token latency**: time between successive tokens during generation. llama.cpp's
-  own `timings` object (already surfaced client-side for RM-36's Playground token counts)
-  reports `predicted_per_token_ms` per request — a ready-made per-request measurement that
-  just needs aggregating server-side per model, rather than inventing a new one.
+**Scope**: per-backend latency tracking in `MetricsStore` (mirrors the existing global
+p50/p95/p99, scoped per `backend_id`), plus two new measurements:
+- **TTFT**: captured in `_stream_response()`'s `event_generator()` — the wall-clock time
+  from `backend_start` to the first chunk whose `choices[0].delta.content` is non-empty
+  (not the empty role-only opening chunk some backends send first). Streaming-only by
+  construction — a non-streaming response has no distinguishable "first token" moment.
+- **Inter-token latency**: llama.cpp's own `timings.predicted_per_token_ms`, confirmed live
+  against a real running instance (both streaming and non-streaming responses carry a
+  top-level `timings` object) — read directly, no need to compute it from token deltas.
+  mlx/vllm/sglang backends don't send `timings` at all, so this (and TTFT) are `None` for
+  them rather than a fabricated 0.
 
-Once captured, needs a home to render: **Instances** page is the natural fit (per-model,
-matches its existing per-row granularity) over a global Overview stat, but worth a second
-look once the exact metrics are chosen — could also make sense as a new tab/section
-there rather than more columns on an already-wide table.
+**What shipped**: `MetricsStore.record_inference()` gained optional `ttft_ms`/
+`inter_token_ms` params; new per-backend sliding-window deques (same `_MAX_LATENCY_SAMPLES`
+approach as the existing global one) for latency, ttft, and inter-token; `snapshot()`
+exposes `latency_p50_ms`/`latency_p95_ms`/`ttft_p50_ms`/`inter_token_ms_avg` per backend,
+with `None` (not 0) until a backend actually reports a value. `router.py` populates these
+in both the streaming and non-streaming paths. Frontend: a single new "Latency" column on
+the Instances table (not 4 — the roadmap's own caution against over-columning an already-
+wide table) showing `p50 ms`, with the full breakdown (p50/p95/TTFT/inter-token) in a hover
+tooltip; "—" for a backend with no samples yet rather than a misleading "0ms".
+
+**Verified**: `gateway` — 246 tests (5 new, `test_metrics_store.py`), mypy, ruff clean.
+`tsc --noEmit`, `npm run lint`, `npm run build` clean. Live, end-to-end: restarted the
+gateway, sent one non-streaming and one streaming real chat-completions request to
+`gpt-oss-20b-mxfp4`, confirmed `GET /metrics` returned `ttft_p50_ms: 791` and
+`inter_token_ms_avg: 8.55` for that backend, and the Instances page's new Latency column
+showed "837ms" with the full breakdown in its tooltip — every other (untouched) instance
+correctly showed "—".
 
 ## RM-47 — Evaluate whether `GET /v1/models` should stay unauthenticated (added)
 

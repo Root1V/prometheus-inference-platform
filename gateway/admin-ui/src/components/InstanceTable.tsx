@@ -1,9 +1,23 @@
 import { ChevronLeft, ChevronRight } from "lucide-react";
 import { useMemo, useState } from "react";
+import type { BackendMetrics } from "../api/metrics";
 import type { InstanceEntry, InstanceState } from "../types/instance";
 import { InstanceRow } from "./InstanceRow";
 
-const COLUMNS = ["#", "ID", "Node", "Backend", "Modality", "State", "Port", "CPU", "RSS", "Uptime", "Actions"];
+const COLUMNS = [
+  "#",
+  "ID",
+  "Node",
+  "Backend",
+  "Modality",
+  "State",
+  "Port",
+  "CPU",
+  "RSS",
+  "Latency",
+  "Uptime",
+  "Actions",
+];
 
 const PAGE_SIZE = 20;
 
@@ -20,9 +34,13 @@ const STATE_RANK: Record<InstanceState, number> = {
 
 export function InstanceTable({
   instances,
+  backendMetrics,
   onEdit,
 }: {
   instances: InstanceEntry[];
+  /** RM-46: keyed by instance/backend id, same as InstanceEntry.id — absent
+   * (undefined) while GET /metrics's first poll hasn't landed yet. */
+  backendMetrics?: Record<string, BackendMetrics>;
   onEdit: (instance: InstanceEntry) => void;
 }) {
   const [page, setPage] = useState(1);
@@ -63,6 +81,7 @@ export function InstanceTable({
               key={`${instance.node}-${instance.id}`}
               rowNumber={startIndex + i + 1}
               instance={instance}
+              metrics={backendMetrics?.[instance.id]}
               onEdit={onEdit}
             />
           ))}

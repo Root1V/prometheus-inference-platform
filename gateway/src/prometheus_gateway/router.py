@@ -577,11 +577,20 @@ def create_router(registry: ModelRegistry, pool: "BackendPool") -> APIRouter:
                         await metrics_store.dec_requests_active()
 
                     usage_obj: dict[str, Any] = {}
+                    # RM-46: llama.cpp-family backends include a `timings` object
+                    # (confirmed live: predicted_per_token_ms is the real average
+                    # inter-token latency for this request) — mlx/vllm/sglang
+                    # don't, hence the None default rather than assuming it exists.
+                    inter_token_ms: float | None = None
                     try:
                         resp_body: Any = resp.json()
                         usage_obj = (
                             resp_body.get("usage", {}) if isinstance(resp_body, dict) else {}
                         )
+                        timings_obj = (
+                            resp_body.get("timings", {}) if isinstance(resp_body, dict) else {}
+                        )
+                        inter_token_ms = timings_obj.get("predicted_per_token_ms")
                     except Exception:
                         resp_body = {}
 
@@ -643,6 +652,7 @@ def create_router(registry: ModelRegistry, pool: "BackendPool") -> APIRouter:
                         completion_tokens=completion_tokens,
                         latency_ms=backend_latency_ms,
                         backend_id=entry.id,
+                        inter_token_ms=inter_token_ms,
                     )
 
                     # RM-32: record persisted daily usage
@@ -1044,6 +1054,14 @@ async def _stream_response(
         prompt_tokens = 0
         completion_tokens = 0
         stream_error: Exception | None = None
+        # RM-46: time-to-first-token — set the first time a chunk carries real
+        # delta.content, i.e. the token a streaming client actually sees first
+        # (not the empty role-only opening chunk some backends send first).
+        ttft_ms: int | None = None
+        # See the non-streaming path's identical comment — same `timings`
+        # object, present on the backend's final chunk for llama.cpp-family
+        # backends only.
+        inter_token_ms: float | None = None
         try:
             # AC-8 (018): forward X-Trace-ID to backend for streaming requests
             async with client.stream(
@@ -1062,6 +1080,15 @@ async def _stream_response(
                                 if usage:
                                     prompt_tokens = usage.get("prompt_tokens", 0)
                                     completion_tokens = usage.get("completion_tokens", 0)
+                                timings = chunk.get("timings") or {}
+                                if timings:
+                                    inter_token_ms = timings.get("predicted_per_token_ms")
+                                if ttft_ms is None:
+                                    delta_content = (
+                                        (chunk.get("choices") or [{}])[0].get("delta") or {}
+                                    ).get("content")
+                                    if delta_content:
+                                        ttft_ms = int((time.monotonic() - backend_start) * 1000)
                             except Exception:
                                 pass
                         yield f"{line}\n\n"
@@ -1105,6 +1132,8 @@ async def _stream_response(
                 latency_ms=backend_latency_ms,
                 backend_id=backend_id,
                 error=stream_error is not None,
+                ttft_ms=ttft_ms,
+                inter_token_ms=inter_token_ms,
             )
             # RM-32: persisted daily usage for streaming
             await _record_usage(claims, backend_id, prompt_tokens, completion_tokens)

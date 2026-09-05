@@ -6,6 +6,14 @@ export interface BackendMetrics {
   requests_total: number;
   /** "closed" (healthy) | "open" (tripped) | "half-open" (probing) — see circuit_breaker.py. */
   circuit_state?: "closed" | "open" | "half-open" | "unknown";
+  /** RM-46: per-model performance. ttft/inter_token are null until a request
+   * that can report them actually happens — ttft needs a streamed request,
+   * inter_token needs a llama.cpp-family backend's own `timings` object
+   * (mlx/vllm/sglang don't send one). */
+  latency_p50_ms: number;
+  latency_p95_ms: number;
+  ttft_p50_ms: number | null;
+  inter_token_ms_avg: number | null;
 }
 
 /**
