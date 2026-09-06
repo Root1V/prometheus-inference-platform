@@ -62,6 +62,10 @@ Status: `done` · `todo`
 | RM-54 | Audio/music generation support (text-to-audio, style transfer) | todo | New modality — prompt-to-music and audio-to-audio (upload a track, restyle or continue it); backend choice needs its own research pass, same as RM-38 |
 | RM-55 | Richer multi-instance-per-model management UX | todo | RM-51 made multi-instance possible; this adds the polished UI (per-model instance list, port-conflict-aware picker) deliberately deferred from that PR |
 | RM-56 | Admin dashboard: edit rate limits live, no restart | todo | Today's RPM/TPM limits (global + per-endpoint overrides) only change via `.env` + a gateway restart — raised while fixing RM-51's admin rate-limit 429 |
+| RM-57 | Multi-instance-per-model: a shared logical name for routing | todo | RM-51's schema allows several instances per catalog model, but each still needs its own unique client-facing id — no "these are replicas of each other" concept yet |
+| RM-58 | Gateway: intelligent load balancing across instances of the same model | todo | Depends on RM-57; candidates are round-robin, least-active-requests, or latency-aware using RM-46's existing per-instance metrics |
+| RM-59 | Dashboard: search/filter for Models and Instances | todo | Both tables sort/paginate today but have no text search — client-side filter, no new endpoint needed |
+| RM-60 | Billing: usage-period exports and spend caps, built on RM-32/33 | todo | Researched against LiteLLM/Helicone/OpenMeter/Lago/Stripe — CSV export + date-range picker + spend caps first; real payment collection explicitly deferred as a much bigger, separate lift |
 
 Adding an item: append the next `RM-NN` row here with a one-liner, then add the full
 Why/Scope writeup to `docs/roadmap.md`.

@@ -2448,6 +2448,102 @@ tightening a leaky client's budget) has to edit a file and bounce the process.
   for the initial cut — today's `rate_limit_rpm_admin` is already a blunt "every admin
   session" budget, not per-operator.
 
+## RM-57 — Multi-instance-per-model: a shared logical name for routing (todo)
+
+**Why**: [[RM-51]]'s schema lets several `instances` reference one catalog `model_id`, and
+this was confirmed live (creating a second instance of an already-catalogued model works
+today) — but each instance still needs its own unique id, which is also the name a client
+must call it by (`"model": "<instance-id>"` in a chat-completions request). There's no
+concept yet of "N instances all serving the same logical model name" from the gateway's
+routing perspective — a client has to know and pick a specific instance id itself. That's
+the missing piece before [[RM-58]] (load balancing) can mean anything: you can't balance
+across replicas the gateway doesn't know are replicas of each other.
+
+**Scope** (not yet designed in detail):
+- A way to declare "these instances are interchangeable" — likely a shared `served_name`
+  (or reuse the catalog's own id as the default public name) distinct from each instance's
+  internal id/PID-file/port identity, so `gateway/src/prometheus_gateway/models/registry.py`'s
+  `ModelRegistry`/`ManagerRegistrySync` can group multiple `ModelEntry`s under one routable
+  name instead of today's 1 name = 1 entry assumption.
+- Decide what happens when instances of the same served name have *different* modality/
+  context_length/backend (the schema allows it, per-instance) — probably: require them to
+  match for a group to be valid, reject/warn otherwise, rather than silently picking one.
+- Out of scope here: the actual selection logic when multiple instances match a request —
+  that's [[RM-58]]. This item is just "can the gateway see and group them at all."
+
+## RM-58 — Gateway: intelligent load balancing across instances of the same model (todo)
+
+**Why**: once [[RM-57]] lets several instances share a routable name, naively picking "the
+first one" (or requiring the client to pick a specific instance) wastes the whole point of
+running replicas — spreading load, tolerating one instance being down/circuit-broken, or
+preferring the fastest one.
+
+**Scope** (not yet designed in detail):
+- Depends on [[RM-57]] shipping first — no grouping concept to balance across otherwise.
+- Selection strategy — candidates worth evaluating rather than assuming one: round-robin
+  (simplest, no state needed beyond a counter), least-active-requests (needs the gateway to
+  track in-flight count per instance, which RM-16's rate-limit/circuit-breaker visibility
+  work may already touch), or latency-aware (reuse [[RM-46]]'s per-instance `latency_p50_ms`/
+  `ttft_p50_ms` metrics already collected in `MetricsStore` — route to whichever replica is
+  currently fastest, rather than round-robin blind to real performance).
+- Must respect the existing per-instance circuit breaker (spec 007) — an instance that's
+  open/tripped should be skipped by the balancer, not just eventually 503 the client.
+- Out of scope: cross-node balancing beyond what [[RM-08]]'s existing multi-node aggregation
+  already does — this is about picking among instances the gateway already aggregates,
+  not a new distributed-systems layer.
+
+## RM-59 — Dashboard: search/filter for Models and Instances (todo)
+
+**Why**: raised in passing — the Instances table ([[RM-26]], numbered/paginated/active-first)
+and the Models/Library table ([[RM-51]]'s catalog view) both support sorting and pagination
+but have no text search/filter. With dozens of registered models (33 in the real registry.db
+as of RM-51), finding one specific model means scanning pages by eye.
+
+**Scope**:
+- A single text filter input on both the Instances page and the Models/Library tab,
+  matching against `id`/`family`/`quantization` client-side (the full list is already
+  fetched for sorting/pagination — no new endpoint needed, just filter before paginating).
+- Out of scope: fuzzy/ranked search, filtering by numeric ranges (size, context length) —
+  a plain substring match covers the actual "I know roughly what it's called" use case this
+  was raised for.
+
+## RM-60 — Billing: usage-period exports and spend caps, built on RM-32/33 (todo)
+
+**Why**: [[RM-32]]/[[RM-33]] already meter and price every request (`usage_daily` — one row
+per day/client/model, tokens + request count — rated against `gateway/pricing.yaml`'s
+per-model $/1M-token rates via `estimate_cost_usd()`) and RM-34 surfaces today's total on the
+Overview page. What's still missing to call this "billing" rather than just "usage display":
+handing a client/department something to actually settle a bill with, and stopping runaway
+spend before the fact rather than only reporting it after. Researched rather than guessed
+(LiteLLM, Helicone, OpenMeter, Lago, Stripe's own usage-billing docs): every comparable
+product treats metering/rating as the reusable core (which this platform already has) and
+layers reporting/enforcement on top — real payment collection is a distinct, much larger
+project layered on top of that, not a natural next step from here. Since Prometheus's
+clients are pre-provisioned OAuth2 credentials (no public signup), this maps to an internal
+chargeback/showback model — settling through a department's existing channels — rather than
+a consumer SaaS that auto-charges a card.
+
+**Scope — phased, build in this order**:
+1. **Usage/cost export** — CSV export of `usage_daily` for an arbitrary date range per
+   client (today's `GET /v1/usage` and `Usage.tsx` are single-day only), so an admin can
+   hand over a statement for a billing period. Pure read/export on existing data, no new
+   backend concepts.
+2. **Date-range picker on `Usage.tsx`** — needed to make #1 meaningful for a real billing
+   period (weekly/monthly), not just "today."
+3. **Spend caps / quota enforcement** — a per-client monthly $ budget checked against
+   `usage_daily`'s running cost total, rejecting further requests once exceeded (likely
+   living alongside `rate_limit_middleware.py`'s existing RPM/TPM checks, a $-budget check
+   rather than a request-count one). Reuses existing pricing data; no payment processor
+   involved.
+
+**Explicitly deferred, not part of this item**: real payment collection (Stripe/Metronome-
+style metered billing with an actual charge to a card). Only worth building if Prometheus
+ever needs to auto-bill *external* customers rather than internal departments — and it's a
+categorically bigger lift than the above: PCI scope (must use Stripe Checkout/Elements,
+never handle raw card numbers directly, annual re-attestation), payment-method storage,
+and recurring-charge failure/dunning handling. Not something to bundle into the same PR as
+phases 1–3 above; would be its own future roadmap item if the need ever materializes.
+
 ## Adding new items
 
 Append a new row to the table with the next `RM-NN` id and a new `## RM-NN — ...` section
