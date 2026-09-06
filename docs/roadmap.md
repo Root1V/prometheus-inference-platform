@@ -2278,6 +2278,33 @@ via `RegisterModelModal`'s picker (Models page's "Instances" column went 1 → 2
 cascade-delete confirmation on a real running instance and confirmed it named the running
 instance before allowing the (cancelled) delete.
 
+**Follow-up (admin dashboard rate-limited itself)**: found live right after shipping — the
+user hit `429 Rate Limit Exceeded` deleting an instance. Root cause: the gateway's
+`RateLimitMiddleware` bucketed every `/admin/api/*` route (instances, nodes, catalog,
+delete, ...) under the same generic per-client "default" 60 RPM budget shared with real
+inference traffic — no admin-specific carve-out existed (unlike `/v1/chat/completions`,
+which already gets its own endpoint slug/override). This PR's own `useModelCatalog()` poll
+(5s, +12 RPM on the Instances/Dashboard page) was a real, if secondary, contributor — it cut
+the remaining headroom under 60 from 36 to 24 RPM, so an ordinary delete (plus its
+cache-invalidation refetch) or a second open dashboard tab was now enough to tip over.
+
+Fixed at the root rather than by trimming polling: `/admin/api/*` (matched by prefix, since
+its paths carry dynamic segments like `{node}/{model_id}`) now resolves to its own `"admin"`
+rate-limit slug, with a new `Settings.rate_limit_rpm_admin` override (default 600) — the
+same per-endpoint-override mechanism `chat_completions` already used, extended to a second
+case. A logged-in dashboard session is a trusted internal credential firing several
+legitimate concurrent polling queries, not an external API consumer competing for the same
+budget as inference clients.
+
+**Verified**: gateway — 257 tests (3 new: `_endpoint_slug` prefix-matches every
+`/admin/api/*` path including dynamic segments, `_resolve_limits` applies the admin
+override, and an end-to-end test proving a global RPM low enough to trip immediately on a
+plain endpoint does *not* trip on `/admin/api/*` once the override is set). Full
+`.githooks/pre-push` green. Live: restarted the gateway, confirmed
+`GET /admin/api/instances` now returns `x-ratelimit-limit-requests: 600` (was 60); bounced
+through Instances → Models → Overview rapidly (mirroring the multi-page-polling scenario)
+and ran a register+delete cycle immediately after — all `200`/`201`/`204`, no `429`.
+
 ## RM-52 — sd_cpp: support split-file diffusion models (done)
 
 **Why**: RM-38's `sd_cpp` backend only supported a single merged `.gguf` file (via

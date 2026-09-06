@@ -40,6 +40,15 @@ class Settings(BaseSettings):
     # Per-endpoint overrides (AC-13)
     rate_limit_rpm_chat_completions: int | None = None
     rate_limit_tpm_chat_completions: int | None = None
+    # RM-51 follow-up: the admin dashboard (/admin/api/*) is one logged-in
+    # operator session firing several independent 5s polling queries at once
+    # (instances, nodes, catalog, metrics, ...) — sharing the generic
+    # per-client "default" budget with real inference traffic meant an
+    # ordinary delete-and-refetch could trip a 429. This is a trusted
+    # internal credential (same reasoning as backend-registry:read), not an
+    # external API consumer, so it gets its own, higher default.
+    rate_limit_rpm_admin: int | None = 600
+    rate_limit_tpm_admin: int | None = None
 
     # ── Circuit Breaker — memory/specs/007-rate-limiting-and-throughput.md ──────────
     # AC-14, AC-15, AC-16
