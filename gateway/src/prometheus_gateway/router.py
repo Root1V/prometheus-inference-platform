@@ -653,6 +653,7 @@ def create_router(registry: ModelRegistry, pool: "BackendPool") -> APIRouter:
                         latency_ms=backend_latency_ms,
                         backend_id=entry.id,
                         inter_token_ms=inter_token_ms,
+                        tokens_per_second=round(tps, 2) if completion_tokens > 0 else None,
                     )
 
                     # RM-32: record persisted daily usage
@@ -1083,6 +1084,20 @@ async def _stream_response(
                                 timings = chunk.get("timings") or {}
                                 if timings:
                                     inter_token_ms = timings.get("predicted_per_token_ms")
+                                    # llama.cpp's streaming chunks don't carry a
+                                    # `usage` field at all (confirmed live —
+                                    # only the final chunk's `timings` does),
+                                    # so prompt_tokens/completion_tokens would
+                                    # otherwise stay 0 for every llama.cpp
+                                    # stream, breaking tokens/sec below. Same
+                                    # cache_n+prompt_n / predicted_n mapping
+                                    # already verified client-side for RM-36's
+                                    # Playground token counts.
+                                    if "predicted_n" in timings and "prompt_n" in timings:
+                                        prompt_tokens = (
+                                            timings.get("cache_n", 0) + timings["prompt_n"]
+                                        )
+                                        completion_tokens = timings["predicted_n"]
                                 if ttft_ms is None:
                                     delta_content = (
                                         (chunk.get("choices") or [{}])[0].get("delta") or {}
@@ -1134,6 +1149,7 @@ async def _stream_response(
                 error=stream_error is not None,
                 ttft_ms=ttft_ms,
                 inter_token_ms=inter_token_ms,
+                tokens_per_second=round(tps, 2) if completion_tokens > 0 else None,
             )
             # RM-32: persisted daily usage for streaming
             await _record_usage(claims, backend_id, prompt_tokens, completion_tokens)

@@ -14,7 +14,11 @@ const COLUMNS = [
   "Port",
   "CPU",
   "RSS",
-  "Latency",
+  "P50",
+  "P95",
+  "TTFT",
+  "Tok/s",
+  "ms/tok",
   "Uptime",
   "Actions",
 ];

@@ -77,6 +77,12 @@ class MetricsStore:
         self._backend_latencies: dict[str, deque[int]] = {}
         self._backend_ttft: dict[str, deque[int]] = {}
         self._backend_inter_token: dict[str, deque[float]] = {}
+        # RM-46 follow-up: throughput — confirmed via research as one of the
+        # field's own "core four" metrics (TTFT, inter-token, throughput,
+        # e2e latency) alongside the three above. Populated whenever
+        # completion_tokens > 0, unlike ttft/inter_token which depend on
+        # streaming or a specific backend's `timings` object.
+        self._backend_tps: dict[str, deque[float]] = {}
 
     async def inc_requests_active(self) -> None:
         async with self._lock:
@@ -97,6 +103,7 @@ class MetricsStore:
         error: bool = False,
         ttft_ms: int | None = None,
         inter_token_ms: float | None = None,
+        tokens_per_second: float | None = None,
     ) -> None:
         async with self._lock:
             self._tokens_prompt_total += prompt_tokens
@@ -109,12 +116,15 @@ class MetricsStore:
                 self._backend_latencies[backend_id] = deque(maxlen=self._MAX_LATENCY_SAMPLES)
                 self._backend_ttft[backend_id] = deque(maxlen=self._MAX_LATENCY_SAMPLES)
                 self._backend_inter_token[backend_id] = deque(maxlen=self._MAX_LATENCY_SAMPLES)
+                self._backend_tps[backend_id] = deque(maxlen=self._MAX_LATENCY_SAMPLES)
             self._backends[backend_id]["requests_total"] += 1
             self._backend_latencies[backend_id].append(latency_ms)
             if ttft_ms is not None:
                 self._backend_ttft[backend_id].append(ttft_ms)
             if inter_token_ms is not None:
                 self._backend_inter_token[backend_id].append(inter_token_ms)
+            if tokens_per_second is not None:
+                self._backend_tps[backend_id].append(tokens_per_second)
 
     async def inc_jwt_ok(self) -> None:
         async with self._lock:
@@ -143,6 +153,7 @@ class MetricsStore:
             backend_latencies_copy = {k: list(v) for k, v in self._backend_latencies.items()}
             backend_ttft_copy = {k: list(v) for k, v in self._backend_ttft.items()}
             backend_inter_token_copy = {k: list(v) for k, v in self._backend_inter_token.items()}
+            backend_tps_copy = {k: list(v) for k, v in self._backend_tps.items()}
 
         uptime = int(time.monotonic() - self._start_time)
         inference: dict[str, Any] = {
@@ -176,6 +187,10 @@ class MetricsStore:
                 round(sum(inter_token_samples) / len(inter_token_samples), 2)
                 if inter_token_samples
                 else None
+            )
+            tps_samples = backend_tps_copy.get(bid, [])
+            entry["tokens_per_second_avg"] = (
+                round(sum(tps_samples) / len(tps_samples), 2) if tps_samples else None
             )
             if pool is not None:
                 cb = pool.get_circuit_breaker(bid)

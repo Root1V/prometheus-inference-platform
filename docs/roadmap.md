@@ -1719,6 +1719,35 @@ gateway, sent one non-streaming and one streaming real chat-completions request 
 showed "837ms" with the full breakdown in its tooltip — every other (untouched) instance
 correctly showed "—".
 
+**Follow-up (throughput + columns instead of tooltip)**: after seeing it live, the user
+asked what p50/p95/TTFT/inter-token actually mean, then asked for two changes — the four
+values as real table columns instead of hidden behind a hover, and a web search for what
+other metrics matter for LLM inference. Research (vLLM/TGI/TensorRT-LLM sources) confirmed
+TTFT, TPOT/inter-token, throughput (tokens/sec), and e2e latency as the field's own "core
+four" — throughput was the one still missing here, and cheap to add (the gateway already
+computed `tps` for its own log lines, just never stored it). Added `tokens_per_second`
+to `record_inference()`/`MetricsStore` (same None-until-reported pattern as ttft/
+inter_token) and split the single "Latency" column into five: P50, P95, TTFT, Tok/s,
+ms/tok — the roadmap's own earlier caution against over-columning was a reasonable
+default, but an explicit ask from the person using the page overrides it.
+
+**Bug found and fixed while wiring throughput**: `_stream_response()`'s streaming path
+only read token counts from a per-chunk `usage` field, but llama.cpp's own streaming
+chunks never carry one (confirmed live) — only the final chunk's `timings` object does.
+`prompt_tokens`/`completion_tokens` were silently staying 0 for every llama.cpp streaming
+request, which meant `tokens_per_second` (and the *global* `tokens_prompt_total`/
+`tokens_completion_total` counters, pre-existing and unrelated to RM-46's own new fields)
+were wrong for streaming. Fixed by falling back to `timings.cache_n + timings.prompt_n` /
+`timings.predicted_n` when present — the exact mapping already verified client-side for
+RM-36's Playground token counts, just not applied server-side until now.
+
+**Verified**: gateway — 248 tests (2 more added for throughput), mypy, ruff clean.
+`tsc --noEmit`, `npm run lint`, `npm run build` clean. Live: restarted the gateway, sent a
+real streaming request, confirmed `GET /metrics` now returns `tokens_per_second_avg: 105.68`
+(previously `null` from the bug above) alongside correctly non-zero global
+`tokens_prompt_total`/`tokens_completion_total`, and the Instances page shows all five
+columns populated for the tested model, "—" for every other.
+
 ## RM-47 — Evaluate whether `GET /v1/models` should stay unauthenticated (added)
 
 **Why**: raised while building [[RM-45]] — `GET /v1/models` is intentionally public today

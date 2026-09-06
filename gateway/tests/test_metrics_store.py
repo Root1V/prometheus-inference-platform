@@ -1,4 +1,5 @@
-"""Tests for RM-46 — per-backend performance metrics (latency, TTFT, inter-token).
+"""Tests for RM-46 — per-backend performance metrics (latency, TTFT,
+inter-token, throughput).
 
 Uses a fresh MetricsStore() per test rather than the module-level singleton,
 to avoid state bleeding between tests.
@@ -21,6 +22,7 @@ async def test_backend_with_no_samples_has_none_ttft_and_inter_token():
     entry = snap["backends"]["b1"]
     assert entry["ttft_p50_ms"] is None
     assert entry["inter_token_ms_avg"] is None
+    assert entry["tokens_per_second_avg"] is None
     assert entry["latency_p50_ms"] == 100
     assert entry["latency_p95_ms"] == 100
 
@@ -89,3 +91,28 @@ async def test_ttft_only_recorded_for_requests_that_report_it():
     )
     snap = await store.snapshot()
     assert snap["backends"]["b1"]["ttft_p50_ms"] is None
+
+
+async def test_tokens_per_second_avg_is_the_mean_across_requests():
+    store = MetricsStore()
+    for value in (10.0, 20.0, 30.0):
+        await store.record_inference(
+            prompt_tokens=1,
+            completion_tokens=1,
+            latency_ms=100,
+            backend_id="b1",
+            tokens_per_second=value,
+        )
+    snap = await store.snapshot()
+    assert snap["backends"]["b1"]["tokens_per_second_avg"] == 20.0
+
+
+async def test_tokens_per_second_none_when_not_provided():
+    """Same rationale as ttft/inter_token: a request with no completion
+    tokens (e.g. an error) shouldn't drag the average toward 0."""
+    store = MetricsStore()
+    await store.record_inference(
+        prompt_tokens=1, completion_tokens=0, latency_ms=100, backend_id="b1"
+    )
+    snap = await store.snapshot()
+    assert snap["backends"]["b1"]["tokens_per_second_avg"] is None
