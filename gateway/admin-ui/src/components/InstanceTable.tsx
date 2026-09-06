@@ -18,26 +18,26 @@ const COLUMNS: { label: string; title?: string }[] = [
   { label: "RSS" },
   {
     label: "P50",
-    title: "Median response latency — half of requests were faster than this, half slower.",
+    title: "Latencia mediana — la mitad de las requests fueron más rápidas que esto, la otra mitad más lentas.",
   },
   {
     label: "P95",
     title:
-      "95th-percentile response latency — the slow tail. Only the worst 5% of requests were slower than this.",
+      "Latencia percentil 95 — la 'cola lenta'. Solo el 5% peor de las requests tardó más que esto.",
   },
   {
     label: "TTFT",
     title:
-      "Time to first token — how long before the response starts appearing. Streaming requests only.",
+      "Tiempo al primer token — cuánto tarda en empezar a aparecer la respuesta. Solo aplica con streaming.",
   },
   {
     label: "Tok/s",
-    title: "Throughput — how many tokens the model generates per second once it starts responding.",
+    title: "Throughput — cuántos tokens genera el modelo por segundo una vez que empieza a responder.",
   },
   {
     label: "ms/tok",
     title:
-      "Inter-token latency — average time between successive tokens once generation has started. Lower is smoother streaming. llama.cpp-family backends only.",
+      "Latencia entre tokens — tiempo promedio entre tokens sucesivos una vez que arrancó la generación. Más bajo = streaming más fluido. Solo backends de la familia llama.cpp.",
   },
   { label: "Uptime" },
   { label: "Actions" },

@@ -824,6 +824,12 @@ def create_router(registry: ModelRegistry, pool: "BackendPool") -> APIRouter:
             request_id=request_id,
         )
 
+        # RM-46 follow-up: this route never called record_inference() at all —
+        # embedding models had zero entries in GET /metrics's backends map,
+        # not just missing ttft/inter_token (neither concept applies to a
+        # single-shot embedding call anyway — no streaming, no autoregressive
+        # token generation).
+        backend_start = time.monotonic()
         client = pool.get(entry.backend_url)
         try:
             resp = await pool.forward(
@@ -840,6 +846,13 @@ def create_router(registry: ModelRegistry, pool: "BackendPool") -> APIRouter:
                 backend_url=entry.backend_url,
                 error=str(exc),
             )
+            await metrics_store.record_inference(
+                prompt_tokens=0,
+                completion_tokens=0,
+                latency_ms=int((time.monotonic() - backend_start) * 1000),
+                backend_id=entry.id,
+                error=True,
+            )
             return _problem(
                 request,
                 503,
@@ -854,6 +867,13 @@ def create_router(registry: ModelRegistry, pool: "BackendPool") -> APIRouter:
                 backend_url=entry.backend_url,
                 error=str(exc),
             )
+            await metrics_store.record_inference(
+                prompt_tokens=0,
+                completion_tokens=0,
+                latency_ms=int((time.monotonic() - backend_start) * 1000),
+                backend_id=entry.id,
+                error=True,
+            )
             return _problem(
                 request,
                 502,
@@ -866,6 +886,13 @@ def create_router(registry: ModelRegistry, pool: "BackendPool") -> APIRouter:
             resp_body: Any = resp.json()
         except Exception:
             resp_body = {}
+        embeddings_usage = resp_body.get("usage", {}) if isinstance(resp_body, dict) else {}
+        await metrics_store.record_inference(
+            prompt_tokens=embeddings_usage.get("prompt_tokens", 0),
+            completion_tokens=0,
+            latency_ms=int((time.monotonic() - backend_start) * 1000),
+            backend_id=entry.id,
+        )
         return JSONResponse(
             content=resp_body, status_code=resp.status_code, media_type="application/json"
         )
@@ -962,6 +989,11 @@ def create_router(registry: ModelRegistry, pool: "BackendPool") -> APIRouter:
             request_id=request_id,
         )
 
+        # RM-46 follow-up: same gap as /v1/embeddings — this route never
+        # called record_inference() at all, so image models had zero entries
+        # in GET /metrics's backends map. No token count and no streaming for
+        # a single blocking image-generation call, so only latency applies.
+        backend_start = time.monotonic()
         client = pool.get(entry.backend_url)
         try:
             resp = await pool.forward(
@@ -978,6 +1010,13 @@ def create_router(registry: ModelRegistry, pool: "BackendPool") -> APIRouter:
                 backend_url=entry.backend_url,
                 error=str(exc),
             )
+            await metrics_store.record_inference(
+                prompt_tokens=0,
+                completion_tokens=0,
+                latency_ms=int((time.monotonic() - backend_start) * 1000),
+                backend_id=entry.id,
+                error=True,
+            )
             return _problem(
                 request,
                 503,
@@ -992,6 +1031,13 @@ def create_router(registry: ModelRegistry, pool: "BackendPool") -> APIRouter:
                 backend_url=entry.backend_url,
                 error=str(exc),
             )
+            await metrics_store.record_inference(
+                prompt_tokens=0,
+                completion_tokens=0,
+                latency_ms=int((time.monotonic() - backend_start) * 1000),
+                backend_id=entry.id,
+                error=True,
+            )
             return _problem(
                 request,
                 502,
@@ -1004,6 +1050,12 @@ def create_router(registry: ModelRegistry, pool: "BackendPool") -> APIRouter:
             resp_body_images: Any = resp.json()
         except Exception:
             resp_body_images = {}
+        await metrics_store.record_inference(
+            prompt_tokens=0,
+            completion_tokens=0,
+            latency_ms=int((time.monotonic() - backend_start) * 1000),
+            backend_id=entry.id,
+        )
         return JSONResponse(
             content=resp_body_images, status_code=resp.status_code, media_type="application/json"
         )

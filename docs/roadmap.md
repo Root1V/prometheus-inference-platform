@@ -1761,6 +1761,26 @@ needs explaining.
 full explanatory `title` text and `cursor: help`; all five metric headers carry their own
 description, the other 11 columns carry none.
 
+**Follow-up (Spanish tooltips + embeddings/images had zero metrics at all)**: translated
+the five header tooltips to Spanish per an explicit request (the rest of the admin UI stays
+English — this was a targeted ask, not a full i18n pass). The user also asked why TTFT
+never populates for non-streaming calls (answered: non-streaming has no distinguishable
+"first token" moment — the whole response arrives in one block, so there's nothing to
+measure separately from total latency; not a code limitation) and why embeddings/image
+models showed no metrics at all. The second question uncovered a real bug: `/v1/embeddings`
+and `/v1/images/generations` never called `record_inference()` at all — not just missing
+ttft/inter_token (which don't conceptually apply to a single blocking call anyway), but
+missing *even basic latency*. Fixed both routes to time the backend call and record
+latency + prompt-token count (embeddings) or just latency (images — no token count for an
+image response), including on the error paths.
+
+**Verified**: gateway — 248 tests (unchanged; the fix is additive telemetry with no change
+to either route's response contract, so the existing functional tests remain the
+correctness check), mypy, ruff clean. Live: restarted the gateway, sent a real embeddings
+request and a real image-generation request — `GET /metrics` now shows
+`qwen3-embedding-0-6b-q8-0-local` at 73ms and `sd-turbo-test` at 12913ms, both previously
+absent from the backends map entirely.
+
 ## RM-47 — Evaluate whether `GET /v1/models` should stay unauthenticated (added)
 
 **Why**: raised while building [[RM-45]] — `GET /v1/models` is intentionally public today
