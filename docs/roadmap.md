@@ -1781,6 +1781,35 @@ request and a real image-generation request — `GET /metrics` now shows
 `qwen3-embedding-0-6b-q8-0-local` at 73ms and `sd-turbo-test` at 12913ms, both previously
 absent from the backends map entirely.
 
+**Follow-up (embeddings/images-specific throughput)**: with basic latency now recorded for
+both modalities, the user asked what other metrics matter specifically for embedding and
+image-generation serving (their existing ttft/inter_token/tokens_per_second columns don't
+apply to either — no streaming, no completion tokens). Research confirmed two workload-
+specific throughput analogs: **input tokens/sec** for embeddings (there's no completion
+side, but the existing `tokens_per_second` field is genuinely just as meaningful computed
+from `prompt_tokens` instead — reused the same field/column rather than adding a new one)
+and **images/sec** for image generation (a new `images_per_second` field/column, since
+there's no token concept at all for that workload). "Steps per second" was also identified
+as a standard diffusion-serving metric but explicitly not implemented — `sd-server` exposes
+no `timings` object and per-request step count isn't currently a known/passed parameter, so
+it would need its own separate design pass.
+
+**What shipped**: `MetricsStore` gained an `images_per_second` param/deque (mirrors
+`tokens_per_second`'s None-until-reported pattern exactly); `/v1/embeddings` now passes
+`tokens_per_second=prompt_tokens/(latency_ms/1000)`; `/v1/images/generations` now passes
+`images_per_second=num_images/(latency_ms/1000)` (`num_images` from the response's `data`
+array length, so `n > 1` is accounted for). New "Img/s" column on the Instances table, and
+the "Tok/s" header tooltip updated to cover both its chat-output and embeddings-input
+meanings.
+
+**Verified**: gateway — 250 tests (2 more added for images_per_second), mypy, ruff clean.
+`tsc --noEmit`, `npm run lint`, `npm run build` clean. Live: restarted the gateway, sent a
+real embeddings request and a real image-generation request — `GET /metrics` returned
+`tokens_per_second_avg: 145.35` for `qwen3-embedding-0-6b-q8-0-local` and
+`images_per_second_avg: 0.079` for `sd-turbo-test` (both previously `null`), and the
+Instances page shows both new/updated columns correctly populated, "—" for the other
+metric each doesn't apply to.
+
 ## RM-47 — Evaluate whether `GET /v1/models` should stay unauthenticated (added)
 
 **Why**: raised while building [[RM-45]] — `GET /v1/models` is intentionally public today

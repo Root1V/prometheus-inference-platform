@@ -887,11 +887,22 @@ def create_router(registry: ModelRegistry, pool: "BackendPool") -> APIRouter:
         except Exception:
             resp_body = {}
         embeddings_usage = resp_body.get("usage", {}) if isinstance(resp_body, dict) else {}
+        embeddings_prompt_tokens = embeddings_usage.get("prompt_tokens", 0)
+        embeddings_latency_ms = int((time.monotonic() - backend_start) * 1000)
         await metrics_store.record_inference(
-            prompt_tokens=embeddings_usage.get("prompt_tokens", 0),
+            prompt_tokens=embeddings_prompt_tokens,
             completion_tokens=0,
-            latency_ms=int((time.monotonic() - backend_start) * 1000),
+            latency_ms=embeddings_latency_ms,
             backend_id=entry.id,
+            # RM-46 follow-up: embeddings have no completion tokens (no text
+            # is generated), so "tokens/sec" here means the input side —
+            # confirmed via research as the throughput metric that actually
+            # applies to embedding serving.
+            tokens_per_second=(
+                round(embeddings_prompt_tokens / (embeddings_latency_ms / 1000), 2)
+                if embeddings_latency_ms > 0 and embeddings_prompt_tokens > 0
+                else None
+            ),
         )
         return JSONResponse(
             content=resp_body, status_code=resp.status_code, media_type="application/json"
@@ -1050,11 +1061,21 @@ def create_router(registry: ModelRegistry, pool: "BackendPool") -> APIRouter:
             resp_body_images: Any = resp.json()
         except Exception:
             resp_body_images = {}
+        images_latency_ms = int((time.monotonic() - backend_start) * 1000)
+        num_images = (
+            len(resp_body_images.get("data", [])) if isinstance(resp_body_images, dict) else 0
+        ) or 1
         await metrics_store.record_inference(
             prompt_tokens=0,
             completion_tokens=0,
-            latency_ms=int((time.monotonic() - backend_start) * 1000),
+            latency_ms=images_latency_ms,
             backend_id=entry.id,
+            # RM-46 follow-up: images/second — confirmed via research
+            # (Images Per Second is the standard throughput metric for
+            # diffusion-model serving). num_images accounts for n > 1.
+            images_per_second=(
+                round(num_images / (images_latency_ms / 1000), 3) if images_latency_ms > 0 else None
+            ),
         )
         return JSONResponse(
             content=resp_body_images, status_code=resp.status_code, media_type="application/json"

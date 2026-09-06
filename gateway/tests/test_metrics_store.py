@@ -23,6 +23,7 @@ async def test_backend_with_no_samples_has_none_ttft_and_inter_token():
     assert entry["ttft_p50_ms"] is None
     assert entry["inter_token_ms_avg"] is None
     assert entry["tokens_per_second_avg"] is None
+    assert entry["images_per_second_avg"] is None
     assert entry["latency_p50_ms"] == 100
     assert entry["latency_p95_ms"] == 100
 
@@ -116,3 +117,28 @@ async def test_tokens_per_second_none_when_not_provided():
     )
     snap = await store.snapshot()
     assert snap["backends"]["b1"]["tokens_per_second_avg"] is None
+
+
+async def test_images_per_second_avg_is_the_mean_across_requests():
+    """Same idea as tokens_per_second, but for image-generation backends —
+    the metric applies to a workload with no token concept at all."""
+    store = MetricsStore()
+    for value in (0.1, 0.2, 0.3):
+        await store.record_inference(
+            prompt_tokens=0,
+            completion_tokens=0,
+            latency_ms=5000,
+            backend_id="b1",
+            images_per_second=value,
+        )
+    snap = await store.snapshot()
+    assert snap["backends"]["b1"]["images_per_second_avg"] == 0.2
+
+
+async def test_images_per_second_none_when_not_provided():
+    store = MetricsStore()
+    await store.record_inference(
+        prompt_tokens=0, completion_tokens=0, latency_ms=100, backend_id="b1"
+    )
+    snap = await store.snapshot()
+    assert snap["backends"]["b1"]["images_per_second_avg"] is None

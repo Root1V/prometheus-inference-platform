@@ -6,16 +6,20 @@ export interface BackendMetrics {
   requests_total: number;
   /** "closed" (healthy) | "open" (tripped) | "half-open" (probing) — see circuit_breaker.py. */
   circuit_state?: "closed" | "open" | "half-open" | "unknown";
-  /** RM-46: per-model performance. ttft/inter_token/tokens_per_second are
-   * null until a request that can report them actually happens — ttft needs
-   * a streamed request, inter_token needs a llama.cpp-family backend's own
-   * `timings` object (mlx/vllm/sglang don't send one), tokens_per_second
-   * needs at least one completion token (not, e.g., an errored request). */
+  /** RM-46: per-model performance. All null until a request that can report
+   * them actually happens — ttft needs a streamed request (chat only, no
+   * streaming exists for embeddings/images), inter_token needs a
+   * llama.cpp-family backend's own `timings` object (chat only — neither
+   * embeddings nor images responses carry one), tokens_per_second is output
+   * tok/s for chat or input tok/s for embeddings (no completion tokens
+   * exist there), images_per_second is the image-generation-only analog
+   * (no token concept applies to an image response at all). */
   latency_p50_ms: number;
   latency_p95_ms: number;
   ttft_p50_ms: number | null;
   inter_token_ms_avg: number | null;
   tokens_per_second_avg: number | null;
+  images_per_second_avg: number | null;
 }
 
 /**

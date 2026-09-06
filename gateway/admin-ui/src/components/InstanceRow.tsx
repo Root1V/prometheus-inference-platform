@@ -16,7 +16,7 @@ import type { InstanceEntry } from "../types/instance";
 import { ConfirmDialog } from "./ConfirmDialog";
 import { StatusBadge } from "./StatusBadge";
 
-const COLUMN_COUNT = 16; // #, ID, Node, Backend, Modality, State, Port, CPU, RSS, P50, P95, TTFT, Tok/s, ms/tok, Uptime, Actions
+const COLUMN_COUNT = 17; // #, ID, Node, Backend, Modality, State, Port, CPU, RSS, P50, P95, TTFT, Tok/s, ms/tok, Img/s, Uptime, Actions
 
 function LogTail({ node, modelId }: { node: string; modelId: string }) {
   const logsQuery = useInstanceLogs(node, modelId, true);
@@ -117,6 +117,11 @@ export function InstanceRow({
         <td className="px-4 py-3 text-text-muted">
           {metrics?.inter_token_ms_avg !== null && metrics?.inter_token_ms_avg !== undefined
             ? metrics.inter_token_ms_avg
+            : "—"}
+        </td>
+        <td className="px-4 py-3 text-text-muted">
+          {metrics?.images_per_second_avg !== null && metrics?.images_per_second_avg !== undefined
+            ? metrics.images_per_second_avg
             : "—"}
         </td>
         <td className="px-4 py-3 text-text-muted">{formatUptime(instance.uptime_s)}</td>

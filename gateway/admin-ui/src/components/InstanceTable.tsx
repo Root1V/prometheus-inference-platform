@@ -32,12 +32,18 @@ const COLUMNS: { label: string; title?: string }[] = [
   },
   {
     label: "Tok/s",
-    title: "Throughput — cuántos tokens genera el modelo por segundo una vez que empieza a responder.",
+    title:
+      "Throughput — tokens generados por segundo (chat), o tokens de entrada procesados por segundo (embeddings, que no generan texto de salida).",
   },
   {
     label: "ms/tok",
     title:
       "Latencia entre tokens — tiempo promedio entre tokens sucesivos una vez que arrancó la generación. Más bajo = streaming más fluido. Solo backends de la familia llama.cpp.",
+  },
+  {
+    label: "Img/s",
+    title:
+      "Throughput — imágenes generadas por segundo. Solo modelos de generación de imágenes (no aplica el concepto de tokens acá).",
   },
   { label: "Uptime" },
   { label: "Actions" },
