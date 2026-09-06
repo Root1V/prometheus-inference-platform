@@ -2372,23 +2372,46 @@ api → sd-server) in the Playground's Images tab, confirmed a genuinely high-qu
 coherent image rendered (118.9s at cfg=1.0/20 steps) — a real, visible quality jump over
 SD-Turbo, not just "the process started."
 
-## RM-53 — Playground: unify Chat/Embeddings/Images into one adaptive chat (todo)
+## RM-53 — Playground: unify Chat/Embeddings/Images into one adaptive chat (done)
 
-**Why**: the three tabs are the same "pick a model, send a request, see the result" pattern
-duplicated three times — RM-41 (model label) and RM-42 (waiting indicator, prompt history,
-question/answer bubble layout) each had to be applied to all three separately because
-nothing is shared beyond copy-pasted JSX. A single surface whose configuration adapts to
-the selected model's `modality` would remove that duplication and read more naturally:
-pick a model, the right controls just appear.
+**Why**: the three tabs were the same "pick a model, send a request, see the result"
+pattern duplicated three times — RM-41 (model label) and RM-42 (waiting indicator, prompt
+history, question/answer bubble layout) each had to be applied to all three separately
+because nothing was shared beyond copy-pasted JSX.
 
-**Scope**:
-- One composer, one message/result list, one Model selector — no more mode tabs.
-- Selecting a model switches the visible config to match its `modality`: `text`/`vision` →
-  today's Chat config (system prompt, temperature/top-p/max-tokens, tools, streaming, image
-  attach only if vision); `embedding` → single-shot input + vector preview; `image` →
-  prompt-only + image results (lightbox, download).
-- Out of scope for this entry: the actual migration/component design — this is a backlog
-  placeholder capturing the idea and rationale, not a committed architecture.
+**What shipped**: `Playground.tsx`'s three mode tabs (and the `mode` state driving them)
+are gone. One Model selector (`components/PlaygroundModelPicker.tsx`, new — grouped by
+`<optgroup>` into Text & Vision / Embedding / Image) spans every ready instance regardless
+of modality; the selected instance's own `modality` now drives which config is visible —
+system prompt/temperature/top-p/max-tokens/tools/streaming for `text`/`vision`, the
+single-shot input + vector preview for `embedding`, prompt-only + image results for
+`image`. `api/playground.ts` needed zero changes (every hook already took a bare
+`model: string`, modality-agnostic by construction) — this was a pure frontend
+state-composition rewrite.
+
+**Confirmed with the user before building**: switching between models of different
+modalities does **not** clear the results — one persistent, chronological,
+mixed-content timeline (`entries: LogEntry[]`, a `{kind: "chat"|"embedding"|"image"}`
+discriminated union replacing the old three parallel `Turn`/`EmbeddingResult`/
+`ImageResult` arrays) can interleave a chat turn, an embedding result, and a generated
+image based on whichever model was used at each point — matching the roadmap's own
+wording literally ("one composer, one message/result list"). `historyMessages()` (what
+actually gets sent as conversation context) filters to chat-kind entries only, so an
+embedding/image action in between two chat turns is correctly excluded from the model's
+context. "Regenerate" targets the last **chat**-kind entry specifically
+(`entries.filter(e => e.kind === "chat").at(-1)`), not the literal last array element, so
+it keeps working even when a later embedding/image entry was appended after it.
+
+**Verified**: no test suite exists for `gateway/admin-ui` (confirmed: no vitest/jest, no
+`.test.`/`.spec.` files) — `tsc --noEmit`, `npm run lint`, `npm run build` clean (first
+pass, no fixes needed), full `.githooks/pre-push` green (backend suites unaffected, as
+expected for a frontend-only change). Live, end-to-end: sent a real chat prompt to a text
+model; without clearing, switched to an embedding model and got a real embedding — its
+result appended below the chat turn in the same timeline; switched to an image model and
+generated a real image — appended below both; switched to a vision model and confirmed the
+attach-image button appeared, then switched back to plain text and confirmed it
+disappeared; Clear emptied the entire mixed timeline (chat + embedding + image) in one
+action.
 
 ## RM-54 — Audio/music generation support (todo)
 

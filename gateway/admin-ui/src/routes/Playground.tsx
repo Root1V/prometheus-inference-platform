@@ -19,6 +19,7 @@ import {
   type ToolCall,
   type ToolDefinition,
 } from "../api/playground";
+import { PlaygroundModelPicker } from "../components/PlaygroundModelPicker";
 import { Sidebar } from "../components/Sidebar";
 import { cn } from "../lib/cn";
 import { getErrorMessage } from "../lib/errors";
@@ -73,7 +74,9 @@ function WaitingIndicator({ label }: { label: string }) {
  * previously sent prompts, same idea as a terminal's up-arrow history.
  * Only fires when the caret is on the first line (ArrowUp) or last line
  * (ArrowDown), so it doesn't hijack cursor movement inside a multi-line
- * draft. One instance per tab (each keeps its own history/draft). */
+ * draft. RM-53: one instance for the whole (now unified) composer — recall
+ * spans whatever modality was used at each point, same as the results
+ * timeline below it. */
 function usePromptHistory() {
   const [history, setHistory] = useState<string[]>([]);
   const [index, setIndex] = useState(-1); // -1 = not browsing, editing a live draft
@@ -149,10 +152,27 @@ function MessageContent({
   );
 }
 
+/** RM-53: the error banner was byte-for-byte triplicated across the old
+ * three modes — one shared render, still colocated here (not its own file,
+ * matching this route's existing convention of small local helpers). */
+function ErrorBanner({ message }: { message: string | null }) {
+  if (!message) return null;
+  return (
+    <div className="mt-3 rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-red-700 dark:border-red-900 dark:bg-red-500/10 dark:text-red-300">
+      {message}
+    </div>
+  );
+}
+
 const inputClass =
   "w-full rounded-lg border border-border bg-background px-3 py-2 text-sm text-text focus:border-primary focus:outline-none";
 
-interface Turn {
+// RM-53: one discriminated-union timeline replaces the three parallel
+// Turn/EmbeddingResult/ImageResult arrays — entries.map() renders whichever
+// modality was used at each point, in the order they happened, and is never
+// cleared by switching models (only by Clear).
+interface ChatLogEntry {
+  kind: "chat";
   // Leading message(s) — either one "user" message, or one "tool" message per
   // pending tool_call being answered — followed by the assistant's response.
   messages: ChatMessage[];
@@ -172,14 +192,8 @@ interface Turn {
   model: string;
 }
 
-interface InProgress {
-  leading: ChatMessage[];
-  content: string;
-  reasoning: string;
-  toolCalls: ToolCall[];
-}
-
-interface EmbeddingResult {
+interface EmbeddingLogEntry {
+  kind: "embedding";
   input: string;
   embedding: number[];
   usage: { prompt_tokens: number; total_tokens: number };
@@ -187,11 +201,21 @@ interface EmbeddingResult {
   model: string;
 }
 
-interface ImageResult {
+interface ImageLogEntry {
+  kind: "image";
   prompt: string;
   b64Json: string;
   latencyMs: number;
   model: string;
+}
+
+type LogEntry = ChatLogEntry | EmbeddingLogEntry | ImageLogEntry;
+
+interface InProgress {
+  leading: ChatMessage[];
+  content: string;
+  reasoning: string;
+  toolCalls: ToolCall[];
 }
 
 const EMBEDDING_PREVIEW_COUNT = 8;
@@ -201,27 +225,17 @@ export default function Playground() {
   const chat = usePlaygroundChat();
   const embeddings = useEmbeddings();
   const imageGenerations = useImageGenerations();
-  const chatHistory = usePromptHistory();
-  const embedHistory = usePromptHistory();
-  const imageHistory = usePromptHistory();
-
-  const [mode, setMode] = useState<"chat" | "embeddings" | "images">("chat");
-  const [embedModel, setEmbedModel] = useState("");
-  const [embedInput, setEmbedInput] = useState("");
-  const [embedResults, setEmbedResults] = useState<EmbeddingResult[]>([]);
-  const [embedError, setEmbedError] = useState<string | null>(null);
-
-  const [imageModel, setImageModel] = useState("");
-  const [imagePrompt, setImagePrompt] = useState("");
-  const [imageResults, setImageResults] = useState<ImageResult[]>([]);
-  const [imageError, setImageError] = useState<string | null>(null);
-  const [expandedImage, setExpandedImage] = useState<ImageResult | null>(null);
+  const composerHistory = usePromptHistory();
 
   const [model, setModel] = useState("");
-  const [systemPrompt, setSystemPrompt] = useState("");
+  const [entries, setEntries] = useState<LogEntry[]>([]);
   const [draft, setDraft] = useState("");
-  const [turns, setTurns] = useState<Turn[]>([]);
+
   const [sendError, setSendError] = useState<string | null>(null);
+  const [embedError, setEmbedError] = useState<string | null>(null);
+  const [imageError, setImageError] = useState<string | null>(null);
+  const [expandedImage, setExpandedImage] = useState<ImageLogEntry | null>(null);
+
   // RM-40: image attached to the next message, vision models only.
   const [attachedImage, setAttachedImage] = useState<{ dataUrl: string; name: string } | null>(
     null,
@@ -229,10 +243,11 @@ export default function Playground() {
   const [attachError, setAttachError] = useState<string | null>(null);
   const imageInputRef = useRef<HTMLInputElement>(null);
   // RM-40 follow-up: full-size lightbox for an image attached to a chat
-  // message — just the data: URL, unlike Images tab's expandedImage (which
+  // message — just the data: URL, unlike the image-result lightbox (which
   // also needs prompt/model for the download button there).
   const [expandedChatImageUrl, setExpandedChatImageUrl] = useState<string | null>(null);
 
+  const [systemPrompt, setSystemPrompt] = useState("");
   const [temperature, setTemperature] = useState(1.0);
   const [topP, setTopP] = useState(1.0);
   const [maxTokens, setMaxTokens] = useState(512);
@@ -259,47 +274,51 @@ export default function Playground() {
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [expandedImage, expandedChatImageUrl]);
 
-  // RM-40: vision models handle plain text-only chat fine too (confirmed by
-  // the gateway's own vision test suite), so Chat includes both — excluding
-  // vision here would mean a vision-capable model can never be selected in
-  // Chat at all, image upload or not.
-  const runningChatModels = (instancesQuery.data?.instances ?? []).filter(
-    (i) => i.state === "ready" && (i.modality === "text" || i.modality === "vision"),
-  );
-  const selectedModel = model || runningChatModels[0]?.id || "";
-  const isVisionModel =
-    runningChatModels.find((i) => i.id === selectedModel)?.modality === "vision";
+  // RM-53: one Model selector spans every modality — the selected model's
+  // own `modality` drives which composer/sidebar controls are visible,
+  // replacing the old three separately-filtered pickers (one per tab).
+  const readyInstances = (instancesQuery.data?.instances ?? []).filter((i) => i.state === "ready");
+  const selectedInstance = readyInstances.find((i) => i.id === model) ?? readyInstances[0];
+  const selectedModel = selectedInstance?.id ?? "";
+  const modality = selectedInstance?.modality;
+  const isTextLike = modality === "text" || modality === "vision";
+  const isVisionModel = modality === "vision";
 
-  const runningEmbeddingModels = (instancesQuery.data?.instances ?? []).filter(
-    (i) => i.state === "ready" && i.modality === "embedding",
-  );
-  const selectedEmbedModel = embedModel || runningEmbeddingModels[0]?.id || "";
+  const isBusy = isSending || embeddings.isPending || imageGenerations.isPending;
+  const canSendDraft =
+    modality === "embedding" || modality === "image"
+      ? draft.trim().length > 0
+      : draft.trim().length > 0 || attachedImage !== null;
 
-  const runningImageModels = (instancesQuery.data?.instances ?? []).filter(
-    (i) => i.state === "ready" && i.modality === "image",
-  );
-  const selectedImageModel = imageModel || runningImageModels[0]?.id || "";
+  function handleModelChange(nextId: string) {
+    setModel(nextId);
+    // RM-40: an attached image is only ever sendable to a vision model — drop
+    // it rather than leave it staged for a model that would just reject it.
+    const next = readyInstances.find((i) => i.id === nextId);
+    if (next?.modality !== "vision") setAttachedImage(null);
+  }
 
   async function handleGetEmbedding() {
-    if (!selectedEmbedModel || !embedInput.trim() || embeddings.isPending) return;
+    if (!selectedModel || !draft.trim() || embeddings.isPending) return;
     setEmbedError(null);
     // Captured before clearing so the result still records what was actually
     // sent, and cleared immediately (not on success) so the input reads as
     // sent right away instead of lingering, editable, during the wait.
-    const input = embedInput;
-    embedHistory.record(input);
-    setEmbedInput("");
+    const input = draft;
+    composerHistory.record(input);
+    setDraft("");
     const startedAt = performance.now();
     try {
-      const data = await embeddings.mutateAsync({ model: selectedEmbedModel, input });
-      setEmbedResults((prev) => [
+      const data = await embeddings.mutateAsync({ model: selectedModel, input });
+      setEntries((prev) => [
         ...prev,
         {
+          kind: "embedding",
           input,
           embedding: data.data[0]?.embedding ?? [],
           usage: data.usage,
           latencyMs: Math.round(performance.now() - startedAt),
-          model: selectedEmbedModel,
+          model: selectedModel,
         },
       ]);
     } catch (error) {
@@ -312,24 +331,25 @@ export default function Playground() {
   }
 
   async function handleGenerateImage() {
-    if (!selectedImageModel || !imagePrompt.trim() || imageGenerations.isPending) return;
+    if (!selectedModel || !draft.trim() || imageGenerations.isPending) return;
     setImageError(null);
     // Same rationale as handleGetEmbedding: capture before clearing so the
     // result still records the real prompt, and clear immediately rather
     // than on success so the input reads as sent right away.
-    const prompt = imagePrompt;
-    imageHistory.record(prompt);
-    setImagePrompt("");
+    const prompt = draft;
+    composerHistory.record(prompt);
+    setDraft("");
     const startedAt = performance.now();
     try {
-      const data = await imageGenerations.mutateAsync({ model: selectedImageModel, prompt });
-      setImageResults((prev) => [
+      const data = await imageGenerations.mutateAsync({ model: selectedModel, prompt });
+      setEntries((prev) => [
         ...prev,
         {
+          kind: "image",
           prompt,
           b64Json: data.data[0]?.b64_json ?? "",
           latencyMs: Math.round(performance.now() - startedAt),
-          model: selectedImageModel,
+          model: selectedModel,
         },
       ]);
     } catch (error) {
@@ -337,7 +357,7 @@ export default function Playground() {
     }
   }
 
-  function handleDownloadImage(result: ImageResult, index: number) {
+  function handleDownloadImage(result: ImageLogEntry, index: number) {
     const link = document.createElement("a");
     link.href = `data:image/png;base64,${result.b64Json}`;
     link.download = `prometheus-image-${index + 1}.png`;
@@ -376,13 +396,21 @@ export default function Playground() {
   }
 
   function historyMessages(): ChatMessage[] {
-    const history = turns.flatMap((t) => t.messages);
+    // Only chat-kind entries are part of the conversation — an embedding or
+    // image action that happened in between doesn't get sent as context.
+    const history = entries
+      .filter((e): e is ChatLogEntry => e.kind === "chat")
+      .flatMap((t) => t.messages);
     return systemPrompt.trim()
       ? [{ role: "system" as const, content: systemPrompt }, ...history]
       : history;
   }
 
-  async function sendNonStreaming(leadingMessages: ChatMessage[], messages: ChatMessage[], tools: ToolDefinition[] | undefined) {
+  async function sendNonStreaming(
+    leadingMessages: ChatMessage[],
+    messages: ChatMessage[],
+    tools: ToolDefinition[] | undefined,
+  ) {
     const startedAt = performance.now();
     // Show the user's own message immediately instead of leaving it
     // invisible until the whole round-trip completes — same treatment the
@@ -401,9 +429,10 @@ export default function Playground() {
       tool_calls: responseMessage?.tool_calls,
     };
     setInProgress(null);
-    setTurns((prev) => [
+    setEntries((prev) => [
       ...prev,
       {
+        kind: "chat",
         messages: [...leadingMessages, assistantMessage],
         usage: data.usage,
         latencyMs,
@@ -414,7 +443,11 @@ export default function Playground() {
     ]);
   }
 
-  async function sendStreaming(leadingMessages: ChatMessage[], messages: ChatMessage[], tools: ToolDefinition[] | undefined) {
+  async function sendStreaming(
+    leadingMessages: ChatMessage[],
+    messages: ChatMessage[],
+    tools: ToolDefinition[] | undefined,
+  ) {
     const startedAt = performance.now();
     let content = "";
     let reasoning = "";
@@ -455,9 +488,17 @@ export default function Playground() {
       tool_calls: toolCalls.length > 0 ? toolCalls : undefined,
     };
     setInProgress(null);
-    setTurns((prev) => [
+    setEntries((prev) => [
       ...prev,
-      { messages: [...leadingMessages, assistantMessage], usage, latencyMs, finishReason, reasoning, model: selectedModel },
+      {
+        kind: "chat",
+        messages: [...leadingMessages, assistantMessage],
+        usage,
+        latencyMs,
+        finishReason,
+        reasoning,
+        model: selectedModel,
+      },
     ]);
   }
 
@@ -484,7 +525,10 @@ export default function Playground() {
   }
 
   function handleSend() {
-    if ((!draft.trim() && !attachedImage) || isSending) return;
+    if (!selectedModel || isBusy) return;
+    if (modality === "embedding") return void handleGetEmbedding();
+    if (modality === "image") return void handleGenerateImage();
+    if (!draft.trim() && !attachedImage) return;
     const userMessage: ChatMessage = {
       role: "user",
       content: attachedImage
@@ -494,7 +538,7 @@ export default function Playground() {
           ]
         : draft,
     };
-    if (draft.trim()) chatHistory.record(draft);
+    if (draft.trim()) composerHistory.record(draft);
     setDraft("");
     setAttachedImage(null);
     void sendMessages([userMessage]);
@@ -526,9 +570,14 @@ export default function Playground() {
   }
 
   function handleRegenerate() {
-    if (turns.length === 0 || isSending) return;
-    const lastLeading = turns[turns.length - 1].messages.slice(0, -1);
-    setTurns((prev) => prev.slice(0, -1));
+    const chatEntries = entries.filter((e): e is ChatLogEntry => e.kind === "chat");
+    if (chatEntries.length === 0 || isSending) return;
+    const last = chatEntries[chatEntries.length - 1];
+    const lastLeading = last.messages.slice(0, -1);
+    // Remove exactly the last CHAT entry, not necessarily the literal last
+    // array element — an embedding/image action may have happened after it.
+    const lastIndex = entries.lastIndexOf(last);
+    setEntries((prev) => prev.filter((_, i) => i !== lastIndex));
     void sendMessages(lastLeading);
   }
 
@@ -547,16 +596,10 @@ export default function Playground() {
   }
 
   function handleClear() {
-    if (mode === "chat") {
-      setTurns([]);
-      setSendError(null);
-    } else if (mode === "embeddings") {
-      setEmbedResults([]);
-      setEmbedError(null);
-    } else {
-      setImageResults([]);
-      setImageError(null);
-    }
+    setEntries([]);
+    setSendError(null);
+    setEmbedError(null);
+    setImageError(null);
   }
 
   async function handleCopy(message: ChatMessage) {
@@ -572,6 +615,24 @@ export default function Playground() {
   async function handleCopyReasoning(reasoning: string) {
     await navigator.clipboard.writeText(reasoning);
   }
+
+  function placeholder(): string {
+    if (readyInstances.length === 0) return "No running models — start one from Instances first.";
+    if (modality === "embedding") return "Text to embed… (Enter to send, Shift+Enter for a new line)";
+    if (modality === "image")
+      return "Describe the image to generate… (Enter to send, Shift+Enter for a new line)";
+    return "Ask something… (Enter to send, Shift+Enter for a new line)";
+  }
+
+  function sendLabel(): string {
+    if (modality === "embedding") return "Get embedding";
+    if (modality === "image") return "Generate";
+    return "Send";
+  }
+
+  const lastChatEntry =
+    [...entries].reverse().find((e): e is ChatLogEntry => e.kind === "chat") ?? null;
+  const imageEntries = entries.filter((e): e is ImageLogEntry => e.kind === "image");
 
   return (
     <div className="flex h-screen overflow-hidden bg-background">
@@ -589,13 +650,7 @@ export default function Playground() {
             <button
               type="button"
               onClick={handleClear}
-              disabled={
-                mode === "chat"
-                  ? turns.length === 0
-                  : mode === "embeddings"
-                    ? embedResults.length === 0
-                    : imageResults.length === 0
-              }
+              disabled={entries.length === 0}
               className="flex items-center gap-1.5 rounded-lg border border-border px-3 py-1.5 text-sm text-text-muted hover:bg-surface disabled:cursor-not-allowed disabled:opacity-40"
             >
               <Trash2 size={14} />
@@ -603,195 +658,238 @@ export default function Playground() {
             </button>
           </div>
 
-          <div className="mt-4 flex gap-2 border-b border-border">
-            <button
-              type="button"
-              onClick={() => setMode("chat")}
-              className={cn(
-                "border-b-2 px-3 py-2 text-sm font-medium",
-                mode === "chat"
-                  ? "border-primary text-text"
-                  : "border-transparent text-text-muted hover:text-text",
-              )}
-            >
-              Chat
-            </button>
-            <button
-              type="button"
-              onClick={() => setMode("embeddings")}
-              className={cn(
-                "border-b-2 px-3 py-2 text-sm font-medium",
-                mode === "embeddings"
-                  ? "border-primary text-text"
-                  : "border-transparent text-text-muted hover:text-text",
-              )}
-            >
-              Embeddings
-            </button>
-            <button
-              type="button"
-              onClick={() => setMode("images")}
-              className={cn(
-                "border-b-2 px-3 py-2 text-sm font-medium",
-                mode === "images"
-                  ? "border-primary text-text"
-                  : "border-transparent text-text-muted hover:text-text",
-              )}
-            >
-              Images
-            </button>
-          </div>
-
-          {mode === "chat" ? (
-          <>
-          <div className="mt-4">
-            <label htmlFor="playground-system" className="mb-1.5 block text-sm font-medium text-text">
-              System prompt
-            </label>
-            <textarea
-              id="playground-system"
-              rows={2}
-              value={systemPrompt}
-              onChange={(e) => setSystemPrompt(e.target.value)}
-              placeholder="Optional — sets the assistant's behavior for this conversation."
-              className={inputClass}
-            />
-          </div>
+          {isTextLike && (
+            <div className="mt-4">
+              <label
+                htmlFor="playground-system"
+                className="mb-1.5 block text-sm font-medium text-text"
+              >
+                System prompt
+              </label>
+              <textarea
+                id="playground-system"
+                rows={2}
+                value={systemPrompt}
+                onChange={(e) => setSystemPrompt(e.target.value)}
+                placeholder="Optional — sets the assistant's behavior for this conversation."
+                className={inputClass}
+              />
+            </div>
+          )}
 
           <div className="mt-4 min-h-0 flex-1 space-y-4 overflow-y-auto rounded-xl border border-border bg-surface p-4">
-            {turns.length === 0 ? (
+            {entries.length === 0 ? (
               <p className="text-sm text-text-muted">No messages yet — send a prompt to get started.</p>
             ) : (
-              turns.map((turn, i) => {
-                const leading = turn.messages.slice(0, -1);
-                const assistantMessage = turn.messages[turn.messages.length - 1];
-                const isLastTurn = i === turns.length - 1;
-                return (
-                <div key={i} className="space-y-3">
-                  {leading.map((m, j) =>
-                    m.role === "tool" ? (
-                      <div
-                        key={j}
-                        className="ml-auto max-w-[80%] rounded-xl border border-dashed border-border bg-surface px-4 py-2 text-xs text-text-muted"
-                      >
-                        Tool result: {typeof m.content === "string" ? m.content : ""}
-                      </div>
-                    ) : (
-                      <div
-                        key={j}
-                        className="ml-auto max-w-[80%] rounded-xl bg-primary px-4 py-2 text-sm text-primary-foreground"
-                      >
-                        <MessageContent content={m.content} onImageClick={setExpandedChatImageUrl} />
-                      </div>
-                    ),
-                  )}
-                  <div className="max-w-[80%] rounded-xl border border-border bg-background px-4 py-2 text-sm text-text">
-                    <MessageContent content={assistantMessage.content} />
-                    {!assistantMessage.content &&
-                      !assistantMessage.tool_calls?.length &&
-                      turn.finishReason === "length" && (
-                        <p className="text-amber-600">
-                          Ran out of max tokens before producing a visible answer — this model
-                          spends tokens on hidden reasoning first, and used up the whole budget
-                          there. Try raising Max tokens.
-                        </p>
+              entries.map((entry, i) => {
+                if (entry.kind === "chat") {
+                  const leading = entry.messages.slice(0, -1);
+                  const assistantMessage = entry.messages[entry.messages.length - 1];
+                  const isLastChatEntry = entry === lastChatEntry;
+                  return (
+                    <div key={i} className="space-y-3">
+                      {leading.map((m, j) =>
+                        m.role === "tool" ? (
+                          <div
+                            key={j}
+                            className="ml-auto max-w-[80%] rounded-xl border border-dashed border-border bg-surface px-4 py-2 text-xs text-text-muted"
+                          >
+                            Tool result: {typeof m.content === "string" ? m.content : ""}
+                          </div>
+                        ) : (
+                          <div
+                            key={j}
+                            className="ml-auto max-w-[80%] rounded-xl bg-primary px-4 py-2 text-sm text-primary-foreground"
+                          >
+                            <MessageContent content={m.content} onImageClick={setExpandedChatImageUrl} />
+                          </div>
+                        ),
                       )}
-                    {turn.reasoning && (
-                      <details className="mt-2 rounded-lg border border-dashed border-border bg-surface p-2 text-xs text-text-muted">
-                        <summary className="cursor-pointer select-none font-medium">
-                          Show the model's reasoning ({turn.reasoning.length.toLocaleString()} chars)
-                        </summary>
-                        <div className="mt-2 flex items-start justify-between gap-2">
-                          <p className="max-h-64 overflow-y-auto whitespace-pre-wrap italic">
-                            {turn.reasoning}
-                          </p>
+                      <div className="max-w-[80%] rounded-xl border border-border bg-background px-4 py-2 text-sm text-text">
+                        <MessageContent content={assistantMessage.content} />
+                        {!assistantMessage.content &&
+                          !assistantMessage.tool_calls?.length &&
+                          entry.finishReason === "length" && (
+                            <p className="text-amber-600">
+                              Ran out of max tokens before producing a visible answer — this model
+                              spends tokens on hidden reasoning first, and used up the whole budget
+                              there. Try raising Max tokens.
+                            </p>
+                          )}
+                        {entry.reasoning && (
+                          <details className="mt-2 rounded-lg border border-dashed border-border bg-surface p-2 text-xs text-text-muted">
+                            <summary className="cursor-pointer select-none font-medium">
+                              Show the model's reasoning ({entry.reasoning.length.toLocaleString()} chars)
+                            </summary>
+                            <div className="mt-2 flex items-start justify-between gap-2">
+                              <p className="max-h-64 overflow-y-auto whitespace-pre-wrap italic">
+                                {entry.reasoning}
+                              </p>
+                              <button
+                                type="button"
+                                onClick={() => handleCopyReasoning(entry.reasoning)}
+                                title="Copy reasoning"
+                                className="shrink-0 text-text-muted hover:text-text"
+                              >
+                                <Copy size={14} />
+                              </button>
+                            </div>
+                          </details>
+                        )}
+                        {assistantMessage.tool_calls?.map((call) => (
+                          <div
+                            key={call.id}
+                            className="mt-1 flex items-start gap-2 rounded-lg bg-surface p-2 font-mono text-xs text-text"
+                          >
+                            <Wrench size={14} className="mt-0.5 shrink-0 text-primary" />
+                            <div>
+                              <span className="font-semibold">{call.function.name}</span>
+                              <span className="text-text-muted">({call.function.arguments})</span>
+                            </div>
+                          </div>
+                        ))}
+                        <div className="mt-2 flex items-center gap-3 border-t border-border pt-2 text-xs text-text-muted">
+                          <span>
+                            {entry.usage
+                              ? `${entry.usage.prompt_tokens} + ${entry.usage.completion_tokens} = ${entry.usage.total_tokens} tokens`
+                              : "tokens not reported (streamed)"}
+                          </span>
+                          <span>{entry.latencyMs} ms</span>
+                          <span className="ml-auto font-mono" title="Model that answered this turn">
+                            {entry.model}
+                          </span>
                           <button
                             type="button"
-                            onClick={() => handleCopyReasoning(turn.reasoning)}
-                            title="Copy reasoning"
-                            className="shrink-0 text-text-muted hover:text-text"
+                            onClick={() => handleCopy(assistantMessage)}
+                            title="Copy response"
+                            className="text-text-muted hover:text-text"
+                          >
+                            <Copy size={14} />
+                          </button>
+                          {isLastChatEntry && (
+                            <button
+                              type="button"
+                              onClick={handleRegenerate}
+                              disabled={isSending}
+                              title="Regenerate"
+                              className="text-text-muted hover:text-text disabled:opacity-40"
+                            >
+                              <RotateCcw size={14} />
+                            </button>
+                          )}
+                        </div>
+                      </div>
+                      {isLastChatEntry &&
+                        assistantMessage.tool_calls &&
+                        assistantMessage.tool_calls.length > 0 && (
+                          <div className="max-w-[80%] space-y-2 rounded-xl border border-dashed border-border bg-surface p-3">
+                            <p className="text-xs text-text-muted">
+                              The Playground doesn't execute tools for real — type a mock result to
+                              continue and see the model's final answer.
+                            </p>
+                            {assistantMessage.tool_calls.map((call) => (
+                              <div key={call.id} className="flex items-center gap-2">
+                                <span className="shrink-0 font-mono text-xs text-text-muted">
+                                  {call.function.name}:
+                                </span>
+                                <input
+                                  type="text"
+                                  value={toolResultDrafts[call.id] ?? ""}
+                                  onChange={(e) =>
+                                    setToolResultDrafts((prev) => ({ ...prev, [call.id]: e.target.value }))
+                                  }
+                                  placeholder="Mock result, e.g. 22C, sunny"
+                                  className={cn(inputClass, "text-xs")}
+                                />
+                              </div>
+                            ))}
+                            <button
+                              type="button"
+                              onClick={() => handleSubmitToolResults(assistantMessage.tool_calls)}
+                              disabled={isSending}
+                              className="rounded-lg bg-primary px-3 py-1.5 text-xs font-medium text-primary-foreground hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-40"
+                            >
+                              Submit result
+                            </button>
+                          </div>
+                        )}
+                    </div>
+                  );
+                }
+
+                if (entry.kind === "embedding") {
+                  return (
+                    <div key={i} className="space-y-3">
+                      <div className="ml-auto w-fit max-w-[80%] rounded-xl bg-primary px-4 py-2 text-sm text-primary-foreground">
+                        {entry.input}
+                      </div>
+                      <div className="rounded-xl border border-border bg-background px-4 py-3 text-sm text-text">
+                        <p className="font-mono text-xs text-text">
+                          [{entry.embedding
+                            .slice(0, EMBEDDING_PREVIEW_COUNT)
+                            .map((v) => v.toFixed(4))
+                            .join(", ")}
+                          {entry.embedding.length > EMBEDDING_PREVIEW_COUNT ? ", …" : ""}]
+                        </p>
+                        <div className="mt-2 flex items-center gap-3 border-t border-border pt-2 text-xs text-text-muted">
+                          <span>{entry.embedding.length} dimensions</span>
+                          <span>{entry.usage.total_tokens} tokens</span>
+                          <span>{entry.latencyMs} ms</span>
+                          <span className="ml-auto font-mono" title="Model that produced this embedding">
+                            {entry.model}
+                          </span>
+                          <button
+                            type="button"
+                            onClick={() => handleCopyEmbedding(entry.embedding)}
+                            title="Copy full vector as JSON"
+                            className="text-text-muted hover:text-text"
                           >
                             <Copy size={14} />
                           </button>
                         </div>
-                      </details>
-                    )}
-                    {assistantMessage.tool_calls?.map((call) => (
-                      <div
-                        key={call.id}
-                        className="mt-1 flex items-start gap-2 rounded-lg bg-surface p-2 font-mono text-xs text-text"
-                      >
-                        <Wrench size={14} className="mt-0.5 shrink-0 text-primary" />
-                        <div>
-                          <span className="font-semibold">{call.function.name}</span>
-                          <span className="text-text-muted">({call.function.arguments})</span>
-                        </div>
                       </div>
-                    ))}
-                    <div className="mt-2 flex items-center gap-3 border-t border-border pt-2 text-xs text-text-muted">
-                      <span>
-                        {turn.usage
-                          ? `${turn.usage.prompt_tokens} + ${turn.usage.completion_tokens} = ${turn.usage.total_tokens} tokens`
-                          : "tokens not reported (streamed)"}
-                      </span>
-                      <span>{turn.latencyMs} ms</span>
-                      <span className="ml-auto font-mono" title="Model that answered this turn">
-                        {turn.model}
-                      </span>
+                    </div>
+                  );
+                }
+
+                const imageIndex = imageEntries.indexOf(entry);
+                return (
+                  <div key={i} className="space-y-3">
+                    <div className="ml-auto w-fit max-w-[80%] rounded-xl bg-primary px-4 py-2 text-sm text-primary-foreground">
+                      {entry.prompt}
+                    </div>
+                    <div className="max-w-xs rounded-xl border border-border bg-background px-4 py-3 text-sm text-text">
                       <button
                         type="button"
-                        onClick={() => handleCopy(assistantMessage)}
-                        title="Copy response"
-                        className="text-text-muted hover:text-text"
+                        onClick={() => setExpandedImage(entry)}
+                        className="block cursor-zoom-in"
+                        title="Click to view full size"
                       >
-                        <Copy size={14} />
+                        <img
+                          src={`data:image/png;base64,${entry.b64Json}`}
+                          alt={entry.prompt}
+                          className="w-full rounded-lg border border-border"
+                        />
                       </button>
-                      {isLastTurn && (
+                      <div className="mt-2 flex items-center gap-3 border-t border-border pt-2 text-xs text-text-muted">
+                        <span className="shrink-0">{entry.latencyMs} ms</span>
+                        <span
+                          className="ml-auto truncate font-mono"
+                          title={`Model that generated this image: ${entry.model}`}
+                        >
+                          {entry.model}
+                        </span>
                         <button
                           type="button"
-                          onClick={handleRegenerate}
-                          disabled={isSending}
-                          title="Regenerate"
-                          className="text-text-muted hover:text-text disabled:opacity-40"
+                          onClick={() => handleDownloadImage(entry, imageIndex)}
+                          title="Download image"
+                          className="shrink-0 cursor-pointer text-text-muted hover:text-text"
                         >
-                          <RotateCcw size={14} />
+                          <Download size={14} />
                         </button>
-                      )}
+                      </div>
                     </div>
                   </div>
-                  {isLastTurn && assistantMessage.tool_calls && assistantMessage.tool_calls.length > 0 && (
-                    <div className="max-w-[80%] space-y-2 rounded-xl border border-dashed border-border bg-surface p-3">
-                      <p className="text-xs text-text-muted">
-                        The Playground doesn't execute tools for real — type a mock result to
-                        continue and see the model's final answer.
-                      </p>
-                      {assistantMessage.tool_calls.map((call) => (
-                        <div key={call.id} className="flex items-center gap-2">
-                          <span className="shrink-0 font-mono text-xs text-text-muted">
-                            {call.function.name}:
-                          </span>
-                          <input
-                            type="text"
-                            value={toolResultDrafts[call.id] ?? ""}
-                            onChange={(e) =>
-                              setToolResultDrafts((prev) => ({ ...prev, [call.id]: e.target.value }))
-                            }
-                            placeholder="Mock result, e.g. 22C, sunny"
-                            className={cn(inputClass, "text-xs")}
-                          />
-                        </div>
-                      ))}
-                      <button
-                        type="button"
-                        onClick={() => handleSubmitToolResults(assistantMessage.tool_calls)}
-                        disabled={isSending}
-                        className="rounded-lg bg-primary px-3 py-1.5 text-xs font-medium text-primary-foreground hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-40"
-                      >
-                        Submit result
-                      </button>
-                    </div>
-                  )}
-                </div>
                 );
               })
             )}
@@ -842,20 +940,15 @@ export default function Playground() {
             {inProgress && !inProgress.content && !inProgress.reasoning && inProgress.toolCalls.length === 0 && (
               <WaitingIndicator label={streamingEnabled ? "Streaming" : "Waiting for a response"} />
             )}
+            {embeddings.isPending && <WaitingIndicator label="Generating embedding" />}
+            {imageGenerations.isPending && <WaitingIndicator label="Generating image" />}
             <div ref={bottomRef} />
           </div>
 
-          {sendError && (
-            <div className="mt-3 rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-red-700 dark:border-red-900 dark:bg-red-500/10 dark:text-red-300">
-              {sendError}
-            </div>
-          )}
-
-          {attachError && (
-            <div className="mt-3 rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-red-700 dark:border-red-900 dark:bg-red-500/10 dark:text-red-300">
-              {attachError}
-            </div>
-          )}
+          <ErrorBanner message={sendError} />
+          <ErrorBanner message={attachError} />
+          <ErrorBanner message={embedError} />
+          <ErrorBanner message={imageError} />
 
           {attachedImage && (
             <div className="mt-3 flex items-center gap-2 rounded-lg border border-border bg-surface p-2">
@@ -889,7 +982,7 @@ export default function Playground() {
                 <button
                   type="button"
                   onClick={() => imageInputRef.current?.click()}
-                  disabled={isSending}
+                  disabled={isBusy}
                   title="Attach an image"
                   className="flex shrink-0 items-center justify-center self-stretch rounded-lg border border-border px-3 text-text-muted hover:bg-background disabled:cursor-not-allowed disabled:opacity-40"
                 >
@@ -907,403 +1000,167 @@ export default function Playground() {
                   handleSend();
                   return;
                 }
-                chatHistory.handleKeyDown(e, draft, setDraft);
+                composerHistory.handleKeyDown(e, draft, setDraft);
               }}
-              placeholder={
-                runningChatModels.length === 0
-                  ? "No running text models — start one from Instances first."
-                  : "Ask something… (Enter to send, Shift+Enter for a new line)"
-              }
-              disabled={runningChatModels.length === 0 || isSending}
+              placeholder={placeholder()}
+              disabled={readyInstances.length === 0 || isBusy}
               className={cn(inputClass, "flex-1")}
             />
             <button
               type="button"
               onClick={handleSend}
-              disabled={!selectedModel || (!draft.trim() && !attachedImage) || isSending}
+              disabled={!selectedModel || isBusy || !canSendDraft}
               className="flex items-center gap-2 rounded-lg bg-primary px-4 py-2.5 text-sm font-medium text-primary-foreground hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-40"
             >
               <Send size={16} />
-              Send
+              {sendLabel()}
             </button>
           </div>
-          </>
-          ) : mode === "embeddings" ? (
-          <>
-          <div className="mt-4 min-h-0 flex-1 space-y-3 overflow-y-auto rounded-xl border border-border bg-surface p-4">
-            {embedResults.length === 0 && !embeddings.isPending ? (
-              <p className="text-sm text-text-muted">
-                No embeddings yet — send some text to get its vector.
-              </p>
-            ) : (
-              <>
-                {embedResults.map((result, i) => (
-                  <div key={i} className="space-y-3">
-                    <div className="ml-auto w-fit max-w-[80%] rounded-xl bg-primary px-4 py-2 text-sm text-primary-foreground">
-                      {result.input}
-                    </div>
-                    <div className="rounded-xl border border-border bg-background px-4 py-3 text-sm text-text">
-                      <p className="font-mono text-xs text-text">
-                        [{result.embedding
-                          .slice(0, EMBEDDING_PREVIEW_COUNT)
-                          .map((v) => v.toFixed(4))
-                          .join(", ")}
-                        {result.embedding.length > EMBEDDING_PREVIEW_COUNT ? ", …" : ""}]
-                      </p>
-                      <div className="mt-2 flex items-center gap-3 border-t border-border pt-2 text-xs text-text-muted">
-                        <span>{result.embedding.length} dimensions</span>
-                        <span>{result.usage.total_tokens} tokens</span>
-                        <span>{result.latencyMs} ms</span>
-                        <span className="ml-auto font-mono" title="Model that produced this embedding">
-                          {result.model}
-                        </span>
-                        <button
-                          type="button"
-                          onClick={() => handleCopyEmbedding(result.embedding)}
-                          title="Copy full vector as JSON"
-                          className="text-text-muted hover:text-text"
-                        >
-                          <Copy size={14} />
-                        </button>
-                      </div>
-                    </div>
-                  </div>
-                ))}
-                {embeddings.isPending && <WaitingIndicator label="Generating embedding" />}
-              </>
-            )}
-          </div>
-
-          {embedError && (
-            <div className="mt-3 rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-red-700 dark:border-red-900 dark:bg-red-500/10 dark:text-red-300">
-              {embedError}
-            </div>
-          )}
-
-          <div className="mt-4 flex items-end gap-2">
-            <textarea
-              rows={2}
-              value={embedInput}
-              onChange={(e) => setEmbedInput(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === "Enter" && !e.shiftKey) {
-                  e.preventDefault();
-                  void handleGetEmbedding();
-                  return;
-                }
-                embedHistory.handleKeyDown(e, embedInput, setEmbedInput);
-              }}
-              placeholder={
-                runningEmbeddingModels.length === 0
-                  ? "No running embedding models — start one from Instances first."
-                  : "Text to embed… (Enter to send, Shift+Enter for a new line)"
-              }
-              disabled={runningEmbeddingModels.length === 0 || embeddings.isPending}
-              className={cn(inputClass, "flex-1")}
-            />
-            <button
-              type="button"
-              onClick={() => void handleGetEmbedding()}
-              disabled={!selectedEmbedModel || !embedInput.trim() || embeddings.isPending}
-              className="flex items-center gap-2 rounded-lg bg-primary px-4 py-2.5 text-sm font-medium text-primary-foreground hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-40"
-            >
-              <Send size={16} />
-              Get embedding
-            </button>
-          </div>
-          </>
-          ) : (
-          <>
-          <div className="mt-4 min-h-0 flex-1 space-y-3 overflow-y-auto rounded-xl border border-border bg-surface p-4">
-            {imageResults.length === 0 && !imageGenerations.isPending ? (
-              <p className="text-sm text-text-muted">
-                No images yet — send a prompt to generate one.
-              </p>
-            ) : (
-              <>
-                {imageResults.map((result, i) => (
-                  <div key={i} className="space-y-3">
-                    <div className="ml-auto w-fit max-w-[80%] rounded-xl bg-primary px-4 py-2 text-sm text-primary-foreground">
-                      {result.prompt}
-                    </div>
-                    <div className="max-w-xs rounded-xl border border-border bg-background px-4 py-3 text-sm text-text">
-                      <button
-                        type="button"
-                        onClick={() => setExpandedImage(result)}
-                        className="block cursor-zoom-in"
-                        title="Click to view full size"
-                      >
-                        <img
-                          src={`data:image/png;base64,${result.b64Json}`}
-                          alt={result.prompt}
-                          className="w-full rounded-lg border border-border"
-                        />
-                      </button>
-                      <div className="mt-2 flex items-center gap-3 border-t border-border pt-2 text-xs text-text-muted">
-                        <span className="shrink-0">{result.latencyMs} ms</span>
-                        <span
-                          className="ml-auto truncate font-mono"
-                          title={`Model that generated this image: ${result.model}`}
-                        >
-                          {result.model}
-                        </span>
-                        <button
-                          type="button"
-                          onClick={() => handleDownloadImage(result, i)}
-                          title="Download image"
-                          className="shrink-0 cursor-pointer text-text-muted hover:text-text"
-                        >
-                          <Download size={14} />
-                        </button>
-                      </div>
-                    </div>
-                  </div>
-                ))}
-                {imageGenerations.isPending && <WaitingIndicator label="Generating image" />}
-              </>
-            )}
-          </div>
-
-          {imageError && (
-            <div className="mt-3 rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-red-700 dark:border-red-900 dark:bg-red-500/10 dark:text-red-300">
-              {imageError}
-            </div>
-          )}
-
-          <div className="mt-4 flex items-end gap-2">
-            <textarea
-              rows={2}
-              value={imagePrompt}
-              onChange={(e) => setImagePrompt(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === "Enter" && !e.shiftKey) {
-                  e.preventDefault();
-                  void handleGenerateImage();
-                  return;
-                }
-                imageHistory.handleKeyDown(e, imagePrompt, setImagePrompt);
-              }}
-              placeholder={
-                runningImageModels.length === 0
-                  ? "No running image models — start one from Instances first."
-                  : "Describe the image to generate… (Enter to send, Shift+Enter for a new line)"
-              }
-              disabled={runningImageModels.length === 0 || imageGenerations.isPending}
-              className={cn(inputClass, "flex-1")}
-            />
-            <button
-              type="button"
-              onClick={() => void handleGenerateImage()}
-              disabled={!selectedImageModel || !imagePrompt.trim() || imageGenerations.isPending}
-              className="flex items-center gap-2 rounded-lg bg-primary px-4 py-2.5 text-sm font-medium text-primary-foreground hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-40"
-            >
-              <Send size={16} />
-              Generate
-            </button>
-          </div>
-          </>
-          )}
         </div>
 
         <aside className="w-72 shrink-0 space-y-5 overflow-y-auto border-l border-border bg-surface px-5 py-8">
-          {mode === "chat" ? (
-          <>
           <div>
             <label htmlFor="playground-model" className="mb-1.5 block text-sm font-medium text-text">
               Model
             </label>
-            {runningChatModels.length === 0 ? (
-              <p className="text-sm text-text-muted">No running text models.</p>
-            ) : (
-              <select
-                id="playground-model"
-                value={selectedModel}
-                onChange={(e) => {
-                  setModel(e.target.value);
-                  // RM-40: an attached image is only ever sendable to a
-                  // vision model — drop it rather than leave it staged for
-                  // a model that would just reject it.
-                  const next = runningChatModels.find((i) => i.id === e.target.value);
-                  if (next?.modality !== "vision") setAttachedImage(null);
-                }}
-                className={inputClass}
-              >
-                {runningChatModels.map((i) => (
-                  <option key={i.id} value={i.id}>
-                    {i.id}
-                  </option>
-                ))}
-              </select>
-            )}
-          </div>
-
-          <label className="flex items-center gap-2 text-sm text-text">
-            <input
-              type="checkbox"
-              checked={streamingEnabled}
-              onChange={(e) => setStreamingEnabled(e.target.checked)}
-            />
-            Stream response
-          </label>
-
-          <h2 className="text-xs font-medium uppercase tracking-wide text-text-muted">Parameters</h2>
-
-          <div>
-            <div className="mb-1.5 flex items-center justify-between text-sm text-text">
-              <label htmlFor="playground-temperature">Temperature</label>
-              <span className="text-text-muted">{temperature.toFixed(1)}</span>
-            </div>
-            <input
-              id="playground-temperature"
-              type="range"
-              min={0}
-              max={2}
-              step={0.1}
-              value={temperature}
-              onChange={(e) => setTemperature(Number(e.target.value))}
-              className="w-full"
+            <PlaygroundModelPicker
+              instances={readyInstances}
+              value={selectedModel}
+              onChange={handleModelChange}
             />
           </div>
 
-          <div>
-            <div className="mb-1.5 flex items-center justify-between text-sm text-text">
-              <label htmlFor="playground-top-p">Top P</label>
-              <span className="text-text-muted">{topP.toFixed(2)}</span>
-            </div>
-            <input
-              id="playground-top-p"
-              type="range"
-              min={0.05}
-              max={1}
-              step={0.05}
-              value={topP}
-              onChange={(e) => setTopP(Number(e.target.value))}
-              className="w-full"
-            />
-          </div>
+          {isTextLike && (
+            <>
+              <label className="flex items-center gap-2 text-sm text-text">
+                <input
+                  type="checkbox"
+                  checked={streamingEnabled}
+                  onChange={(e) => setStreamingEnabled(e.target.checked)}
+                />
+                Stream response
+              </label>
 
-          <div>
-            <label htmlFor="playground-max-tokens" className="mb-1.5 block text-sm text-text">
-              Max tokens
-            </label>
-            <input
-              id="playground-max-tokens"
-              type="number"
-              min={1}
-              value={maxTokens}
-              onChange={(e) => setMaxTokens(Math.max(1, Number(e.target.value) || 1))}
-              className={inputClass}
-            />
-          </div>
+              <h2 className="text-xs font-medium uppercase tracking-wide text-text-muted">Parameters</h2>
 
-          <div>
-            <label htmlFor="playground-stop" className="mb-1.5 block text-sm text-text">
-              Stop sequences
-            </label>
-            <input
-              id="playground-stop"
-              type="text"
-              value={stopInput}
-              onChange={(e) => setStopInput(e.target.value)}
-              placeholder="Comma-separated, optional"
-              className={inputClass}
-            />
-          </div>
+              <div>
+                <div className="mb-1.5 flex items-center justify-between text-sm text-text">
+                  <label htmlFor="playground-temperature">Temperature</label>
+                  <span className="text-text-muted">{temperature.toFixed(1)}</span>
+                </div>
+                <input
+                  id="playground-temperature"
+                  type="range"
+                  min={0}
+                  max={2}
+                  step={0.1}
+                  value={temperature}
+                  onChange={(e) => setTemperature(Number(e.target.value))}
+                  className="w-full"
+                />
+              </div>
 
-          <h2 className="text-xs font-medium uppercase tracking-wide text-text-muted">
-            Tools (function calling)
-          </h2>
+              <div>
+                <div className="mb-1.5 flex items-center justify-between text-sm text-text">
+                  <label htmlFor="playground-top-p">Top P</label>
+                  <span className="text-text-muted">{topP.toFixed(2)}</span>
+                </div>
+                <input
+                  id="playground-top-p"
+                  type="range"
+                  min={0.05}
+                  max={1}
+                  step={0.05}
+                  value={topP}
+                  onChange={(e) => setTopP(Number(e.target.value))}
+                  className="w-full"
+                />
+              </div>
 
-          <div>
-            <label htmlFor="playground-tools" className="mb-1.5 block text-sm text-text">
-              Tool definitions (JSON)
-            </label>
-            <textarea
-              id="playground-tools"
-              rows={6}
-              value={toolsInput}
-              onChange={(e) => setToolsInput(e.target.value)}
-              placeholder={'Optional — an OpenAI-style tools array, e.g.\n[\n  {\n    "type": "function",\n    "function": {\n      "name": "get_weather",\n      "parameters": {"type": "object", "properties": {"city": {"type": "string"}}}\n    }\n  }\n]'}
-              className={cn(inputClass, "font-mono text-xs")}
-            />
-            {toolsError && <p className="mt-1 text-xs text-red-600">{toolsError}</p>}
-          </div>
+              <div>
+                <label htmlFor="playground-max-tokens" className="mb-1.5 block text-sm text-text">
+                  Max tokens
+                </label>
+                <input
+                  id="playground-max-tokens"
+                  type="number"
+                  min={1}
+                  value={maxTokens}
+                  onChange={(e) => setMaxTokens(Math.max(1, Number(e.target.value) || 1))}
+                  className={inputClass}
+                />
+              </div>
 
-          <div>
-            <label htmlFor="playground-tool-choice" className="mb-1.5 block text-sm text-text">
-              Tool choice
-            </label>
-            <select
-              id="playground-tool-choice"
-              value={toolChoice}
-              onChange={(e) => setToolChoice(e.target.value as "auto" | "required" | "none")}
-              disabled={!toolsInput.trim()}
-              className={cn(inputClass, !toolsInput.trim() && "opacity-40")}
-            >
-              <option value="auto">auto</option>
-              <option value="required">required</option>
-              <option value="none">none</option>
-            </select>
-            {toolChoice === "required" && (
-              <p className="mt-1 text-xs text-text-muted">
-                "required" forces a tool call every turn — switch to "auto" after submitting a
-                result if you want the model's final text answer instead of another call.
-              </p>
-            )}
-          </div>
-          </>
-          ) : mode === "embeddings" ? (
-          <div>
-            <label htmlFor="playground-embed-model" className="mb-1.5 block text-sm font-medium text-text">
-              Model
-            </label>
-            {runningEmbeddingModels.length === 0 ? (
-              <p className="text-sm text-text-muted">No running embedding models.</p>
-            ) : (
-              <select
-                id="playground-embed-model"
-                value={selectedEmbedModel}
-                onChange={(e) => setEmbedModel(e.target.value)}
-                className={inputClass}
-              >
-                {runningEmbeddingModels.map((i) => (
-                  <option key={i.id} value={i.id}>
-                    {i.id}
-                  </option>
-                ))}
-              </select>
-            )}
-            <p className="mt-3 text-xs text-text-muted">
+              <div>
+                <label htmlFor="playground-stop" className="mb-1.5 block text-sm text-text">
+                  Stop sequences
+                </label>
+                <input
+                  id="playground-stop"
+                  type="text"
+                  value={stopInput}
+                  onChange={(e) => setStopInput(e.target.value)}
+                  placeholder="Comma-separated, optional"
+                  className={inputClass}
+                />
+              </div>
+
+              <h2 className="text-xs font-medium uppercase tracking-wide text-text-muted">
+                Tools (function calling)
+              </h2>
+
+              <div>
+                <label htmlFor="playground-tools" className="mb-1.5 block text-sm text-text">
+                  Tool definitions (JSON)
+                </label>
+                <textarea
+                  id="playground-tools"
+                  rows={6}
+                  value={toolsInput}
+                  onChange={(e) => setToolsInput(e.target.value)}
+                  placeholder={'Optional — an OpenAI-style tools array, e.g.\n[\n  {\n    "type": "function",\n    "function": {\n      "name": "get_weather",\n      "parameters": {"type": "object", "properties": {"city": {"type": "string"}}}\n    }\n  }\n]'}
+                  className={cn(inputClass, "font-mono text-xs")}
+                />
+                {toolsError && <p className="mt-1 text-xs text-red-600">{toolsError}</p>}
+              </div>
+
+              <div>
+                <label htmlFor="playground-tool-choice" className="mb-1.5 block text-sm text-text">
+                  Tool choice
+                </label>
+                <select
+                  id="playground-tool-choice"
+                  value={toolChoice}
+                  onChange={(e) => setToolChoice(e.target.value as "auto" | "required" | "none")}
+                  disabled={!toolsInput.trim()}
+                  className={cn(inputClass, !toolsInput.trim() && "opacity-40")}
+                >
+                  <option value="auto">auto</option>
+                  <option value="required">required</option>
+                  <option value="none">none</option>
+                </select>
+                {toolChoice === "required" && (
+                  <p className="mt-1 text-xs text-text-muted">
+                    "required" forces a tool call every turn — switch to "auto" after submitting a
+                    result if you want the model's final text answer instead of another call.
+                  </p>
+                )}
+              </div>
+            </>
+          )}
+
+          {modality === "embedding" && (
+            <p className="text-xs text-text-muted">
               Embeddings are single-shot — each request is independent, there's no
               conversation history to carry over between them.
             </p>
-          </div>
-          ) : (
-          <div>
-            <label htmlFor="playground-image-model" className="mb-1.5 block text-sm font-medium text-text">
-              Model
-            </label>
-            {runningImageModels.length === 0 ? (
-              <p className="text-sm text-text-muted">No running image models.</p>
-            ) : (
-              <select
-                id="playground-image-model"
-                value={selectedImageModel}
-                onChange={(e) => setImageModel(e.target.value)}
-                className={inputClass}
-              >
-                {runningImageModels.map((i) => (
-                  <option key={i.id} value={i.id}>
-                    {i.id}
-                  </option>
-                ))}
-              </select>
-            )}
-            <p className="mt-3 text-xs text-text-muted">
+          )}
+
+          {modality === "image" && (
+            <p className="text-xs text-text-muted">
               Each prompt is single-shot — there's no conversation history to carry over
               between generations.
             </p>
-          </div>
           )}
         </aside>
       </main>
@@ -1318,7 +1175,7 @@ export default function Playground() {
                 type="button"
                 onClick={(e) => {
                   e.stopPropagation();
-                  handleDownloadImage(expandedImage, imageResults.indexOf(expandedImage));
+                  handleDownloadImage(expandedImage, imageEntries.indexOf(expandedImage));
                 }}
                 aria-label="Download"
                 title="Download image"
