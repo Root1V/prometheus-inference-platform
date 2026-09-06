@@ -1748,6 +1748,19 @@ real streaming request, confirmed `GET /metrics` now returns `tokens_per_second_
 `tokens_prompt_total`/`tokens_completion_total`, and the Instances page shows all five
 columns populated for the tested model, "—" for every other.
 
+**Follow-up (header tooltips)**: with the five metrics now visible as bare column headers
+(P50/P95/TTFT/Tok/s/ms/tok), the abbreviations weren't self-explanatory. `COLUMNS` in
+`InstanceTable.tsx` changed from a flat string array to `{label, title?}` objects — a
+`title` attribute on the `<th>` (plus `cursor-help`) explains each metric on hover, once,
+at the column level, rather than repeating the same static text on every row's cell (the
+per-cell `title`s from the earlier tooltip-based design were removed as the now-redundant
+duplicate). Non-metric columns (ID, State, Uptime, ...) get no `title` — nothing there
+needs explaining.
+
+**Verified**: live in the browser — `document.querySelector('th')` for "P50" returns the
+full explanatory `title` text and `cursor: help`; all five metric headers carry their own
+description, the other 11 columns carry none.
+
 ## RM-47 — Evaluate whether `GET /v1/models` should stay unauthenticated (added)
 
 **Why**: raised while building [[RM-45]] — `GET /v1/models` is intentionally public today

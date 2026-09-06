@@ -4,23 +4,43 @@ import type { BackendMetrics } from "../api/metrics";
 import type { InstanceEntry, InstanceState } from "../types/instance";
 import { InstanceRow } from "./InstanceRow";
 
-const COLUMNS = [
-  "#",
-  "ID",
-  "Node",
-  "Backend",
-  "Modality",
-  "State",
-  "Port",
-  "CPU",
-  "RSS",
-  "P50",
-  "P95",
-  "TTFT",
-  "Tok/s",
-  "ms/tok",
-  "Uptime",
-  "Actions",
+/** RM-46 follow-up: header tooltips explain what each performance column
+ * means once, here — the per-row cells no longer need to repeat it. */
+const COLUMNS: { label: string; title?: string }[] = [
+  { label: "#" },
+  { label: "ID" },
+  { label: "Node" },
+  { label: "Backend" },
+  { label: "Modality" },
+  { label: "State" },
+  { label: "Port" },
+  { label: "CPU" },
+  { label: "RSS" },
+  {
+    label: "P50",
+    title: "Median response latency — half of requests were faster than this, half slower.",
+  },
+  {
+    label: "P95",
+    title:
+      "95th-percentile response latency — the slow tail. Only the worst 5% of requests were slower than this.",
+  },
+  {
+    label: "TTFT",
+    title:
+      "Time to first token — how long before the response starts appearing. Streaming requests only.",
+  },
+  {
+    label: "Tok/s",
+    title: "Throughput — how many tokens the model generates per second once it starts responding.",
+  },
+  {
+    label: "ms/tok",
+    title:
+      "Inter-token latency — average time between successive tokens once generation has started. Lower is smoother streaming. llama.cpp-family backends only.",
+  },
+  { label: "Uptime" },
+  { label: "Actions" },
 ];
 
 const PAGE_SIZE = 20;
@@ -73,8 +93,12 @@ export function InstanceTable({
         <thead>
           <tr className="border-b border-border text-xs uppercase tracking-wide text-text-muted">
             {COLUMNS.map((col) => (
-              <th key={col} className="px-4 py-3 font-medium">
-                {col}
+              <th
+                key={col.label}
+                className={col.title ? "cursor-help px-4 py-3 font-medium" : "px-4 py-3 font-medium"}
+                title={col.title}
+              >
+                {col.label}
               </th>
             ))}
           </tr>

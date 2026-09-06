@@ -98,29 +98,23 @@ export function InstanceRow({
         <td className="px-4 py-3 text-text-muted">{instance.port}</td>
         <td className="px-4 py-3 text-text-muted">{instance.cpu_percent.toFixed(1)}%</td>
         <td className="px-4 py-3 text-text-muted">{Math.round(instance.rss_mb)} MB</td>
-        <td className="px-4 py-3 text-text-muted" title="Median (p50) response latency">
+        <td className="px-4 py-3 text-text-muted">
           {metrics && metrics.requests_total > 0 ? `${metrics.latency_p50_ms}ms` : "—"}
         </td>
-        <td className="px-4 py-3 text-text-muted" title="p95 response latency — the slow tail">
+        <td className="px-4 py-3 text-text-muted">
           {metrics && metrics.requests_total > 0 ? `${metrics.latency_p95_ms}ms` : "—"}
         </td>
-        <td
-          className="px-4 py-3 text-text-muted"
-          title="Time to first token — streaming requests only"
-        >
+        <td className="px-4 py-3 text-text-muted">
           {metrics?.ttft_p50_ms !== null && metrics?.ttft_p50_ms !== undefined
             ? `${metrics.ttft_p50_ms}ms`
             : "—"}
         </td>
-        <td className="px-4 py-3 text-text-muted" title="Throughput — tokens generated per second">
+        <td className="px-4 py-3 text-text-muted">
           {metrics?.tokens_per_second_avg !== null && metrics?.tokens_per_second_avg !== undefined
             ? metrics.tokens_per_second_avg
             : "—"}
         </td>
-        <td
-          className="px-4 py-3 text-text-muted"
-          title="Inter-token latency — llama.cpp-family backends only"
-        >
+        <td className="px-4 py-3 text-text-muted">
           {metrics?.inter_token_ms_avg !== null && metrics?.inter_token_ms_avg !== undefined
             ? metrics.inter_token_ms_avg
             : "—"}
