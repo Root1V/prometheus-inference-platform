@@ -2206,41 +2206,77 @@ undercounted models now show their real combined size in the Library table —
 `qwen25-32b-q4` 4.0 GB → 18.5 GB (the worst case), `deepseek-v25-1210-iq1m` 39.9 GB →
 49.1 GB, `qwen2.5-7b-q4` 4.0 GB → 4.4 GB.
 
-## RM-51 — fix: Separate the model catalog from running instances (todo)
+## RM-51 — fix: Separate the model catalog from running instances (done)
 
 **Why**: found live, mid-session, while verifying RM-38 — an operator cleanup pass deleted
 what it believed were unused *instances* through the dashboard, and it wiped 27 *model*
-registrations along with them (down from 30 to 5 live rows). Root cause: today's
-`registry.db` `models` table conflates two concepts into one row — "a model that's been
-downloaded/known" and "a specific running instance of it, on some node, some port, some
-backend" — so there's no way to remove an instance without also removing the model it came
-from. The intended flow (per the operator): download a model → it's added to a models
-catalog → the operator creates one or more instances of that model (different nodes/ports)
-→ deleting an instance must not touch the catalog entry, but deleting a model *should*
-cascade — stop and remove every instance of it — behind a strong confirmation, since it's
-destructive across potentially multiple nodes.
+registrations along with them (down from 30 to 5 live rows). Root cause: `registry.db`'s
+`models` table conflated two concepts into one row — "a model that's been downloaded/known"
+and "a specific running instance of it, on some node/port/backend" — so there was no way to
+remove an instance without also removing the model it came from.
 
-**Impact confirmed**: the incident was recovered from `runtime/manager/registry.db`'s last
-git commit (SQLite, tracked since RM-49) — 25 of the 27 deleted rows had a real path and
-were re-inserted; 2 already had an empty path in that commit (pre-existing broken/duplicate
-entries, left out). No data was permanently lost this time only because the tracked file
-happened to still hold a recent-enough snapshot — the schema gap itself is still open.
+**What shipped**: `runtime/manager/core/registry.py` split into two tables — `models` (the
+catalog: path, family, quantization, hf_repo/sha256/filenames, downloaded, plus the
+mmproj/vae/clip_l/t5xxl companion-file paths) and `instances` (`model_id` FK, port, backend,
+modality, context_length, discovery, rss_estimate_mb, cfg_scale) — a real 1-to-many
+relationship. `RegistryEntry` stays a flat merged view (every pre-split field, plus a new
+`model_id`) computed via a join, so `lifecycle.py`, `scanner.py`, `capacity.py`, and most of
+`control.py`/`routes.py`/`tui/cli.py` needed no changes at all. `remove()` now only ever
+deletes the instance row (**the literal bug fix**); a new `remove_catalog()`/
+`deregister_model()` pair handles the cascade case, guarded by `RegistryIntegrityError` if
+instances still reference a catalog row being removed directly.
 
-**Scope** (not yet designed in detail — this entry exists to not lose the finding, not as
-a committed design):
-- Likely a real schema split in `runtime/manager/core/registry.py`: a `models` table
-  (path, family, quantization, hf_repo/sha256/filenames, downloaded) and an `instances`
-  table (model_id FK, node, port, backend, modality override, discovery) — a 1-to-many
-  relationship, not today's 1-to-1 row.
-- `runtime/manager/api` routes and `gateway/admin-ui`'s Models/Instances pages and
-  `RegisterModelModal` all assume today's single-table shape and would need reworking.
-- Delete semantics: removing an instance leaves the model catalog entry untouched, no
-  confirmation needed beyond today's. Removing a model must show what it cascades to
-  (every instance, on every node) and require an explicit strong confirmation before
-  stopping and removing them.
-- Migration path for the existing single-table `registry.db` data into the new shape —
-  needs its own plan given the file is git-tracked and already has real production data
-  in it (30 entries as of this writing).
+Downloading a model now creates **only** a catalog entry (no port/instance allocated) — the
+operator explicitly creates an instance afterward via `RegisterModelModal`'s existing "pick
+a downloaded model" dropdown (now sourced from the catalog, submitting a `model_id` FK
+instead of copying every field into the request body). `DELETE /v1/models/{id}/downloaded`
+(Models/Library page) became the cascade path: stops+removes every instance across every
+node, then deletes the catalog row and file — but only with `confirm=true` if any instance
+is live, otherwise 400s listing which ones (id + node), so neither the dashboard's
+confirmation dialog nor a bare curl/script can cascade-stop instances across nodes by
+accident. New `GET /v1/models` (manager-api) and `GET /admin/api/models` (gateway
+aggregation) list the catalog with each entry's `instance_ids` — needed since a
+downloaded-but-not-yet-instantiated model has zero instances and no longer shows up in
+`GET /v1/backends`.
+
+**Explicit scope boundary** (user-confirmed): ships the schema split, the safe delete
+semantics, and the minimal "create one instance from a catalog entry" flow — not a
+dedicated multi-simultaneous-instance management UI (per-model instance picker, port-aware
+multi-instance dashboard). The schema/API already support running several instances of one
+catalog entry; the richer UI for that is [[RM-55]].
+
+**Two real bugs found while implementing, fixed in passing**: `control.py`'s
+`_control_action` passed `entry.__dict__` (not `.to_dict()`) into `_merge()` — silently
+dropped `backend_url` and would have dropped the new `model_id` too (pre-existing, unrelated
+to this migration, but the exact function being rewritten anyway). And the new migration's
+backup path used `Path.with_suffix(".pre-rm51.bak")` on a `.db` file — which *replaces* the
+`.db` extension rather than appending, producing `registry.pre-rm51.bak` instead of
+`registry.db.pre-rm51.bak`; caught during the real-file migration rollout below and fixed
+with `with_name` instead.
+
+**Migration**: same structural pattern as RM-49's YAML→SQLite move (temp-file build, atomic
+`os.replace`), adapted for a same-file split — backs up via `shutil.copy2` (not rename,
+which would briefly leave the live path missing) *before* any destructive step, so a crash
+before the swap leaves the original untouched and retries cleanly, and a crash after leaves
+`registry.db.pre-rm51.bak` as a permanent recovery snapshot.
+
+**Verified**: `runtime/manager/core` — 188 tests (new migration-split tests mirroring
+RM-49's `TestLegacyYamlMigration` shape, catalog/instance CRUD tests including the literal
+regression test for the bug: `remove(instance)` leaves `get_catalog()` intact).
+`runtime/manager/api` — 88 tests (register-with-`model_id`, cascade-delete confirm/no-confirm
+paths, new `GET /v1/models`). `gateway` — 254 tests (`model_id` passthrough/fallback in
+`manager_sync`, new `GET /admin/api/models`). Frontend: `tsc`/lint/build clean. Full
+`.githooks/pre-push` green.
+
+Live, end-to-end against the real (git-tracked, 33-row) `registry.db`: migrated a scratch
+copy first and diffed every field across all 33 rows against the pre-migration original (0
+mismatches, including the FLUX.1 split-file fields) before touching the real file; migrated
+the real file (restarting manager-api), confirmed `GET /v1/backends` unchanged
+field-for-field; through the actual dashboard, registered a manual instance, deleted it, and
+confirmed the catalog entry survived; created a second instance of an existing catalog entry
+via `RegisterModelModal`'s picker (Models page's "Instances" column went 1 → 2); opened the
+cascade-delete confirmation on a real running instance and confirmed it named the running
+instance before allowing the (cancelled) delete.
 
 ## RM-52 — sd_cpp: support split-file diffusion models (done)
 
@@ -2342,6 +2378,22 @@ real, requested use cases — not just prompt-to-music.
   results).
 - Backend/model choice is **not yet decided** — needs its own research pass first, same as
   RM-38 did for image generation, before any implementation starts.
+
+## RM-55 — Richer multi-instance-per-model management UX (todo)
+
+**Why**: [[RM-51]]'s schema/API split (a `models` catalog + an `instances` table, 1-to-many)
+makes running several instances of one catalog model — on different nodes/ports/backends —
+fully supportable, but that PR deliberately shipped only the minimal flow: pick a catalog
+entry, specify node/port/id/discovery/backend/modality, create one instance. Explicitly out
+of scope there, per the user's own call, to keep that PR's blast radius contained.
+
+**Scope**:
+- A per-model instance list/picker inside the create-instance flow, showing "here are the N
+  existing instances of this model" (node, port, state) before adding another — today's
+  `RegisterModelModal` shows none of that context.
+- A port-conflict-aware view when creating a second instance on the same node.
+- Any dedicated UI for comparing/managing multiple instances of the same model side-by-side
+  (the Models/Library page's "Instances" column today is just a count).
 
 ## Adding new items
 

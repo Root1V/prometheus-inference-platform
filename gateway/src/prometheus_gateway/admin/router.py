@@ -240,6 +240,39 @@ def create_admin_router(manager_client: ManagerApiClient) -> APIRouter:
 
         return {"instances": instances, "unreachable_nodes": unreachable_nodes}
 
+    @router.get("/admin/api/models")
+    async def list_models(request: Request) -> Any:
+        """RM-51: cross-node catalog listing — mirrors list_instances above,
+        but aggregates manager-api's GET /v1/models (the catalog: downloaded/
+        known models) instead of GET /v1/backends (running instances). A
+        catalog entry with zero instances (freshly downloaded, not yet
+        deployed) only ever shows up here, not in list_instances."""
+        if (forbidden := _require_scope(request, "admin:read")) is not None:
+            return forbidden
+
+        settings: Settings = request.app.state.settings
+        models: list[dict[str, Any]] = []
+        unreachable_nodes: list[str] = []
+
+        nodes = await fetch_nodes(
+            settings.auth_service_admin_url,  # type: ignore[arg-type]
+            settings.auth_service_admin_api_key,  # type: ignore[arg-type]
+            tls_verify=settings.auth_service_tls_verify,
+        )
+        for name, url in nodes:
+            try:
+                resp = await manager_client.get(url, "/v1/models")
+                resp.raise_for_status()
+                body = resp.json()
+                for entry in body.get("models", []):
+                    entry["node"] = name
+                    models.append(entry)
+            except Exception as exc:
+                logger.warning("admin.node_unreachable", node=name, error=str(exc))
+                unreachable_nodes.append(name)
+
+        return {"models": models, "unreachable_nodes": unreachable_nodes}
+
     @router.post("/admin/api/nodes/{node}/models")
     async def register_model(node: str, body: dict[str, Any], request: Request) -> Response:
         if (forbidden := _require_scope(request, "admin:write")) is not None:
@@ -443,7 +476,13 @@ def create_admin_router(manager_client: ManagerApiClient) -> APIRouter:
                 request, 400, "unknown-node", "Unknown Node", f"Node {node!r} is not configured."
             )
         try:
-            resp = await manager_client.delete(node_url, f"/v1/models/{model_id}/downloaded")
+            # RM-51: forward ?confirm=true — required by manager-api's cascade
+            # delete whenever the model has running instances.
+            resp = await manager_client.delete(
+                node_url,
+                f"/v1/models/{model_id}/downloaded",
+                params=dict(request.query_params),
+            )
         except Exception as exc:
             return _proxy_error_response(request, exc)
         return _passthrough(resp)

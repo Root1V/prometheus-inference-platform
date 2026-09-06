@@ -295,6 +295,41 @@ async def test_list_instances_marks_unreachable_node(gw, rsa_keys):
     assert body["unreachable_nodes"] == ["mac"]
 
 
+# ── GET /admin/api/models (RM-51 catalog) ────────────────────────────────────
+
+
+async def test_list_models_aggregates_and_tags_node(gw, rsa_keys):
+    with respx.mock:
+        _mock_nodes(("mac", NODE_URL))
+        _mock_manager_token()
+        respx.get(f"{NODE_URL}/v1/models").mock(
+            return_value=Response(
+                200,
+                json={"models": [{"id": "model-a", "downloaded": True, "instance_ids": []}]},
+            )
+        )
+        resp = await gw.get("/admin/api/models", headers=_headers(rsa_keys, "admin:read"))
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["unreachable_nodes"] == []
+    assert body["models"][0]["id"] == "model-a"
+    assert body["models"][0]["node"] == "mac"
+
+
+async def test_list_models_marks_unreachable_node(gw, rsa_keys):
+    import httpx
+
+    with respx.mock:
+        _mock_nodes(("mac", NODE_URL))
+        _mock_manager_token()
+        respx.get(f"{NODE_URL}/v1/models").mock(side_effect=httpx.ConnectError("refused"))
+        resp = await gw.get("/admin/api/models", headers=_headers(rsa_keys, "admin:read"))
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["models"] == []
+    assert body["unreachable_nodes"] == ["mac"]
+
+
 # ── POST /admin/api/nodes/{node}/models (register) ───────────────────────────
 
 

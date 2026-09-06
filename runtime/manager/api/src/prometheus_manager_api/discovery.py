@@ -41,15 +41,16 @@ from prometheus_manager_core.hf_discovery import (
     fetch_model_card,
     infer_quant,
     list_model_files,
-    next_free_port,
     search_models,
     shard_filenames,
 )
-from prometheus_manager_core.registry import Registry, RegistryEntry
+from prometheus_manager_core.lifecycle import deregister_model
+from prometheus_manager_core.registry import CatalogEntry, Registry
 from prometheus_manager_core.scanner import scan
 from prometheus_manager_core.telemetry import get_tracer
 
 from .auth import require_backend_registry_read, require_backend_registry_write
+from .routes import _file_size_bytes
 
 router = APIRouter()
 
@@ -213,6 +214,39 @@ async def update_models_config(
     return _serialize_config(config)
 
 
+# ── GET /v1/models — catalog listing ─────────────────────────────────────────
+
+
+@router.get("/v1/models", tags=["models"])
+async def list_models(
+    request: Request,
+    _claims: Annotated[Claims, Depends(require_backend_registry_read)],
+) -> dict[str, Any]:
+    """List every catalog entry (a downloaded/known model), each annotated
+    with the ids of its current instances (RM-51).
+
+    Needed because a freshly-downloaded model has zero instances until the
+    operator explicitly creates one (see POST /v1/backends's `model_id`
+    field) — it can no longer be found by filtering /v1/backends, which
+    lists instances, not catalog entries.
+    """
+    registry: Registry = request.app.state.registry
+    registry.reload()
+    instance_ids_by_model: dict[str, list[str]] = {}
+    for e in registry.entries:
+        instance_ids_by_model.setdefault(e.model_id, []).append(e.id)
+    return {
+        "models": [
+            {
+                **(catalog_dict := c.to_dict()),
+                "instance_ids": instance_ids_by_model.get(c.id, []),
+                "file_size_bytes": _file_size_bytes(catalog_dict),
+            }
+            for c in registry.list_catalog()
+        ]
+    }
+
+
 # ── Download orchestration ────────────────────────────────────────────────────
 
 
@@ -291,7 +325,10 @@ async def _download_shards(
 
     if all(s.status == "done" for s in shard_states):
         first_path = config.resolved_downloads_dir / shard_states[0].hf_filename
-        registry.update(model_id, downloaded=True, path=str(first_path))
+        # RM-51: model_id here is a catalog id with no instance yet (download
+        # no longer auto-creates one) — update_catalog(), not update(), which
+        # requires an existing instance to route the FK lookup through.
+        registry.update_catalog(model_id, downloaded=True, path=str(first_path))
 
 
 async def _kick_download(
@@ -329,8 +366,11 @@ async def start_download(
 ) -> dict[str, Any]:
     """Register a model from a Hugging Face repo/file and start downloading it.
 
-    Body: {repo_id, filename, model_id?, context_length?, family?,
-    quantization?, modality?}. Shard siblings (HF's NNNNN-of-MMMMM naming) are
+    Body: {repo_id, filename, model_id?, family?, quantization?}. RM-51:
+    creates only a catalog entry — no instance, no port allocation; the
+    operator creates an instance afterward (POST /v1/backends with a
+    `model_id` referencing this catalog entry). Shard siblings (HF's
+    NNNNN-of-MMMMM naming) are
     detected automatically from the repo's file list — the caller only needs
     to pick one filename from GET /v1/models/search/files.
     """
@@ -369,7 +409,11 @@ async def start_download(
 
         shard_files = shard_filenames(filename, all_filenames)
 
-        existing_ids = {e.id for e in registry.entries}
+        # RM-51: a catalog id shares its uniqueness namespace with instance
+        # ids — manual registration (add()) still upserts a catalog row and
+        # an instance row under the same id, so a collision with either
+        # would silently corrupt an unrelated existing entry.
+        existing_ids = {e.id for e in registry.entries} | {c.id for c in registry.list_catalog()}
         model_id = body.get("model_id") or auto_id(shard_files[0], existing_ids)
         if model_id in existing_ids:
             span.set_attribute("http.status_code", 409)
@@ -380,22 +424,16 @@ async def start_download(
                 f"Model {model_id!r} already exists.",
             )
 
-        used_ports = {e.port for e in registry.entries}
-        port = next_free_port(used_ports)
-
-        entry = RegistryEntry(
+        entry = CatalogEntry(
             id=model_id,
-            port=port,
-            context_length=int(body.get("context_length", 4096)),
             family=body.get("family", ""),
             quantization=body.get("quantization") or infer_quant(shard_files[0]),
-            modality=body.get("modality", "text"),
             downloaded=False,
             hf_repo=repo_id,
             hf_filenames=shard_files,
         )
         try:
-            registry.add(entry)
+            registry.add_catalog(entry)
         except (ValueError, TypeError) as exc:
             span.set_attribute("http.status_code", 400)
             raise _problem(400, "invalid-registration", "Invalid Registration", str(exc)) from exc
@@ -416,7 +454,6 @@ async def start_download(
         span.set_attribute("http.status_code", 202)
         return {
             "model_id": model_id,
-            "port": port,
             "hf_repo": repo_id,
             "shard_count": len(shard_files),
         }
@@ -465,7 +502,7 @@ async def retry_download(
         span.set_attribute("model_id", model_id)
         registry: Registry = request.app.state.registry
         config: ManagerConfig = request.app.state.config
-        entry = registry.get(model_id)
+        entry = registry.get_catalog(model_id)
         if entry is None or not entry.hf_repo:
             span.set_attribute("http.status_code", 404)
             raise _problem(
@@ -526,7 +563,7 @@ async def resume_download(
         span.set_attribute("model_id", model_id)
         registry: Registry = request.app.state.registry
         config: ManagerConfig = request.app.state.config
-        entry = registry.get(model_id)
+        entry = registry.get_catalog(model_id)
         if entry is None or not entry.hf_repo:
             span.set_attribute("http.status_code", 404)
             raise _problem(
@@ -553,20 +590,38 @@ async def delete_downloaded_model(
     model_id: str,
     request: Request,
     _claims: Annotated[Claims, Depends(require_backend_registry_write)],
+    confirm: Annotated[
+        bool,
+        Query(
+            description="RM-51: required to proceed when any instance of this "
+            "model is currently running — otherwise a 400 lists them instead "
+            "of stopping them silently."
+        ),
+    ] = False,
 ) -> Response:
-    """Delete a downloaded model's on-disk file(s) and deregister it.
+    """Delete a downloaded model's on-disk file(s) and its whole catalog
+    entry — cascading to stop and remove every instance of it first (RM-51).
 
     Only applies to entries downloaded through this flow (downloaded=True) —
     a manually-registered local-path entry (path typed by hand, never
     downloaded here) is untouched by this endpoint; use the regular
-    DELETE /v1/backends/{id} to just deregister without touching any file.
+    DELETE /v1/backends/{id} to just deregister a single instance without
+    touching any file or the catalog entry.
+
+    RM-51: previously refused (409) outright whenever any instance was live,
+    requiring the operator to stop it manually first. Now cascades
+    automatically — but only when `confirm=true` is passed, so a bare DELETE
+    (from a script, or a caller unaware of live instances) never silently
+    tears down instances across multiple nodes; instead it 400s with exactly
+    which instances (id) are currently running.
     """
     with _tracer.start_as_current_span("models.delete_downloaded", kind=SpanKind.INTERNAL) as span:
         span.set_attribute("model_id", model_id)
         registry: Registry = request.app.state.registry
+        config: ManagerConfig = request.app.state.config
         pid_dir: Path = request.app.state.pid_dir
 
-        entry = registry.get(model_id)
+        entry = registry.get_catalog(model_id)
         if entry is None:
             span.set_attribute("http.status_code", 404)
             raise _problem(404, "not-found", "Not Found", f"Model {model_id!r} not registered.")
@@ -579,22 +634,26 @@ async def delete_downloaded_model(
                 f"{model_id!r} was not downloaded through this flow — nothing to delete on disk.",
             )
 
-        live = [p for p in await asyncio.to_thread(scan, pid_dir, {model_id}) if p.model_id]
-        if live:
-            span.set_attribute("http.status_code", 409)
+        instance_ids = {e.id for e in registry.entries if e.model_id == model_id}
+        live = [p for p in await asyncio.to_thread(scan, pid_dir, instance_ids) if p.model_id]
+        if live and not confirm:
+            span.set_attribute("http.status_code", 400)
+            running = sorted(p.model_id for p in live)
             raise _problem(
-                409,
-                "lifecycle-conflict",
-                "Lifecycle Conflict",
-                f"Stop {model_id!r} before deleting its downloaded file.",
+                400,
+                "confirmation-required",
+                "Confirmation Required",
+                f"{model_id!r} has running instances {running} — pass confirm=true "
+                "to stop and remove them along with the model.",
             )
+
+        await asyncio.to_thread(deregister_model, model_id, config, registry)
 
         filenames = list(entry.hf_filenames)
         for fname in filenames:
             if fname:
-                (request.app.state.config.resolved_downloads_dir / fname).unlink(missing_ok=True)
+                (config.resolved_downloads_dir / fname).unlink(missing_ok=True)
 
-        registry.remove(model_id)
         downloads = _downloads_list(request)
         downloads[:] = [ds for ds in downloads if ds not in _matching(downloads, model_id)]
 

@@ -3,6 +3,7 @@ import { useState } from "react";
 import {
   useCancelDownload,
   useDownloads,
+  useModelCatalog,
   useModelFiles,
   useModelSearch,
   usePauseDownload,
@@ -16,13 +17,11 @@ import { DownloadedModelsTable } from "../components/DownloadedModelsTable";
 import { ModelCardView } from "../components/ModelCardView";
 import { ModelPreviewPanel } from "../components/ModelPreviewPanel";
 import { ModelSettingsModal } from "../components/ModelSettingsModal";
-import { RegisterModelModal } from "../components/RegisterModelModal";
 import { Sidebar } from "../components/Sidebar";
 import { useToast } from "../context/ToastContext";
 import { cn } from "../lib/cn";
 import { getErrorMessage } from "../lib/errors";
 import { formatBytes } from "../lib/format";
-import type { InstanceEntry } from "../types/instance";
 import type { DownloadEntry, ModelSort } from "../types/models";
 
 const inputClass =
@@ -176,15 +175,16 @@ export default function Models() {
   const [customModelId, setCustomModelId] = useState("");
 
   const [previewId, setPreviewId] = useState<string | null>(null);
-  const [editingModel, setEditingModel] = useState<InstanceEntry | null>(null);
 
   const searchQuery = useModelSearch(selectedNode, searchTerm, sort);
   const filesQuery = useModelFiles(selectedNode, selectedRepo);
   const downloadsQuery = useDownloads(selectedNode);
   const instancesQuery = useInstances();
+  const catalogQuery = useModelCatalog();
   const startDownload = useStartDownload();
 
-  const downloadedModels = (instancesQuery.data?.instances ?? []).filter((i) => i.downloaded);
+  const instances = instancesQuery.data?.instances ?? [];
+  const downloadedModels = (catalogQuery.data?.models ?? []).filter((m) => m.node === selectedNode);
   const previewModel = previewId ? (downloadedModels.find((m) => m.id === previewId) ?? null) : null;
 
   function handleSearch() {
@@ -450,10 +450,10 @@ export default function Models() {
                 <div className="min-w-0 flex-1">
                   <DownloadedModelsTable
                     models={downloadedModels}
+                    instances={instances}
                     node={selectedNode}
                     selectedId={previewId}
                     onSelect={(m) => setPreviewId(m.id === previewId ? null : m.id)}
-                    onEdit={setEditingModel}
                   />
                 </div>
                 {previewModel && (
@@ -470,13 +470,6 @@ export default function Models() {
       </main>
 
       <ModelSettingsModal open={settingsOpen} node={selectedNode} onClose={() => setSettingsOpen(false)} />
-      <RegisterModelModal
-        key={editingModel?.id ?? "none"}
-        open={editingModel !== null}
-        nodes={editingModel ? [editingModel.node] : []}
-        editing={editingModel}
-        onClose={() => setEditingModel(null)}
-      />
     </div>
   );
 }

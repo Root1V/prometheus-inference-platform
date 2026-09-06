@@ -1,9 +1,8 @@
 import { X } from "lucide-react";
 import { formatBytes } from "../lib/format";
-import type { InstanceEntry } from "../types/instance";
-import { Badge, ModalityBadge } from "./Badge";
+import type { ModelCatalogEntry } from "../types/models";
+import { Badge } from "./Badge";
 import { ModelCardView } from "./ModelCardView";
-import { StatusBadge } from "./StatusBadge";
 
 function Stat({ label, value }: { label: string; value: string }) {
   return (
@@ -22,7 +21,7 @@ export function ModelPreviewPanel({
   node,
   onClose,
 }: {
-  model: InstanceEntry;
+  model: ModelCatalogEntry;
   node: string;
   onClose: () => void;
 }) {
@@ -42,21 +41,17 @@ export function ModelPreviewPanel({
 
       <div className="flex-1 overflow-y-auto p-4">
         <div className="mb-2 flex flex-wrap gap-2">
-          <ModalityBadge modality={model.modality} />
           <Badge>{model.quantization || "unknown quant"}</Badge>
-          <StatusBadge state={model.state} message={model.error_message} />
         </div>
 
         <dl className="mt-4 grid grid-cols-2 gap-3">
           <Stat label="Family" value={model.family || "—"} />
-          <Stat label="Backend" value={model.backend} />
-          <Stat
-            label="Context"
-            value={model.context_length > 0 ? model.context_length.toLocaleString() : "—"}
-          />
           <Stat label="Size on disk" value={formatBytes(model.file_size_bytes)} />
-          <Stat label="Port" value={String(model.port)} />
           <Stat label="Node" value={model.node} />
+          <Stat
+            label="Instances"
+            value={model.instance_ids.length > 0 ? model.instance_ids.join(", ") : "None yet"}
+          />
         </dl>
 
         <p className="mt-4 truncate text-xs text-text-muted" title={model.hf_repo}>

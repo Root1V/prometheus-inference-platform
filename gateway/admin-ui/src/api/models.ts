@@ -6,6 +6,7 @@ import type {
   HfFile,
   HfModelCard,
   HfSearchResult,
+  ModelCatalogEntry,
   ModelsConfig,
   ModelSort,
   StartDownloadRequest,
@@ -14,6 +15,25 @@ import type {
 } from "../types/models";
 
 const DOWNLOADS_POLL_MS = 2000;
+const CATALOG_POLL_MS = 5000;
+
+/** RM-51: the model catalog — GET /admin/api/models, mirrors useInstances()'s
+ * cross-node aggregation. A downloaded model with zero instances only shows
+ * up here, never in useInstances(). */
+export const CATALOG_KEY = ["model-catalog"] as const;
+
+export function useModelCatalog() {
+  return useQuery({
+    queryKey: CATALOG_KEY,
+    queryFn: async () =>
+      (
+        await apiClient.get<{ models: ModelCatalogEntry[]; unreachable_nodes: string[] }>(
+          "/models",
+        )
+      ).data,
+    refetchInterval: CATALOG_POLL_MS,
+  });
+}
 
 /** Not auto-fetched — the caller passes the current search box value and
  * only enables the query once there's a non-empty term to search for. */
@@ -60,6 +80,7 @@ export function useStartDownload() {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: INSTANCES_KEY });
       queryClient.invalidateQueries({ queryKey: ["downloads"] });
+      queryClient.invalidateQueries({ queryKey: CATALOG_KEY });
     },
   });
 }
@@ -113,12 +134,25 @@ export function useUpdateModelsConfig() {
 export function useDeleteDownloadedModel() {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: async ({ node, modelId }: { node: string; modelId: string }) => {
-      await apiClient.delete(`/nodes/${node}/models/${modelId}/downloaded`);
+    mutationFn: async ({
+      node,
+      modelId,
+      confirm,
+    }: {
+      node: string;
+      modelId: string;
+      /** RM-51: required when the model has running instances — otherwise
+       * the request 400s listing which ones, instead of cascading silently. */
+      confirm?: boolean;
+    }) => {
+      await apiClient.delete(`/nodes/${node}/models/${modelId}/downloaded`, {
+        params: confirm ? { confirm: true } : undefined,
+      });
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: INSTANCES_KEY });
       queryClient.invalidateQueries({ queryKey: ["downloads"] });
+      queryClient.invalidateQueries({ queryKey: CATALOG_KEY });
     },
   });
 }

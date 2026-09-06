@@ -1,7 +1,5 @@
 /** RM-48 — Models page: discover/download/manage models from Hugging Face. */
 
-import type { Modality } from "./instance";
-
 export interface HfSearchResult {
   id: string;
   downloads: number | null;
@@ -49,17 +47,35 @@ export interface StartDownloadRequest {
   repo_id: string;
   filename: string;
   model_id?: string;
-  context_length?: number;
   family?: string;
   quantization?: string;
-  modality?: Modality;
 }
 
 export interface StartDownloadResult {
   model_id: string;
-  port: number;
   hf_repo: string;
   shard_count: number;
+}
+
+/** RM-51: a downloaded/known model — the catalog entry. Downloading no
+ * longer auto-creates an instance; `instance_ids` lists whichever instances
+ * (if any) the operator has since created from it. */
+export interface ModelCatalogEntry {
+  id: string;
+  path: string;
+  family: string;
+  quantization: string;
+  downloaded: boolean;
+  hf_repo: string;
+  hf_sha256: string;
+  hf_filenames: string[];
+  mmproj_path: string;
+  vae_path: string;
+  clip_l_path: string;
+  t5xxl_path: string;
+  instance_ids: string[];
+  node: string;
+  file_size_bytes: number | null;
 }
 
 export interface ModelsConfig {

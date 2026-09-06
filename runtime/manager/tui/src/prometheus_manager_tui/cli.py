@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 import click
+from prometheus_manager_core.registry import BACKENDS, MODALITIES
 from prometheus_manager_core.telemetry import configure_logging
 
 if TYPE_CHECKING:
@@ -323,7 +324,7 @@ def cmd_restart(ctx: click.Context, model_id: str) -> None:
 @click.option("--id", "model_id", prompt="Model ID", help="Unique model identifier.")
 @click.option(
     "--backend",
-    type=click.Choice(["llama_cpp", "mlx", "vllm", "sglang", "sd_cpp"]),
+    type=click.Choice(list(BACKENDS)),
     default="llama_cpp",
     prompt="Backend",
     help="Inference engine — see memory/wiki/inference-engines.md (RM-06).",
@@ -340,7 +341,7 @@ def cmd_restart(ctx: click.Context, model_id: str) -> None:
 @click.option("--quantization", default="", prompt="Quantization (e.g. Q4_0, mlx-4bit, awq)")
 @click.option(
     "--modality",
-    type=click.Choice(["text", "embedding", "vision", "image"]),
+    type=click.Choice(list(MODALITIES)),
     default="text",
     help="What this model serves — see memory/wiki/model-registry.md (RM-09).",
 )

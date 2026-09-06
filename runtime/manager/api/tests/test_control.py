@@ -114,6 +114,10 @@ class TestRegister:
         assert body["id"] == "new-model"
         assert body["modality"] == "vision"
         assert body["mmproj_path"] == "/models/mmproj.gguf"
+        # RM-51 regression: the immediate POST response must reflect the
+        # persisted catalog FK (self-referencing for manual registration),
+        # not the stale in-memory entry built before registry.add().
+        assert body["model_id"] == "new-model"
 
     def test_register_split_file_fields(self, tmp_path: Path):
         """RM-52: vae_path/clip_l_path/t5xxl_path — FLUX.1-class split models.
@@ -194,6 +198,66 @@ class TestRegister:
             resp = client.post(
                 "/v1/backends",
                 json={"id": "audio-model", "port": 8091, "modality": "audio"},
+                headers={"Authorization": "Bearer dummy"},
+            )
+        finally:
+            _clear_override()
+        assert resp.status_code == 400
+
+
+class TestRegisterInstanceFromCatalog:
+    """RM-51: an optional `model_id` field creates a new instance of an
+    already-catalogued model instead of registering a brand-new one."""
+
+    def test_register_with_model_id_creates_instance(self, tmp_path: Path):
+        client = _authed(_make_client(tmp_path))
+        try:
+            registry: Registry = app.state.registry
+            registry.get("llama3-test")  # sanity: the seeded instance/catalog exist
+            resp = client.post(
+                "/v1/backends",
+                json={
+                    "id": "llama3-test-2",
+                    "model_id": "llama3-test",
+                    "port": 8081,
+                    "discovery": True,
+                },
+                headers={"Authorization": "Bearer dummy"},
+            )
+        finally:
+            _clear_override()
+        assert resp.status_code == 201
+        body = resp.json()
+        assert body["id"] == "llama3-test-2"
+        assert body["model_id"] == "llama3-test"
+        assert body["path"] == "/models/llama3.gguf"  # carried from the catalog
+        # The original instance and its catalog entry are untouched.
+        assert app.state.registry.get("llama3-test") is not None
+        assert app.state.registry.get_catalog("llama3-test") is not None
+
+    def test_register_with_unknown_model_id_returns_404(self, tmp_path: Path):
+        client = _authed(_make_client(tmp_path))
+        try:
+            resp = client.post(
+                "/v1/backends",
+                json={"id": "orphan-instance", "model_id": "nonexistent", "port": 8082},
+                headers={"Authorization": "Bearer dummy"},
+            )
+        finally:
+            _clear_override()
+        assert resp.status_code == 404
+
+    def test_register_with_model_id_invalid_backend_returns_400(self, tmp_path: Path):
+        client = _authed(_make_client(tmp_path))
+        try:
+            resp = client.post(
+                "/v1/backends",
+                json={
+                    "id": "bad-backend-instance",
+                    "model_id": "llama3-test",
+                    "port": 8083,
+                    "backend": "not-a-real-backend",
+                },
                 headers={"Authorization": "Bearer dummy"},
             )
         finally:
@@ -414,6 +478,11 @@ class TestLifecycleControl:
         assert body["id"] == "llama3-test"
         assert body["state"] == "ready"
         assert body["pid"] == 4242
+        # RM-51 regression: _control_action must pass entry.to_dict(), not
+        # entry.__dict__ — a bare dataclass __dict__ silently drops
+        # @property fields (backend_url) and would also drop model_id.
+        assert body["model_id"] == "llama3-test"
+        assert body["backend_url"] == "http://127.0.0.1:8080"
 
     def test_start_lifecycle_error_returns_409(self, tmp_path: Path):
         client = _authed(_make_client(tmp_path))

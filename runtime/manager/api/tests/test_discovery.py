@@ -142,6 +142,45 @@ class TestModelsConfig:
         assert resp.json()["hf_token_env"] == "MY_HF_TOKEN"
 
 
+# ── GET /v1/models — catalog listing (RM-51) ─────────────────────────────────
+
+
+class TestListModels:
+    def test_requires_auth(self, tmp_path: Path):
+        client = _make_client(tmp_path)
+        resp = client.get("/v1/models")
+        assert resp.status_code == 401
+
+    def test_lists_catalog_entries_with_instance_ids(self, tmp_path: Path):
+        client = _authed_read(_make_client(tmp_path))
+        app.state.registry.add(
+            RegistryEntry(id="model-a", port=8090, context_length=4096, downloaded=True)
+        )
+        app.state.registry.add_instance("model-a-2", "model-a", port=8091)
+        try:
+            resp = client.get("/v1/models", headers=_HEADERS)
+        finally:
+            _clear_overrides()
+        assert resp.status_code == 200
+        models = {m["id"]: m for m in resp.json()["models"]}
+        assert set(models["model-a"]["instance_ids"]) == {"model-a", "model-a-2"}
+
+    def test_includes_catalog_entries_with_zero_instances(self, tmp_path: Path):
+        """RM-51: a freshly-downloaded model has no instance yet — it must
+        still show up here (unlike GET /v1/backends, which lists instances)."""
+        from prometheus_manager_core.registry import CatalogEntry
+
+        client = _authed_read(_make_client(tmp_path))
+        app.state.registry.add_catalog(CatalogEntry(id="never-instantiated", downloaded=True))
+        try:
+            resp = client.get("/v1/models", headers=_HEADERS)
+        finally:
+            _clear_overrides()
+        assert resp.status_code == 200
+        models = {m["id"]: m for m in resp.json()["models"]}
+        assert models["never-instantiated"]["instance_ids"] == []
+
+
 # ── GET /v1/models/search[/files|/card] ──────────────────────────────────────
 
 
@@ -278,9 +317,12 @@ class TestStartDownload:
 
         assert resp.status_code == 202
         body = resp.json()
+        assert "port" not in body  # RM-51: download no longer allocates a port/instance
         assert body["hf_repo"] == "bartowski/Llama-3.2-1B-GGUF"
         assert body["shard_count"] == 1
-        entry = app.state.registry.get(body["model_id"])
+        # RM-51: download creates only a catalog entry, no instance yet.
+        assert app.state.registry.get(body["model_id"]) is None
+        entry = app.state.registry.get_catalog(body["model_id"])
         assert entry is not None
         assert entry.downloaded is False
         assert entry.hf_repo == "bartowski/Llama-3.2-1B-GGUF"
@@ -505,7 +547,10 @@ class TestDeleteDownloaded:
         assert not gguf_path.exists()
         assert app.state.registry.get("downloaded-model") is None
 
-    def test_blocked_while_instance_is_running(self, tmp_path: Path):
+    def test_running_instance_without_confirm_returns_400_with_instance_list(self, tmp_path: Path):
+        """RM-51: cascades automatically once confirmed, but a bare DELETE
+        (no confirm=true) must not silently stop/remove anything — it 400s,
+        naming exactly which instances are running."""
         from datetime import UTC, datetime
 
         from prometheus_manager_core.scanner import ProcessState
@@ -546,8 +591,64 @@ class TestDeleteDownloaded:
         finally:
             _clear_overrides()
 
-        assert resp.status_code == 409
+        assert resp.status_code == 400
+        assert resp.json()["detail"]["type"].endswith("confirmation-required")
+        assert "running-model" in resp.json()["detail"]["detail"]
         assert gguf_path.exists()
+        assert app.state.registry.get("running-model") is not None
+
+    def test_running_instance_with_confirm_cascades(self, tmp_path: Path):
+        """confirm=true stops+removes every instance of the model, then
+        deletes the file and the catalog entry."""
+        from datetime import UTC, datetime
+
+        from prometheus_manager_core.scanner import ProcessState
+
+        client = _authed_write(_make_client(tmp_path))
+        downloads_dir = tmp_path / "models"
+        downloads_dir.mkdir(parents=True, exist_ok=True)
+        gguf_path = downloads_dir / "running-model.gguf"
+        gguf_path.write_bytes(b"fake gguf content")
+
+        app.state.registry.add(
+            RegistryEntry(
+                id="running-model",
+                port=8090,
+                context_length=4096,
+                path=str(gguf_path),
+                downloaded=True,
+                hf_repo="x/y",
+                hf_filenames=["running-model.gguf"],
+            )
+        )
+        fake_proc = ProcessState(
+            pid=123,
+            model_id="running-model",
+            alias="running-model",
+            port=8090,
+            model_path=str(gguf_path),
+            host="127.0.0.1",
+            state="ready",
+            cpu_percent=0.0,
+            rss_mb=0.0,
+            started_at=datetime.now(tz=UTC),
+            managed=True,
+        )
+        try:
+            with (
+                patch("prometheus_manager_api.discovery.scan", return_value=[fake_proc]),
+                patch("prometheus_manager_api.discovery.deregister_model") as mock_deregister,
+            ):
+                resp = client.delete(
+                    "/v1/models/running-model/downloaded?confirm=true", headers=_HEADERS
+                )
+        finally:
+            _clear_overrides()
+
+        assert resp.status_code == 204
+        mock_deregister.assert_called_once()
+        assert mock_deregister.call_args.args[0] == "running-model"
+        assert not gguf_path.exists()
         assert app.state.registry.get("running-model") is not None
 
 

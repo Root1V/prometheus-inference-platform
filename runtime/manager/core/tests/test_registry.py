@@ -184,24 +184,45 @@ class TestSplitFileFields:
                 )
             )
 
-    def test_existing_db_gets_new_columns_migrated(self, registry_path: Path):
-        """A registry.db created before RM-52 (no vae_path/clip_l_path/
-        t5xxl_path columns) must load cleanly and accept them once reopened —
-        CREATE TABLE IF NOT EXISTS alone doesn't backfill an existing table."""
+    def test_pre_rm52_legacy_db_migrates_cleanly(self, registry_path: Path):
+        """RM-51: a legacy single-table registry.db that ALSO pre-dates RM-52
+        (missing vae_path/clip_l_path/t5xxl_path/cfg_scale) must still split
+        cleanly into (models, instances) — the split migration backfills
+        those columns onto the legacy row before reading it (see
+        _backfill_legacy_columns), so an even-older file than RM-52 alone
+        doesn't break the RM-51 migration."""
         import sqlite3
 
-        pre_rm52 = Registry(registry_path)
-        pre_rm52.add(RegistryEntry(id="old-model", port=8080, context_length=4096))
         conn = sqlite3.connect(str(registry_path))
-        conn.execute("ALTER TABLE models DROP COLUMN vae_path")
-        conn.execute("ALTER TABLE models DROP COLUMN clip_l_path")
-        conn.execute("ALTER TABLE models DROP COLUMN t5xxl_path")
-        conn.execute("ALTER TABLE models DROP COLUMN cfg_scale")
+        conn.execute(
+            """
+            CREATE TABLE models (
+                id TEXT PRIMARY KEY, context_length INTEGER NOT NULL,
+                port INTEGER NOT NULL, path TEXT NOT NULL DEFAULT '',
+                family TEXT NOT NULL DEFAULT '', quantization TEXT NOT NULL DEFAULT '',
+                backend TEXT NOT NULL DEFAULT 'llama_cpp', modality TEXT NOT NULL DEFAULT 'text',
+                mmproj_path TEXT NOT NULL DEFAULT '', downloaded INTEGER NOT NULL DEFAULT 0,
+                discovery INTEGER NOT NULL DEFAULT 0, rss_estimate_mb INTEGER,
+                hf_repo TEXT NOT NULL DEFAULT '', hf_sha256 TEXT NOT NULL DEFAULT '',
+                hf_filenames TEXT NOT NULL DEFAULT '[]',
+                created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+            )
+            """
+        )
+        conn.execute(
+            "INSERT INTO models (id, context_length, port, path, family, quantization, downloaded) "
+            "VALUES ('old-model', 4096, 8080, '/models/old-model.gguf', 'llama3', 'Q4_0', 1)"
+        )
         conn.commit()
         conn.close()
 
         reopened = Registry(registry_path)
-        assert reopened.get("old-model").vae_path == ""
+        entry = reopened.get("old-model")
+        assert entry is not None
+        assert entry.vae_path == ""
+        assert entry.path == "/models/old-model.gguf"
+        assert reopened.get_catalog("old-model") is not None
+
         reopened.add(
             RegistryEntry(
                 id="new-flux-model",
@@ -257,7 +278,7 @@ class TestRegistryCRUD:
         import sqlite3
 
         conn = sqlite3.connect(str(registry_path))
-        conn.execute("UPDATE models SET port = 9999 WHERE id = 'test-model'")
+        conn.execute("UPDATE instances SET port = 9999 WHERE id = 'test-model'")
         conn.commit()
         conn.close()
         populated_registry.reload()
@@ -429,6 +450,179 @@ class TestLegacyYamlMigration:
         assert not (tmp_path / "registry.yaml.bak").exists()
 
 
+# ── RM-51: models/instances schema split ────────────────────────────────────────
+
+
+def _write_legacy_single_table_db(path: Path, rows: list[dict]) -> None:
+    """Build a pre-RM-51 single-table registry.db by hand, for migration tests."""
+    import sqlite3
+
+    conn = sqlite3.connect(str(path))
+    conn.executescript(
+        """
+        CREATE TABLE models (
+            id TEXT PRIMARY KEY, context_length INTEGER NOT NULL,
+            port INTEGER NOT NULL, path TEXT NOT NULL DEFAULT '',
+            family TEXT NOT NULL DEFAULT '', quantization TEXT NOT NULL DEFAULT '',
+            backend TEXT NOT NULL DEFAULT 'llama_cpp', modality TEXT NOT NULL DEFAULT 'text',
+            mmproj_path TEXT NOT NULL DEFAULT '', downloaded INTEGER NOT NULL DEFAULT 0,
+            discovery INTEGER NOT NULL DEFAULT 0, rss_estimate_mb INTEGER,
+            hf_repo TEXT NOT NULL DEFAULT '', hf_sha256 TEXT NOT NULL DEFAULT '',
+            hf_filenames TEXT NOT NULL DEFAULT '[]',
+            vae_path TEXT NOT NULL DEFAULT '', clip_l_path TEXT NOT NULL DEFAULT '',
+            t5xxl_path TEXT NOT NULL DEFAULT '', cfg_scale REAL,
+            created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+        )
+        """
+    )
+    for row in rows:
+        cols = ", ".join(row.keys())
+        placeholders = ", ".join("?" for _ in row)
+        conn.execute(f"INSERT INTO models ({cols}) VALUES ({placeholders})", tuple(row.values()))
+    conn.commit()
+    conn.close()
+
+
+class TestModelsInstancesSplitMigration:
+    """RM-51: a pre-existing single-table registry.db is split into
+    (models, instances) in place, non-destructively, the first time Registry
+    opens it."""
+
+    def test_migration_from_legacy_single_table(self, registry_path: Path):
+        _write_legacy_single_table_db(
+            registry_path,
+            [
+                {
+                    "id": "text-model",
+                    "context_length": 4096,
+                    "port": 8080,
+                    "path": "/models/text-model.gguf",
+                    "family": "llama3",
+                    "quantization": "Q4_0",
+                    "downloaded": 1,
+                },
+                {
+                    "id": "flux-model",
+                    "context_length": 0,
+                    "port": 8199,
+                    "path": "/models/flux1-dev.gguf",
+                    "backend": "sd_cpp",
+                    "modality": "image",
+                    "downloaded": 1,
+                    "vae_path": "/models/ae.safetensors",
+                    "cfg_scale": 1.0,
+                },
+            ],
+        )
+
+        registry = Registry(registry_path)
+
+        assert len(registry.entries) == 2
+        assert len(registry.list_catalog()) == 2
+        text_entry = registry.get("text-model")
+        assert text_entry is not None
+        assert text_entry.model_id == "text-model"
+        assert text_entry.family == "llama3"
+        flux_entry = registry.get("flux-model")
+        assert flux_entry is not None
+        assert flux_entry.vae_path == "/models/ae.safetensors"
+        assert flux_entry.cfg_scale == 1.0
+        assert registry.get_catalog("flux-model") is not None
+
+    def test_migration_is_idempotent_and_creates_backup(self, registry_path: Path):
+        _write_legacy_single_table_db(
+            registry_path, [{"id": "m", "context_length": 4096, "port": 8080}]
+        )
+        Registry(registry_path)
+        backup = registry_path.with_name(registry_path.name + ".pre-rm51.bak")
+        assert backup.exists()
+        backup_bytes = backup.read_bytes()
+
+        # Reopening again must not re-migrate or touch the backup.
+        registry2 = Registry(registry_path)
+        assert backup.read_bytes() == backup_bytes
+        assert registry2.get("m") is not None
+
+    def test_no_migration_for_already_new_schema(self, registry_path: Path):
+        registry = Registry(registry_path)
+        registry.add(RegistryEntry(id="test-model", port=8080, context_length=4096))
+        assert not registry_path.with_name(registry_path.name + ".pre-rm51.bak").exists()
+
+        Registry(registry_path)
+        assert not registry_path.with_name(registry_path.name + ".pre-rm51.bak").exists()
+
+    def test_no_migration_for_brand_new_file(self, registry_path: Path):
+        registry = Registry(registry_path)
+        assert registry.entries == []
+        assert registry.list_catalog() == []
+        assert not registry_path.with_name(registry_path.name + ".pre-rm51.bak").exists()
+
+
+class TestCatalogInstanceSplit:
+    """RM-51: catalog and instance CRUD, and the core bug-fix invariant —
+    removing an instance never removes its catalog entry."""
+
+    def test_remove_instance_leaves_catalog_intact(self, populated_registry: Registry):
+        """The literal regression test for the reported incident."""
+        populated_registry.remove("test-model")
+        assert populated_registry.get("test-model") is None
+        assert populated_registry.get_catalog("test-model") is not None
+
+    def test_add_instance_against_missing_catalog_raises(self, empty_registry: Registry):
+        with pytest.raises(ValueError, match="No catalog entry"):
+            empty_registry.add_instance("new-instance", "nonexistent-model", port=8080)
+
+    def test_add_instance_creates_second_instance_of_same_catalog(
+        self, populated_registry: Registry
+    ):
+        populated_registry.add_instance("test-model-2", "test-model", port=8081)
+        assert populated_registry.get("test-model") is not None
+        second = populated_registry.get("test-model-2")
+        assert second is not None
+        assert second.model_id == "test-model"
+        assert second.path == "/models/test-model.gguf"  # carried from the catalog
+
+    def test_add_instance_validates_path_against_backend(self, empty_registry: Registry):
+        from prometheus_manager_core.registry import CatalogEntry
+
+        empty_registry.add_catalog(CatalogEntry(id="bad-catalog", path="/models/bad.bin"))
+        with pytest.raises(ValueError, match=r"\.gguf"):
+            empty_registry.add_instance("bad-instance", "bad-catalog", port=8080)
+
+    def test_remove_catalog_with_live_instance_raises(self, populated_registry: Registry):
+        from prometheus_manager_core.registry import RegistryIntegrityError
+
+        with pytest.raises(RegistryIntegrityError):
+            populated_registry.remove_catalog("test-model")
+
+    def test_remove_catalog_succeeds_after_instance_removed(self, populated_registry: Registry):
+        populated_registry.remove("test-model")
+        populated_registry.remove_catalog("test-model")
+        assert populated_registry.get_catalog("test-model") is None
+
+    def test_update_catalog_owned_field_via_instance_keyed_update(
+        self, populated_registry: Registry
+    ):
+        populated_registry.update("test-model", path="/models/renamed.gguf")
+        assert populated_registry.get_catalog("test-model").path == "/models/renamed.gguf"
+        assert populated_registry.get("test-model").path == "/models/renamed.gguf"
+
+    def test_update_catalog_with_no_instance_yet(self, empty_registry: Registry):
+        """The download-flow regression test: a freshly-downloaded catalog
+        entry has no instance yet, so update_catalog() must not require one."""
+        from prometheus_manager_core.registry import CatalogEntry
+
+        empty_registry.add_catalog(CatalogEntry(id="downloading-model"))
+        empty_registry.update_catalog(
+            "downloading-model", downloaded=True, path="/models/downloading-model.gguf"
+        )
+        entry = empty_registry.get_catalog("downloading-model")
+        assert entry is not None
+        assert entry.downloaded is True
+        assert entry.path == "/models/downloading-model.gguf"
+        assert empty_registry.get("downloading-model") is None  # still no instance
+
+
 # ── spec-010 AC-1 & AC-2: discovery field ─────────────────────────────────────
 
 
@@ -446,8 +640,12 @@ class TestDiscoveryField:
         conn = sqlite3.connect(str(registry_path))
         conn.executescript(_SCHEMA_SQL)
         conn.execute(
-            "INSERT INTO models (id, port, context_length, family, quantization, downloaded) "
-            "VALUES ('no-discovery-model', 9090, 4096, 'llama3', 'Q4_0', 0)"
+            "INSERT INTO models (id, family, quantization, downloaded) "
+            "VALUES ('no-discovery-model', 'llama3', 'Q4_0', 0)"
+        )
+        conn.execute(
+            "INSERT INTO instances (id, model_id, port, context_length) "
+            "VALUES ('no-discovery-model', 'no-discovery-model', 9090, 4096)"
         )
         conn.commit()
         conn.close()

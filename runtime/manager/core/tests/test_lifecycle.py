@@ -617,6 +617,58 @@ class TestACDeregister:
         assert populated_registry.get("test-model") is None
 
 
+# ── RM-51: deregister_model — cascade delete for a catalog entry ───────────────
+
+
+class TestDeregisterModel:
+    """RM-51: deregister_model stops+removes every instance of a catalog
+    entry, then removes the catalog entry itself — the cascade counterpart
+    to deregister_instance() used by the Models/Library page's "delete
+    downloaded file" action."""
+
+    def test_deregister_model_stops_and_removes_all_instances(
+        self, default_config, populated_registry
+    ):
+        from prometheus_manager_core.lifecycle import deregister_model
+
+        populated_registry.add_instance("test-model-2", "test-model", port=9091)
+
+        with patch("prometheus_manager_core.lifecycle.stop_instance") as mock_stop:
+            deregister_model("test-model", default_config, populated_registry)
+
+        assert mock_stop.call_count == 2
+        assert populated_registry.get("test-model") is None
+        assert populated_registry.get("test-model-2") is None
+        assert populated_registry.get_catalog("test-model") is None
+
+    def test_deregister_model_leaves_other_catalogs_untouched(
+        self, default_config, populated_registry
+    ):
+        from prometheus_manager_core.lifecycle import deregister_model
+        from prometheus_manager_core.registry import CatalogEntry
+
+        populated_registry.add_catalog(CatalogEntry(id="other-model"))
+        populated_registry.add_instance("other-instance", "other-model", port=9092)
+
+        with patch("prometheus_manager_core.lifecycle.stop_instance"):
+            deregister_model("test-model", default_config, populated_registry)
+
+        assert populated_registry.get_catalog("test-model") is None
+        assert populated_registry.get_catalog("other-model") is not None
+        assert populated_registry.get("other-instance") is not None
+
+    def test_deregister_model_with_zero_instances(self, default_config, empty_registry):
+        """A downloaded-but-never-instantiated catalog entry can still be
+        removed via the cascade path — deregister_model must not require at
+        least one instance to exist."""
+        from prometheus_manager_core.lifecycle import deregister_model
+        from prometheus_manager_core.registry import CatalogEntry
+
+        empty_registry.add_catalog(CatalogEntry(id="never-started"))
+        deregister_model("never-started", default_config, empty_registry)
+        assert empty_registry.get_catalog("never-started") is None
+
+
 # ── PID integrity (security)───────────────────────────────────────────────────
 
 

@@ -12,6 +12,7 @@ import type {
   RegisterModelRequest,
   UpdateModelRequest,
 } from "../types/instance";
+import type { ModelCatalogEntry } from "../types/models";
 
 interface RegisterModelModalProps {
   open: boolean;
@@ -22,12 +23,13 @@ interface RegisterModelModalProps {
    * model to a different node or renaming it isn't a field edit, it's a
    * re-registration, out of scope here. */
   editing?: InstanceEntry | null;
-  /** Already-downloaded models to populate the "Model" picker when creating
-   * a new instance — path/family/quantization/modality/mmproj_path are
-   * derived from the selection instead of typed by hand, since those
-   * describe the file on disk, not a choice the operator is free to make.
-   * Ignored while editing. */
-  downloadedModels?: InstanceEntry[];
+  /** RM-51: catalog entries to populate the "Model" picker when creating a
+   * new instance — path/family/quantization/mmproj_path are derived from the
+   * selection instead of typed by hand, since those describe the downloaded
+   * file, not a per-instance choice. Submitted as `model_id`, letting
+   * manager-api pull those fields from the catalog server-side rather than
+   * copying them into the request body. Ignored while editing. */
+  downloadedModels?: ModelCatalogEntry[];
 }
 
 const BACKENDS: Backend[] = ["llama_cpp", "mlx", "vllm", "sglang", "sd_cpp"];
@@ -134,15 +136,15 @@ export function RegisterModelModal({
     setSelectedSourceId(sourceId);
     const source = modelsOnNode.find((m) => m.id === sourceId);
     if (!source) return;
+    // Only catalog-owned fields come from the selection — backend/modality/
+    // context_length are per-instance choices the operator makes here, not
+    // derived from the downloaded file.
     setForm((current) => ({
       ...current,
       path: source.path,
       family: source.family,
       quantization: source.quantization,
-      modality: source.modality,
       mmproj_path: source.mmproj_path,
-      backend: source.backend,
-      context_length: String(source.context_length),
       hf_repo: source.hf_repo,
       hf_sha256: source.hf_sha256,
     }));
@@ -188,18 +190,13 @@ export function RegisterModelModal({
 
     const body: RegisterModelRequest = {
       id: form.id,
+      model_id: selectedSourceId,
       port: Number(form.port),
       backend: form.backend,
       modality: form.modality,
       discovery: form.discovery,
     };
-    if (form.path) body.path = form.path;
     if (form.context_length) body.context_length = Number(form.context_length);
-    if (form.family) body.family = form.family;
-    if (form.quantization) body.quantization = form.quantization;
-    if (form.modality === "vision" && form.mmproj_path) body.mmproj_path = form.mmproj_path;
-    if (form.hf_repo) body.hf_repo = form.hf_repo;
-    if (form.hf_sha256) body.hf_sha256 = form.hf_sha256;
 
     registerModel.mutate(
       { node: selectedNode, data: body },
@@ -319,26 +316,17 @@ export function RegisterModelModal({
               </select>
             </Field>
             <Field label="Modality">
-              {isEditing ? (
-                <select
-                  value={form.modality}
-                  onChange={(e) => update("modality", e.target.value as Modality)}
-                  className={inputClass}
-                >
-                  {MODALITIES.map((m) => (
-                    <option key={m} value={m}>
-                      {m}
-                    </option>
-                  ))}
-                </select>
-              ) : (
-                <input
-                  value={form.modality}
-                  disabled
-                  placeholder="From the selected model"
-                  className={cn(inputClass, "cursor-not-allowed opacity-60")}
-                />
-              )}
+              <select
+                value={form.modality}
+                onChange={(e) => update("modality", e.target.value as Modality)}
+                className={inputClass}
+              >
+                {MODALITIES.map((m) => (
+                  <option key={m} value={m}>
+                    {m}
+                  </option>
+                ))}
+              </select>
             </Field>
             <Field label="Family">
               <input

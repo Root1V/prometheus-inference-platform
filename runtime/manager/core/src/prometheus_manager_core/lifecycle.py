@@ -477,6 +477,26 @@ def deregister_instance(
         registry.remove(model_id)
 
 
+def deregister_model(
+    catalog_id: str,
+    config: ManagerConfig,
+    registry: Registry,
+) -> None:
+    """Stop and remove every instance of *catalog_id*, then remove the
+    catalog entry itself — the cascade counterpart to deregister_instance().
+
+    Used by DELETE /v1/models/{catalog_id}/downloaded (RM-51) — the
+    "delete downloaded model" action on the Models/Library page, which
+    (unlike the Instances page's single-instance delete) must not leave
+    orphaned instances still pointing at a now-removed catalog row.
+    """
+    instance_ids = [e.id for e in registry.entries if e.model_id == catalog_id]
+    for instance_id in instance_ids:
+        deregister_instance(instance_id, config, registry)
+    if registry.get_catalog(catalog_id) is not None:
+        registry.remove_catalog(catalog_id)
+
+
 # ── helpers ──────────────────────────────────────────────────────────────────
 
 
