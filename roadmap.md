@@ -61,6 +61,7 @@ Status: `done` · `todo`
 | RM-53 | Playground: unify Chat/Embeddings/Images into one adaptive chat | todo | One composer whose config switches based on the selected model's modality, instead of 3 separate tabs with duplicated logic |
 | RM-54 | Audio/music generation support (text-to-audio, style transfer) | todo | New modality — prompt-to-music and audio-to-audio (upload a track, restyle or continue it); backend choice needs its own research pass, same as RM-38 |
 | RM-55 | Richer multi-instance-per-model management UX | todo | RM-51 made multi-instance possible; this adds the polished UI (per-model instance list, port-conflict-aware picker) deliberately deferred from that PR |
+| RM-56 | Admin dashboard: edit rate limits live, no restart | todo | Today's RPM/TPM limits (global + per-endpoint overrides) only change via `.env` + a gateway restart — raised while fixing RM-51's admin rate-limit 429 |
 
 Adding an item: append the next `RM-NN` row here with a one-liner, then add the full
 Why/Scope writeup to `docs/roadmap.md`.

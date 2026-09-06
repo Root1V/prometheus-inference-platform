@@ -107,17 +107,25 @@ function DownloadedModelRow({
         open={confirmDelete}
         title={`Delete ${model.id}?`}
         description={
-          runningInstances.length > 0
-            ? `This model has ${runningInstances.length} running instance(s): ${runningInstances
-                .map((i) => `${i.id} (${i.node})`)
-                .join(
-                  ", ",
-                )}. Deleting will stop and remove all of them, then delete the downloaded file(s). This cannot be undone.`
-            : hasInstances
-              ? `This will remove ${model.instance_ids.length} stopped instance(s) and delete the downloaded file(s). This cannot be undone.`
-              : "This permanently removes the downloaded file(s) from disk. This cannot be undone."
+          runningInstances.length > 0 ? (
+            <div className="rounded-lg border border-red-200 bg-red-50 p-3 text-red-800 dark:border-red-900 dark:bg-red-950 dark:text-red-200">
+              <p className="font-medium">
+                This model has {runningInstances.length} running instance(s):{" "}
+                {runningInstances.map((i) => `${i.id} (${i.node})`).join(", ")}.
+              </p>
+              <p className="mt-1">
+                Deleting will stop and remove all of them, then delete the downloaded
+                file(s). This cannot be undone.
+              </p>
+            </div>
+          ) : hasInstances ? (
+            `This will remove ${model.instance_ids.length} stopped instance(s) and delete the downloaded file(s). This cannot be undone.`
+          ) : (
+            "This permanently removes the downloaded file(s) from disk. This cannot be undone."
+          )
         }
         confirmLabel="Delete"
+        requireTypedConfirmation={runningInstances.length > 0 ? model.id : undefined}
         onCancel={() => setConfirmDelete(false)}
         onConfirm={() => {
           setConfirmDelete(false);

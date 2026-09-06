@@ -2422,6 +2422,32 @@ of scope there, per the user's own call, to keep that PR's blast radius containe
 - Any dedicated UI for comparing/managing multiple instances of the same model side-by-side
   (the Models/Library page's "Instances" column today is just a count).
 
+## RM-56 — Admin dashboard: edit rate limits live, no restart (todo)
+
+**Why**: raised while explaining [[RM-51]]'s follow-up fix (giving `/admin/api/*` its own
+`rate_limit_rpm_admin` budget) — today every rate limit (`rate_limit_rpm`, `rate_limit_tpm`,
+the `chat_completions`/`admin` per-endpoint overrides) is a `Settings` field, only
+changeable via `gateway/.env` + a gateway restart. An operator tuning limits in response to
+real traffic (e.g. loosening `rate_limit_rpm_admin` after a false-positive 429, or
+tightening a leaky client's budget) has to edit a file and bounce the process.
+
+**Scope** (not yet designed in detail):
+- A new admin-only settings surface (Limits page already exists in the dashboard nav —
+  today it likely only *displays* circuit-breaker/rate-limit state; check its current scope
+  before assuming it needs to be created from scratch) to view and edit the global RPM/TPM
+  and the per-endpoint (`chat_completions`, `admin`) overrides.
+- "Take effect hot" means `RateLimitMiddleware._resolve_limits()` needs to read from a
+  live-mutable source instead of the frozen `Settings` object constructed at startup —
+  likely a small in-memory/Redis-backed override store the middleware checks first, falling
+  back to the `.env`-configured defaults when nothing's been overridden. Needs a decision on
+  whether an override persists across a gateway restart (Redis-backed) or is
+  process-lifetime only (in-memory, simpler, matches how `update_models_config` in
+  `discovery.py` already documents itself as "in-memory only, this session" for a similar
+  don't-persist-to-disk tradeoff).
+- Per-client overrides (not just per-endpoint) are a plausible extension but not required
+  for the initial cut — today's `rate_limit_rpm_admin` is already a blunt "every admin
+  session" budget, not per-operator.
+
 ## Adding new items
 
 Append a new row to the table with the next `RM-NN` id and a new `## RM-NN — ...` section
