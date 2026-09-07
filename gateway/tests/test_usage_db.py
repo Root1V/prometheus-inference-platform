@@ -108,6 +108,59 @@ async def test_record_usage_stores_cost_at_write_time(tmp_path):
     assert rows_after[0].cost_usd == pytest.approx(2.0)
 
 
+async def test_record_usage_stores_cost_breakdown_by_component(tmp_path):
+    """RM-60 follow-up: the Usage page shows what's paid for input tokens vs.
+    inference (completion) tokens separately — each must be its own stored
+    value, not just derivable by re-deriving from the combined cost_usd.
+    """
+    pricing_file = tmp_path / "pricing.yaml"
+    pricing_file.write_text(
+        "models:\n  - id: priced-model\n    prompt_price_per_1m: 1.0\n"
+        "    completion_price_per_1m: 2.0\n"
+    )
+    pricing.init_pricing_table(str(pricing_file))
+
+    await db.record_usage("client-a", "priced-model", 1_000_000, 500_000, day=_DAY)
+
+    rows = await db.query_usage_day(_DAY)
+    assert rows[0].prompt_cost_usd == pytest.approx(1.0)
+    assert rows[0].completion_cost_usd == pytest.approx(1.0)
+    assert rows[0].image_cost_usd is None
+    assert rows[0].cost_usd == pytest.approx(2.0)
+
+
+async def test_record_usage_image_cost_breakdown(tmp_path):
+    pricing_file = tmp_path / "pricing.yaml"
+    pricing_file.write_text("models:\n  - id: image-model\n    image_price: 0.02\n")
+    pricing.init_pricing_table(str(pricing_file))
+
+    await db.record_usage(
+        "client-a", "image-model", 0, 0, request_kind="image", image_count=3, day=_DAY
+    )
+
+    rows = await db.query_usage_day(_DAY)
+    assert rows[0].image_cost_usd == pytest.approx(0.06)
+    assert rows[0].prompt_cost_usd is None
+    assert rows[0].completion_cost_usd is None
+    assert rows[0].cost_usd == pytest.approx(0.06)
+
+
+async def test_cost_breakdown_accumulates_across_requests(tmp_path):
+    pricing_file = tmp_path / "pricing.yaml"
+    pricing_file.write_text(
+        "models:\n  - id: priced-model\n    prompt_price_per_1m: 1.0\n"
+        "    completion_price_per_1m: 1.0\n"
+    )
+    pricing.init_pricing_table(str(pricing_file))
+
+    await db.record_usage("client-a", "priced-model", 1_000_000, 0, day=_DAY)
+    await db.record_usage("client-a", "priced-model", 1_000_000, 0, day=_DAY)
+
+    rows = await db.query_usage_day(_DAY)
+    assert rows[0].prompt_cost_usd == pytest.approx(2.0)
+    assert rows[0].completion_cost_usd == pytest.approx(0.0)
+
+
 async def test_record_usage_unpriced_model_stays_null_not_zero():
     await db.record_usage("client-a", "unpriced-model", 100, 50, day=_DAY)
 
@@ -335,3 +388,38 @@ async def test_model_price_config_delete():
     assert await db.delete_model_price_config("small-model") is True
     assert await db.list_model_price_configs() == []
     assert await db.delete_model_price_config("small-model") is False
+
+
+# ── RM-60 stopgap migration: usage_daily gains cost columns on an old DB ────
+
+
+async def test_create_tables_adds_missing_cost_columns_to_legacy_table(tmp_path):
+    """Simulates a gateway.db predating cost_usd/prompt_cost_usd/
+    completion_cost_usd/image_cost_usd — create_tables() must ALTER the
+    existing table to add them, not just skip it as "already exists".
+    """
+    import sqlalchemy
+    from sqlalchemy.ext.asyncio import create_async_engine
+
+    legacy_engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path}/legacy.db")
+    async with legacy_engine.begin() as conn:
+        await conn.execute(
+            sqlalchemy.text(
+                "CREATE TABLE usage_daily ("
+                "id VARCHAR(36) PRIMARY KEY, day DATE NOT NULL, client_id VARCHAR(64) NOT NULL, "
+                "model_id VARCHAR(128) NOT NULL, prompt_tokens BIGINT NOT NULL, "
+                "completion_tokens BIGINT NOT NULL, request_count BIGINT NOT NULL, "
+                "UNIQUE (day, client_id, model_id))"
+            )
+        )
+
+    db.init_db_engine(f"sqlite+aiosqlite:///{tmp_path}/legacy.db")
+    await db.create_tables(db.get_engine())
+
+    # Would raise if any of the 4 columns were still missing.
+    await db.record_usage("client-a", "model-x", 10, 5, day=_DAY)
+    rows = await db.query_usage_day(_DAY)
+    assert rows[0].cost_usd is None
+    assert rows[0].prompt_cost_usd is None
+
+    await legacy_engine.dispose()

@@ -656,6 +656,9 @@ async def test_usage_endpoint_AC11(
             "total_tokens": 80,
             "request_count": 2,
             "estimated_cost_usd": None,
+            "prompt_cost_usd": None,
+            "completion_cost_usd": None,
+            "image_cost_usd": None,
         }
     ]
 
@@ -699,6 +702,13 @@ async def test_usage_endpoint_includes_estimated_cost(
     client_data = next(d for d in body["data"] if d["client_id"] == "client-a")
     assert client_data["estimated_cost_usd"] == pytest.approx(2.0)
     assert client_data["by_model"][0]["estimated_cost_usd"] == pytest.approx(2.0)
+    # RM-60 follow-up: the total is also broken into what's paid for each component.
+    assert client_data["prompt_cost_usd"] == pytest.approx(1.0)
+    assert client_data["completion_cost_usd"] == pytest.approx(1.0)
+    assert client_data["image_cost_usd"] is None
+    assert client_data["by_model"][0]["prompt_cost_usd"] == pytest.approx(1.0)
+    assert client_data["by_model"][0]["completion_cost_usd"] == pytest.approx(1.0)
+    assert client_data["by_model"][0]["image_cost_usd"] is None
 
 
 async def test_usage_endpoint_invalid_date_400(rl_app, admin_headers):  # RM-32

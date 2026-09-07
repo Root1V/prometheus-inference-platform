@@ -59,6 +59,13 @@ class UsageDaily(Base):
     # (never recomputed later against a changed pricing table). NULL iff every
     # contributing request was unpriced — never a silent $0.
     cost_usd: Mapped[float | None] = mapped_column(Float, nullable=True)
+    # RM-60 follow-up: cost_usd broken into its components, so the Usage page
+    # can show what's being paid for input vs. inference vs. images
+    # separately, not just the combined total. Same write-time-only,
+    # never-recomputed, never-a-silent-$0 rules as cost_usd.
+    prompt_cost_usd: Mapped[float | None] = mapped_column(Float, nullable=True)
+    completion_cost_usd: Mapped[float | None] = mapped_column(Float, nullable=True)
+    image_cost_usd: Mapped[float | None] = mapped_column(Float, nullable=True)
 
     __table_args__ = (
         UniqueConstraint("day", "client_id", "model_id", name="uq_usage_daily_day_client_model"),
@@ -180,24 +187,46 @@ def get_session_factory() -> sessionmaker:  # type: ignore[type-arg]
     return _session_factory
 
 
+# Nullable FLOAT columns added to usage_daily after its first release —
+# `create_all()` only creates missing TABLES, never ALTERs existing ones (this
+# project has no Alembic), so each needs a one-time idempotent ALTER TABLE for
+# a gateway.db that predates it. A brand-new DB gets them for free via the
+# model above.
+_USAGE_DAILY_ADDED_COLUMNS = (
+    "cost_usd",
+    "prompt_cost_usd",
+    "completion_cost_usd",
+    "image_cost_usd",
+)
+
+
 def _ensure_usage_daily_cost_column(sync_conn: Connection) -> None:
-    """`create_all()` only creates missing TABLES, never ALTERs existing ones —
-    this project has no Alembic. A brand-new gateway.db gets cost_usd for free
-    via the model above; an existing one needs it added once. Idempotent, safe
-    to run on every startup. RM-60 stopgap, not a real migration tool.
+    """RM-60 stopgap, not a real migration tool. Idempotent, safe to run on
+    every startup.
     """
     inspector = inspect(sync_conn)
     if "usage_daily" not in inspector.get_table_names():
         return
     existing_columns = {c["name"] for c in inspector.get_columns("usage_daily")}
-    if "cost_usd" not in existing_columns:
-        sync_conn.execute(text("ALTER TABLE usage_daily ADD COLUMN cost_usd FLOAT"))
+    for column_name in _USAGE_DAILY_ADDED_COLUMNS:
+        if column_name not in existing_columns:
+            sync_conn.execute(text(f"ALTER TABLE usage_daily ADD COLUMN {column_name} FLOAT"))
 
 
 async def create_tables(engine: AsyncEngine) -> None:
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
         await conn.run_sync(_ensure_usage_daily_cost_column)
+
+
+def _accumulate_nullable_cost(existing_col: Any, new_col: Any) -> Any:
+    """NULL+NULL must stay NULL (still "no price configured" — never a
+    silent $0); otherwise sum treating a NULL side as 0.
+    """
+    return case(
+        (existing_col.is_(None) & new_col.is_(None), None),
+        else_=func.coalesce(existing_col, 0.0) + func.coalesce(new_col, 0.0),
+    )
 
 
 def _usage_daily_upsert_stmt(
@@ -208,6 +237,9 @@ def _usage_daily_upsert_stmt(
     prompt_tokens: int,
     completion_tokens: int,
     cost_usd: float | None,
+    prompt_cost_usd: float | None,
+    completion_cost_usd: float | None,
+    image_cost_usd: float | None,
 ) -> Any:
     insert_fn = sqlite_insert if dialect_name == "sqlite" else pg_insert
     stmt = insert_fn(UsageDaily).values(
@@ -219,18 +251,26 @@ def _usage_daily_upsert_stmt(
         completion_tokens=completion_tokens,
         request_count=1,
         cost_usd=cost_usd,
+        prompt_cost_usd=prompt_cost_usd,
+        completion_cost_usd=completion_cost_usd,
+        image_cost_usd=image_cost_usd,
     )
-    new_cost = stmt.excluded.cost_usd
+    excluded = stmt.excluded
     return stmt.on_conflict_do_update(
         index_elements=["day", "client_id", "model_id"],
         set_={
             "prompt_tokens": UsageDaily.prompt_tokens + prompt_tokens,
             "completion_tokens": UsageDaily.completion_tokens + completion_tokens,
             "request_count": UsageDaily.request_count + 1,
-            # NULL+NULL must stay NULL (still "no price configured" — never a silent $0)
-            "cost_usd": case(
-                (UsageDaily.cost_usd.is_(None) & new_cost.is_(None), None),
-                else_=func.coalesce(UsageDaily.cost_usd, 0.0) + func.coalesce(new_cost, 0.0),
+            "cost_usd": _accumulate_nullable_cost(UsageDaily.cost_usd, excluded.cost_usd),
+            "prompt_cost_usd": _accumulate_nullable_cost(
+                UsageDaily.prompt_cost_usd, excluded.prompt_cost_usd
+            ),
+            "completion_cost_usd": _accumulate_nullable_cost(
+                UsageDaily.completion_cost_usd, excluded.completion_cost_usd
+            ),
+            "image_cost_usd": _accumulate_nullable_cost(
+                UsageDaily.image_cost_usd, excluded.image_cost_usd
             ),
         },
     )
@@ -254,15 +294,27 @@ async def record_usage(
     price_table = pricing.get_pricing_table()
     price = price_table.get_price(model_id)
 
+    prompt_cost_usd: float | None
+    completion_cost_usd: float | None
+    image_cost_usd: float | None
+
     if request_kind == "image":
         image_price_each = price.image_price if price else None
-        cost_usd = image_price_each * image_count if image_price_each is not None else None
+        image_cost_usd = image_price_each * image_count if image_price_each is not None else None
         prompt_price_per_1m = completion_price_per_1m = None
+        prompt_cost_usd = completion_cost_usd = None
+        cost_usd = image_cost_usd
     else:
         prompt_price_per_1m = price.prompt_price_per_1m if price else None
         completion_price_per_1m = price.completion_price_per_1m if price else None
+        if prompt_price_per_1m is not None and completion_price_per_1m is not None:
+            prompt_cost_usd = prompt_tokens * prompt_price_per_1m / 1_000_000
+            completion_cost_usd = completion_tokens * completion_price_per_1m / 1_000_000
+        else:
+            prompt_cost_usd = completion_cost_usd = None
         cost_usd = price_table.estimate_cost_usd(model_id, prompt_tokens, completion_tokens)
         image_price_each = None
+        image_cost_usd = None
 
     session_factory = get_session_factory()
     async with session_factory() as session:
@@ -290,6 +342,9 @@ async def record_usage(
                 prompt_tokens,
                 completion_tokens,
                 cost_usd,
+                prompt_cost_usd,
+                completion_cost_usd,
+                image_cost_usd,
             )
         )
         await session.commit()

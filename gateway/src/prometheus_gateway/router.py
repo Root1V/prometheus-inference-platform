@@ -329,6 +329,10 @@ def create_router(registry: ModelRegistry, pool: "BackendPool") -> APIRouter:
                     "Unable to read usage data from the store.",
                 )
 
+            def _accumulate(entry: dict[str, Any], key: str, value: float | None) -> None:
+                if value is not None:
+                    entry[key] = (entry[key] or 0.0) + value
+
             by_client: dict[str, dict[str, Any]] = {}
             for row in rows:
                 entry = by_client.setdefault(
@@ -340,6 +344,12 @@ def create_router(registry: ModelRegistry, pool: "BackendPool") -> APIRouter:
                         "total_tokens": 0,
                         "request_count": 0,
                         "estimated_cost_usd": None,
+                        # RM-60 follow-up: cost broken into what's paid for
+                        # input tokens vs. inference (completion) tokens vs.
+                        # images, alongside the existing combined total.
+                        "prompt_cost_usd": None,
+                        "completion_cost_usd": None,
+                        "image_cost_usd": None,
                         "by_model": [],
                     },
                 )
@@ -351,8 +361,10 @@ def create_router(registry: ModelRegistry, pool: "BackendPool") -> APIRouter:
                 # against the *current* pricing table, or a price change +
                 # restart would silently re-price every past day.
                 model_cost = row.cost_usd
-                if model_cost is not None:
-                    entry["estimated_cost_usd"] = (entry["estimated_cost_usd"] or 0.0) + model_cost
+                _accumulate(entry, "estimated_cost_usd", model_cost)
+                _accumulate(entry, "prompt_cost_usd", row.prompt_cost_usd)
+                _accumulate(entry, "completion_cost_usd", row.completion_cost_usd)
+                _accumulate(entry, "image_cost_usd", row.image_cost_usd)
                 entry["by_model"].append(
                     {
                         "model_id": row.model_id,
@@ -361,6 +373,9 @@ def create_router(registry: ModelRegistry, pool: "BackendPool") -> APIRouter:
                         "total_tokens": row.prompt_tokens + row.completion_tokens,
                         "request_count": row.request_count,
                         "estimated_cost_usd": model_cost,
+                        "prompt_cost_usd": row.prompt_cost_usd,
+                        "completion_cost_usd": row.completion_cost_usd,
+                        "image_cost_usd": row.image_cost_usd,
                     }
                 )
 

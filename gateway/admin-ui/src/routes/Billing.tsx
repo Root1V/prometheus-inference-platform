@@ -1,5 +1,5 @@
-import { Download, Percent, Receipt } from "lucide-react";
-import { useState, type CSSProperties } from "react";
+import { ChevronDown, ChevronRight, Download, Percent, Receipt } from "lucide-react";
+import { Fragment, useState, type CSSProperties } from "react";
 import {
   Area,
   AreaChart,
@@ -12,7 +12,7 @@ import {
   YAxis,
 } from "recharts";
 import { useBillingHistory, useBillingSummary } from "../api/billing";
-import { downloadUsageExportCsv } from "../api/usage";
+import { downloadUsageExportCsv, useUsageExportRows } from "../api/usage";
 import { useUsers } from "../api/users";
 import { BudgetAlertBanner } from "../components/BudgetAlertBanner";
 import { ModelPricingTable } from "../components/ModelPricingTable";
@@ -84,6 +84,121 @@ function CapIndicator({ summary }: { summary: BillingPeriodSummary }) {
         {percent.toFixed(0)}% of {formatUsdCost(summary.monthly_spend_cap_usd)} cap
       </span>
     </div>
+  );
+}
+
+/**
+ * One row of the Period History table, with an expand toggle that shows the
+ * same per-request detail as the CSV export (via the same /v1/usage/export
+ * endpoint, parsed for display instead of downloaded) directly on the page —
+ * only fetched once expanded, so periods nobody inspects cost nothing.
+ */
+function PeriodHistoryRow({
+  periodSummary,
+  clientId,
+  isExporting,
+  onExport,
+}: {
+  periodSummary: BillingPeriodSummary;
+  clientId: string;
+  isExporting: boolean;
+  onExport: (p: BillingPeriodSummary) => void;
+}) {
+  const [expanded, setExpanded] = useState(false);
+  const detailQuery = useUsageExportRows(
+    { start: periodSummary.period_start, end: periodSummary.period_end, client_id: clientId },
+    expanded,
+  );
+  const rows = detailQuery.data ?? [];
+
+  return (
+    <Fragment>
+      <tr
+        className="cursor-pointer border-b border-border last:border-0 hover:bg-background/50"
+        onClick={() => setExpanded((v) => !v)}
+      >
+        <td className="flex items-center gap-1.5 px-4 py-3 font-medium text-text">
+          {expanded ? (
+            <ChevronDown size={14} className="text-text-muted" />
+          ) : (
+            <ChevronRight size={14} className="text-text-muted" />
+          )}
+          {periodSummary.period}
+        </td>
+        <td className="px-4 py-3 text-text-muted">{formatUsdCost(periodSummary.subtotal_usd)}</td>
+        <td className="px-4 py-3 text-text-muted">
+          {formatUsdCost(periodSummary.tax_amount_usd)}
+        </td>
+        <td className="px-4 py-3 text-text-muted">{formatUsdCost(periodSummary.total_usd)}</td>
+        <td className="px-4 py-3 text-text-muted">
+          {periodSummary.request_count.toLocaleString()}
+        </td>
+        <td className="px-4 py-3">
+          <button
+            type="button"
+            onClick={(e) => {
+              e.stopPropagation();
+              onExport(periodSummary);
+            }}
+            disabled={isExporting}
+            className="flex items-center gap-1.5 text-xs font-medium text-primary hover:opacity-80 disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            <Download size={14} />
+            {isExporting ? "Exporting…" : "CSV"}
+          </button>
+        </td>
+      </tr>
+      {expanded && (
+        <tr className="border-b border-border bg-background/30 last:border-0">
+          <td colSpan={6} className="p-0">
+            {detailQuery.isLoading ? (
+              <div className="p-4 text-center text-xs text-text-muted">Loading detail…</div>
+            ) : rows.length === 0 ? (
+              <div className="p-4 text-center text-xs text-text-muted">No usage this period.</div>
+            ) : (
+              <div className="max-h-64 overflow-y-auto overflow-x-auto">
+                <table className="w-full min-w-[560px] text-left text-xs">
+                  <thead>
+                    <tr className="sticky top-0 bg-surface text-text-muted">
+                      <th className="px-4 py-2 font-medium">Recorded at</th>
+                      <th className="px-4 py-2 font-medium">Model</th>
+                      <th className="px-4 py-2 font-medium">Kind</th>
+                      <th className="px-4 py-2 font-medium">Prompt tok.</th>
+                      <th className="px-4 py-2 font-medium">Completion tok.</th>
+                      <th className="px-4 py-2 font-medium">Images</th>
+                      <th className="px-4 py-2 font-medium">Cost</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {rows.map((row, i) => (
+                      <tr key={i} className="border-t border-border">
+                        <td className="px-4 py-1.5 text-text-muted">
+                          {new Date(row.recorded_at).toLocaleString()}
+                        </td>
+                        <td className="px-4 py-1.5 text-text">{row.model_id}</td>
+                        <td className="px-4 py-1.5 text-text-muted">{row.request_kind}</td>
+                        <td className="px-4 py-1.5 text-text-muted">
+                          {row.prompt_tokens.toLocaleString()}
+                        </td>
+                        <td className="px-4 py-1.5 text-text-muted">
+                          {row.completion_tokens.toLocaleString()}
+                        </td>
+                        <td className="px-4 py-1.5 text-text-muted">
+                          {row.image_count.toLocaleString()}
+                        </td>
+                        <td className="px-4 py-1.5 text-text-muted">
+                          {formatUsdCost(row.cost_usd)}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </td>
+        </tr>
+      )}
+    </Fragment>
   );
 }
 
@@ -323,30 +438,13 @@ export default function Billing() {
                     </thead>
                     <tbody>
                       {(historyQuery.data?.periods ?? []).map((p) => (
-                        <tr key={p.period} className="border-b border-border last:border-0">
-                          <td className="px-4 py-3 font-medium text-text">{p.period}</td>
-                          <td className="px-4 py-3 text-text-muted">
-                            {formatUsdCost(p.subtotal_usd)}
-                          </td>
-                          <td className="px-4 py-3 text-text-muted">
-                            {formatUsdCost(p.tax_amount_usd)}
-                          </td>
-                          <td className="px-4 py-3 text-text-muted">{formatUsdCost(p.total_usd)}</td>
-                          <td className="px-4 py-3 text-text-muted">
-                            {p.request_count.toLocaleString()}
-                          </td>
-                          <td className="px-4 py-3">
-                            <button
-                              type="button"
-                              onClick={() => handleExportPeriod(p)}
-                              disabled={exportingPeriod === p.period}
-                              className="flex items-center gap-1.5 text-xs font-medium text-primary hover:opacity-80 disabled:cursor-not-allowed disabled:opacity-50"
-                            >
-                              <Download size={14} />
-                              {exportingPeriod === p.period ? "Exporting…" : "CSV"}
-                            </button>
-                          </td>
-                        </tr>
+                        <PeriodHistoryRow
+                          key={p.period}
+                          periodSummary={p}
+                          clientId={effectiveClientId}
+                          isExporting={exportingPeriod === p.period}
+                          onExport={handleExportPeriod}
+                        />
                       ))}
                     </tbody>
                   </table>

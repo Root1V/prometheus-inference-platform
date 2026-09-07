@@ -123,7 +123,7 @@ export default function Usage() {
               No usage recorded for {date || "today"} yet.
             </div>
           ) : (
-            <table className="w-full min-w-[640px] text-left text-sm">
+            <table className="w-full min-w-[900px] text-left text-sm">
               <thead>
                 <tr className="border-b border-border text-xs uppercase tracking-wide text-text-muted">
                   <th className="px-4 py-3 font-medium">Client</th>
@@ -131,6 +131,9 @@ export default function Usage() {
                   <th className="px-4 py-3 font-medium">Completion tokens</th>
                   <th className="px-4 py-3 font-medium">Total tokens</th>
                   <th className="px-4 py-3 font-medium">Requests</th>
+                  <th className="px-4 py-3 font-medium">Prompt cost</th>
+                  <th className="px-4 py-3 font-medium">Completion cost</th>
+                  <th className="px-4 py-3 font-medium">Image cost</th>
                   <th className="px-4 py-3 font-medium">Est. cost</th>
                 </tr>
               </thead>
@@ -171,6 +174,15 @@ export default function Usage() {
                           {entry.request_count.toLocaleString()}
                         </td>
                         <td className="px-4 py-3 text-text-muted">
+                          {formatUsdCost(entry.prompt_cost_usd)}
+                        </td>
+                        <td className="px-4 py-3 text-text-muted">
+                          {formatUsdCost(entry.completion_cost_usd)}
+                        </td>
+                        <td className="px-4 py-3 text-text-muted">
+                          {formatUsdCost(entry.image_cost_usd)}
+                        </td>
+                        <td className="px-4 py-3 text-text-muted">
                           {formatUsdCost(entry.estimated_cost_usd)}
                         </td>
                       </tr>
@@ -192,6 +204,15 @@ export default function Usage() {
                             </td>
                             <td className="px-4 py-2 text-text-muted">
                               {model.request_count.toLocaleString()}
+                            </td>
+                            <td className="px-4 py-2 text-text-muted">
+                              {formatUsdCost(model.prompt_cost_usd)}
+                            </td>
+                            <td className="px-4 py-2 text-text-muted">
+                              {formatUsdCost(model.completion_cost_usd)}
+                            </td>
+                            <td className="px-4 py-2 text-text-muted">
+                              {formatUsdCost(model.image_cost_usd)}
                             </td>
                             <td className="px-4 py-2 text-text-muted">
                               {formatUsdCost(model.estimated_cost_usd)}
