@@ -658,25 +658,6 @@ export default function Playground() {
             </button>
           </div>
 
-          {isTextLike && (
-            <div className="mt-4">
-              <label
-                htmlFor="playground-system"
-                className="mb-1.5 block text-sm font-medium text-text"
-              >
-                System prompt
-              </label>
-              <textarea
-                id="playground-system"
-                rows={2}
-                value={systemPrompt}
-                onChange={(e) => setSystemPrompt(e.target.value)}
-                placeholder="Optional — sets the assistant's behavior for this conversation."
-                className={inputClass}
-              />
-            </div>
-          )}
-
           <div className="mt-4 min-h-0 flex-1 space-y-4 overflow-y-auto rounded-xl border border-border bg-surface p-4">
             {entries.length === 0 ? (
               <p className="text-sm text-text-muted">No messages yet — send a prompt to get started.</p>
@@ -1032,6 +1013,23 @@ export default function Playground() {
 
           {isTextLike && (
             <>
+              <div>
+                <label
+                  htmlFor="playground-system"
+                  className="mb-1.5 block text-sm font-medium text-text"
+                >
+                  System prompt
+                </label>
+                <textarea
+                  id="playground-system"
+                  rows={3}
+                  value={systemPrompt}
+                  onChange={(e) => setSystemPrompt(e.target.value)}
+                  placeholder="Optional — sets the assistant's behavior for this conversation."
+                  className={inputClass}
+                />
+              </div>
+
               <label className="flex items-center gap-2 text-sm text-text">
                 <input
                   type="checkbox"
