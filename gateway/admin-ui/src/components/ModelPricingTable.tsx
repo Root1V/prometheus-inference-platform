@@ -179,7 +179,7 @@ export function ModelPricingTable() {
 
   return (
     <table className="w-full min-w-[640px] text-left text-sm">
-      <thead>
+      <thead className="sticky top-0 z-10 bg-surface">
         <tr className="border-b border-border text-xs uppercase tracking-wide text-text-muted">
           <th className="px-4 py-3 font-medium">Model</th>
           <th className="px-4 py-3 font-medium">Prompt $/1M</th>

@@ -42,6 +42,30 @@ function tooltipCostFormatter(value: unknown): string {
   return formatUsdCost(typeof value === "number" ? value : Number(value ?? 0));
 }
 
+// timeZone: "UTC" is required — periods are UTC calendar months (matching the
+// backend's month_bounds()), and formatting a UTC midnight Date in a
+// negative-offset local timezone (e.g. UTC-5) would otherwise display the
+// previous day, which crosses into the previous month on the 1st.
+const PERIOD_MONTH_FORMATTER = new Intl.DateTimeFormat(undefined, {
+  month: "long",
+  year: "numeric",
+  timeZone: "UTC",
+});
+
+/** Last `count` UTC calendar months (most recent first) as "YYYY-MM" values,
+ * paired with a human-readable label — used to populate the Period select
+ * instead of a native <input type="month">, whose placeholder renders as an
+ * unreadable "-------- de ----" in some locales.
+ */
+function recentPeriods(count: number): { value: string; label: string }[] {
+  const now = new Date();
+  return Array.from({ length: count }, (_, i) => {
+    const d = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() - i, 1));
+    const value = `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, "0")}`;
+    return { value, label: PERIOD_MONTH_FORMATTER.format(d) };
+  });
+}
+
 function CapIndicator({ summary }: { summary: BillingPeriodSummary }) {
   if (summary.monthly_spend_cap_usd === null) {
     return <span className="text-xs text-text-muted">No cap configured</span>;
@@ -74,6 +98,7 @@ export default function Billing() {
   const effectiveClientId = clientId || users[0]?.client_id || "";
   const summaryQuery = useBillingSummary(effectiveClientId, period || undefined);
   const historyQuery = useBillingHistory(effectiveClientId, 6);
+  const periodOptions = recentPeriods(12);
 
   const summary = summaryQuery.data;
   const modelBreakdown = (summary?.by_model ?? []).map((m) => ({
@@ -126,31 +151,24 @@ export default function Billing() {
             </label>
             <label className="flex items-center gap-2 text-sm text-text-muted">
               Period
-              <input
-                type="month"
+              <select
                 value={period}
                 onChange={(e) => setPeriod(e.target.value)}
                 className="rounded-lg border border-border bg-surface px-3 py-1.5 text-text"
-              />
+              >
+                <option value="">Current ({periodOptions[0].label})</option>
+                {periodOptions.slice(1).map((p) => (
+                  <option key={p.value} value={p.value}>
+                    {p.label}
+                  </option>
+                ))}
+              </select>
             </label>
           </div>
         </div>
 
         <div className="mt-4">
           <BudgetAlertBanner />
-        </div>
-
-        <div className="mt-6">
-          <h2 className="text-sm font-medium uppercase tracking-wide text-text-muted">
-            Model pricing
-          </h2>
-          <p className="mt-1 text-xs text-text-muted">
-            Replaces hand-editing pricing.yaml — a saved price applies to the next request
-            immediately, no restart needed.
-          </p>
-          <div className="mt-3 overflow-x-auto rounded-xl border border-border bg-surface">
-            <ModelPricingTable />
-          </div>
         </div>
 
         {!effectiveClientId ? (
@@ -337,6 +355,21 @@ export default function Billing() {
             </div>
           </>
         )}
+
+        <div className="mt-8">
+          <h2 className="text-sm font-medium uppercase tracking-wide text-text-muted">
+            Model pricing
+          </h2>
+          <p className="mt-1 text-xs text-text-muted">
+            Replaces hand-editing pricing.yaml — a saved price applies to the next request
+            immediately, no restart needed.
+          </p>
+          <div className="mt-3 rounded-xl border border-border bg-surface">
+            <div className="max-h-[35rem] overflow-y-auto overflow-x-auto">
+              <ModelPricingTable />
+            </div>
+          </div>
+        </div>
       </main>
     </div>
   );
