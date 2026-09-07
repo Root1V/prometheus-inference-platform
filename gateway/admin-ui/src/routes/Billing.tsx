@@ -15,6 +15,7 @@ import { useBillingHistory, useBillingSummary } from "../api/billing";
 import { downloadUsageExportCsv, useUsageExportRows } from "../api/usage";
 import { useUsers } from "../api/users";
 import { BudgetAlertBanner } from "../components/BudgetAlertBanner";
+import { CurrencyRatesForm } from "../components/CurrencyRatesForm";
 import { ModelPricingTable } from "../components/ModelPricingTable";
 import { Sidebar } from "../components/Sidebar";
 import { StatCard } from "../components/StatCard";
@@ -453,6 +454,10 @@ export default function Billing() {
             </div>
           </>
         )}
+
+        <div className="mt-8">
+          <CurrencyRatesForm />
+        </div>
 
         <div className="mt-8">
           <h2 className="text-sm font-medium uppercase tracking-wide text-text-muted">

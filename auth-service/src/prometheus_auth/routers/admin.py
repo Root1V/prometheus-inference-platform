@@ -14,7 +14,17 @@ from fastapi.security import APIKeyHeader
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from ..db import CredentialShareToken, Node, NodeType, Principal, PrincipalRole, get_session_factory
+from ..db import (
+    DEFAULT_ELECTRICITY_USD_PER_HOUR,
+    DEFAULT_HARDWARE_AMORTIZATION_USD_PER_HOUR,
+    DEFAULT_PRICE_MARGIN_MULTIPLIER,
+    CredentialShareToken,
+    Node,
+    NodeType,
+    Principal,
+    PrincipalRole,
+    get_session_factory,
+)
 from ..schemas import (
     CreateNodeRequest,
     CreatePrincipalRequest,
@@ -624,6 +634,10 @@ def _node_to_item(node: Node) -> NodeListItem:
         node_type=node.node_type.value,
         tag=node.tag,
         is_active=node.is_active,
+        hardware_amortization_usd_per_hour=node.hardware_amortization_usd_per_hour,
+        electricity_usd_per_hour=node.electricity_usd_per_hour,
+        price_margin_multiplier=node.price_margin_multiplier,
+        hourly_cost_usd=node.hardware_amortization_usd_per_hour + node.electricity_usd_per_hour,
         created_at=node.created_at,
         updated_at=node.updated_at,
     )
@@ -656,6 +670,21 @@ async def create_node(
         node_type=NodeType(body.node_type),
         tag=body.tag,
         is_active=reachable,
+        hardware_amortization_usd_per_hour=(
+            body.hardware_amortization_usd_per_hour
+            if body.hardware_amortization_usd_per_hour is not None
+            else DEFAULT_HARDWARE_AMORTIZATION_USD_PER_HOUR
+        ),
+        electricity_usd_per_hour=(
+            body.electricity_usd_per_hour
+            if body.electricity_usd_per_hour is not None
+            else DEFAULT_ELECTRICITY_USD_PER_HOUR
+        ),
+        price_margin_multiplier=(
+            body.price_margin_multiplier
+            if body.price_margin_multiplier is not None
+            else DEFAULT_PRICE_MARGIN_MULTIPLIER
+        ),
     )
     db.add(node)
     await db.commit()
@@ -697,6 +726,12 @@ async def update_node(
         node.node_type = NodeType(body.node_type)
     if "tag" in body.model_fields_set:
         node.tag = body.tag
+    if body.hardware_amortization_usd_per_hour is not None:
+        node.hardware_amortization_usd_per_hour = body.hardware_amortization_usd_per_hour
+    if body.electricity_usd_per_hour is not None:
+        node.electricity_usd_per_hour = body.electricity_usd_per_hour
+    if body.price_margin_multiplier is not None:
+        node.price_margin_multiplier = body.price_margin_multiplier
 
     node.updated_at = datetime.now(timezone.utc)
     await db.commit()

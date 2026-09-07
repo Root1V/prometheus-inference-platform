@@ -2599,6 +2599,42 @@ not this assistant) decides:
 **Do not implement e-invoicing integration under [[RM-60]]'s tax phase** — that phase's
 plain tax-rate line item is explicitly NOT a substitute for this compliance requirement.
 
+## RM-62 — Cost-based model price suggestion (done)
+
+**Why**: [[RM-60]] added a DB-backed Model Pricing table, but prices were still hand-typed —
+no link to what a model actually costs to run. The user's own hardware (a MacBook Pro M4
+Max) has a real cost (purchase price + electricity), and the platform already measures real
+per-model throughput ([[RM-46]]'s `tokens_per_second_avg`/`images_per_second_avg`); this item
+connects the two into a "suggest a break-even-plus-margin price" button, instead of guessing.
+
+**What shipped**: the Node registry (auth-service `nodes` table + `/admin/nodes` CRUD + the
+Nodes page's edit modal/table columns) gained 3 operator-entered fields —
+`hardware_amortization_usd_per_hour`, `electricity_usd_per_hour` (summed into a computed,
+read-only `hourly_cost_usd` total), and `price_margin_multiplier` — each falling back to a
+platform default (a MacBook Pro M4 Max's real numbers: ~$0.3082/hr amortization over a
+3-year life, ~$0.0146/hr electricity at Lima's residential rate, 1.3× margin) when left blank
+at creation, so a node is never left without a usable total. A new prefill (prompt-processing)
+throughput metric, `prompt_tokens_per_second_avg`, added to `telemetry.py`'s `MetricsStore`
+and `GET /metrics`: llama.cpp-family backends already send `timings.prompt_per_second` (or
+`prompt_ms`/`prompt_n` to derive it) on every response — router.py was reading
+`predicted_per_token_ms` from the same object but discarding this field entirely, so this
+closes a real gap with zero new backend instrumentation (previously `tokens_per_second_avg`
+was chat's *decode*-phase rate only, with no separate prefill number). A "Suggest price"
+calculator button per row in `ModelPricingTable.tsx`: looks up the model's node (via the
+existing catalog `node` name link) → that node's cost total and margin → divides by the
+model's observed prompt/completion/image throughput → fills the price inputs for review,
+never auto-saves. A new `CurrencyRatesForm` on `Billing.tsx` gives the PEN/EUR rates
+(`currency_rates` table, RM-60's endpoints had no consuming UI until now) an actual settings
+form instead of hand-editing the DB.
+
+**Verified**: live against the real dev gateway/auth-service — the operator's own node now
+carries the 3 real cost fields (confirmed the SQLite migration applied the platform defaults
+to the pre-existing node exactly as computed), confirmed `GET /metrics` reports
+`prompt_tokens_per_second_avg` for a real llama.cpp backend, confirmed the Suggest button's
+output matches the formula by hand across two separate live requests (different throughput
+samples each time), and confirmed the currency-rates form loads and round-trips real PEN/EUR
+values through the existing PUT endpoint.
+
 Append a new row to the table with the next `RM-NN` id and a new `## RM-NN — ...` section
 below, following the same shape (Why / Scope). Re-sort the table if the new item's
 priority isn't "last."

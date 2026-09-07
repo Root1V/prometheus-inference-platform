@@ -67,6 +67,7 @@ Status: `done` · `todo`
 | RM-59 | Dashboard: search/filter for Models and Instances | todo | Both tables sort/paginate today but have no text search — client-side filter, no new endpoint needed |
 | RM-60 | Billing: real per-client cost, multi-currency display, tax, dashboard, budget alerts | done | Fixed a retroactive-repricing bug (cost now stored at write time, not recomputed later); added an audit trail, CSV export, PEN/USD/EUR display, a tax line, a hard cap + soft alert thresholds, and a billing dashboard; real card charging stays deferred |
 | RM-61 | Peru/SUNAT e-invoicing compliance for individual (B2C) clients | todo | Blocked on the user's own business/legal decision (bill Peru individuals at all? which e-invoicing provider?) — not something to silently code under RM-60 |
+| RM-62 | Cost-based model price suggestion | done | Per-node $/hour field, a real prefill (prompt) tokens/sec metric, and a "Suggest price" calculator button in the Model Pricing table — break-even = node $/hour ÷ observed throughput, with an editable margin |
 
 Adding an item: append the next `RM-NN` row here with a one-liner, then add the full
 Why/Scope writeup to `docs/roadmap.md`.

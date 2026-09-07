@@ -1,7 +1,10 @@
-import { RotateCcw, Save } from "lucide-react";
+import { Calculator, RotateCcw, Save } from "lucide-react";
 import { useState } from "react";
+import type { BackendMetrics } from "../api/metrics";
 import { useDeleteModelPrice, useModelPrices, useUpdateModelPrice } from "../api/billing";
+import { useMetrics } from "../api/metrics";
 import { useModelCatalog } from "../api/models";
+import { useNodeRegistry } from "../api/nodes";
 import { useToast } from "../context/ToastContext";
 import { getErrorMessage } from "../lib/errors";
 import type { ModelPriceEntry } from "../types/billing";
@@ -15,7 +18,32 @@ function parseOptionalNumber(raw: string): number | null | "invalid" {
   return Number.isNaN(n) ? "invalid" : n;
 }
 
-function ModelPricingRow({ modelId, entry }: { modelId: string; entry: ModelPriceEntry | undefined }) {
+/** RM-62: break-even $/hour-of-node divided by real observed throughput,
+ * scaled to the usual $/1M-tokens or $/image unit, then bumped by `margin`
+ * (e.g. 1.3 = 30% over break-even) — never applied silently, only prefills
+ * the editable inputs below for the operator to review before Save. */
+function suggestPricePerUnit(
+  hourlyCostUsd: number,
+  unitsPerSecond: number,
+  unitsPerPricedBatch: number,
+  margin: number,
+): number {
+  return (hourlyCostUsd / (unitsPerSecond * 3600)) * unitsPerPricedBatch * margin;
+}
+
+function ModelPricingRow({
+  modelId,
+  entry,
+  hourlyCostUsd,
+  metrics,
+  margin,
+}: {
+  modelId: string;
+  entry: ModelPriceEntry | undefined;
+  hourlyCostUsd: number | null;
+  metrics: BackendMetrics | undefined;
+  margin: number;
+}) {
   const { showToast } = useToast();
   const updatePrice = useUpdateModelPrice();
   const deletePrice = useDeleteModelPrice();
@@ -28,6 +56,47 @@ function ModelPricingRow({ modelId, entry }: { modelId: string; entry: ModelPric
 
   const isBusy = updatePrice.isPending || deletePrice.isPending;
   const isDbOverride = entry?.source === "db";
+
+  function handleSuggest() {
+    if (!hourlyCostUsd) {
+      showToast(
+        `No hourly cost configured for ${modelId}'s node — set one on the Nodes page first.`,
+        "error",
+      );
+      return;
+    }
+    if (!metrics) {
+      showToast(`No throughput data yet for ${modelId} — send it a real request first.`, "error");
+      return;
+    }
+    let applied = false;
+    if (metrics.tokens_per_second_avg) {
+      setCompletionPrice(
+        suggestPricePerUnit(hourlyCostUsd, metrics.tokens_per_second_avg, 1_000_000, margin).toFixed(4),
+      );
+      applied = true;
+    }
+    if (metrics.prompt_tokens_per_second_avg) {
+      setPromptPrice(
+        suggestPricePerUnit(
+          hourlyCostUsd,
+          metrics.prompt_tokens_per_second_avg,
+          1_000_000,
+          margin,
+        ).toFixed(4),
+      );
+      applied = true;
+    }
+    if (metrics.images_per_second_avg) {
+      setImagePrice(suggestPricePerUnit(hourlyCostUsd, metrics.images_per_second_avg, 1, margin).toFixed(4));
+      applied = true;
+    }
+    if (!applied) {
+      showToast(`No usable throughput samples yet for ${modelId}.`, "error");
+      return;
+    }
+    showToast(`Suggested price filled in for ${modelId} — review, then Save.`, "success");
+  }
 
   function handleSave() {
     const prompt = parseOptionalNumber(promptPrice);
@@ -121,6 +190,15 @@ function ModelPricingRow({ modelId, entry }: { modelId: string; entry: ModelPric
         <div className="flex items-center gap-2">
           <button
             type="button"
+            title="Suggest a price from this model's node cost + observed throughput"
+            aria-label={`Suggest price for ${modelId}`}
+            onClick={handleSuggest}
+            className="rounded-md p-1.5 text-text-muted hover:bg-primary/10 hover:text-primary"
+          >
+            <Calculator size={16} />
+          </button>
+          <button
+            type="button"
             title="Save"
             aria-label={`Save price for ${modelId}`}
             disabled={isBusy}
@@ -157,17 +235,36 @@ function ModelPricingRow({ modelId, entry }: { modelId: string; entry: ModelPric
 export function ModelPricingTable() {
   const pricesQuery = useModelPrices();
   const catalogQuery = useModelCatalog();
+  const nodesQuery = useNodeRegistry();
+  const metricsQuery = useMetrics();
 
   if (pricesQuery.isLoading || catalogQuery.isLoading) {
     return <div className="p-8 text-center text-text-muted">Loading…</div>;
   }
 
   const prices = pricesQuery.data?.data ?? {};
-  const catalogIds = (catalogQuery.data?.models ?? []).map((m) => m.id);
+  const catalogEntries = catalogQuery.data?.models ?? [];
+  const catalogIds = catalogEntries.map((m) => m.id);
   // Every priced model (yaml or db) plus every catalog model not yet priced —
   // a model can be priced before it's downloaded, but usually it's the
   // other way around.
   const modelIds = Array.from(new Set([...Object.keys(prices), ...catalogIds])).sort();
+
+  // RM-62: modelId -> its node's $/hour + margin, via the catalog's node-name
+  // link (registry.py's ModelEntry.node) -> the node registry (Nodes page).
+  const nodeByName = new Map((nodesQuery.data ?? []).map((n) => [n.name, n]));
+  const nodeInfoByModel = new Map(
+    catalogEntries.map((m) => {
+      const node = nodeByName.get(m.node);
+      return [
+        m.id,
+        node
+          ? { hourlyCostUsd: node.hourly_cost_usd, margin: node.price_margin_multiplier }
+          : null,
+      ] as const;
+    }),
+  );
+  const backendsById = metricsQuery.data?.backends ?? {};
 
   if (modelIds.length === 0) {
     return (
@@ -178,21 +275,37 @@ export function ModelPricingTable() {
   }
 
   return (
-    <table className="w-full min-w-[640px] text-left text-sm">
-      <thead className="sticky top-0 z-10 bg-surface">
-        <tr className="border-b border-border text-xs uppercase tracking-wide text-text-muted">
-          <th className="px-4 py-3 font-medium">Model</th>
-          <th className="px-4 py-3 font-medium">Prompt $/1M</th>
-          <th className="px-4 py-3 font-medium">Completion $/1M</th>
-          <th className="px-4 py-3 font-medium">Image $/each</th>
-          <th className="px-4 py-3 font-medium">Actions</th>
-        </tr>
-      </thead>
-      <tbody>
-        {modelIds.map((modelId) => (
-          <ModelPricingRow key={modelId} modelId={modelId} entry={prices[modelId]} />
-        ))}
-      </tbody>
-    </table>
+    <div>
+      <div className="border-b border-border bg-surface px-4 py-3 text-xs text-text-muted">
+        The calculator button suggests a price from each model's node cost + margin — set both
+        on the Nodes page.
+      </div>
+      <table className="w-full min-w-[640px] text-left text-sm">
+        <thead className="sticky top-0 z-10 bg-surface">
+          <tr className="border-b border-border text-xs uppercase tracking-wide text-text-muted">
+            <th className="px-4 py-3 font-medium">Model</th>
+            <th className="px-4 py-3 font-medium">Prompt $/1M</th>
+            <th className="px-4 py-3 font-medium">Completion $/1M</th>
+            <th className="px-4 py-3 font-medium">Image $/each</th>
+            <th className="px-4 py-3 font-medium">Actions</th>
+          </tr>
+        </thead>
+        <tbody>
+          {modelIds.map((modelId) => {
+            const nodeInfo = nodeInfoByModel.get(modelId);
+            return (
+              <ModelPricingRow
+                key={modelId}
+                modelId={modelId}
+                entry={prices[modelId]}
+                hourlyCostUsd={nodeInfo?.hourlyCostUsd ?? null}
+                metrics={backendsById[modelId]}
+                margin={nodeInfo?.margin ?? 1}
+              />
+            );
+          })}
+        </tbody>
+      </table>
+    </div>
   );
 }

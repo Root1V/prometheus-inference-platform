@@ -800,6 +800,11 @@ def create_router(registry: ModelRegistry, pool: "BackendPool") -> APIRouter:
                     # inter-token latency for this request) — mlx/vllm/sglang
                     # don't, hence the None default rather than assuming it exists.
                     inter_token_ms: float | None = None
+                    # RM-62: prefill (prompt-processing) throughput — the same
+                    # `timings` object already reports this directly as
+                    # `prompt_per_second`; fall back to prompt_n/prompt_ms if a
+                    # backend only reports the raw pair.
+                    prompt_tps: float | None = None
                     try:
                         resp_body: Any = resp.json()
                         usage_obj = (
@@ -809,6 +814,12 @@ def create_router(registry: ModelRegistry, pool: "BackendPool") -> APIRouter:
                             resp_body.get("timings", {}) if isinstance(resp_body, dict) else {}
                         )
                         inter_token_ms = timings_obj.get("predicted_per_token_ms")
+                        prompt_tps = timings_obj.get("prompt_per_second")
+                        if prompt_tps is None:
+                            prompt_ms = timings_obj.get("prompt_ms")
+                            prompt_n = timings_obj.get("prompt_n")
+                            if prompt_ms and prompt_n:
+                                prompt_tps = prompt_n / (prompt_ms / 1000)
                     except Exception:
                         resp_body = {}
 
@@ -872,6 +883,9 @@ def create_router(registry: ModelRegistry, pool: "BackendPool") -> APIRouter:
                         backend_id=entry.id,
                         inter_token_ms=inter_token_ms,
                         tokens_per_second=round(tps, 2) if completion_tokens > 0 else None,
+                        prompt_tokens_per_second=(
+                            round(prompt_tps, 2) if prompt_tps is not None else None
+                        ),
                     )
 
                     # RM-32: record persisted daily usage
@@ -1569,6 +1583,8 @@ async def _stream_response(
         # object, present on the backend's final chunk for llama.cpp-family
         # backends only.
         inter_token_ms: float | None = None
+        # RM-62: same prefill-throughput extraction as the non-streaming path.
+        prompt_tps: float | None = None
         try:
             # AC-8 (018): forward X-Trace-ID to backend for streaming requests
             async with client.stream(
@@ -1604,6 +1620,12 @@ async def _stream_response(
                                             timings.get("cache_n", 0) + timings["prompt_n"]
                                         )
                                         completion_tokens = timings["predicted_n"]
+                                    prompt_tps = timings.get("prompt_per_second")
+                                    if prompt_tps is None:
+                                        prompt_ms = timings.get("prompt_ms")
+                                        prompt_n = timings.get("prompt_n")
+                                        if prompt_ms and prompt_n:
+                                            prompt_tps = prompt_n / (prompt_ms / 1000)
                                 if ttft_ms is None:
                                     delta_content = (
                                         (chunk.get("choices") or [{}])[0].get("delta") or {}
@@ -1656,6 +1678,7 @@ async def _stream_response(
                 ttft_ms=ttft_ms,
                 inter_token_ms=inter_token_ms,
                 tokens_per_second=round(tps, 2) if completion_tokens > 0 else None,
+                prompt_tokens_per_second=round(prompt_tps, 2) if prompt_tps is not None else None,
             )
             # RM-32: persisted daily usage for streaming
             await _record_usage(claims, backend_id, prompt_tokens, completion_tokens)

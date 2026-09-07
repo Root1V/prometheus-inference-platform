@@ -1,7 +1,7 @@
 import type { Node } from "../types/node";
 import { NodeRow } from "./NodeRow";
 
-const COLUMNS = ["Name", "Manager URL", "Type", "Tag", "Status", "Actions"];
+const COLUMNS = ["Name", "Manager URL", "Type", "Tag", "$/hour", "Margin", "Status", "Actions"];
 
 export function NodeTable({
   nodes,
@@ -20,7 +20,7 @@ export function NodeTable({
 
   return (
     <div className="overflow-x-auto rounded-xl border border-border bg-surface">
-      <table className="w-full min-w-[700px] text-left text-sm">
+      <table className="w-full min-w-[880px] text-left text-sm">
         <thead>
           <tr className="border-b border-border text-xs uppercase tracking-wide text-text-muted">
             {COLUMNS.map((col) => (

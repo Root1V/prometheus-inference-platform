@@ -20,6 +20,10 @@ export interface BackendMetrics {
   inter_token_ms_avg: number | null;
   tokens_per_second_avg: number | null;
   images_per_second_avg: number | null;
+  /** RM-62: prefill (prompt-processing) throughput — separate from
+   * tokens_per_second_avg's decode-phase rate for chat. Only populated for
+   * llama.cpp-family backends, whose `timings` object reports it directly. */
+  prompt_tokens_per_second_avg: number | null;
 }
 
 /**

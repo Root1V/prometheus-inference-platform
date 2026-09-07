@@ -18,15 +18,34 @@ interface CreateNodeModalProps {
 
 const NODE_TYPES: NodeType[] = ["mac", "nvidia", "other"];
 
+// RM-62 follow-up: mirrors db.py's DEFAULT_* constants — shown as
+// placeholders only (the server applies the real defaults when a field is
+// left blank at creation), so this repo's single source of truth stays the
+// backend; these just tell the operator what they'll get.
+const DEFAULT_AMORTIZATION_HINT = "0.3082";
+const DEFAULT_ELECTRICITY_HINT = "0.0146";
+const DEFAULT_MARGIN_HINT = "1.3";
+
 interface FormState {
   name: string;
   manager_url: string;
   node_type: NodeType;
   tag: string;
+  hardware_amortization: string;
+  electricity: string;
+  margin: string;
 }
 
 function initialState(): FormState {
-  return { name: "", manager_url: "", node_type: "mac", tag: "" };
+  return {
+    name: "",
+    manager_url: "",
+    node_type: "mac",
+    tag: "",
+    hardware_amortization: "",
+    electricity: "",
+    margin: "",
+  };
 }
 
 function stateFromNode(node: Node): FormState {
@@ -35,7 +54,17 @@ function stateFromNode(node: Node): FormState {
     manager_url: node.manager_url,
     node_type: node.node_type,
     tag: node.tag ?? "",
+    hardware_amortization: node.hardware_amortization_usd_per_hour.toString(),
+    electricity: node.electricity_usd_per_hour.toString(),
+    margin: node.price_margin_multiplier.toString(),
   };
+}
+
+/** Blank is valid (server applies its default); anything else must parse. */
+function parseBlankableNumber(raw: string): number | undefined | "invalid" {
+  if (raw.trim() === "") return undefined;
+  const n = Number(raw);
+  return Number.isNaN(n) ? "invalid" : n;
 }
 
 const inputClass =
@@ -69,11 +98,26 @@ export function CreateNodeModal({ open, onClose, editing = null }: CreateNodeMod
   const handleSubmit = (event: FormEvent) => {
     event.preventDefault();
 
+    const amortization = parseBlankableNumber(form.hardware_amortization);
+    const electricity = parseBlankableNumber(form.electricity);
+    const margin = parseBlankableNumber(form.margin);
+    if (amortization === "invalid" || electricity === "invalid" || margin === "invalid") {
+      showToast("Amortization, electricity, and margin must be numbers, or blank.", "error");
+      return;
+    }
+
     if (isEditing) {
       updateNode.mutate(
         {
           id: editing.id,
-          data: { manager_url: form.manager_url, node_type: form.node_type, tag: form.tag || null },
+          data: {
+            manager_url: form.manager_url,
+            node_type: form.node_type,
+            tag: form.tag || null,
+            hardware_amortization_usd_per_hour: amortization,
+            electricity_usd_per_hour: electricity,
+            price_margin_multiplier: margin,
+          },
         },
         {
           onSuccess: () => {
@@ -91,6 +135,9 @@ export function CreateNodeModal({ open, onClose, editing = null }: CreateNodeMod
       manager_url: form.manager_url,
       node_type: form.node_type,
       ...(form.tag ? { tag: form.tag } : {}),
+      ...(amortization !== undefined ? { hardware_amortization_usd_per_hour: amortization } : {}),
+      ...(electricity !== undefined ? { electricity_usd_per_hour: electricity } : {}),
+      ...(margin !== undefined ? { price_margin_multiplier: margin } : {}),
     };
 
     createNode.mutate(body, {
@@ -102,6 +149,9 @@ export function CreateNodeModal({ open, onClose, editing = null }: CreateNodeMod
       onError: (error) => showToast(getErrorMessage(error), "error"),
     });
   };
+
+  const previewTotal =
+    (Number(form.hardware_amortization) || 0) + (Number(form.electricity) || 0);
 
   return createPortal(
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 px-4 py-8">
@@ -149,6 +199,39 @@ export function CreateNodeModal({ open, onClose, editing = null }: CreateNodeMod
           </Field>
           <Field label="Tag">
             <input value={form.tag} onChange={(e) => update("tag", e.target.value)} className={inputClass} />
+          </Field>
+          <div className="grid grid-cols-2 gap-3">
+            <Field label="Hardware amortization ($/hour)">
+              <input
+                value={form.hardware_amortization}
+                onChange={(e) => update("hardware_amortization", e.target.value)}
+                placeholder={`${DEFAULT_AMORTIZATION_HINT} (default)`}
+                inputMode="decimal"
+                className={inputClass}
+              />
+            </Field>
+            <Field label="Electricity ($/hour)">
+              <input
+                value={form.electricity}
+                onChange={(e) => update("electricity", e.target.value)}
+                placeholder={`${DEFAULT_ELECTRICITY_HINT} (default)`}
+                inputMode="decimal"
+                className={inputClass}
+              />
+            </Field>
+          </div>
+          <p className="text-xs text-text-muted">
+            Total: <span className="font-medium text-text">${previewTotal.toFixed(4)}/hour</span> —
+            blank fields use the platform default shown above.
+          </p>
+          <Field label="Price-suggestion margin (×)">
+            <input
+              value={form.margin}
+              onChange={(e) => update("margin", e.target.value)}
+              placeholder={`${DEFAULT_MARGIN_HINT} (default)`}
+              inputMode="decimal"
+              className={inputClass}
+            />
           </Field>
           <div className="flex justify-end gap-3 pt-2">
             <button
