@@ -7,6 +7,7 @@ memory/specs/007-rate-limiting-and-throughput.md
 from __future__ import annotations
 
 import time
+from unittest.mock import patch
 
 import fakeredis.aioredis as fakeredis
 import pytest
@@ -356,10 +357,13 @@ async def test_restart_uses_existing_counters_AC18(
             rate_limit_tpm=100_000,
             rate_limit_strict=True,
         )
-        # Pre-seed the rate limit counter to max (rpm=2)
-        import time as _t
-
-        bucket = int(_t.time() // 60)
+        # Pre-seed the rate limit counter to max (rpm=2). The bucket is a
+        # wall-clock-derived value (minute granularity) shared between this
+        # seed step and the rate limiter's own bucket lookup during the
+        # request below; freeze time for both so a minute-boundary crossing
+        # between the two can never desync the Redis key they use.
+        frozen_now = time.time()
+        bucket = int(frozen_now // 60)
         key = f"prometheus:rl:rpm:sub-123:chat_completions:{bucket}"
         await fake_redis.set(key, 2)
         await fake_redis.expire(key, 90)
@@ -379,12 +383,16 @@ async def test_restart_uses_existing_counters_AC18(
         )
         headers = {"Authorization": f"Bearer {token}"}
 
-        async with AsyncClient(transport=ASGITransport(app=new_app), base_url="http://test") as c:
-            with respx.mock:
-                respx.post("http://127.0.0.1:18081/v1/chat/completions").mock(
-                    return_value=Response(200, json=LLAMA_RESPONSE)
-                )
-                r = await c.post("/v1/chat/completions", json=VALID_BODY, headers=headers)
+        with patch("prometheus_gateway.rate_limiter.time") as mock_time:
+            mock_time.time.return_value = frozen_now
+            async with AsyncClient(
+                transport=ASGITransport(app=new_app), base_url="http://test"
+            ) as c:
+                with respx.mock:
+                    respx.post("http://127.0.0.1:18081/v1/chat/completions").mock(
+                        return_value=Response(200, json=LLAMA_RESPONSE)
+                    )
+                    r = await c.post("/v1/chat/completions", json=VALID_BODY, headers=headers)
     finally:
         os.unlink(pem_path)
 
