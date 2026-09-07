@@ -65,7 +65,8 @@ Status: `done` · `todo`
 | RM-57 | Multi-instance-per-model: a shared logical name for routing | todo | RM-51's schema allows several instances per catalog model, but each still needs its own unique client-facing id — no "these are replicas of each other" concept yet |
 | RM-58 | Gateway: intelligent load balancing across instances of the same model | todo | Depends on RM-57; candidates are round-robin, least-active-requests, or latency-aware using RM-46's existing per-instance metrics |
 | RM-59 | Dashboard: search/filter for Models and Instances | todo | Both tables sort/paginate today but have no text search — client-side filter, no new endpoint needed |
-| RM-60 | Billing: usage-period exports and spend caps, built on RM-32/33 | todo | Researched against LiteLLM/Helicone/OpenMeter/Lago/Stripe — CSV export + date-range picker + spend caps first; real payment collection explicitly deferred as a much bigger, separate lift |
+| RM-60 | Billing: real per-client cost, multi-currency display, tax, dashboard, budget alerts | todo | Fixes a retroactive-repricing bug first (cost now stored at write time, not recomputed later); adds an audit trail, CSV export, PEN/USD/EUR display, a tax line, a hard cap + soft alert thresholds, and a billing dashboard; real card charging stays deferred |
+| RM-61 | Peru/SUNAT e-invoicing compliance for individual (B2C) clients | todo | Blocked on the user's own business/legal decision (bill Peru individuals at all? which e-invoicing provider?) — not something to silently code under RM-60 |
 
 Adding an item: append the next `RM-NN` row here with a one-liner, then add the full
 Why/Scope writeup to `docs/roadmap.md`.

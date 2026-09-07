@@ -2530,44 +2530,118 @@ as of RM-51), finding one specific model means scanning pages by eye.
   a plain substring match covers the actual "I know roughly what it's called" use case this
   was raised for.
 
-## RM-60 — Billing: usage-period exports and spend caps, built on RM-32/33 (todo)
+## RM-60 — Billing: real per-client cost, multi-currency display, tax, dashboard, budget alerts (todo)
 
 **Why**: [[RM-32]]/[[RM-33]] already meter and price every request (`usage_daily` — one row
 per day/client/model, tokens + request count — rated against `gateway/pricing.yaml`'s
-per-model $/1M-token rates via `estimate_cost_usd()`) and RM-34 surfaces today's total on the
-Overview page. What's still missing to call this "billing" rather than just "usage display":
-handing a client/department something to actually settle a bill with, and stopping runaway
-spend before the fact rather than only reporting it after. Researched rather than guessed
-(LiteLLM, Helicone, OpenMeter, Lago, Stripe's own usage-billing docs): every comparable
-product treats metering/rating as the reusable core (which this platform already has) and
-layers reporting/enforcement on top — real payment collection is a distinct, much larger
-project layered on top of that, not a natural next step from here. Since Prometheus's
-clients are pre-provisioned OAuth2 credentials (no public signup), this maps to an internal
-chargeback/showback model — settling through a department's existing channels — rather than
-a consumer SaaS that auto-charges a card.
+per-model $/1M-token rates) and RM-34 surfaces today's total on the Overview page. Confirmed
+with the user this is meant to become **real billing of Prometheus's own users** — telling
+each client how much they owe for their consumption — not just an internal chargeback
+report, though actual payment collection (charging a card) stays a separate, later step.
+
+**Correctness bug found while researching, fixed as part of this item, not optional**:
+`estimate_cost_usd()` computes cost at **read time** (`GET /v1/usage`) against whatever
+`pricing.yaml` currently says — there is no stored `cost_usd` anywhere. If an operator edits
+a model's price and restarts the gateway, every past day's usage silently re-prices under
+the new rate the next time anyone queries it. No real billing system does this (Stripe,
+Lago, Kill Bill all rate against the price version in effect *at the time of usage*, never
+retroactively). Confirmed via research this is a real, common anti-pattern, not a
+hypothetical.
 
 **Scope — phased, build in this order**:
-1. **Usage/cost export** — CSV export of `usage_daily` for an arbitrary date range per
-   client (today's `GET /v1/usage` and `Usage.tsx` are single-day only), so an admin can
-   hand over a statement for a billing period. Pure read/export on existing data, no new
-   backend concepts.
-2. **Date-range picker on `Usage.tsx`** — needed to make #1 meaningful for a real billing
+
+1. **Fix write-time pricing**: `record_usage()` computes and stores `cost_usd` (against the
+   pricing table active *at that moment*) directly on the row, instead of `GET /v1/usage`
+   recomputing it later from whatever's currently configured. A price change only ever
+   affects usage recorded after the change.
+2. **Immutable audit trail**: a new append-only `usage_events` table (one row per request,
+   never updated — `client_id`, `model_id`, `prompt_tokens`, `completion_tokens`, the
+   `prompt_price_per_1m`/`completion_price_per_1m` actually applied, `cost_usd`,
+   `recorded_at`) as the real source of truth; `usage_daily` becomes a rebuildable rollup of
+   it rather than the only record. Minimum viable "why was I charged X" answer — not a
+   signed/hash-chained ledger, one honest table.
+3. **Usage/cost CSV export** — arbitrary date range per client (today's `GET /v1/usage` and
+   `Usage.tsx` are single-day only). Each line shows the actual rate applied (not just a
+   total, so a client can verify the math themselves — AWS Cost & Usage Report convention),
+   a `generated_at` timestamp distinct from the period bounds, and a reconciliation/totals
+   row.
+4. **Date-range picker on `Usage.tsx`** — needed to make #3 meaningful for a real billing
    period (weekly/monthly), not just "today."
-3. **Spend caps / quota enforcement** — a per-client monthly $ budget checked against
-   `usage_daily`'s running cost total, rejecting further requests once exceeded (likely
-   living alongside `rate_limit_middleware.py`'s existing RPM/TPM checks, a $-budget check
-   rather than a request-count one). Reuses existing pricing data; no payment processor
-   involved.
+5. **Multi-currency display (PEN, USD, EUR)**: cost stays stored in USD only (that's what
+   `pricing.yaml` is denominated in) — currency conversion is a **display-layer concern
+   only**, never part of the stored cost. A small admin-configured exchange-rate table (not
+   a live FX API for v1 — unnecessary maintenance/dependency for a display convenience); the
+   rate actually used gets snapshotted onto each period summary/export so it's traceable.
+   This is "let a client see their bill in their preferred currency," not real
+   multi-currency settlement (separate payment rails/reconciliation per currency) — that
+   stays out of scope.
+6. **Tax line item**: a configurable tax rate per client, shown as a separate tax-exclusive
+   line (subtotal + tax = total) — not a full tax-determination engine (Stripe Tax/Avalara
+   territory, overkill for a platform with known, pre-provisioned clients). See the
+   **Peru/SUNAT flag** below — this phase covers the B2B/general case only.
+7. **Spend caps / budget guardrail** — two separate mechanisms, not one, matching how
+   GCP/GitHub budgets work: (a) the hard cap — a per-client monthly $ budget that blocks
+   further requests at 100%, implemented as a single atomic Redis operation (reuse
+   `rate_limiter.py`'s `check_and_increment_rpm` pattern — **not**
+   `check_tpm_budget`'s separate-read-then-write pattern, which this codebase already has as
+   a known race-condition gap; don't repeat it for a $ budget). Because completion-token
+   cost isn't known until generation finishes, use reserve-then-settle: reserve a
+   conservative worst-case estimate before forwarding the request, true up the real cost
+   once it completes. (b) softer, configurable alert thresholds below the cap (default
+   50%/80%/100%, admin-adjustable) that only notify (in-app banner + email) — never block —
+   evaluated against the same spend total the hard cap already tracks.
+8. **Billing dashboard**: current-period summary card (running total + cap indicator if
+   set), a breakdown by model (stacked bar or sortable table), a historical trend chart
+   (daily spend across periods), and a period-history list linking to each period's CSV
+   export (closest precedent: AWS Cost Explorer's daily-chart + top-cost-drivers view, GCP
+   Billing's stacked-bar-by-service, Vercel's usage dashboard).
+9. **Pricing granularity — confirmed unchanged**: stays per exact model id
+   (`pricing.yaml`'s existing shape), not per model-type/tier. Researched — no serious
+   gateway (LiteLLM, OpenRouter) prices by tier, and it fits this platform even less: these
+   are self-hosted models where real operator cost varies model-to-model in ways a tier
+   label would misrepresent.
+
+**Peru/SUNAT flag — confirmed real, not a config field**: the user confirmed Prometheus may
+bill individual (non-business) clients based in Peru. Peru's Legislative Decree 1623
+(effective Dec 2024) requires a foreign digital-service provider selling to Peru-based
+**individual consumers** (B2C) to register with SUNAT as a withholding agent and issue
+SUNAT-format electronic invoices (UBL 2.1, via an authorized PSE/OSE provider), with monthly
+filing. This is a genuine legal/compliance undertaking, not something to silently build into
+this item's tax phase — see [[RM-61]]. This item's own tax phase (#6 above) ships a
+plain configurable rate + tax-exclusive line item, explicitly labeled on any invoice/export
+generated for a Peru-based individual client as **not a SUNAT-compliant tax receipt**, so
+nobody mistakes it for one until RM-61 (or the user's own decision to restrict Peru billing
+to business clients only) resolves this.
 
 **Explicitly deferred, not part of this item**: real payment collection (Stripe/Metronome-
-style metered billing with an actual charge to a card). Only worth building if Prometheus
-ever needs to auto-bill *external* customers rather than internal departments — and it's a
-categorically bigger lift than the above: PCI scope (must use Stripe Checkout/Elements,
-never handle raw card numbers directly, annual re-attestation), payment-method storage,
-and recurring-charge failure/dunning handling. Not something to bundle into the same PR as
-phases 1–3 above; would be its own future roadmap item if the need ever materializes.
+style metered billing with an actual charge to a card) — confirmed with the user this stays
+a separate, later step. Real multi-currency settlement (vs. display-only conversion), a full
+tax-determination engine, and SUNAT e-invoicing compliance (→ [[RM-61]]) are all out of
+scope here too.
 
-## Adding new items
+## RM-61 — Peru/SUNAT e-invoicing compliance for individual (B2C) clients (todo, blocked on a business decision)
+
+**Why**: split out of [[RM-60]] — Peru's Legislative Decree 1623 (effective Dec 2024)
+requires a foreign digital-service provider billing Peru-based **individual consumers** to
+register with SUNAT as a withholding agent and issue electronic invoices in SUNAT's UBL 2.1
+format via an authorized PSE/OSE provider, with monthly filing and 5-year electronic
+retention. This is a real legal/compliance program — SUNAT registration, choosing and
+integrating an authorized e-invoicing provider (e.g. a PSE/OSE service), ongoing monthly
+remittance — not a software feature a coding session should silently implement without
+actual legal/tax review, since getting it wrong creates real legal/tax exposure for the
+platform operator.
+
+**This item is intentionally left unscoped** until the user (with actual legal/tax counsel,
+not this assistant) decides:
+- Whether Prometheus will actually bill Peru-based individual consumers at all, or restrict
+  Peru-based billing to registered business entities (which sidesteps this requirement
+  entirely, per Decree 1623's explicit B2C-only scope).
+- If billing Peru individuals is required: which authorized PSE/OSE e-invoicing provider to
+  integrate with, and confirmation of the registration/filing process with SUNAT (a business
+  process, not a code change).
+
+**Do not implement e-invoicing integration under [[RM-60]]'s tax phase** — that phase's
+plain tax-rate line item is explicitly NOT a substitute for this compliance requirement.
 
 Append a new row to the table with the next `RM-NN` id and a new `## RM-NN — ...` section
 below, following the same shape (Why / Scope). Re-sort the table if the new item's
