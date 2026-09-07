@@ -33,3 +33,25 @@ export function formatUsdCost(cost: number | null): string {
     maximumFractionDigits: 4,
   });
 }
+
+export type CurrencyCode = "USD" | "PEN" | "EUR";
+
+/**
+ * RM-60: display-only multi-currency formatting — cost is always stored and
+ * computed in USD (see gateway/pricing.yaml); `unitsPerUsd` (1 for USD) just
+ * converts the already-computed USD figure for display, never re-derives it.
+ */
+export function formatCurrency(
+  costUsd: number | null,
+  currency: CurrencyCode,
+  unitsPerUsd: number,
+): string {
+  if (costUsd === null) return "—";
+  const amount = currency === "USD" ? costUsd : costUsd * unitsPerUsd;
+  return amount.toLocaleString(undefined, {
+    style: "currency",
+    currency,
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 4,
+  });
+}

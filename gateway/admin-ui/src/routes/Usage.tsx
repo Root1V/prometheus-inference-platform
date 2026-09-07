@@ -1,20 +1,46 @@
-import { ChevronDown, ChevronRight } from "lucide-react";
+import { ChevronDown, ChevronRight, Download } from "lucide-react";
 import { Fragment, useState } from "react";
-import { useUsage } from "../api/usage";
+import { downloadUsageExportCsv, useUsage } from "../api/usage";
 import { useUsers } from "../api/users";
 import { Sidebar } from "../components/Sidebar";
+import { useToast } from "../context/ToastContext";
 import { getErrorMessage } from "../lib/errors";
 import { formatUsdCost } from "../lib/format";
+
+/** Today (UTC) as YYYY-MM-DD, for the export range's default bounds. */
+function todayUtc(): string {
+  return new Date().toISOString().slice(0, 10);
+}
+
+/** First day of the current UTC month, as YYYY-MM-DD. */
+function monthStartUtc(): string {
+  return `${todayUtc().slice(0, 7)}-01`;
+}
 
 export default function Usage() {
   const [date, setDate] = useState("");
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
+  const [exportStart, setExportStart] = useState(monthStartUtc);
+  const [exportEnd, setExportEnd] = useState(todayUtc);
+  const [exporting, setExporting] = useState(false);
   const usageQuery = useUsage(date || undefined);
   const usersQuery = useUsers();
+  const { showToast } = useToast();
 
   const users = usersQuery.data ?? [];
   const nameByClientId = new Map(users.map((u) => [u.client_id, u.client_name]));
   const entries = usageQuery.data?.data ?? [];
+
+  async function handleExport() {
+    setExporting(true);
+    try {
+      await downloadUsageExportCsv({ start: exportStart, end: exportEnd });
+    } catch (error) {
+      showToast(getErrorMessage(error), "error");
+    } finally {
+      setExporting(false);
+    }
+  }
 
   function toggleExpanded(clientId: string) {
     setExpanded((prev) => {
@@ -49,6 +75,42 @@ export default function Usage() {
               className="rounded-lg border border-border bg-surface px-3 py-1.5 text-text"
             />
           </label>
+        </div>
+
+        <div className="mt-4 flex flex-wrap items-end gap-3 rounded-xl border border-border bg-surface p-4">
+          <label className="flex items-center gap-2 text-sm text-text-muted">
+            From
+            <input
+              type="date"
+              value={exportStart}
+              max={exportEnd}
+              onChange={(e) => setExportStart(e.target.value)}
+              className="rounded-lg border border-border bg-background px-3 py-1.5 text-text"
+            />
+          </label>
+          <label className="flex items-center gap-2 text-sm text-text-muted">
+            To
+            <input
+              type="date"
+              value={exportEnd}
+              min={exportStart}
+              onChange={(e) => setExportEnd(e.target.value)}
+              className="rounded-lg border border-border bg-background px-3 py-1.5 text-text"
+            />
+          </label>
+          <button
+            type="button"
+            onClick={handleExport}
+            disabled={exporting}
+            className="flex items-center gap-2 rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            <Download size={16} />
+            {exporting ? "Exporting…" : "Export CSV"}
+          </button>
+          <p className="text-xs text-text-muted">
+            Every request in the range, with the exact rate applied at the time — a reconciliation
+            total row is appended.
+          </p>
         </div>
 
         <div className="mt-6 overflow-x-auto rounded-xl border border-border bg-surface">

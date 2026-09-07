@@ -275,6 +275,20 @@ def clear_jwks_cache():
 
 
 @pytest.fixture(autouse=True)
+def clear_budget_settings_cache():
+    """RM-60: budget.py's in-process billing-settings cache is keyed only by
+    client_id, with no awareness of which (per-test, isolated) DB it came
+    from — without this, a client_id reused across tests within the cache's
+    30s TTL would see a stale cap/settings row from an earlier test's DB.
+    """
+    from prometheus_gateway.budget import _reset_cache_for_testing as _reset_budget_cache
+
+    _reset_budget_cache()
+    yield
+    _reset_budget_cache()
+
+
+@pytest.fixture(autouse=True)
 def _isolated_gateway_db(tmp_path, monkeypatch):
     """RM-32: every test gets its own SQLite file via GATEWAY_DB_URL.
 

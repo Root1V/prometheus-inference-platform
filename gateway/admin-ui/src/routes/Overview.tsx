@@ -19,6 +19,7 @@ import { useNodeRegistry } from "../api/nodes";
 import { useUsage } from "../api/usage";
 import { useUsers } from "../api/users";
 import { AttentionTable, type AttentionEntry } from "../components/AttentionTable";
+import { BudgetAlertBanner } from "../components/BudgetAlertBanner";
 import { Sidebar } from "../components/Sidebar";
 import { StatCard } from "../components/StatCard";
 import { formatUptime, formatUsdCost } from "../lib/format";
@@ -84,6 +85,10 @@ export default function Overview() {
       <Sidebar />
       <main className="min-w-0 flex-1 px-8 py-8">
         <h1 className="text-2xl font-semibold text-text">Overview</h1>
+
+        <div className="mt-4">
+          <BudgetAlertBanner />
+        </div>
 
         <div className="mt-6 grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
           <StatCard

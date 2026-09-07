@@ -46,3 +46,29 @@ export function useUsage(date?: string) {
     refetchInterval: date ? false : POLL_INTERVAL_MS,
   });
 }
+
+/**
+ * RM-60: GET /v1/usage/export as a client-side file download. A plain
+ * `<a href>` navigation would 401 — the Bearer token lives in sessionStorage
+ * and is only attached by rootClient's axios interceptor — so this fetches
+ * through rootClient and triggers the download via a Blob + synthetic click.
+ */
+export async function downloadUsageExportCsv(params: {
+  start: string;
+  end: string;
+  client_id?: string;
+}): Promise<void> {
+  const response = await rootClient.get<string>("/v1/usage/export", {
+    params,
+    responseType: "text",
+  });
+  const blob = new Blob([response.data], { type: "text/csv" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = `usage-${params.start}-to-${params.end}.csv`;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
+}

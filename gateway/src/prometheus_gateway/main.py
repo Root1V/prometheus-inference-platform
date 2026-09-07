@@ -164,6 +164,10 @@ def create_app(
     app.state.metrics_store = metrics_store
     # AC-29 (018) prompt-summary opt-in + RM-10 admin dashboard both read this.
     app.state.settings = settings
+    # RM-60: the same shared Redis client already threaded through BackendPool/
+    # RateLimitMiddleware above — billing_router.py reads it here rather than
+    # reaching into pool's private _redis attribute from another module.
+    app.state.shared_redis = _redis_instance
 
     # Middleware stack — innermost added first (see gateway.instructions.md)
     # Order: [request-id+trace-id] → [auth] → [rate-limit] → router
@@ -237,6 +241,7 @@ def create_app(
     if settings.admin_dashboard_enabled:
         from fastapi.staticfiles import StaticFiles
 
+        from .admin.billing_router import create_billing_router
         from .admin.client import ManagerApiClient
         from .admin.router import create_admin_router
 
@@ -250,6 +255,10 @@ def create_app(
         # are matched first — a StaticFiles Mount at /admin would otherwise
         # shadow sub-paths like /admin/api/instances.
         app.include_router(create_admin_router(manager_client))
+        # RM-60: billing config CRUD — the enforcement hooks in router.py are
+        # always active regardless of this flag; only the admin UI to
+        # configure them is gated (matching the rest of this dashboard).
+        app.include_router(create_billing_router())
 
         _admin_static_dir = Path(__file__).parent / "admin" / "static"
         if _admin_static_dir.is_dir():

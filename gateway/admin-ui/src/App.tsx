@@ -2,6 +2,7 @@ import type { ReactNode } from "react";
 import { HashRouter, Navigate, Route, Routes } from "react-router-dom";
 import { AuthProvider, useAuth } from "./context/AuthContext";
 import { ToastProvider } from "./context/ToastContext";
+import Billing from "./routes/Billing";
 import Dashboard from "./routes/Dashboard";
 import Limits from "./routes/Limits";
 import Login from "./routes/Login";
@@ -63,6 +64,14 @@ export default function App() {
               element={
                 <ProtectedRoute>
                   <Users />
+                </ProtectedRoute>
+              }
+            />
+            <Route
+              path="/billing"
+              element={
+                <ProtectedRoute>
+                  <Billing />
                 </ProtectedRoute>
               }
             />

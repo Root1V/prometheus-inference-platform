@@ -6,10 +6,12 @@ const COLUMNS = ["Name", "Auth method", "Identifier", "Role", "Scopes", "Models"
 export function UserTable({
   users,
   onEdit,
+  onBilling,
   onRevealCredential,
 }: {
   users: Principal[];
   onEdit: (user: Principal) => void;
+  onBilling: (user: Principal) => void;
   onRevealCredential: (clientId: string, secret: string, label: string) => void;
 }) {
   if (users.length === 0) {
@@ -34,7 +36,13 @@ export function UserTable({
         </thead>
         <tbody>
           {users.map((user) => (
-            <UserRow key={user.client_id} user={user} onEdit={onEdit} onRevealCredential={onRevealCredential} />
+            <UserRow
+              key={user.client_id}
+              user={user}
+              onEdit={onEdit}
+              onBilling={onBilling}
+              onRevealCredential={onRevealCredential}
+            />
           ))}
         </tbody>
       </table>

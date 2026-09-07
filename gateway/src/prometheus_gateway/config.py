@@ -190,6 +190,33 @@ class Settings(BaseSettings):
             raise ValueError("AUTH_SERVICE_TOKEN_URL is required when UI_ENABLED=true.")
         return self
 
+    # ── Billing — docs/roadmap.md RM-60 ─────────────────────────────────────────
+    # Hard per-client monthly spend cap + softer alert thresholds, tracked in
+    # Redis via the SAME shared client used for rate limiting (main.py's
+    # app.state.shared_redis) — no new Redis URL setting. No
+    # ClientBillingSettings row for a client = no cap enforced (opt-in,
+    # matching pricing_file's "unset = disabled" convention).
+    budget_alert_thresholds_percent_default: str = "50,80,100"
+
+    # SMTP — optional email delivery for budget alerts. Unset = alerts
+    # silently skip (the in-app banner still fires) — same convention as
+    # pricing_file/grafana_url.
+    smtp_host: str | None = None
+    smtp_port: int = 587
+    smtp_username: str | None = None
+    smtp_password: str | None = None
+    smtp_from_address: str | None = None
+    smtp_use_tls: bool = True
+    billing_alert_email_to: str | None = None  # comma-separated
+
+    @model_validator(mode="after")
+    def validate_smtp_requirements(self) -> "Settings":
+        if self.smtp_host and not (self.smtp_from_address and self.billing_alert_email_to):
+            raise ValueError(
+                "SMTP_FROM_ADDRESS and BILLING_ALERT_EMAIL_TO are required when SMTP_HOST is set."
+            )
+        return self
+
     @property
     def effective_rate_limit_redis_url(self) -> str | None:
         """Return the Redis URL to use for rate limiting.

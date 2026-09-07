@@ -24,8 +24,9 @@ _DEFAULT_PRICING_PATH = Path(__file__).parents[2] / "pricing.yaml"
 
 @dataclass(frozen=True)
 class ModelPrice:
-    prompt_price_per_1m: float
-    completion_price_per_1m: float
+    prompt_price_per_1m: float | None = None
+    completion_price_per_1m: float | None = None
+    image_price: float | None = None  # USD per generated image
 
 
 class PricingTable:
@@ -43,22 +44,44 @@ class PricingTable:
         with path.open() as f:
             data = yaml.safe_load(f) or {}
         for entry in data.get("models", []):
+            has_prompt_price = "prompt_price_per_1m" in entry
+            has_completion_price = "completion_price_per_1m" in entry
+            if has_prompt_price != has_completion_price:
+                logger.warning("pricing.incomplete_token_price", model_id=entry["id"])
+            token_priced = has_prompt_price and has_completion_price
             self._prices[entry["id"]] = ModelPrice(
-                prompt_price_per_1m=float(entry["prompt_price_per_1m"]),
-                completion_price_per_1m=float(entry["completion_price_per_1m"]),
+                prompt_price_per_1m=float(entry["prompt_price_per_1m"]) if token_priced else None,
+                completion_price_per_1m=float(entry["completion_price_per_1m"])
+                if token_priced
+                else None,
+                image_price=float(entry["image_price"]) if "image_price" in entry else None,
             )
+
+    def get_price(self, model_id: str) -> ModelPrice | None:
+        return self._prices.get(model_id)
 
     def estimate_cost_usd(
         self, model_id: str, prompt_tokens: int, completion_tokens: int
     ) -> float | None:
         """None means "no price configured for this model", not "free"."""
         price = self._prices.get(model_id)
-        if price is None:
+        if (
+            price is None
+            or price.prompt_price_per_1m is None
+            or price.completion_price_per_1m is None
+        ):
             return None
         return (
             prompt_tokens * price.prompt_price_per_1m
             + completion_tokens * price.completion_price_per_1m
         ) / 1_000_000
+
+    def estimate_image_cost_usd(self, model_id: str, num_images: int) -> float | None:
+        """None means "no price configured for this model", not "free"."""
+        price = self._prices.get(model_id)
+        if price is None or price.image_price is None:
+            return None
+        return price.image_price * num_images
 
 
 _table: PricingTable | None = None

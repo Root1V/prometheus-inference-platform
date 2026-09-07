@@ -8,6 +8,9 @@ Implements: memory/specs/018-observability-telemetry.md — AC-8, AC-10, AC-23, 
 
 from __future__ import annotations
 
+import asyncio
+import csv
+import io
 import json
 import time
 from datetime import date as _date
@@ -16,12 +19,19 @@ from typing import TYPE_CHECKING, Any
 
 import httpx
 import structlog
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, Request, Response
 from fastapi.responses import JSONResponse, StreamingResponse
 
 from . import db, pricing
+from .budget import (
+    BudgetReservation,
+    BudgetTracker,
+    get_client_billing_settings_cached,
+    parse_thresholds,
+)
 from .models.registry import ModelRegistry
 from .models.schemas import ChatCompletionRequest, EmbeddingsRequest, ImageGenerationRequest
+from .notifications import send_budget_alert_email
 from .telemetry import get_logger, get_tracer, metrics_store
 
 if TYPE_CHECKING:
@@ -37,6 +47,8 @@ _CHARS_PER_TOKEN = 4
 # vision content parts). Matches common VLM low/mid-resolution tile estimates —
 # not exact, just enough to keep the existing context-exceeded guard meaningful.
 _IMAGE_TOKEN_ESTIMATE = 512
+# RM-60: cap a single CSV export to ~1 year of usage_events at a time.
+_MAX_EXPORT_RANGE_DAYS = 366
 
 
 def _problem(
@@ -317,7 +329,6 @@ def create_router(registry: ModelRegistry, pool: "BackendPool") -> APIRouter:
                     "Unable to read usage data from the store.",
                 )
 
-            price_table = pricing.get_pricing_table()
             by_client: dict[str, dict[str, Any]] = {}
             for row in rows:
                 entry = by_client.setdefault(
@@ -336,9 +347,10 @@ def create_router(registry: ModelRegistry, pool: "BackendPool") -> APIRouter:
                 entry["completion_tokens"] += row.completion_tokens
                 entry["total_tokens"] += row.prompt_tokens + row.completion_tokens
                 entry["request_count"] += row.request_count
-                model_cost = price_table.estimate_cost_usd(
-                    row.model_id, row.prompt_tokens, row.completion_tokens
-                )
+                # RM-60: read the cost stored at write time — never recompute
+                # against the *current* pricing table, or a price change +
+                # restart would silently re-price every past day.
+                model_cost = row.cost_usd
                 if model_cost is not None:
                     entry["estimated_cost_usd"] = (entry["estimated_cost_usd"] or 0.0) + model_cost
                 entry["by_model"].append(
@@ -358,6 +370,134 @@ def create_router(registry: ModelRegistry, pool: "BackendPool") -> APIRouter:
                 "window": target_day.isoformat(),
                 "data": list(by_client.values()),
             }
+
+    # ── GET /v1/usage/export ─────────────────────────────────────────────────
+    # Implements: docs/roadmap.md — RM-60 (CSV export over an arbitrary date range)
+    @router.get("/v1/usage/export")
+    async def export_usage(
+        request: Request, start: str, end: str, client_id: str | None = None
+    ) -> Any:
+        """CSV export of raw usage_events over [start, end] (inclusive UTC days).
+
+        One row per request (not pre-aggregated) so a client can verify the
+        exact rate applied to each request, plus a final TOTAL reconciliation
+        row. Requires admin:read scope.
+        """
+        claims = getattr(getattr(request, "state", None), "claims", None)
+        if claims is None or not claims.has_scope("admin:read"):
+            return _problem(
+                request, 403, "forbidden", "Forbidden", "This endpoint requires admin:read scope."
+            )
+
+        try:
+            start_day = _date.fromisoformat(start)
+            end_day = _date.fromisoformat(end)
+        except ValueError:
+            return _problem(
+                request,
+                400,
+                "invalid-date",
+                "Invalid Date",
+                "start/end must be valid YYYY-MM-DD dates.",
+            )
+        if end_day < start_day:
+            return _problem(
+                request, 400, "invalid-range", "Invalid Range", "end must not be before start."
+            )
+        if (end_day - start_day).days > _MAX_EXPORT_RANGE_DAYS:
+            return _problem(
+                request,
+                400,
+                "range-too-large",
+                "Range Too Large",
+                f"Date range exceeds the {_MAX_EXPORT_RANGE_DAYS}-day maximum for a single export.",
+            )
+
+        try:
+            events = await db.query_usage_events_range(start_day, end_day, client_id)
+        except Exception as exc:
+            logger.error("usage.export_db_error", error=str(exc))
+            return _problem(
+                request,
+                503,
+                "usage-store-unavailable",
+                "Usage Store Unavailable",
+                "Unable to read usage data from the store.",
+            )
+
+        generated_at = datetime.now(tz=timezone.utc).isoformat()
+        buf = io.StringIO()
+        writer = csv.writer(buf)
+        writer.writerow(
+            [
+                "generated_at",
+                "period_start",
+                "period_end",
+                "client_id",
+                "recorded_at",
+                "model_id",
+                "request_kind",
+                "prompt_tokens",
+                "completion_tokens",
+                "image_count",
+                "prompt_price_per_1m",
+                "completion_price_per_1m",
+                "image_price_each",
+                "cost_usd",
+            ]
+        )
+        total_prompt = total_completion = total_images = 0
+        total_cost = 0.0
+        any_cost = False
+        for ev in events:
+            writer.writerow(
+                [
+                    generated_at,
+                    start_day.isoformat(),
+                    end_day.isoformat(),
+                    ev.client_id,
+                    ev.recorded_at.isoformat(),
+                    ev.model_id,
+                    ev.request_kind,
+                    ev.prompt_tokens,
+                    ev.completion_tokens,
+                    ev.image_count,
+                    ev.prompt_price_per_1m,
+                    ev.completion_price_per_1m,
+                    ev.image_price_each,
+                    f"{ev.cost_usd:.6f}" if ev.cost_usd is not None else "",
+                ]
+            )
+            total_prompt += ev.prompt_tokens
+            total_completion += ev.completion_tokens
+            total_images += ev.image_count
+            if ev.cost_usd is not None:
+                total_cost += ev.cost_usd
+                any_cost = True
+        writer.writerow(
+            [
+                generated_at,
+                start_day.isoformat(),
+                end_day.isoformat(),
+                client_id or "ALL",
+                "",
+                "TOTAL",
+                "",
+                total_prompt,
+                total_completion,
+                total_images,
+                "",
+                "",
+                "",
+                f"{total_cost:.6f}" if any_cost else "",
+            ]
+        )
+        filename = f"usage-{start_day.isoformat()}-to-{end_day.isoformat()}.csv"
+        return Response(
+            content=buf.getvalue(),
+            media_type="text/csv",
+            headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+        )
 
     # ── POST /v1/chat/completions ────────────────────────────────────────────
     @router.post("/v1/chat/completions")
@@ -533,6 +673,60 @@ def create_router(registry: ModelRegistry, pool: "BackendPool") -> APIRouter:
                         "circuit_breaker.check_error", backend_id=entry.id, error=str(exc)
                     )
 
+            # RM-60: hard spend-cap reserve, before forwarding. Completion-token
+            # cost isn't known until generation finishes, so this reserves a
+            # conservative worst-case estimate (max_tokens, or the remaining
+            # context budget) and settles with the real cost once the response
+            # completes (non-streaming: below; streaming: _stream_response()).
+            budget_redis = getattr(pool, "_redis", None)
+            reservation: BudgetReservation | None = None
+            alert_thresholds_percent: list[int] = []
+            if claims is not None and budget_redis is not None:
+                billing_settings = await get_client_billing_settings_cached(claims.client_id)
+                cap_usd = billing_settings.monthly_spend_cap_usd if billing_settings else None
+                if cap_usd is not None:
+                    app_settings = getattr(getattr(request.app, "state", None), "settings", None)
+                    default_thresholds = getattr(
+                        app_settings, "budget_alert_thresholds_percent_default", "50,80,100"
+                    )
+                    alert_thresholds_percent = parse_thresholds(
+                        billing_settings.alert_thresholds_percent if billing_settings else None,
+                        default_thresholds,
+                    )
+                    worst_case_completion = (
+                        body.max_tokens
+                        if body.max_tokens is not None
+                        else max(0, entry.context_length - estimated_input_tokens)
+                    )
+                    est_cost = pricing.get_pricing_table().estimate_cost_usd(
+                        entry.id, estimated_input_tokens, worst_case_completion
+                    )
+                    if est_cost is not None:
+                        reservation = await BudgetTracker(budget_redis).reserve(
+                            claims.client_id,
+                            est_cost,
+                            cap_usd=cap_usd,
+                            alert_thresholds_percent=alert_thresholds_percent,
+                        )
+                        await _dispatch_threshold_alerts(
+                            request,
+                            claims.client_id,
+                            cap_usd,
+                            reservation.total_spend_usd,
+                            reservation.crossed_thresholds,
+                        )
+                        if not reservation.allowed:
+                            inf_span.set_attribute("http.status_code", 402)
+                            return _problem(
+                                request,
+                                402,
+                                "spend-cap-exceeded",
+                                "Spend Cap Exceeded",
+                                f"Client '{claims.client_id}' has reached its monthly spend cap "
+                                f"of ${cap_usd:.2f}. Current spend: ${reservation.total_spend_usd:.2f}. "
+                                "Contact the platform operator to raise the cap.",
+                            )
+
             payload = body.to_llama_payload()
 
             target_url = f"{entry.backend_url.rstrip('/')}/v1/chat/completions"
@@ -557,7 +751,16 @@ def create_router(registry: ModelRegistry, pool: "BackendPool") -> APIRouter:
                 if body.stream:
                     # AC-7 (006): SSE streaming — retry NOT applied (AC-17c)
                     return await _stream_response(
-                        request, client, target_url, payload, pool, entry.id, trace_id
+                        request,
+                        client,
+                        target_url,
+                        payload,
+                        pool,
+                        entry.id,
+                        trace_id,
+                        budget_redis=budget_redis,
+                        reservation=reservation,
+                        alert_thresholds_percent=alert_thresholds_percent,
                     )
                 else:
                     await metrics_store.inc_requests_active()
@@ -658,6 +861,27 @@ def create_router(registry: ModelRegistry, pool: "BackendPool") -> APIRouter:
 
                     # RM-32: record persisted daily usage
                     await _record_usage(claims, entry.id, prompt_tokens, completion_tokens)
+
+                    # RM-60: settle the spend-cap reservation with the real cost
+                    if reservation is not None and reservation.allowed and budget_redis is not None:
+                        actual_cost = pricing.get_pricing_table().estimate_cost_usd(
+                            entry.id, prompt_tokens, completion_tokens
+                        )
+                        if actual_cost is not None:
+                            newly_crossed = await BudgetTracker(budget_redis).settle(
+                                claims.client_id,
+                                reservation.reserved_usd,
+                                actual_cost,
+                                cap_usd=reservation.cap_usd,
+                                alert_thresholds_percent=alert_thresholds_percent,
+                            )
+                            await _dispatch_threshold_alerts(
+                                request,
+                                claims.client_id,
+                                reservation.cap_usd,
+                                reservation.total_spend_usd,
+                                newly_crossed,
+                            )
 
                     # Increment TPM counter with actual token usage
                     rl_redis = getattr(pool, "_redis", None)
@@ -812,6 +1036,53 @@ def create_router(registry: ModelRegistry, pool: "BackendPool") -> APIRouter:
             except Exception as exc:
                 logger.warning("circuit_breaker.check_error", backend_id=entry.id, error=str(exc))
 
+        # RM-60: hard spend-cap reserve, before forwarding — mirrors chat
+        # completions' hook below. Worst-case estimate priced as prompt-only
+        # (embeddings have no completion tokens).
+        budget_redis = getattr(pool, "_redis", None)
+        reservation: BudgetReservation | None = None
+        alert_thresholds_percent: list[int] = []
+        if claims is not None and budget_redis is not None:
+            billing_settings = await get_client_billing_settings_cached(claims.client_id)
+            cap_usd = billing_settings.monthly_spend_cap_usd if billing_settings else None
+            if cap_usd is not None:
+                settings = getattr(getattr(request.app, "state", None), "settings", None)
+                default_thresholds = getattr(
+                    settings, "budget_alert_thresholds_percent_default", "50,80,100"
+                )
+                alert_thresholds_percent = parse_thresholds(
+                    billing_settings.alert_thresholds_percent if billing_settings else None,
+                    default_thresholds,
+                )
+                estimated_tokens = _estimate_text_tokens(body.input)
+                est_cost = pricing.get_pricing_table().estimate_cost_usd(
+                    entry.id, estimated_tokens, 0
+                )
+                if est_cost is not None:
+                    reservation = await BudgetTracker(budget_redis).reserve(
+                        claims.client_id,
+                        est_cost,
+                        cap_usd=cap_usd,
+                        alert_thresholds_percent=alert_thresholds_percent,
+                    )
+                    await _dispatch_threshold_alerts(
+                        request,
+                        claims.client_id,
+                        cap_usd,
+                        reservation.total_spend_usd,
+                        reservation.crossed_thresholds,
+                    )
+                    if not reservation.allowed:
+                        return _problem(
+                            request,
+                            402,
+                            "spend-cap-exceeded",
+                            "Spend Cap Exceeded",
+                            f"Client '{claims.client_id}' has reached its monthly spend cap of "
+                            f"${cap_usd:.2f}. Current spend: ${reservation.total_spend_usd:.2f}. "
+                            "Contact the platform operator to raise the cap.",
+                        )
+
         target_url = f"{entry.backend_url.rstrip('/')}/v1/embeddings"
         trace_id = getattr(getattr(request, "state", None), "trace_id", None)
         if trace_id is None:
@@ -889,6 +1160,29 @@ def create_router(registry: ModelRegistry, pool: "BackendPool") -> APIRouter:
         embeddings_usage = resp_body.get("usage", {}) if isinstance(resp_body, dict) else {}
         embeddings_prompt_tokens = embeddings_usage.get("prompt_tokens", 0)
         embeddings_latency_ms = int((time.monotonic() - backend_start) * 1000)
+
+        # RM-60: embeddings never called _record_usage() at all — usage/cost
+        # accounting was blind to this entire request type.
+        await _record_usage(claims, entry.id, embeddings_prompt_tokens, 0, request_kind="embedding")
+        if budget_redis is not None and reservation is not None and reservation.allowed:
+            actual_cost = pricing.get_pricing_table().estimate_cost_usd(
+                entry.id, embeddings_prompt_tokens, 0
+            )
+            if actual_cost is not None:
+                newly_crossed = await BudgetTracker(budget_redis).settle(
+                    claims.client_id,
+                    reservation.reserved_usd,
+                    actual_cost,
+                    cap_usd=reservation.cap_usd,
+                    alert_thresholds_percent=alert_thresholds_percent,
+                )
+                await _dispatch_threshold_alerts(
+                    request,
+                    claims.client_id,
+                    reservation.cap_usd,
+                    reservation.total_spend_usd,
+                    newly_crossed,
+                )
         await metrics_store.record_inference(
             prompt_tokens=embeddings_prompt_tokens,
             completion_tokens=0,
@@ -914,8 +1208,8 @@ def create_router(registry: ModelRegistry, pool: "BackendPool") -> APIRouter:
     async def images_generations(body: ImageGenerationRequest, request: Request) -> Any:
         """Proxy image-generation requests to an image-capable backend.
 
-        Mirrors /v1/embeddings exactly: buffered, no streaming, no usage/cost
-        accounting (there's no token count to log for an image response).
+        Mirrors /v1/embeddings: buffered, no streaming. Usage/cost is priced
+        per generated image rather than by token count (RM-60).
         """
         claims = getattr(getattr(request, "state", None), "claims", None)
         request_id = getattr(getattr(request, "state", None), "request_id", "unknown")
@@ -987,6 +1281,51 @@ def create_router(registry: ModelRegistry, pool: "BackendPool") -> APIRouter:
                     )
             except Exception as exc:
                 logger.warning("circuit_breaker.check_error", backend_id=entry.id, error=str(exc))
+
+        # RM-60: hard spend-cap reserve, before forwarding — worst-case
+        # estimate priced per requested image (`n`, default 1).
+        budget_redis = getattr(pool, "_redis", None)
+        reservation: BudgetReservation | None = None
+        alert_thresholds_percent: list[int] = []
+        if claims is not None and budget_redis is not None:
+            billing_settings = await get_client_billing_settings_cached(claims.client_id)
+            cap_usd = billing_settings.monthly_spend_cap_usd if billing_settings else None
+            if cap_usd is not None:
+                settings = getattr(getattr(request.app, "state", None), "settings", None)
+                default_thresholds = getattr(
+                    settings, "budget_alert_thresholds_percent_default", "50,80,100"
+                )
+                alert_thresholds_percent = parse_thresholds(
+                    billing_settings.alert_thresholds_percent if billing_settings else None,
+                    default_thresholds,
+                )
+                est_cost = pricing.get_pricing_table().estimate_image_cost_usd(
+                    entry.id, body.n or 1
+                )
+                if est_cost is not None:
+                    reservation = await BudgetTracker(budget_redis).reserve(
+                        claims.client_id,
+                        est_cost,
+                        cap_usd=cap_usd,
+                        alert_thresholds_percent=alert_thresholds_percent,
+                    )
+                    await _dispatch_threshold_alerts(
+                        request,
+                        claims.client_id,
+                        cap_usd,
+                        reservation.total_spend_usd,
+                        reservation.crossed_thresholds,
+                    )
+                    if not reservation.allowed:
+                        return _problem(
+                            request,
+                            402,
+                            "spend-cap-exceeded",
+                            "Spend Cap Exceeded",
+                            f"Client '{claims.client_id}' has reached its monthly spend cap of "
+                            f"${cap_usd:.2f}. Current spend: ${reservation.total_spend_usd:.2f}. "
+                            "Contact the platform operator to raise the cap.",
+                        )
 
         target_url = f"{entry.backend_url.rstrip('/')}/v1/images/generations"
         trace_id = getattr(getattr(request, "state", None), "trace_id", None)
@@ -1065,6 +1404,27 @@ def create_router(registry: ModelRegistry, pool: "BackendPool") -> APIRouter:
         num_images = (
             len(resp_body_images.get("data", [])) if isinstance(resp_body_images, dict) else 0
         ) or 1
+
+        # RM-60: images/generations never called _record_usage() at all —
+        # usage/cost accounting was blind to this entire request type.
+        await _record_usage(claims, entry.id, 0, 0, request_kind="image", image_count=num_images)
+        if budget_redis is not None and reservation is not None and reservation.allowed:
+            actual_cost = pricing.get_pricing_table().estimate_image_cost_usd(entry.id, num_images)
+            if actual_cost is not None:
+                newly_crossed = await BudgetTracker(budget_redis).settle(
+                    claims.client_id,
+                    reservation.reserved_usd,
+                    actual_cost,
+                    cap_usd=reservation.cap_usd,
+                    alert_thresholds_percent=alert_thresholds_percent,
+                )
+                await _dispatch_threshold_alerts(
+                    request,
+                    claims.client_id,
+                    reservation.cap_usd,
+                    reservation.total_spend_usd,
+                    newly_crossed,
+                )
         await metrics_store.record_inference(
             prompt_tokens=0,
             completion_tokens=0,
@@ -1085,20 +1445,72 @@ def create_router(registry: ModelRegistry, pool: "BackendPool") -> APIRouter:
 
 
 async def _record_usage(
-    claims: Any, model_id: str, prompt_tokens: int, completion_tokens: int
+    claims: Any,
+    model_id: str,
+    prompt_tokens: int,
+    completion_tokens: int,
+    *,
+    request_kind: str = "chat",
+    image_count: int = 0,
 ) -> None:
-    """Write persisted per-day, per-client, per-model token counters.
+    """Write an immutable usage_events row + persisted per-day rollup counters.
 
     Implements: docs/roadmap.md — RM-32 (replaces the old Redis daily-TTL counters).
+    Implements: docs/roadmap.md — RM-60 (#1, #2, #3 — write-time cost, audit
+    trail, and covers embeddings/images which previously never called this).
     """
     if claims is None:
         return
-    if prompt_tokens + completion_tokens == 0:
+    if request_kind == "image":
+        if image_count == 0:
+            return
+    elif prompt_tokens + completion_tokens == 0:
         return
     try:
-        await db.record_usage(claims.client_id, model_id, prompt_tokens, completion_tokens)
+        await db.record_usage(
+            claims.client_id,
+            model_id,
+            prompt_tokens,
+            completion_tokens,
+            request_kind=request_kind,
+            image_count=image_count,
+        )
     except Exception as exc:
         logger.warning("usage.db_write_error", error=str(exc))
+
+
+def _estimate_text_tokens(text_input: str | list[str]) -> int:
+    """Worst-case token estimate for an embeddings request's spend-cap reserve."""
+    if isinstance(text_input, str):
+        total_chars = len(text_input)
+    else:
+        total_chars = sum(len(s) for s in text_input)
+    return max(1, total_chars // _CHARS_PER_TOKEN)
+
+
+async def _dispatch_threshold_alerts(
+    request: Request,
+    client_id: str,
+    cap_usd: float | None,
+    spend_usd: float,
+    newly_crossed: list[int],
+) -> None:
+    """Fire an email for each newly-crossed alert threshold. Blocking smtplib
+    runs off the event loop via asyncio.to_thread; failures are logged, never
+    raised (an alert-delivery failure must not fail the inference request).
+    """
+    if not newly_crossed or cap_usd is None:
+        return
+    settings = getattr(getattr(request.app, "state", None), "settings", None)
+    if settings is None:
+        return
+    for threshold in newly_crossed:
+        try:
+            await asyncio.to_thread(
+                send_budget_alert_email, settings, client_id, threshold, spend_usd, cap_usd
+            )
+        except Exception as exc:
+            logger.warning("billing.alert_dispatch_error", error=str(exc))
 
 
 async def _stream_response(
@@ -1109,6 +1521,10 @@ async def _stream_response(
     pool: "BackendPool",
     backend_id: str,
     trace_id: str = "none",
+    *,
+    budget_redis: Any = None,
+    reservation: "BudgetReservation | None" = None,
+    alert_thresholds_percent: list[int] | None = None,
 ) -> StreamingResponse:
     """Forward a streaming request using a pooled client.
 
@@ -1118,6 +1534,8 @@ async def _stream_response(
     Implements: memory/specs/018-observability-telemetry.md — AC-8 (X-Trace-ID forwarded)
     Flushes each chunk immediately. Closes with 'data: [DONE]' per OpenAI convention.
     Retry is NOT applied (AC-17c: response headers already sent).
+    RM-60: budget_redis/reservation/alert_thresholds_percent settle the
+    caller's spend-cap reservation once the real token counts are known.
     """
     request_id = getattr(getattr(request, "state", None), "request_id", "unknown")
     claims = getattr(getattr(request, "state", None), "claims", None)
@@ -1226,6 +1644,32 @@ async def _stream_response(
             )
             # RM-32: persisted daily usage for streaming
             await _record_usage(claims, backend_id, prompt_tokens, completion_tokens)
+
+            # RM-60: settle the spend-cap reservation with the real cost
+            if (
+                claims is not None
+                and reservation is not None
+                and reservation.allowed
+                and budget_redis is not None
+            ):
+                actual_cost = pricing.get_pricing_table().estimate_cost_usd(
+                    backend_id, prompt_tokens, completion_tokens
+                )
+                if actual_cost is not None:
+                    newly_crossed = await BudgetTracker(budget_redis).settle(
+                        claims.client_id,
+                        reservation.reserved_usd,
+                        actual_cost,
+                        cap_usd=reservation.cap_usd,
+                        alert_thresholds_percent=alert_thresholds_percent or [],
+                    )
+                    await _dispatch_threshold_alerts(
+                        request,
+                        claims.client_id,
+                        reservation.cap_usd,
+                        reservation.total_spend_usd,
+                        newly_crossed,
+                    )
 
     logger.info("llama.forwarding_stream", backend_id=backend_id, request_id=request_id)
     return StreamingResponse(

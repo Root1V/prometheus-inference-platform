@@ -2530,94 +2530,50 @@ as of RM-51), finding one specific model means scanning pages by eye.
   a plain substring match covers the actual "I know roughly what it's called" use case this
   was raised for.
 
-## RM-60 — Billing: real per-client cost, multi-currency display, tax, dashboard, budget alerts (todo)
+## RM-60 — Billing: real per-client cost, multi-currency display, tax, dashboard, budget alerts (done)
 
-**Why**: [[RM-32]]/[[RM-33]] already meter and price every request (`usage_daily` — one row
-per day/client/model, tokens + request count — rated against `gateway/pricing.yaml`'s
-per-model $/1M-token rates) and RM-34 surfaces today's total on the Overview page. Confirmed
-with the user this is meant to become **real billing of Prometheus's own users** — telling
-each client how much they owe for their consumption — not just an internal chargeback
-report, though actual payment collection (charging a card) stays a separate, later step.
+**Why**: [[RM-32]]/[[RM-33]] metered and priced usage but computed cost at **read time**
+(`GET /v1/usage` against whatever `pricing.yaml` currently says) with no stored `cost_usd` —
+a price change + restart silently re-priced every past day (confirmed real anti-pattern via
+research: Stripe/Lago/Kill Bill all rate at time-of-usage, never retroactively). The user
+confirmed this is meant to become **real billing of Prometheus's own users**, potentially
+including individual (non-business) clients in Peru, not just an internal chargeback report.
 
-**Correctness bug found while researching, fixed as part of this item, not optional**:
-`estimate_cost_usd()` computes cost at **read time** (`GET /v1/usage`) against whatever
-`pricing.yaml` currently says — there is no stored `cost_usd` anywhere. If an operator edits
-a model's price and restarts the gateway, every past day's usage silently re-prices under
-the new rate the next time anyone queries it. No real billing system does this (Stripe,
-Lago, Kill Bill all rate against the price version in effect *at the time of usage*, never
-retroactively). Confirmed via research this is a real, common anti-pattern, not a
-hypothetical.
+**What shipped**: write-time cost (`record_usage()` now prices and stores `cost_usd`
+per-row) + a new append-only `usage_events` audit table as the source of truth
+(`usage_daily` stays only as the live-poll rollup) — this also closed a real gap where
+`/v1/embeddings` and `/v1/images/generations` never recorded usage at all. New
+`GET /v1/usage/export` CSV endpoint (arbitrary date range, per-request rate, reconciliation
+row) + a date-range/export control on `Usage.tsx`. Multi-currency (PEN/USD/EUR) is
+display-only — cost stays stored in USD, converted via an admin-configurable static rate
+table (`admin/api/billing/currency-rates`), never a live FX API. A per-client tax rate
+(`ClientBillingSettings.tax_rate_percent`) renders as a separate line item — plain and
+configurable, explicitly **not** a SUNAT-compliant tax receipt (see [[RM-61]], still
+unbuilt/blocked). A hard monthly spend cap + soft alert thresholds (50/80/100% default) are
+enforced via a new Redis-backed `BudgetTracker` (`budget.py`, atomic pipelined `INCRBY`,
+mirroring `rate_limiter.py`'s `check_and_increment_rpm` — not `check_tpm_budget`'s known
+read-then-write race) using reserve-before-forward/settle-after on `/v1/chat/completions`
+(streaming + non-streaming), `/v1/embeddings`, and `/v1/images/generations`; alert emails go
+through a new stdlib-`smtplib` `notifications.py` (no new dependency), optional/unconfigured
+by default. New `Billing.tsx` dashboard (Recharts) shows the current-period summary, cap
+indicator, cost-by-model, daily trend, and period history with CSV links; a "Billing
+settings" action on `Users.tsx`/`UserRow.tsx` opens `ClientBillingSettingsModal.tsx`.
+Real payment collection (charging a card) stays explicitly out of scope, as does a full
+tax-determination engine and live multi-currency settlement. Pricing granularity stays
+per-exact-model (unchanged, confirmed no need for tier-based pricing).
 
-**Scope — phased, build in this order**:
-
-1. **Fix write-time pricing**: `record_usage()` computes and stores `cost_usd` (against the
-   pricing table active *at that moment*) directly on the row, instead of `GET /v1/usage`
-   recomputing it later from whatever's currently configured. A price change only ever
-   affects usage recorded after the change.
-2. **Immutable audit trail**: a new append-only `usage_events` table (one row per request,
-   never updated — `client_id`, `model_id`, `prompt_tokens`, `completion_tokens`, the
-   `prompt_price_per_1m`/`completion_price_per_1m` actually applied, `cost_usd`,
-   `recorded_at`) as the real source of truth; `usage_daily` becomes a rebuildable rollup of
-   it rather than the only record. Minimum viable "why was I charged X" answer — not a
-   signed/hash-chained ledger, one honest table.
-3. **Usage/cost CSV export** — arbitrary date range per client (today's `GET /v1/usage` and
-   `Usage.tsx` are single-day only). Each line shows the actual rate applied (not just a
-   total, so a client can verify the math themselves — AWS Cost & Usage Report convention),
-   a `generated_at` timestamp distinct from the period bounds, and a reconciliation/totals
-   row.
-4. **Date-range picker on `Usage.tsx`** — needed to make #3 meaningful for a real billing
-   period (weekly/monthly), not just "today."
-5. **Multi-currency display (PEN, USD, EUR)**: cost stays stored in USD only (that's what
-   `pricing.yaml` is denominated in) — currency conversion is a **display-layer concern
-   only**, never part of the stored cost. A small admin-configured exchange-rate table (not
-   a live FX API for v1 — unnecessary maintenance/dependency for a display convenience); the
-   rate actually used gets snapshotted onto each period summary/export so it's traceable.
-   This is "let a client see their bill in their preferred currency," not real
-   multi-currency settlement (separate payment rails/reconciliation per currency) — that
-   stays out of scope.
-6. **Tax line item**: a configurable tax rate per client, shown as a separate tax-exclusive
-   line (subtotal + tax = total) — not a full tax-determination engine (Stripe Tax/Avalara
-   territory, overkill for a platform with known, pre-provisioned clients). See the
-   **Peru/SUNAT flag** below — this phase covers the B2B/general case only.
-7. **Spend caps / budget guardrail** — two separate mechanisms, not one, matching how
-   GCP/GitHub budgets work: (a) the hard cap — a per-client monthly $ budget that blocks
-   further requests at 100%, implemented as a single atomic Redis operation (reuse
-   `rate_limiter.py`'s `check_and_increment_rpm` pattern — **not**
-   `check_tpm_budget`'s separate-read-then-write pattern, which this codebase already has as
-   a known race-condition gap; don't repeat it for a $ budget). Because completion-token
-   cost isn't known until generation finishes, use reserve-then-settle: reserve a
-   conservative worst-case estimate before forwarding the request, true up the real cost
-   once it completes. (b) softer, configurable alert thresholds below the cap (default
-   50%/80%/100%, admin-adjustable) that only notify (in-app banner + email) — never block —
-   evaluated against the same spend total the hard cap already tracks.
-8. **Billing dashboard**: current-period summary card (running total + cap indicator if
-   set), a breakdown by model (stacked bar or sortable table), a historical trend chart
-   (daily spend across periods), and a period-history list linking to each period's CSV
-   export (closest precedent: AWS Cost Explorer's daily-chart + top-cost-drivers view, GCP
-   Billing's stacked-bar-by-service, Vercel's usage dashboard).
-9. **Pricing granularity — confirmed unchanged**: stays per exact model id
-   (`pricing.yaml`'s existing shape), not per model-type/tier. Researched — no serious
-   gateway (LiteLLM, OpenRouter) prices by tier, and it fits this platform even less: these
-   are self-hosted models where real operator cost varies model-to-model in ways a tier
-   label would misrepresent.
-
-**Peru/SUNAT flag — confirmed real, not a config field**: the user confirmed Prometheus may
-bill individual (non-business) clients based in Peru. Peru's Legislative Decree 1623
-(effective Dec 2024) requires a foreign digital-service provider selling to Peru-based
-**individual consumers** (B2C) to register with SUNAT as a withholding agent and issue
-SUNAT-format electronic invoices (UBL 2.1, via an authorized PSE/OSE provider), with monthly
-filing. This is a genuine legal/compliance undertaking, not something to silently build into
-this item's tax phase — see [[RM-61]]. This item's own tax phase (#6 above) ships a
-plain configurable rate + tax-exclusive line item, explicitly labeled on any invoice/export
-generated for a Peru-based individual client as **not a SUNAT-compliant tax receipt**, so
-nobody mistakes it for one until RM-61 (or the user's own decision to restrict Peru billing
-to business clients only) resolves this.
-
-**Explicitly deferred, not part of this item**: real payment collection (Stripe/Metronome-
-style metered billing with an actual charge to a card) — confirmed with the user this stays
-a separate, later step. Real multi-currency settlement (vs. display-only conversion), a full
-tax-determination engine, and SUNAT e-invoicing compliance (→ [[RM-61]]) are all out of
-scope here too.
+**Verified**: 318 backend tests passing (up from 257; new coverage includes a concurrent-
+write regression test for the atomic-upsert fix, `BudgetTracker` reserve/settle/rollback
+under concurrency, CSV export shape, and an end-to-end 402 on cap-exceeded), `ruff`/`mypy`
+clean, admin-ui `tsc`/`eslint`/`build` clean. Live, against a real running gateway process
+and SQLite DB (no test mocks): recorded real usage, then changed `pricing.yaml` to a wildly
+different rate and restarted the gateway — confirmed the already-recorded day's cost was
+unchanged (the actual bug fix); verified CSV export, tax, and currency-conversion math by
+hand against the API response; found and fixed a real bug live (the alerts-listing endpoint
+500'd when Redis was unreachable instead of degrading to an empty list — now covered by a
+regression test); confirmed in the browser that the new Billing nav item, page, Usage page's
+CSV export (real 200 response), and Overview's budget-alert banner all render correctly
+against live data.
 
 ## RM-61 — Peru/SUNAT e-invoicing compliance for individual (B2C) clients (todo, blocked on a business decision)
 
