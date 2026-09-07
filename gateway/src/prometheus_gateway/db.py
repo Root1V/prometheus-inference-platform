@@ -133,6 +133,30 @@ class CurrencyRate(Base):
     )
 
 
+class ModelPriceConfig(Base):
+    """Admin-configured per-model price — RM-60 follow-up.
+
+    Persists what used to require hand-editing gateway/pricing.yaml +
+    restart. Loaded into the in-memory PricingTable at startup and on every
+    admin write (see billing.py's reload helpers) so a change takes effect
+    immediately, without a restart. pricing.yaml still seeds the table at
+    first boot; a row here overrides the YAML value for that model_id.
+    """
+
+    __tablename__ = "model_price_config"
+
+    model_id: Mapped[str] = mapped_column(String(128), primary_key=True)
+    prompt_price_per_1m: Mapped[float | None] = mapped_column(Float, nullable=True)
+    completion_price_per_1m: Mapped[float | None] = mapped_column(Float, nullable=True)
+    image_price: Mapped[float | None] = mapped_column(Float, nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+        onupdate=lambda: datetime.now(timezone.utc),
+    )
+
+
 _engine: AsyncEngine | None = None
 _session_factory: sessionmaker | None = None  # type: ignore[type-arg]
 
@@ -420,3 +444,43 @@ async def upsert_currency_rate(currency_code: str, units_per_usd: float) -> Curr
         await session.commit()
         await session.refresh(row)
         return row
+
+
+async def list_model_price_configs() -> list[ModelPriceConfig]:
+    session_factory = get_session_factory()
+    async with session_factory() as session:
+        result = await session.execute(select(ModelPriceConfig))
+        return list(result.scalars().all())
+
+
+async def upsert_model_price_config(
+    model_id: str,
+    *,
+    prompt_price_per_1m: float | None,
+    completion_price_per_1m: float | None,
+    image_price: float | None,
+) -> ModelPriceConfig:
+    session_factory = get_session_factory()
+    async with session_factory() as session:
+        row: ModelPriceConfig | None = await session.get(ModelPriceConfig, model_id)
+        if row is None:
+            row = ModelPriceConfig(model_id=model_id)
+            session.add(row)
+        row.prompt_price_per_1m = prompt_price_per_1m
+        row.completion_price_per_1m = completion_price_per_1m
+        row.image_price = image_price
+        await session.commit()
+        await session.refresh(row)
+        return row
+
+
+async def delete_model_price_config(model_id: str) -> bool:
+    """Returns False if no row existed for model_id (nothing to delete)."""
+    session_factory = get_session_factory()
+    async with session_factory() as session:
+        row: ModelPriceConfig | None = await session.get(ModelPriceConfig, model_id)
+        if row is None:
+            return False
+        await session.delete(row)
+        await session.commit()
+        return True

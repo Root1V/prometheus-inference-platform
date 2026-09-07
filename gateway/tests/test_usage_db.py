@@ -301,3 +301,37 @@ async def test_currency_rate_upsert_and_list():
     await db.upsert_currency_rate("PEN", 3.80)
     rates_after = await db.list_currency_rates()
     assert {r.currency_code: r.units_per_usd for r in rates_after}["PEN"] == 3.80
+
+
+# ── RM-60 follow-up: admin-configurable model pricing (ModelPriceConfig) ────
+
+
+async def test_model_price_config_upsert_and_list():
+    assert await db.list_model_price_configs() == []
+
+    row = await db.upsert_model_price_config(
+        "small-model", prompt_price_per_1m=1.0, completion_price_per_1m=2.0, image_price=None
+    )
+    assert row.model_id == "small-model"
+    assert row.completion_price_per_1m == 2.0
+
+    rows = await db.list_model_price_configs()
+    assert len(rows) == 1
+
+    # Upsert again — updates in place, not a second row.
+    await db.upsert_model_price_config(
+        "small-model", prompt_price_per_1m=5.0, completion_price_per_1m=5.0, image_price=None
+    )
+    rows_after = await db.list_model_price_configs()
+    assert len(rows_after) == 1
+    assert rows_after[0].prompt_price_per_1m == 5.0
+
+
+async def test_model_price_config_delete():
+    await db.upsert_model_price_config(
+        "small-model", prompt_price_per_1m=1.0, completion_price_per_1m=2.0, image_price=None
+    )
+
+    assert await db.delete_model_price_config("small-model") is True
+    assert await db.list_model_price_configs() == []
+    assert await db.delete_model_price_config("small-model") is False

@@ -68,3 +68,25 @@ export interface BillingAlertsResponse {
   object: string;
   data: BillingAlert[];
 }
+
+/** One entry of GET /admin/api/billing/pricing — keyed by model_id. */
+export interface ModelPriceEntry {
+  prompt_price_per_1m: number | null;
+  completion_price_per_1m: number | null;
+  image_price: number | null;
+  /** "db" = admin-configured (this dashboard); "file" = from pricing.yaml, read-only until edited. */
+  source: "db" | "file";
+}
+
+export type ModelPrices = Record<string, ModelPriceEntry>;
+
+export interface ModelPricesResponse {
+  object: string;
+  data: ModelPrices;
+}
+
+export interface UpdateModelPriceRequest {
+  prompt_price_per_1m: number | null;
+  completion_price_per_1m: number | null;
+  image_price: number | null;
+}

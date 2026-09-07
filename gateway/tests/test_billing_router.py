@@ -279,3 +279,139 @@ async def test_put_settings_invalidates_cache_for_hot_path(app, admin_write_head
     fetched = await get_client_billing_settings_cached("client-a")
     assert fetched is not None
     assert fetched.monthly_spend_cap_usd == 5.0
+
+
+# ── RM-60 follow-up: admin-configurable model pricing (replaces pricing.yaml) ──
+
+
+async def test_get_pricing_empty_when_nothing_configured(app, admin_read_headers):
+    await db.create_tables(db.get_engine())
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
+        r = await c.get("/admin/api/billing/pricing", headers=admin_read_headers)
+
+    assert r.status_code == 200
+    assert r.json() == {"object": "list", "data": {}}
+
+
+async def test_put_pricing_requires_admin_write(app, admin_read_headers):
+    await db.create_tables(db.get_engine())
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
+        r = await c.put(
+            "/admin/api/billing/pricing/small-model",
+            json={"prompt_price_per_1m": 1.0, "completion_price_per_1m": 2.0},
+            headers=admin_read_headers,
+        )
+    assert r.status_code == 403
+
+
+async def test_put_pricing_persists_and_applies_live(app, admin_write_headers):
+    """The new price must be usable by the very next record_usage() call —
+    no restart — and survive by being written to ModelPriceConfig too.
+    """
+    from prometheus_gateway import pricing
+
+    await db.create_tables(db.get_engine())
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
+        r = await c.put(
+            "/admin/api/billing/pricing/small-model",
+            json={"prompt_price_per_1m": 1.0, "completion_price_per_1m": 2.0},
+            headers=admin_write_headers,
+        )
+    assert r.status_code == 200
+    assert r.json() == {
+        "model_id": "small-model",
+        "prompt_price_per_1m": 1.0,
+        "completion_price_per_1m": 2.0,
+        "image_price": None,
+        "source": "db",
+    }
+
+    # Applied immediately in-memory, no restart.
+    assert pricing.get_pricing_table().estimate_cost_usd("small-model", 1_000_000, 0) == 1.0
+
+    # Persisted to the DB.
+    rows = await db.list_model_price_configs()
+    assert len(rows) == 1
+    assert rows[0].model_id == "small-model"
+    assert rows[0].prompt_price_per_1m == 1.0
+
+
+async def test_put_pricing_rejects_partial_token_price(app, admin_write_headers):
+    await db.create_tables(db.get_engine())
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
+        r = await c.put(
+            "/admin/api/billing/pricing/small-model",
+            json={"prompt_price_per_1m": 1.0},
+            headers=admin_write_headers,
+        )
+    assert r.status_code == 400
+
+
+async def test_put_pricing_image_only_is_allowed(app, admin_write_headers):
+    await db.create_tables(db.get_engine())
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
+        r = await c.put(
+            "/admin/api/billing/pricing/image-model",
+            json={"image_price": 0.02},
+            headers=admin_write_headers,
+        )
+    assert r.status_code == 200
+    assert r.json()["image_price"] == 0.02
+
+
+async def test_delete_pricing_removes_db_override(app, admin_write_headers):
+    from prometheus_gateway import pricing
+
+    await db.create_tables(db.get_engine())
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
+        await c.put(
+            "/admin/api/billing/pricing/small-model",
+            json={"prompt_price_per_1m": 1.0, "completion_price_per_1m": 2.0},
+            headers=admin_write_headers,
+        )
+        del_r = await c.delete(
+            "/admin/api/billing/pricing/small-model", headers=admin_write_headers
+        )
+    assert del_r.status_code == 204
+    assert pricing.get_pricing_table().estimate_cost_usd("small-model", 1_000_000, 0) is None
+    assert await db.list_model_price_configs() == []
+
+
+async def test_get_pricing_reflects_yaml_and_db_sources(
+    tmp_path, rsa_keys, registry, fake_redis, admin_read_headers, admin_write_headers
+):
+    """A model priced only in pricing.yaml shows source="file"; one overridden
+    (or newly added) via the admin API shows source="db".
+    """
+    key_file = tmp_path / "public.pem"
+    key_file.write_text(rsa_keys["public"])
+    pricing_file = tmp_path / "pricing.yaml"
+    pricing_file.write_text(
+        "models:\n  - id: yaml-only-model\n    prompt_price_per_1m: 1.0\n"
+        "    completion_price_per_1m: 1.0\n"
+    )
+    settings = Settings(
+        jwt_issuer="https://auth.test",
+        jwt_audience="prometheus-gateway",
+        jwt_public_key_file=str(key_file),
+        jwt_revocation_redis_url=None,
+        rate_limit_strict=False,
+        admin_dashboard_enabled=True,
+        auth_service_admin_url="http://auth.test",
+        auth_service_admin_api_key="secret",
+        pricing_file=str(pricing_file),
+    )
+    app = create_app(settings=settings, registry=registry, redis_client=fake_redis)
+    await db.create_tables(db.get_engine())
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
+        await c.put(
+            "/admin/api/billing/pricing/db-model",
+            json={"prompt_price_per_1m": 5.0, "completion_price_per_1m": 5.0},
+            headers=admin_write_headers,
+        )
+        r = await c.get("/admin/api/billing/pricing", headers=admin_read_headers)
+
+    body = r.json()["data"]
+    assert body["yaml-only-model"]["source"] == "file"
+    assert body["db-model"]["source"] == "db"

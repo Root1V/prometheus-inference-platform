@@ -5,7 +5,9 @@ import type {
   BillingPeriodSummary,
   ClientBillingSettings,
   CurrencyRates,
+  ModelPricesResponse,
   UpdateClientBillingSettingsRequest,
+  UpdateModelPriceRequest,
 } from "../types/billing";
 import { apiClient } from "./client";
 
@@ -14,6 +16,7 @@ const CURRENCY_RATES_KEY = ["currency-rates"] as const;
 const BILLING_SUMMARY_KEY = "billing-summary";
 const BILLING_HISTORY_KEY = "billing-history";
 const BILLING_ALERTS_KEY = ["billing-alerts"] as const;
+const MODEL_PRICES_KEY = ["model-prices"] as const;
 
 /** Polled at the same cadence as useUsage()'s live "today" view. */
 const ALERTS_POLL_MS = 15000;
@@ -97,5 +100,35 @@ export function useBillingAlerts() {
     queryKey: BILLING_ALERTS_KEY,
     queryFn: async () => (await apiClient.get<BillingAlertsResponse>("/billing/alerts")).data,
     refetchInterval: ALERTS_POLL_MS,
+  });
+}
+
+/**
+ * Admin-configurable model pricing — replaces hand-editing pricing.yaml +
+ * restarting the gateway. A saved price applies to the very next request.
+ */
+export function useModelPrices() {
+  return useQuery({
+    queryKey: MODEL_PRICES_KEY,
+    queryFn: async () => (await apiClient.get<ModelPricesResponse>("/billing/pricing")).data,
+  });
+}
+
+export function useUpdateModelPrice() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async ({ modelId, data }: { modelId: string; data: UpdateModelPriceRequest }) =>
+      (await apiClient.put(`/billing/pricing/${modelId}`, data)).data,
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: MODEL_PRICES_KEY }),
+  });
+}
+
+export function useDeleteModelPrice() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async (modelId: string) => {
+      await apiClient.delete(`/billing/pricing/${modelId}`);
+    },
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: MODEL_PRICES_KEY }),
   });
 }

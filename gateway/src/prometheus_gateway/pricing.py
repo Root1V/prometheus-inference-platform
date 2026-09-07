@@ -34,11 +34,16 @@ class PricingTable:
 
     def __init__(self, path: Path | str | None = None) -> None:
         pricing_path = Path(path) if path else _DEFAULT_PRICING_PATH
-        self._prices: dict[str, ModelPrice] = {}
+        # _file_prices is a read-only snapshot of what pricing.yaml said at
+        # startup — remove_price() falls back to it so deleting an admin
+        # (DB) override restores the file's own price rather than clearing
+        # it entirely, matching "DB overrides the file, never replaces it."
+        self._file_prices: dict[str, ModelPrice] = {}
         if pricing_path.exists():
             self._load(pricing_path)
         else:
             logger.debug("pricing.no_file", path=str(pricing_path))
+        self._prices: dict[str, ModelPrice] = dict(self._file_prices)
 
     def _load(self, path: Path) -> None:
         with path.open() as f:
@@ -49,7 +54,7 @@ class PricingTable:
             if has_prompt_price != has_completion_price:
                 logger.warning("pricing.incomplete_token_price", model_id=entry["id"])
             token_priced = has_prompt_price and has_completion_price
-            self._prices[entry["id"]] = ModelPrice(
+            self._file_prices[entry["id"]] = ModelPrice(
                 prompt_price_per_1m=float(entry["prompt_price_per_1m"]) if token_priced else None,
                 completion_price_per_1m=float(entry["completion_price_per_1m"])
                 if token_priced
@@ -59,6 +64,38 @@ class PricingTable:
 
     def get_price(self, model_id: str) -> ModelPrice | None:
         return self._prices.get(model_id)
+
+    def list_prices(self) -> dict[str, ModelPrice]:
+        return dict(self._prices)
+
+    def set_price(
+        self,
+        model_id: str,
+        *,
+        prompt_price_per_1m: float | None,
+        completion_price_per_1m: float | None,
+        image_price: float | None,
+    ) -> None:
+        """Admin-driven update (RM-60 follow-up) — mutates the live in-memory
+        table directly so the new price applies to the very next request,
+        no restart needed. Callers are also responsible for persisting to
+        ModelPriceConfig (db.py) so it survives a restart.
+        """
+        self._prices[model_id] = ModelPrice(
+            prompt_price_per_1m=prompt_price_per_1m,
+            completion_price_per_1m=completion_price_per_1m,
+            image_price=image_price,
+        )
+
+    def remove_price(self, model_id: str) -> None:
+        """Clears an admin (DB) override. If pricing.yaml also priced this
+        model, that file price reappears — otherwise the model is unpriced.
+        """
+        file_price = self._file_prices.get(model_id)
+        if file_price is not None:
+            self._prices[model_id] = file_price
+        else:
+            self._prices.pop(model_id, None)
 
     def estimate_cost_usd(
         self, model_id: str, prompt_tokens: int, completion_tokens: int

@@ -15,6 +15,7 @@ import { useBillingHistory, useBillingSummary } from "../api/billing";
 import { downloadUsageExportCsv } from "../api/usage";
 import { useUsers } from "../api/users";
 import { BudgetAlertBanner } from "../components/BudgetAlertBanner";
+import { ModelPricingTable } from "../components/ModelPricingTable";
 import { Sidebar } from "../components/Sidebar";
 import { StatCard } from "../components/StatCard";
 import { useToast } from "../context/ToastContext";
@@ -137,6 +138,19 @@ export default function Billing() {
 
         <div className="mt-4">
           <BudgetAlertBanner />
+        </div>
+
+        <div className="mt-6">
+          <h2 className="text-sm font-medium uppercase tracking-wide text-text-muted">
+            Model pricing
+          </h2>
+          <p className="mt-1 text-xs text-text-muted">
+            Replaces hand-editing pricing.yaml — a saved price applies to the next request
+            immediately, no restart needed.
+          </p>
+          <div className="mt-3 overflow-x-auto rounded-xl border border-border bg-surface">
+            <ModelPricingTable />
+          </div>
         </div>
 
         {!effectiveClientId ? (
