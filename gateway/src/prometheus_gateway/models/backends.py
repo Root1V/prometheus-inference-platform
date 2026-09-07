@@ -21,6 +21,14 @@ logger = get_logger(__name__)
 # HTTP status codes that indicate a transient backend fault — safe to retry
 _TRANSIENT_STATUS_CODES: frozenset[int] = frozenset({502, 503, 504})
 
+# RM-52: was 120.0 — too short for a real FLUX.1-dev generation (~150-500s at
+# 20 steps on Metal, confirmed empirically), which read-timed-out and then
+# got retried into an even longer wait since sd-server keeps computing a
+# request server-side even after the client gives up. A higher ceiling here
+# doesn't slow down already-fast chat/embeddings responses — it only matters
+# when a backend is legitimately still working.
+_BACKEND_REQUEST_TIMEOUT_S = 600.0
+
 
 class _TransientBackendError(Exception):
     """Raised internally when a backend returns a transient 5xx response."""
@@ -62,7 +70,7 @@ class BackendPool:
     def get(self, backend_url: str) -> httpx.AsyncClient:
         """Return the shared client for *backend_url*, creating it on first access."""
         if backend_url not in self._clients:
-            self._clients[backend_url] = httpx.AsyncClient(timeout=120.0)
+            self._clients[backend_url] = httpx.AsyncClient(timeout=_BACKEND_REQUEST_TIMEOUT_S)
         return self._clients[backend_url]
 
     def get_circuit_breaker(self, backend_id: str) -> CircuitBreaker | None:
@@ -118,7 +126,9 @@ class BackendPool:
                 await asyncio.sleep(sleep_s)
 
             try:
-                resp = await client.post(url, json=payload, timeout=120.0, headers=headers)
+                resp = await client.post(
+                    url, json=payload, timeout=_BACKEND_REQUEST_TIMEOUT_S, headers=headers
+                )
 
                 if resp.status_code in _TRANSIENT_STATUS_CODES:
                     raise _TransientBackendError(resp.status_code)

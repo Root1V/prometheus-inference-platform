@@ -12,6 +12,7 @@ import type {
   RegisterModelRequest,
   UpdateModelRequest,
 } from "../types/instance";
+import type { ModelCatalogEntry } from "../types/models";
 
 interface RegisterModelModalProps {
   open: boolean;
@@ -22,10 +23,17 @@ interface RegisterModelModalProps {
    * model to a different node or renaming it isn't a field edit, it's a
    * re-registration, out of scope here. */
   editing?: InstanceEntry | null;
+  /** RM-51: catalog entries to populate the "Model" picker when creating a
+   * new instance — path/family/quantization/mmproj_path are derived from the
+   * selection instead of typed by hand, since those describe the downloaded
+   * file, not a per-instance choice. Submitted as `model_id`, letting
+   * manager-api pull those fields from the catalog server-side rather than
+   * copying them into the request body. Ignored while editing. */
+  downloadedModels?: ModelCatalogEntry[];
 }
 
-const BACKENDS: Backend[] = ["llama_cpp", "mlx", "vllm", "sglang"];
-const MODALITIES: Modality[] = ["text", "vision", "embedding"];
+const BACKENDS: Backend[] = ["llama_cpp", "mlx", "vllm", "sglang", "sd_cpp"];
+const MODALITIES: Modality[] = ["text", "vision", "embedding", "image"];
 
 interface FormState {
   node: string;
@@ -40,7 +48,6 @@ interface FormState {
   mmproj_path: string;
   discovery: boolean;
   hf_repo: string;
-  hf_filename: string;
   hf_sha256: string;
 }
 
@@ -58,7 +65,6 @@ function initialState(defaultNode: string): FormState {
     mmproj_path: "",
     discovery: false,
     hf_repo: "",
-    hf_filename: "",
     hf_sha256: "",
   };
 }
@@ -77,7 +83,6 @@ function stateFromInstance(instance: InstanceEntry): FormState {
     mmproj_path: instance.mmproj_path,
     discovery: instance.discovery,
     hf_repo: instance.hf_repo,
-    hf_filename: instance.hf_filename,
     hf_sha256: instance.hf_sha256,
   };
 }
@@ -97,7 +102,13 @@ function Field({ label, required, children }: { label: string; required?: boolea
   );
 }
 
-export function RegisterModelModal({ open, nodes, onClose, editing = null }: RegisterModelModalProps) {
+export function RegisterModelModal({
+  open,
+  nodes,
+  onClose,
+  editing = null,
+  downloadedModels = [],
+}: RegisterModelModalProps) {
   const { showToast } = useToast();
   const registerModel = useRegisterModel();
   const updateModel = useUpdateModel();
@@ -105,6 +116,7 @@ export function RegisterModelModal({ open, nodes, onClose, editing = null }: Reg
   const [form, setForm] = useState<FormState>(() =>
     editing ? stateFromInstance(editing) : initialState(""),
   );
+  const [selectedSourceId, setSelectedSourceId] = useState("");
 
   if (!open) return null;
 
@@ -113,14 +125,39 @@ export function RegisterModelModal({ open, nodes, onClose, editing = null }: Reg
   // during render rather than synced via an effect (no extra render needed).
   const selectedNode = form.node || nodes[0] || "";
   const isPending = registerModel.isPending || updateModel.isPending;
+  // A downloaded model's file only exists on its own node — offering one
+  // from a different node would register a path that isn't there.
+  const modelsOnNode = downloadedModels.filter((m) => m.node === selectedNode);
 
   const update = <K extends keyof FormState>(key: K, value: FormState[K]) =>
     setForm((current) => ({ ...current, [key]: value }));
+
+  function handleSelectModel(sourceId: string) {
+    setSelectedSourceId(sourceId);
+    const source = modelsOnNode.find((m) => m.id === sourceId);
+    if (!source) return;
+    // Only catalog-owned fields come from the selection — backend/modality/
+    // context_length are per-instance choices the operator makes here, not
+    // derived from the downloaded file.
+    setForm((current) => ({
+      ...current,
+      path: source.path,
+      family: source.family,
+      quantization: source.quantization,
+      mmproj_path: source.mmproj_path,
+      hf_repo: source.hf_repo,
+      hf_sha256: source.hf_sha256,
+    }));
+  }
 
   const handleSubmit = (event: FormEvent) => {
     event.preventDefault();
     if (!selectedNode) {
       showToast("Select a node", "error");
+      return;
+    }
+    if (!isEditing && !selectedSourceId) {
+      showToast("Select a model", "error");
       return;
     }
 
@@ -136,7 +173,6 @@ export function RegisterModelModal({ open, nodes, onClose, editing = null }: Reg
         quantization: form.quantization,
         mmproj_path: form.modality === "vision" ? form.mmproj_path : "",
         hf_repo: form.hf_repo,
-        hf_filename: form.hf_filename,
         hf_sha256: form.hf_sha256,
       };
       updateModel.mutate(
@@ -154,19 +190,13 @@ export function RegisterModelModal({ open, nodes, onClose, editing = null }: Reg
 
     const body: RegisterModelRequest = {
       id: form.id,
+      model_id: selectedSourceId,
       port: Number(form.port),
       backend: form.backend,
       modality: form.modality,
       discovery: form.discovery,
     };
-    if (form.path) body.path = form.path;
     if (form.context_length) body.context_length = Number(form.context_length);
-    if (form.family) body.family = form.family;
-    if (form.quantization) body.quantization = form.quantization;
-    if (form.modality === "vision" && form.mmproj_path) body.mmproj_path = form.mmproj_path;
-    if (form.hf_repo) body.hf_repo = form.hf_repo;
-    if (form.hf_filename) body.hf_filename = form.hf_filename;
-    if (form.hf_sha256) body.hf_sha256 = form.hf_sha256;
 
     registerModel.mutate(
       { node: selectedNode, data: body },
@@ -197,7 +227,10 @@ export function RegisterModelModal({ open, nodes, onClose, editing = null }: Reg
             <Field label="Node" required>
               <select
                 value={selectedNode}
-                onChange={(e) => update("node", e.target.value)}
+                onChange={(e) => {
+                  update("node", e.target.value);
+                  setSelectedSourceId("");
+                }}
                 required
                 disabled={isEditing}
                 className={cn(inputClass, isEditing && "cursor-not-allowed opacity-60")}
@@ -223,6 +256,32 @@ export function RegisterModelModal({ open, nodes, onClose, editing = null }: Reg
                 className={cn(inputClass, isEditing && "cursor-not-allowed opacity-60")}
               />
             </Field>
+            {!isEditing && (
+              <Field label="Model" required>
+                {modelsOnNode.length === 0 ? (
+                  <p className="rounded-lg border border-dashed border-border px-3 py-2 text-xs text-text-muted">
+                    No downloaded models on this node yet — download one from the Models page
+                    first.
+                  </p>
+                ) : (
+                  <select
+                    value={selectedSourceId}
+                    onChange={(e) => handleSelectModel(e.target.value)}
+                    required
+                    className={inputClass}
+                  >
+                    <option value="" disabled>
+                      Select a downloaded model
+                    </option>
+                    {modelsOnNode.map((m) => (
+                      <option key={m.id} value={m.id}>
+                        {m.id} — {m.family || "?"} · {m.quantization || "?"}
+                      </option>
+                    ))}
+                  </select>
+                )}
+              </Field>
+            )}
             <Field label="Port" required>
               <input
                 type="number"
@@ -270,49 +329,54 @@ export function RegisterModelModal({ open, nodes, onClose, editing = null }: Reg
               </select>
             </Field>
             <Field label="Family">
-              <input value={form.family} onChange={(e) => update("family", e.target.value)} className={inputClass} />
+              <input
+                value={form.family}
+                onChange={(e) => update("family", e.target.value)}
+                disabled={!isEditing}
+                placeholder={isEditing ? undefined : "From the selected model"}
+                className={cn(inputClass, !isEditing && "cursor-not-allowed opacity-60")}
+              />
             </Field>
             <Field label="Quantization">
               <input
                 value={form.quantization}
                 onChange={(e) => update("quantization", e.target.value)}
-                className={inputClass}
+                disabled={!isEditing}
+                placeholder={isEditing ? undefined : "From the selected model"}
+                className={cn(inputClass, !isEditing && "cursor-not-allowed opacity-60")}
               />
             </Field>
             <Field label="Path (local .gguf)">
-              <input value={form.path} onChange={(e) => update("path", e.target.value)} className={inputClass} />
+              <input
+                value={form.path}
+                onChange={(e) => update("path", e.target.value)}
+                disabled={!isEditing}
+                placeholder={isEditing ? undefined : "From the selected model"}
+                className={cn(inputClass, !isEditing && "cursor-not-allowed opacity-60")}
+              />
             </Field>
             {form.modality === "vision" && (
               <Field label="mmproj path">
                 <input
                   value={form.mmproj_path}
                   onChange={(e) => update("mmproj_path", e.target.value)}
-                  className={inputClass}
+                  disabled={!isEditing}
+                  placeholder={isEditing ? undefined : "From the selected model"}
+                  className={cn(inputClass, !isEditing && "cursor-not-allowed opacity-60")}
                 />
               </Field>
             )}
-            <Field label="HF repo">
-              <input
-                value={form.hf_repo}
-                onChange={(e) => update("hf_repo", e.target.value)}
-                className={inputClass}
-              />
-            </Field>
-            <Field label="HF filename">
-              <input
-                value={form.hf_filename}
-                onChange={(e) => update("hf_filename", e.target.value)}
-                className={inputClass}
-              />
-            </Field>
-            <Field label="HF sha256">
-              <input
-                value={form.hf_sha256}
-                onChange={(e) => update("hf_sha256", e.target.value)}
-                className={inputClass}
-              />
-            </Field>
           </div>
+          {!isEditing && (
+            <p className="text-xs text-text-muted">
+              Don't see the model you want? Download it from the{" "}
+              <a href="#/models" className="text-primary hover:underline">
+                Models
+              </a>{" "}
+              page first — it searches Hugging Face, shows the model card, and registers the
+              finished download automatically.
+            </p>
+          )}
           <label className="flex items-center gap-2 text-sm text-text">
             <input
               type="checkbox"

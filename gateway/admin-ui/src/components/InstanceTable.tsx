@@ -1,9 +1,53 @@
 import { ChevronLeft, ChevronRight } from "lucide-react";
 import { useMemo, useState } from "react";
+import type { BackendMetrics } from "../api/metrics";
 import type { InstanceEntry, InstanceState } from "../types/instance";
 import { InstanceRow } from "./InstanceRow";
 
-const COLUMNS = ["#", "ID", "Node", "Backend", "Modality", "State", "Port", "CPU", "RSS", "Uptime", "Actions"];
+/** RM-46 follow-up: header tooltips explain what each performance column
+ * means once, here — the per-row cells no longer need to repeat it. */
+const COLUMNS: { label: string; title?: string }[] = [
+  { label: "#" },
+  { label: "ID" },
+  { label: "Node" },
+  { label: "Backend" },
+  { label: "Modality" },
+  { label: "State" },
+  { label: "Port" },
+  { label: "CPU" },
+  { label: "RSS" },
+  {
+    label: "P50",
+    title: "Latencia mediana — la mitad de las requests fueron más rápidas que esto, la otra mitad más lentas.",
+  },
+  {
+    label: "P95",
+    title:
+      "Latencia percentil 95 — la 'cola lenta'. Solo el 5% peor de las requests tardó más que esto.",
+  },
+  {
+    label: "TTFT",
+    title:
+      "Tiempo al primer token — cuánto tarda en empezar a aparecer la respuesta. Solo aplica con streaming.",
+  },
+  {
+    label: "Tok/s",
+    title:
+      "Throughput — tokens generados por segundo (chat), o tokens de entrada procesados por segundo (embeddings, que no generan texto de salida).",
+  },
+  {
+    label: "ms/tok",
+    title:
+      "Latencia entre tokens — tiempo promedio entre tokens sucesivos una vez que arrancó la generación. Más bajo = streaming más fluido. Solo backends de la familia llama.cpp.",
+  },
+  {
+    label: "Img/s",
+    title:
+      "Throughput — imágenes generadas por segundo. Solo modelos de generación de imágenes (no aplica el concepto de tokens acá).",
+  },
+  { label: "Uptime" },
+  { label: "Actions" },
+];
 
 const PAGE_SIZE = 20;
 
@@ -20,9 +64,13 @@ const STATE_RANK: Record<InstanceState, number> = {
 
 export function InstanceTable({
   instances,
+  backendMetrics,
   onEdit,
 }: {
   instances: InstanceEntry[];
+  /** RM-46: keyed by instance/backend id, same as InstanceEntry.id — absent
+   * (undefined) while GET /metrics's first poll hasn't landed yet. */
+  backendMetrics?: Record<string, BackendMetrics>;
   onEdit: (instance: InstanceEntry) => void;
 }) {
   const [page, setPage] = useState(1);
@@ -51,8 +99,12 @@ export function InstanceTable({
         <thead>
           <tr className="border-b border-border text-xs uppercase tracking-wide text-text-muted">
             {COLUMNS.map((col) => (
-              <th key={col} className="px-4 py-3 font-medium">
-                {col}
+              <th
+                key={col.label}
+                className={col.title ? "cursor-help px-4 py-3 font-medium" : "px-4 py-3 font-medium"}
+                title={col.title}
+              >
+                {col.label}
               </th>
             ))}
           </tr>
@@ -63,6 +115,7 @@ export function InstanceTable({
               key={`${instance.node}-${instance.id}`}
               rowNumber={startIndex + i + 1}
               instance={instance}
+              metrics={backendMetrics?.[instance.id]}
               onEdit={onEdit}
             />
           ))}

@@ -8,6 +8,7 @@ from sqlalchemy import (
     Boolean,
     DateTime,
     Enum,
+    Float,
     ForeignKey,
     Index,
     Integer,
@@ -110,6 +111,16 @@ class NodeType(str, enum.Enum):
     other = "other"
 
 
+# RM-62 follow-up: platform defaults for a node's cost fields, applied when
+# the operator leaves them blank at creation — derived from a MacBook Pro M4
+# Max (~$8,100 amortized over a 3-year lifespan) + ~70W sustained inference
+# load at Lima, Peru's highest residential electricity tier. Editable per
+# node any time; these are just the starting point for a new one.
+DEFAULT_HARDWARE_AMORTIZATION_USD_PER_HOUR = 0.3082
+DEFAULT_ELECTRICITY_USD_PER_HOUR = 0.0146
+DEFAULT_PRICE_MARGIN_MULTIPLIER = 1.3
+
+
 class Node(Base):
     """Inference manager node inventory.
 
@@ -124,6 +135,27 @@ class Node(Base):
     manager_url: Mapped[str] = mapped_column(String(512), nullable=False)
     node_type: Mapped[NodeType] = mapped_column(Enum(NodeType), nullable=False)
     tag: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # RM-62: superseded by the 3 fields below (kept, unused, per this
+    # codebase's additive-only migration convention — see _ADDITIVE_MIGRATIONS).
+    hourly_cost_usd: Mapped[float | None] = mapped_column(Float, nullable=True)
+    # RM-62 follow-up: the $/hour total is the sum of these two, each entered
+    # by the operator (nothing in this codebase can derive them) — split so
+    # either can be adjusted independently (e.g. an electricity rate change
+    # without re-estimating hardware amortization). Never left unconfigured:
+    # a blank value at creation gets the platform default above, so every
+    # node always has a real total for the price-suggestion calculator.
+    hardware_amortization_usd_per_hour: Mapped[float] = mapped_column(
+        Float, nullable=False, default=DEFAULT_HARDWARE_AMORTIZATION_USD_PER_HOUR
+    )
+    electricity_usd_per_hour: Mapped[float] = mapped_column(
+        Float, nullable=False, default=DEFAULT_ELECTRICITY_USD_PER_HOUR
+    )
+    # Multiplier applied over this node's break-even cost by the Model
+    # Pricing table's "suggest price" calculator — per-node since different
+    # hardware/markets may warrant a different margin.
+    price_margin_multiplier: Mapped[float] = mapped_column(
+        Float, nullable=False, default=DEFAULT_PRICE_MARGIN_MULTIPLIER
+    )
     # Set by a connectivity check (GET {manager_url}/health) at creation, on
     # manager_url changes, and via /check and /activate (activate can't just
     # flip this to True — it re-probes and only succeeds if reachable, so the
@@ -218,6 +250,13 @@ async def create_tables(engine: AsyncEngine) -> None:
         "ALTER TABLE principals ADD COLUMN email TEXT",
         "ALTER TABLE principals ADD COLUMN password_hash TEXT",
         "ALTER TABLE nodes ADD COLUMN is_active BOOLEAN NOT NULL DEFAULT 1",
+        "ALTER TABLE nodes ADD COLUMN hourly_cost_usd FLOAT",
+        "ALTER TABLE nodes ADD COLUMN hardware_amortization_usd_per_hour FLOAT NOT NULL "
+        f"DEFAULT {DEFAULT_HARDWARE_AMORTIZATION_USD_PER_HOUR}",
+        "ALTER TABLE nodes ADD COLUMN electricity_usd_per_hour FLOAT NOT NULL "
+        f"DEFAULT {DEFAULT_ELECTRICITY_USD_PER_HOUR}",
+        "ALTER TABLE nodes ADD COLUMN price_margin_multiplier FLOAT NOT NULL "
+        f"DEFAULT {DEFAULT_PRICE_MARGIN_MULTIPLIER}",
     ]
     async with engine.begin() as conn:
         for stmt in _ADDITIVE_MIGRATIONS:

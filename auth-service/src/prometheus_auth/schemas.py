@@ -162,6 +162,13 @@ class CreateNodeRequest(BaseModel):
     manager_url: str = Field(..., min_length=1, max_length=512)
     node_type: NodeType
     tag: str | None = Field(None, max_length=255)
+    # RM-62 follow-up: the two $/hour components (amortization + electricity)
+    # and the price-suggestion margin — each entered by the operator, each
+    # falling back to a platform default (db.py's DEFAULT_* constants) when
+    # left blank, so a node is never left without a usable total.
+    hardware_amortization_usd_per_hour: float | None = Field(None, ge=0)
+    electricity_usd_per_hour: float | None = Field(None, ge=0)
+    price_margin_multiplier: float | None = Field(None, gt=0)
 
     model_config = {"use_enum_values": True}
 
@@ -173,6 +180,12 @@ class NodeListItem(BaseModel):
     node_type: str
     tag: str | None = None
     is_active: bool
+    hardware_amortization_usd_per_hour: float
+    electricity_usd_per_hour: float
+    price_margin_multiplier: float
+    # Computed = hardware_amortization_usd_per_hour + electricity_usd_per_hour
+    # — read-only convenience for callers that just want the total.
+    hourly_cost_usd: float
     created_at: datetime
     updated_at: datetime | None = None
 
@@ -183,6 +196,9 @@ class UpdateNodeRequest(BaseModel):
     manager_url: str | None = Field(None, min_length=1, max_length=512)
     node_type: NodeType | None = None
     tag: str | None = Field(None, max_length=255)
+    hardware_amortization_usd_per_hour: float | None = Field(None, ge=0)
+    electricity_usd_per_hour: float | None = Field(None, ge=0)
+    price_margin_multiplier: float | None = Field(None, gt=0)
 
     model_config = {"use_enum_values": True}
 

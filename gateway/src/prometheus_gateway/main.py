@@ -103,7 +103,7 @@ def create_app(
 
     # RM-33: static pricing table — loaded eagerly for the same testability reason
     # as db_engine above. Missing/unset pricing_file just yields an empty table.
-    from .pricing import init_pricing_table
+    from .pricing import get_pricing_table, init_pricing_table
 
     init_pricing_table(settings.pricing_file)
 
@@ -111,9 +111,22 @@ def create_app(
     async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
         app.state.backend_pool = pool
 
-        from .db import create_tables
+        from .db import create_tables, list_model_price_configs
 
         await create_tables(db_engine)
+
+        # RM-60 follow-up: DB-configured prices (set via the admin dashboard)
+        # override whatever pricing.yaml loaded above — this is what lets a
+        # price change made in the UI survive a restart, on top of applying
+        # immediately at write time via PricingTable.set_price().
+        price_table = get_pricing_table()
+        for row in await list_model_price_configs():
+            price_table.set_price(
+                row.model_id,
+                prompt_price_per_1m=row.prompt_price_per_1m,
+                completion_price_per_1m=row.completion_price_per_1m,
+                image_price=row.image_price,
+            )
 
         # AC-7 (007): inject Redis client into JWKS module for cross-worker cache
         if _redis_instance is not None:
@@ -164,6 +177,10 @@ def create_app(
     app.state.metrics_store = metrics_store
     # AC-29 (018) prompt-summary opt-in + RM-10 admin dashboard both read this.
     app.state.settings = settings
+    # RM-60: the same shared Redis client already threaded through BackendPool/
+    # RateLimitMiddleware above — billing_router.py reads it here rather than
+    # reaching into pool's private _redis attribute from another module.
+    app.state.shared_redis = _redis_instance
 
     # Middleware stack — innermost added first (see gateway.instructions.md)
     # Order: [request-id+trace-id] → [auth] → [rate-limit] → router
@@ -237,6 +254,7 @@ def create_app(
     if settings.admin_dashboard_enabled:
         from fastapi.staticfiles import StaticFiles
 
+        from .admin.billing_router import create_billing_router
         from .admin.client import ManagerApiClient
         from .admin.router import create_admin_router
 
@@ -250,6 +268,10 @@ def create_app(
         # are matched first — a StaticFiles Mount at /admin would otherwise
         # shadow sub-paths like /admin/api/instances.
         app.include_router(create_admin_router(manager_client))
+        # RM-60: billing config CRUD — the enforcement hooks in router.py are
+        # always active regardless of this flag; only the admin UI to
+        # configure them is gated (matching the rest of this dashboard).
+        app.include_router(create_billing_router())
 
         _admin_static_dir = Path(__file__).parent / "admin" / "static"
         if _admin_static_dir.is_dir():

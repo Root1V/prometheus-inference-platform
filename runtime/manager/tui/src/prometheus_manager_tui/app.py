@@ -772,7 +772,7 @@ class ManagerApp(App[None]):
             if not getattr(entry, "hf_repo", None):
                 self.notify(
                     f"'{model_id}' has no HF repo configured — "
-                    "add hf_repo and hf_filename to registry.yaml",
+                    "add hf_repo and hf_filenames to the registry",
                     severity="error",
                 )
                 return
@@ -813,7 +813,7 @@ class ManagerApp(App[None]):
         _hf_base = "https://huggingface.co"
         _download_url_host = urlparse(_hf_base).hostname or "huggingface.co"
 
-        filenames = entry.hf_filenames if entry.hf_filenames else [entry.hf_filename]
+        filenames = list(entry.hf_filenames)
         total = len(filenames)
 
         with _tracer.start_as_current_span("model.download", kind=SpanKind.INTERNAL) as span:
@@ -933,8 +933,7 @@ class ManagerApp(App[None]):
             port=port,
             context_length=4096,
             hf_repo=view._selected_repo,
-            hf_filename=shard_files[0],
-            hf_filenames=shard_files if len(shard_files) > 1 else [],
+            hf_filenames=shard_files,
             quantization=quant,
             downloaded=False,
         )

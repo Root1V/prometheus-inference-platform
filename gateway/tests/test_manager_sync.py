@@ -203,3 +203,42 @@ async def test_sync_with_no_nodes_registered_yields_empty_registry():
         await sync._sync()
 
     assert registry._models == {}
+
+
+async def test_sync_passes_through_model_id_from_manager_api():
+    """RM-51: a /v1/backends response that includes model_id (the catalog FK)
+    must carry it through to the gateway's ModelEntry unchanged."""
+    registry = ModelRegistry.__new__(ModelRegistry)
+    registry._models = {}
+    sync = _sync(registry)
+
+    backend = _backend("model-a-2", 8080)
+    backend["model_id"] = "model-a"
+
+    with respx.mock:
+        _mock_nodes(("mac", "http://mac.local:8090"))
+        respx.get("http://mac.local:8090/v1/backends").mock(
+            return_value=Response(200, json={"backends": [backend]})
+        )
+        await sync._sync()
+
+    assert registry._models["model-a-2"].model_id == "model-a"
+
+
+async def test_sync_model_id_falls_back_to_instance_id_when_absent():
+    """A not-yet-upgraded manager node (pre-RM-51) sends no model_id at all —
+    the gateway must not crash or silently drop the entry, just default
+    model_id to the instance's own id (matching pre-RM-51 semantics: one row,
+    one id, serving as both)."""
+    registry = ModelRegistry.__new__(ModelRegistry)
+    registry._models = {}
+    sync = _sync(registry)
+
+    with respx.mock:
+        _mock_nodes(("mac", "http://mac.local:8090"))
+        respx.get("http://mac.local:8090/v1/backends").mock(
+            return_value=Response(200, json={"backends": [_backend("legacy-model", 8080)]})
+        )
+        await sync._sync()
+
+    assert registry._models["legacy-model"].model_id == "legacy-model"

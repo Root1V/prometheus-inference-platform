@@ -12,6 +12,7 @@ dependencies = [
     "structlog>=25.5.0",
     "prometheus-telemetry",
     "prometheus-manager-core",
+    "huggingface-hub>=0.23",
 ]
 
 [dependency-groups]

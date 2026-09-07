@@ -1,28 +1,38 @@
 import { Boxes, CircleCheck, CirclePause, Plus, Server } from "lucide-react";
 import { useMemo, useState } from "react";
 import { useInstances, useNodes } from "../api/instances";
+import { useMetrics } from "../api/metrics";
+import { useModelCatalog } from "../api/models";
 import { InstanceTable } from "../components/InstanceTable";
 import { RegisterModelModal } from "../components/RegisterModelModal";
 import { Sidebar } from "../components/Sidebar";
 import { StatCard } from "../components/StatCard";
 import { WarningBanner } from "../components/WarningBanner";
 import type { InstanceEntry } from "../types/instance";
+import type { ModelCatalogEntry } from "../types/models";
 
 // Stable references so they don't retrigger the useMemo below on every poll
 // while data is still loading.
 const EMPTY_INSTANCES: InstanceEntry[] = [];
 const EMPTY_NODES: string[] = [];
+const EMPTY_CATALOG: ModelCatalogEntry[] = [];
 
 type ModalState = { mode: "create" } | { mode: "edit"; instance: InstanceEntry } | null;
 
 export default function Dashboard() {
   const instancesQuery = useInstances();
+  const metricsQuery = useMetrics();
   const nodesQuery = useNodes();
+  const catalogQuery = useModelCatalog();
   const [modal, setModal] = useState<ModalState>(null);
 
   const instances = instancesQuery.data?.instances ?? EMPTY_INSTANCES;
   const unreachableNodes = instancesQuery.data?.unreachable_nodes ?? EMPTY_NODES;
   const nodes = nodesQuery.data ?? EMPTY_NODES;
+  // RM-51: the "Model" picker in RegisterModelModal sources from the catalog
+  // now, not from instances.filter(downloaded) — a downloaded model with no
+  // instance yet must still be pickable.
+  const downloadedModels = catalogQuery.data?.models ?? EMPTY_CATALOG;
 
   const stats = useMemo(
     () => ({
@@ -37,7 +47,7 @@ export default function Dashboard() {
   return (
     <div className="flex min-h-screen bg-background">
       <Sidebar />
-      <main className="flex-1 px-8 py-8">
+      <main className="min-w-0 flex-1 px-8 py-8">
         <div className="flex items-center justify-between">
           <h1 className="text-2xl font-semibold text-text">Instances</h1>
           <button
@@ -71,6 +81,7 @@ export default function Dashboard() {
           ) : (
             <InstanceTable
               instances={instances}
+              backendMetrics={metricsQuery.data?.backends}
               onEdit={(instance) => setModal({ mode: "edit", instance })}
             />
           )}
@@ -82,6 +93,7 @@ export default function Dashboard() {
         open={modal !== null}
         nodes={nodes}
         editing={modal?.mode === "edit" ? modal.instance : null}
+        downloadedModels={downloadedModels}
         onClose={() => setModal(null)}
       />
     </div>

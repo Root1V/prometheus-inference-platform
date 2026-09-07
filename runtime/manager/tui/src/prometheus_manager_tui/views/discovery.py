@@ -5,14 +5,23 @@ Implements: memory/specs/012-discovery-view-redesign.md — AC-1 through AC-16
 
 from __future__ import annotations
 
-import contextlib
-import os
-import re
-from collections.abc import Generator
 from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+# Pure helpers (also importable by tests) live in manager-core's hf_discovery
+# module — RM-48 added an HTTP-facing consumer (manager-api) for the exact
+# same logic, so the canonical version moved there; re-exported here under
+# the original private names so this view's own call sites, app.py's
+# discovery-download action, and this package's tests are all unaffected.
+# auto_id/next_free_port/shard_filenames aren't called inside this module
+# itself (only by app.py, via this re-export) — noqa'd rather than silently
+# dropped.
+from prometheus_manager_core.hf_discovery import auto_id as _auto_id  # noqa: F401
+from prometheus_manager_core.hf_discovery import infer_quant as _infer_quant
+from prometheus_manager_core.hf_discovery import next_free_port as _next_free_port  # noqa: F401
+from prometheus_manager_core.hf_discovery import shard_filenames as _shard_filenames  # noqa: F401
+from prometheus_manager_core.hf_discovery import ssl_env as _ssl_env
 from textual import work
 from textual.app import ComposeResult
 from textual.binding import Binding
@@ -21,83 +30,9 @@ from textual.events import Key
 from textual.markup import escape as markup_escape
 from textual.widgets import DataTable, Input, Static
 
-# ── Pure helpers (also importable by tests) ───────────────────────────────────
-
-_QUANT_RE = re.compile(
-    r"(IQ\d[_A-Z0-9]*|Q\d[_A-Z0-9]*|F16|F32|BF16)",
-    re.IGNORECASE,
-)
-_SLUG_RE = re.compile(r"[^a-z0-9]+")
-# Matches HuggingFace multi-part shard naming: <prefix>NNNNN-of-MMMMM.gguf
-# e.g. "Q4_0/DeepSeek-V3.2-Q4_0-00001-of-00008.gguf"
-_SHARD_RE = re.compile(r"^(.*?-?)(\d{5})-of-(\d{5})(\.gguf)$", re.IGNORECASE)
-
-
-def _infer_quant(filename: str) -> str:
-    """Return quantization tag inferred from a GGUF filename.
-
-    AC-12: covers Q4_K_M, Q8_0, IQ3_M, F16, F32, BF16; returns '?' if unknown.
-    """
-    m = _QUANT_RE.search(filename)
-    return m.group(0).upper() if m else "?"
-
-
-def _auto_id(filename: str, existing_ids: set[str] | None = None) -> str:
-    """Slugify a GGUF filename into a registry-safe ID.
-
-    AC-10: strips .gguf, lowercases, collapses non-alnum to '-', appends '-local'.
-    Collision-resolves with -2, -3, … if existing_ids is provided.
-    """
-    name = re.sub(r"\.gguf$", "", filename, flags=re.IGNORECASE)
-    slug = _SLUG_RE.sub("-", name.lower()).strip("-")
-    base = (slug + "-local")[:63]
-    if not existing_ids:
-        return base
-    candidate = base
-    suffix = 2
-    while candidate in existing_ids:
-        candidate = f"{base[:59]}-{suffix}"
-        suffix += 1
-    return candidate
-
-
-def _next_free_port(used_ports: set[int]) -> int:
-    """Return the lowest port >= 8081 not already in use.
-
-    AC-11: callers pass {e.port for e in registry.entries}.
-    """
-    port = 8081
-    while port in used_ports:
-        port += 1
-    return port
-
-
-def _shard_filenames(selected: str, all_files: list[str]) -> list[str]:
-    """Return the full ordered list of shard files for a multi-part GGUF model.
-
-    Detects the HuggingFace split-model naming pattern:
-        <prefix>NNNNN-of-MMMMM.gguf  (e.g. Q4_0/Model-00001-of-00008.gguf)
-
-    Collects all M sibling shards from *all_files* sharing the same prefix and
-    total count, sorted by part number.  Returns ``[selected]`` unchanged when
-    the filename does not match the pattern (single-file model).
-    """
-    m = _SHARD_RE.match(selected)
-    if not m:
-        return [selected]
-    prefix, total, ext = m.group(1), m.group(3), m.group(4)
-    shards: list[tuple[int, str]] = []
-    for f in all_files:
-        fm = _SHARD_RE.match(f)
-        if (
-            fm
-            and fm.group(1) == prefix
-            and fm.group(3) == total
-            and fm.group(4).lower() == ext.lower()
-        ):
-            shards.append((int(fm.group(2)), f))
-    shards.sort()
-    return [f for _, f in shards] if shards else [selected]
+# mypy (strict / no_implicit_reexport) requires re-exported imports to be
+# explicitly declared — these four are consumed by app.py via this module.
+__all__ = ["DiscoveryView", "_auto_id", "_infer_quant", "_next_free_port", "_shard_filenames"]
 
 
 def _fmt_count(n: int | None) -> str:
@@ -115,28 +50,6 @@ def _fmt_date(dt: datetime | None) -> str:
     if dt is None:
         return "?"
     return dt.strftime("%Y-%m-%d")
-
-
-@contextlib.contextmanager
-def _ssl_env(ca: Path | None) -> Generator[None, None, None]:
-    """Temporarily set REQUESTS_CA_BUNDLE for the duration of an HF API call.
-
-    huggingface_hub uses requests under the hood, which honours this env var.
-    Safe to call from a worker thread (restores original value on exit).
-    """
-    if ca is None:
-        yield
-        return
-    key = "REQUESTS_CA_BUNDLE"
-    old = os.environ.get(key)
-    os.environ[key] = str(ca)
-    try:
-        yield
-    finally:
-        if old is None:
-            os.environ.pop(key, None)
-        else:
-            os.environ[key] = old
 
 
 # ── View ──────────────────────────────────────────────────────────────────────

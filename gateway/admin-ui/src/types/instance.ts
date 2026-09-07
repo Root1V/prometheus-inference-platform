@@ -1,9 +1,11 @@
-export type Backend = "llama_cpp" | "mlx" | "vllm" | "sglang";
-export type Modality = "text" | "vision" | "embedding";
+export type Backend = "llama_cpp" | "mlx" | "vllm" | "sglang" | "sd_cpp";
+export type Modality = "text" | "vision" | "embedding" | "image";
 export type InstanceState = "ready" | "loading" | "paused" | "stopped" | "error";
 
 export interface InstanceEntry {
   id: string;
+  /** RM-51: the catalog (models) entry this instance belongs to. */
+  model_id: string;
   context_length: number;
   port: number;
   path: string;
@@ -12,13 +14,14 @@ export interface InstanceEntry {
   backend: Backend;
   modality: Modality;
   mmproj_path: string;
-  log_level: string;
   downloaded: boolean;
   discovery: boolean;
   rss_estimate_mb: number | null;
+  /** On-disk size of the downloaded file(s), summed across shards — null if
+   * not downloaded, or the file is missing. See routes.py's _merge(). */
+  file_size_bytes: number | null;
   backend_url: string;
   hf_repo: string;
-  hf_filename: string;
   hf_sha256: string;
   hf_filenames: string[];
   pid: number | null;
@@ -48,8 +51,11 @@ export interface RegisterModelRequest {
   mmproj_path?: string;
   discovery?: boolean;
   hf_repo?: string;
-  hf_filename?: string;
   hf_sha256?: string;
+  /** RM-51: create a new instance of this already-catalogued model instead
+   * of registering a brand-new one — manager-api pulls path/family/
+   * quantization/etc. from the catalog entry server-side. */
+  model_id?: string;
 }
 
 /** PATCH /admin/api/nodes/{node}/models/{id} — every field optional, `id` excluded (it's the registry key, not editable in place). */

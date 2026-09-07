@@ -114,6 +114,70 @@ class TestRegister:
         assert body["id"] == "new-model"
         assert body["modality"] == "vision"
         assert body["mmproj_path"] == "/models/mmproj.gguf"
+        # RM-51 regression: the immediate POST response must reflect the
+        # persisted catalog FK (self-referencing for manual registration),
+        # not the stale in-memory entry built before registry.add().
+        assert body["model_id"] == "new-model"
+
+    def test_register_split_file_fields(self, tmp_path: Path):
+        """RM-52: vae_path/clip_l_path/t5xxl_path — FLUX.1-class split models.
+        Regression: register_backend() builds RegistryEntry field-by-field
+        rather than **body, so a new field is easy to add here and forget
+        to wire into that constructor call."""
+        client = _authed(_make_client(tmp_path))
+        try:
+            resp = client.post(
+                "/v1/backends",
+                json={
+                    "id": "flux-model",
+                    "port": 8199,
+                    "path": "/models/flux1-dev-q8_0.gguf",
+                    "context_length": 0,
+                    "backend": "sd_cpp",
+                    "modality": "image",
+                    "vae_path": "/models/ae.safetensors",
+                    "clip_l_path": "/models/clip_l.safetensors",
+                    "t5xxl_path": "/models/t5xxl.safetensors",
+                },
+                headers={"Authorization": "Bearer dummy"},
+            )
+        finally:
+            _clear_override()
+        assert resp.status_code == 201
+        body = resp.json()
+        assert body["vae_path"] == "/models/ae.safetensors"
+        assert body["clip_l_path"] == "/models/clip_l.safetensors"
+        assert body["t5xxl_path"] == "/models/t5xxl.safetensors"
+
+    def test_register_and_update_cfg_scale(self, tmp_path: Path):
+        """RM-52: sd-server's own --cfg-scale default (7.0) is wrong for
+        guidance-distilled models (FLUX.1) — confirmed empirically."""
+        client = _authed(_make_client(tmp_path))
+        try:
+            resp = client.post(
+                "/v1/backends",
+                json={
+                    "id": "flux-model",
+                    "port": 8199,
+                    "path": "/models/flux1-dev-q8_0.gguf",
+                    "backend": "sd_cpp",
+                    "cfg_scale": 1.0,
+                },
+                headers={"Authorization": "Bearer dummy"},
+            )
+            assert resp.status_code == 201
+            assert resp.json()["cfg_scale"] == 1.0
+
+            patch_resp = client.patch(
+                "/v1/backends/flux-model",
+                json={"cfg_scale": 3.5},
+                headers={"Authorization": "Bearer dummy"},
+            )
+            assert patch_resp.status_code == 200
+            assert patch_resp.json()["cfg_scale"] == 3.5
+            assert app.state.registry.get("flux-model").cfg_scale == 3.5
+        finally:
+            _clear_override()
 
     def test_register_invalid_id_returns_400(self, tmp_path: Path):
         client = _authed(_make_client(tmp_path))
@@ -134,6 +198,66 @@ class TestRegister:
             resp = client.post(
                 "/v1/backends",
                 json={"id": "audio-model", "port": 8091, "modality": "audio"},
+                headers={"Authorization": "Bearer dummy"},
+            )
+        finally:
+            _clear_override()
+        assert resp.status_code == 400
+
+
+class TestRegisterInstanceFromCatalog:
+    """RM-51: an optional `model_id` field creates a new instance of an
+    already-catalogued model instead of registering a brand-new one."""
+
+    def test_register_with_model_id_creates_instance(self, tmp_path: Path):
+        client = _authed(_make_client(tmp_path))
+        try:
+            registry: Registry = app.state.registry
+            registry.get("llama3-test")  # sanity: the seeded instance/catalog exist
+            resp = client.post(
+                "/v1/backends",
+                json={
+                    "id": "llama3-test-2",
+                    "model_id": "llama3-test",
+                    "port": 8081,
+                    "discovery": True,
+                },
+                headers={"Authorization": "Bearer dummy"},
+            )
+        finally:
+            _clear_override()
+        assert resp.status_code == 201
+        body = resp.json()
+        assert body["id"] == "llama3-test-2"
+        assert body["model_id"] == "llama3-test"
+        assert body["path"] == "/models/llama3.gguf"  # carried from the catalog
+        # The original instance and its catalog entry are untouched.
+        assert app.state.registry.get("llama3-test") is not None
+        assert app.state.registry.get_catalog("llama3-test") is not None
+
+    def test_register_with_unknown_model_id_returns_404(self, tmp_path: Path):
+        client = _authed(_make_client(tmp_path))
+        try:
+            resp = client.post(
+                "/v1/backends",
+                json={"id": "orphan-instance", "model_id": "nonexistent", "port": 8082},
+                headers={"Authorization": "Bearer dummy"},
+            )
+        finally:
+            _clear_override()
+        assert resp.status_code == 404
+
+    def test_register_with_model_id_invalid_backend_returns_400(self, tmp_path: Path):
+        client = _authed(_make_client(tmp_path))
+        try:
+            resp = client.post(
+                "/v1/backends",
+                json={
+                    "id": "bad-backend-instance",
+                    "model_id": "llama3-test",
+                    "port": 8083,
+                    "backend": "not-a-real-backend",
+                },
                 headers={"Authorization": "Bearer dummy"},
             )
         finally:
@@ -179,6 +303,39 @@ class TestUpdate:
         assert body["port"] == 8099
         # persisted, not just returned in the response
         assert app.state.registry.get("llama3-test").context_length == 16384
+
+    def test_update_split_file_fields_persists_and_validates(self, tmp_path: Path):
+        """RM-52: vae_path/clip_l_path/t5xxl_path are PATCH-able and path-
+        traversal-validated the same way `path` already is."""
+        client = _authed(_make_client(tmp_path))
+        try:
+            app.state.registry.add(
+                RegistryEntry(
+                    id="flux-model",
+                    port=8199,
+                    context_length=0,
+                    path="/models/flux1-dev-q8_0.gguf",
+                    backend="sd_cpp",
+                    modality="image",
+                )
+            )
+            resp = client.patch(
+                "/v1/backends/flux-model",
+                json={"vae_path": "/models/ae.safetensors"},
+                headers={"Authorization": "Bearer dummy"},
+            )
+            assert resp.status_code == 200
+            assert resp.json()["vae_path"] == "/models/ae.safetensors"
+            assert app.state.registry.get("flux-model").vae_path == "/models/ae.safetensors"
+
+            bad_resp = client.patch(
+                "/v1/backends/flux-model",
+                json={"clip_l_path": "../../etc/passwd"},
+                headers={"Authorization": "Bearer dummy"},
+            )
+            assert bad_resp.status_code == 400
+        finally:
+            _clear_override()
 
     def test_update_id_field_is_ignored(self, tmp_path: Path):
         """id is the registry key — PATCH cannot rename an entry."""
@@ -321,6 +478,11 @@ class TestLifecycleControl:
         assert body["id"] == "llama3-test"
         assert body["state"] == "ready"
         assert body["pid"] == 4242
+        # RM-51 regression: _control_action must pass entry.to_dict(), not
+        # entry.__dict__ — a bare dataclass __dict__ silently drops
+        # @property fields (backend_url) and would also drop model_id.
+        assert body["model_id"] == "llama3-test"
+        assert body["backend_url"] == "http://127.0.0.1:8080"
 
     def test_start_lifecycle_error_returns_409(self, tmp_path: Path):
         client = _authed(_make_client(tmp_path))

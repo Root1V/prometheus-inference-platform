@@ -1,0 +1,1227 @@
+import { Copy, Download, Paperclip, RotateCcw, Send, Trash2, Wrench, X } from "lucide-react";
+import {
+  useEffect,
+  useRef,
+  useState,
+  type ChangeEvent,
+  type KeyboardEvent as ReactKeyboardEvent,
+} from "react";
+import { createPortal } from "react-dom";
+import { useInstances } from "../api/instances";
+import {
+  streamPlaygroundChat,
+  useEmbeddings,
+  useImageGenerations,
+  usePlaygroundChat,
+  type ChatMessage,
+  type ImageContentPart,
+  type TextContentPart,
+  type ToolCall,
+  type ToolDefinition,
+} from "../api/playground";
+import { PlaygroundModelPicker } from "../components/PlaygroundModelPicker";
+import { Sidebar } from "../components/Sidebar";
+import { cn } from "../lib/cn";
+import { getErrorMessage } from "../lib/errors";
+
+/** Auto-scrolls to its own bottom as `text` grows — so the model's live chain-of-thought
+ * stays visible instead of scrolling out of a fixed-height box (RM-36 follow-up). */
+function ReasoningBox({ text }: { text: string }) {
+  const ref = useRef<HTMLParagraphElement>(null);
+  useEffect(() => {
+    ref.current?.scrollIntoView({ block: "end" });
+  }, [text]);
+  return (
+    <div className="max-w-[80%] rounded-xl border border-dashed border-border bg-surface px-4 py-2 text-xs text-text-muted">
+      <p className="mb-1 font-medium">🧠 Thinking…</p>
+      <div className="max-h-40 overflow-y-auto">
+        <p className="whitespace-pre-wrap italic">
+          {text}
+          <span className="animate-pulse">▍</span>
+        </p>
+        <div ref={ref} />
+      </div>
+    </div>
+  );
+}
+
+/** RM-42: a static "Waiting…" string reads as stalled during a real
+ * multi-second inference call — three dots pulsing in sequence signal it's
+ * still actively working. */
+function WaitingIndicator({ label }: { label: string }) {
+  return (
+    <p className="flex items-center gap-1.5 text-sm text-text-muted">
+      {label}
+      <span className="flex items-center gap-0.5">
+        <span
+          className="h-1 w-1 animate-bounce-dot rounded-full bg-current"
+          style={{ animationDelay: "0ms" }}
+        />
+        <span
+          className="h-1 w-1 animate-bounce-dot rounded-full bg-current"
+          style={{ animationDelay: "150ms" }}
+        />
+        <span
+          className="h-1 w-1 animate-bounce-dot rounded-full bg-current"
+          style={{ animationDelay: "300ms" }}
+        />
+      </span>
+    </p>
+  );
+}
+
+/** RM-42 follow-up: shell-style prompt history — ArrowUp/ArrowDown recall
+ * previously sent prompts, same idea as a terminal's up-arrow history.
+ * Only fires when the caret is on the first line (ArrowUp) or last line
+ * (ArrowDown), so it doesn't hijack cursor movement inside a multi-line
+ * draft. RM-53: one instance for the whole (now unified) composer — recall
+ * spans whatever modality was used at each point, same as the results
+ * timeline below it. */
+function usePromptHistory() {
+  const [history, setHistory] = useState<string[]>([]);
+  const [index, setIndex] = useState(-1); // -1 = not browsing, editing a live draft
+  const [stash, setStash] = useState("");
+
+  function record(value: string) {
+    setHistory((prev) => [...prev, value]);
+    setIndex(-1);
+  }
+
+  function handleKeyDown(
+    e: ReactKeyboardEvent<HTMLTextAreaElement>,
+    value: string,
+    setValue: (v: string) => void,
+  ) {
+    const el = e.currentTarget;
+    const caretStart = el.selectionStart ?? 0;
+    const caretEnd = el.selectionEnd ?? el.value.length;
+    if (e.key === "ArrowUp" && !el.value.slice(0, caretStart).includes("\n")) {
+      if (history.length === 0) return;
+      e.preventDefault();
+      if (index === -1) setStash(value);
+      const nextIndex = index === -1 ? history.length - 1 : Math.max(0, index - 1);
+      setIndex(nextIndex);
+      setValue(history[nextIndex]);
+    } else if (e.key === "ArrowDown" && !el.value.slice(caretEnd).includes("\n")) {
+      if (index === -1) return;
+      e.preventDefault();
+      if (index >= history.length - 1) {
+        setIndex(-1);
+        setValue(stash);
+      } else {
+        const nextIndex = index + 1;
+        setIndex(nextIndex);
+        setValue(history[nextIndex]);
+      }
+    }
+  }
+
+  return { record, handleKeyDown };
+}
+
+/** RM-40: a message's content is either a plain string (every non-vision
+ * turn, and every assistant response) or an array of content parts (a
+ * user turn that attached an image) — renders either shape the same way. */
+function MessageContent({
+  content,
+  onImageClick,
+}: {
+  content: ChatMessage["content"];
+  onImageClick?: (url: string) => void;
+}) {
+  if (typeof content !== "object" || content === null) {
+    return content ? <p className="whitespace-pre-wrap">{content}</p> : null;
+  }
+  const text = content.find((p): p is TextContentPart => p.type === "text")?.text;
+  const image = content.find((p): p is ImageContentPart => p.type === "image_url");
+  return (
+    <>
+      {text && <p className="whitespace-pre-wrap">{text}</p>}
+      {image && (
+        <img
+          src={image.image_url.url}
+          alt="Attached"
+          onClick={() => onImageClick?.(image.image_url.url)}
+          className={cn(
+            "mt-1 max-h-40 rounded-lg border border-border/50",
+            onImageClick && "cursor-zoom-in",
+          )}
+        />
+      )}
+    </>
+  );
+}
+
+/** RM-53: the error banner was byte-for-byte triplicated across the old
+ * three modes — one shared render, still colocated here (not its own file,
+ * matching this route's existing convention of small local helpers). */
+function ErrorBanner({ message }: { message: string | null }) {
+  if (!message) return null;
+  return (
+    <div className="mt-3 rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-red-700 dark:border-red-900 dark:bg-red-500/10 dark:text-red-300">
+      {message}
+    </div>
+  );
+}
+
+const inputClass =
+  "w-full rounded-lg border border-border bg-background px-3 py-2 text-sm text-text focus:border-primary focus:outline-none";
+
+// RM-53: one discriminated-union timeline replaces the three parallel
+// Turn/EmbeddingResult/ImageResult arrays — entries.map() renders whichever
+// modality was used at each point, in the order they happened, and is never
+// cleared by switching models (only by Clear).
+interface ChatLogEntry {
+  kind: "chat";
+  // Leading message(s) — either one "user" message, or one "tool" message per
+  // pending tool_call being answered — followed by the assistant's response.
+  messages: ChatMessage[];
+  // null for a streamed response — the backends verified so far don't report
+  // usage for stream:true (docs/roadmap.md RM-36).
+  usage: { prompt_tokens: number; completion_tokens: number; total_tokens: number } | null;
+  latencyMs: number;
+  finishReason: string | null;
+  // The model's chain-of-thought for this turn, if any — kept around (collapsed
+  // in the UI) rather than discarded, especially useful when it ran out of
+  // max_tokens before producing a visible answer.
+  reasoning: string;
+  // RM-41: which model produced this turn's response — captured at send time,
+  // so switching models mid-conversation still shows the right label on each
+  // earlier turn instead of relying on the (possibly since-changed) current
+  // selection.
+  model: string;
+}
+
+interface EmbeddingLogEntry {
+  kind: "embedding";
+  input: string;
+  embedding: number[];
+  usage: { prompt_tokens: number; total_tokens: number };
+  latencyMs: number;
+  model: string;
+}
+
+interface ImageLogEntry {
+  kind: "image";
+  prompt: string;
+  b64Json: string;
+  latencyMs: number;
+  model: string;
+}
+
+type LogEntry = ChatLogEntry | EmbeddingLogEntry | ImageLogEntry;
+
+interface InProgress {
+  leading: ChatMessage[];
+  content: string;
+  reasoning: string;
+  toolCalls: ToolCall[];
+}
+
+const EMBEDDING_PREVIEW_COUNT = 8;
+
+export default function Playground() {
+  const instancesQuery = useInstances();
+  const chat = usePlaygroundChat();
+  const embeddings = useEmbeddings();
+  const imageGenerations = useImageGenerations();
+  const composerHistory = usePromptHistory();
+
+  const [model, setModel] = useState("");
+  const [entries, setEntries] = useState<LogEntry[]>([]);
+  const [draft, setDraft] = useState("");
+
+  const [sendError, setSendError] = useState<string | null>(null);
+  const [embedError, setEmbedError] = useState<string | null>(null);
+  const [imageError, setImageError] = useState<string | null>(null);
+  const [expandedImage, setExpandedImage] = useState<ImageLogEntry | null>(null);
+
+  // RM-40: image attached to the next message, vision models only.
+  const [attachedImage, setAttachedImage] = useState<{ dataUrl: string; name: string } | null>(
+    null,
+  );
+  const [attachError, setAttachError] = useState<string | null>(null);
+  const imageInputRef = useRef<HTMLInputElement>(null);
+  // RM-40 follow-up: full-size lightbox for an image attached to a chat
+  // message — just the data: URL, unlike the image-result lightbox (which
+  // also needs prompt/model for the download button there).
+  const [expandedChatImageUrl, setExpandedChatImageUrl] = useState<string | null>(null);
+
+  const [systemPrompt, setSystemPrompt] = useState("");
+  const [temperature, setTemperature] = useState(1.0);
+  const [topP, setTopP] = useState(1.0);
+  const [maxTokens, setMaxTokens] = useState(512);
+  const [stopInput, setStopInput] = useState("");
+  const [toolsInput, setToolsInput] = useState("");
+  const [toolChoice, setToolChoice] = useState<"auto" | "required" | "none">("auto");
+  const [toolsError, setToolsError] = useState<string | null>(null);
+  const [toolResultDrafts, setToolResultDrafts] = useState<Record<string, string>>({});
+  const [streamingEnabled, setStreamingEnabled] = useState(false);
+  const [isSending, setIsSending] = useState(false);
+  const [inProgress, setInProgress] = useState<InProgress | null>(null);
+
+  const bottomRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!expandedImage && !expandedChatImageUrl) return;
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        setExpandedImage(null);
+        setExpandedChatImageUrl(null);
+      }
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [expandedImage, expandedChatImageUrl]);
+
+  // RM-53: one Model selector spans every modality — the selected model's
+  // own `modality` drives which composer/sidebar controls are visible,
+  // replacing the old three separately-filtered pickers (one per tab).
+  const readyInstances = (instancesQuery.data?.instances ?? []).filter((i) => i.state === "ready");
+  const selectedInstance = readyInstances.find((i) => i.id === model) ?? readyInstances[0];
+  const selectedModel = selectedInstance?.id ?? "";
+  const modality = selectedInstance?.modality;
+  const isTextLike = modality === "text" || modality === "vision";
+  const isVisionModel = modality === "vision";
+
+  const isBusy = isSending || embeddings.isPending || imageGenerations.isPending;
+  const canSendDraft =
+    modality === "embedding" || modality === "image"
+      ? draft.trim().length > 0
+      : draft.trim().length > 0 || attachedImage !== null;
+
+  function handleModelChange(nextId: string) {
+    setModel(nextId);
+    // RM-40: an attached image is only ever sendable to a vision model — drop
+    // it rather than leave it staged for a model that would just reject it.
+    const next = readyInstances.find((i) => i.id === nextId);
+    if (next?.modality !== "vision") setAttachedImage(null);
+  }
+
+  async function handleGetEmbedding() {
+    if (!selectedModel || !draft.trim() || embeddings.isPending) return;
+    setEmbedError(null);
+    // Captured before clearing so the result still records what was actually
+    // sent, and cleared immediately (not on success) so the input reads as
+    // sent right away instead of lingering, editable, during the wait.
+    const input = draft;
+    composerHistory.record(input);
+    setDraft("");
+    const startedAt = performance.now();
+    try {
+      const data = await embeddings.mutateAsync({ model: selectedModel, input });
+      setEntries((prev) => [
+        ...prev,
+        {
+          kind: "embedding",
+          input,
+          embedding: data.data[0]?.embedding ?? [],
+          usage: data.usage,
+          latencyMs: Math.round(performance.now() - startedAt),
+          model: selectedModel,
+        },
+      ]);
+    } catch (error) {
+      setEmbedError(getErrorMessage(error));
+    }
+  }
+
+  async function handleCopyEmbedding(embedding: number[]) {
+    await navigator.clipboard.writeText(JSON.stringify(embedding));
+  }
+
+  async function handleGenerateImage() {
+    if (!selectedModel || !draft.trim() || imageGenerations.isPending) return;
+    setImageError(null);
+    // Same rationale as handleGetEmbedding: capture before clearing so the
+    // result still records the real prompt, and clear immediately rather
+    // than on success so the input reads as sent right away.
+    const prompt = draft;
+    composerHistory.record(prompt);
+    setDraft("");
+    const startedAt = performance.now();
+    try {
+      const data = await imageGenerations.mutateAsync({ model: selectedModel, prompt });
+      setEntries((prev) => [
+        ...prev,
+        {
+          kind: "image",
+          prompt,
+          b64Json: data.data[0]?.b64_json ?? "",
+          latencyMs: Math.round(performance.now() - startedAt),
+          model: selectedModel,
+        },
+      ]);
+    } catch (error) {
+      setImageError(getErrorMessage(error));
+    }
+  }
+
+  function handleDownloadImage(result: ImageLogEntry, index: number) {
+    const link = document.createElement("a");
+    link.href = `data:image/png;base64,${result.b64Json}`;
+    link.download = `prometheus-image-${index + 1}.png`;
+    link.click();
+  }
+
+  /** Returns null (and sets toolsError) if the JSON is present but invalid. */
+  function parseTools(): ToolDefinition[] | null | undefined {
+    if (!toolsInput.trim()) {
+      setToolsError(null);
+      return undefined;
+    }
+    try {
+      const parsed = JSON.parse(toolsInput);
+      if (!Array.isArray(parsed)) throw new Error("Tools must be a JSON array.");
+      setToolsError(null);
+      return parsed as ToolDefinition[];
+    } catch (e) {
+      setToolsError(e instanceof Error ? e.message : "Invalid JSON.");
+      return null;
+    }
+  }
+
+  function buildParams(tools: ToolDefinition[] | undefined) {
+    const stop = stopInput
+      .split(",")
+      .map((s) => s.trim())
+      .filter(Boolean);
+    return {
+      temperature,
+      top_p: topP,
+      max_tokens: maxTokens,
+      ...(stop.length > 0 ? { stop } : {}),
+      ...(tools ? { tools, tool_choice: toolChoice } : {}),
+    };
+  }
+
+  function historyMessages(): ChatMessage[] {
+    // Only chat-kind entries are part of the conversation — an embedding or
+    // image action that happened in between doesn't get sent as context.
+    const history = entries
+      .filter((e): e is ChatLogEntry => e.kind === "chat")
+      .flatMap((t) => t.messages);
+    return systemPrompt.trim()
+      ? [{ role: "system" as const, content: systemPrompt }, ...history]
+      : history;
+  }
+
+  async function sendNonStreaming(
+    leadingMessages: ChatMessage[],
+    messages: ChatMessage[],
+    tools: ToolDefinition[] | undefined,
+  ) {
+    const startedAt = performance.now();
+    // Show the user's own message immediately instead of leaving it
+    // invisible until the whole round-trip completes — same treatment the
+    // streaming path already gives it via inProgress.leading.
+    setInProgress({ leading: leadingMessages, content: "", reasoning: "", toolCalls: [] });
+    const data = await chat.mutateAsync({ model: selectedModel, messages, params: buildParams(tools) });
+    const latencyMs = Math.round(performance.now() - startedAt);
+    const responseMessage = data.choices[0]?.message;
+    const hasToolCalls = (responseMessage?.tool_calls?.length ?? 0) > 0;
+    const assistantMessage: ChatMessage = {
+      role: "assistant",
+      // Same rule as the streaming path: null content is only valid when
+      // tool_calls carries the payload instead, or the backend never gets
+      // sent as history on a later turn.
+      content: hasToolCalls ? null : (responseMessage?.content ?? ""),
+      tool_calls: responseMessage?.tool_calls,
+    };
+    setInProgress(null);
+    setEntries((prev) => [
+      ...prev,
+      {
+        kind: "chat",
+        messages: [...leadingMessages, assistantMessage],
+        usage: data.usage,
+        latencyMs,
+        finishReason: data.choices[0]?.finish_reason ?? null,
+        reasoning: responseMessage?.reasoning_content ?? "",
+        model: selectedModel,
+      },
+    ]);
+  }
+
+  async function sendStreaming(
+    leadingMessages: ChatMessage[],
+    messages: ChatMessage[],
+    tools: ToolDefinition[] | undefined,
+  ) {
+    const startedAt = performance.now();
+    let content = "";
+    let reasoning = "";
+    const toolCallsByIndex = new Map<number, ToolCall>();
+    setInProgress({ leading: leadingMessages, content: "", reasoning: "", toolCalls: [] });
+
+    const { finishReason, usage } = await streamPlaygroundChat(
+      { model: selectedModel, messages, params: buildParams(tools) },
+      (delta) => {
+        if (delta.content) content += delta.content;
+        if (delta.reasoning_content) reasoning += delta.reasoning_content;
+        for (const partial of delta.tool_calls ?? []) {
+          const existing = toolCallsByIndex.get(partial.index) ?? {
+            id: "",
+            type: "function" as const,
+            function: { name: "", arguments: "" },
+          };
+          if (partial.id) existing.id = partial.id;
+          if (partial.function?.name) existing.function.name = partial.function.name;
+          if (partial.function?.arguments) existing.function.arguments += partial.function.arguments;
+          toolCallsByIndex.set(partial.index, existing);
+        }
+        setInProgress({ leading: leadingMessages, content, reasoning, toolCalls: [...toolCallsByIndex.values()] });
+        requestAnimationFrame(() => bottomRef.current?.scrollIntoView({ block: "end" }));
+      },
+    );
+
+    const latencyMs = Math.round(performance.now() - startedAt);
+    const toolCalls = [...toolCallsByIndex.values()];
+    const assistantMessage: ChatMessage = {
+      role: "assistant",
+      // OpenAI's shape only allows null content when tool_calls carries the
+      // payload instead — an assistant message with neither is invalid and
+      // gets the *entire conversation* rejected by the backend on every
+      // later turn. An empty-but-present string (e.g. ran out of max_tokens
+      // during reasoning) must stay a string, never null.
+      content: toolCalls.length > 0 ? null : content,
+      tool_calls: toolCalls.length > 0 ? toolCalls : undefined,
+    };
+    setInProgress(null);
+    setEntries((prev) => [
+      ...prev,
+      {
+        kind: "chat",
+        messages: [...leadingMessages, assistantMessage],
+        usage,
+        latencyMs,
+        finishReason,
+        reasoning,
+        model: selectedModel,
+      },
+    ]);
+  }
+
+  async function sendMessages(leadingMessages: ChatMessage[]) {
+    if (!selectedModel || isSending) return;
+    const tools = parseTools();
+    if (tools === null) return; // invalid JSON — toolsError is already set
+    setSendError(null);
+    setIsSending(true);
+    const messages = [...historyMessages(), ...leadingMessages];
+    try {
+      if (streamingEnabled) {
+        await sendStreaming(leadingMessages, messages, tools);
+      } else {
+        await sendNonStreaming(leadingMessages, messages, tools);
+      }
+      requestAnimationFrame(() => bottomRef.current?.scrollIntoView({ block: "end" }));
+    } catch (error) {
+      setInProgress(null);
+      setSendError(getErrorMessage(error));
+    } finally {
+      setIsSending(false);
+    }
+  }
+
+  function handleSend() {
+    if (!selectedModel || isBusy) return;
+    if (modality === "embedding") return void handleGetEmbedding();
+    if (modality === "image") return void handleGenerateImage();
+    if (!draft.trim() && !attachedImage) return;
+    const userMessage: ChatMessage = {
+      role: "user",
+      content: attachedImage
+        ? [
+            ...(draft.trim() ? [{ type: "text" as const, text: draft }] : []),
+            { type: "image_url" as const, image_url: { url: attachedImage.dataUrl } },
+          ]
+        : draft,
+    };
+    if (draft.trim()) composerHistory.record(draft);
+    setDraft("");
+    setAttachedImage(null);
+    void sendMessages([userMessage]);
+  }
+
+  // RM-40: images are inlined as base64 data: URIs (the gateway rejects
+  // remote http(s) URLs to avoid SSRF), so an oversized image bloats the
+  // request and the in-memory conversation history significantly — 5MB of
+  // raw file bytes is already a very generous prompt image.
+  const MAX_IMAGE_BYTES = 5 * 1024 * 1024;
+
+  function handleImageFileSelected(e: ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    e.target.value = ""; // allow re-selecting the same file later
+    if (!file) return;
+    setAttachError(null);
+    if (file.size > MAX_IMAGE_BYTES) {
+      setAttachError(
+        `Image is too large (${(file.size / 1024 / 1024).toFixed(1)} MB) — 5 MB max.`,
+      );
+      return;
+    }
+    const reader = new FileReader();
+    reader.onload = () => {
+      setAttachedImage({ dataUrl: reader.result as string, name: file.name });
+    };
+    reader.onerror = () => setAttachError("Could not read the selected file.");
+    reader.readAsDataURL(file);
+  }
+
+  function handleRegenerate() {
+    const chatEntries = entries.filter((e): e is ChatLogEntry => e.kind === "chat");
+    if (chatEntries.length === 0 || isSending) return;
+    const last = chatEntries[chatEntries.length - 1];
+    const lastLeading = last.messages.slice(0, -1);
+    // Remove exactly the last CHAT entry, not necessarily the literal last
+    // array element — an embedding/image action may have happened after it.
+    const lastIndex = entries.lastIndexOf(last);
+    setEntries((prev) => prev.filter((_, i) => i !== lastIndex));
+    void sendMessages(lastLeading);
+  }
+
+  /** RM-35 follow-up: the model asked to call a tool — the Playground has no real
+   * tool executor, so the operator types a mock result per call to continue the
+   * conversation and see the model's actual final answer. */
+  function handleSubmitToolResults(calls: ChatMessage["tool_calls"]) {
+    if (!calls || calls.length === 0 || isSending) return;
+    const toolMessages: ChatMessage[] = calls.map((call) => ({
+      role: "tool",
+      tool_call_id: call.id,
+      content: toolResultDrafts[call.id]?.trim() || "(no result provided)",
+    }));
+    setToolResultDrafts({});
+    void sendMessages(toolMessages);
+  }
+
+  function handleClear() {
+    setEntries([]);
+    setSendError(null);
+    setEmbedError(null);
+    setImageError(null);
+  }
+
+  async function handleCopy(message: ChatMessage) {
+    // Only assistant responses are copied here, and a model never replies
+    // with content parts — the array case is just for TypeScript's benefit.
+    const text =
+      typeof message.content === "string"
+        ? message.content
+        : JSON.stringify(message.tool_calls, null, 2);
+    await navigator.clipboard.writeText(text ?? "");
+  }
+
+  async function handleCopyReasoning(reasoning: string) {
+    await navigator.clipboard.writeText(reasoning);
+  }
+
+  function placeholder(): string {
+    if (readyInstances.length === 0) return "No running models — start one from Instances first.";
+    if (modality === "embedding") return "Text to embed… (Enter to send, Shift+Enter for a new line)";
+    if (modality === "image")
+      return "Describe the image to generate… (Enter to send, Shift+Enter for a new line)";
+    return "Ask something… (Enter to send, Shift+Enter for a new line)";
+  }
+
+  function sendLabel(): string {
+    if (modality === "embedding") return "Get embedding";
+    if (modality === "image") return "Generate";
+    return "Send";
+  }
+
+  const lastChatEntry =
+    [...entries].reverse().find((e): e is ChatLogEntry => e.kind === "chat") ?? null;
+  const imageEntries = entries.filter((e): e is ImageLogEntry => e.kind === "image");
+
+  return (
+    <div className="flex h-screen overflow-hidden bg-background">
+      <Sidebar />
+      <main className="flex min-h-0 min-w-0 flex-1">
+        <div className="flex min-h-0 min-w-0 flex-1 flex-col px-8 py-8">
+          <div className="flex items-center justify-between">
+            <div>
+              <h1 className="text-2xl font-semibold text-text">Playground</h1>
+              <p className="mt-1 text-sm text-text-muted">
+                Sends real requests through the gateway's inference API — this counts as
+                real usage, recorded the same as any other call.
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={handleClear}
+              disabled={entries.length === 0}
+              className="flex items-center gap-1.5 rounded-lg border border-border px-3 py-1.5 text-sm text-text-muted hover:bg-surface disabled:cursor-not-allowed disabled:opacity-40"
+            >
+              <Trash2 size={14} />
+              Clear
+            </button>
+          </div>
+
+          <div className="mt-4 min-h-0 flex-1 space-y-4 overflow-y-auto rounded-xl border border-border bg-surface p-4">
+            {entries.length === 0 ? (
+              <p className="text-sm text-text-muted">No messages yet — send a prompt to get started.</p>
+            ) : (
+              entries.map((entry, i) => {
+                if (entry.kind === "chat") {
+                  const leading = entry.messages.slice(0, -1);
+                  const assistantMessage = entry.messages[entry.messages.length - 1];
+                  const isLastChatEntry = entry === lastChatEntry;
+                  return (
+                    <div key={i} className="space-y-3">
+                      {leading.map((m, j) =>
+                        m.role === "tool" ? (
+                          <div
+                            key={j}
+                            className="ml-auto max-w-[80%] rounded-xl border border-dashed border-border bg-surface px-4 py-2 text-xs text-text-muted"
+                          >
+                            Tool result: {typeof m.content === "string" ? m.content : ""}
+                          </div>
+                        ) : (
+                          <div
+                            key={j}
+                            className="ml-auto max-w-[80%] rounded-xl bg-primary px-4 py-2 text-sm text-primary-foreground"
+                          >
+                            <MessageContent content={m.content} onImageClick={setExpandedChatImageUrl} />
+                          </div>
+                        ),
+                      )}
+                      <div className="max-w-[80%] rounded-xl border border-border bg-background px-4 py-2 text-sm text-text">
+                        <MessageContent content={assistantMessage.content} />
+                        {!assistantMessage.content &&
+                          !assistantMessage.tool_calls?.length &&
+                          entry.finishReason === "length" && (
+                            <p className="text-amber-600">
+                              Ran out of max tokens before producing a visible answer — this model
+                              spends tokens on hidden reasoning first, and used up the whole budget
+                              there. Try raising Max tokens.
+                            </p>
+                          )}
+                        {entry.reasoning && (
+                          <details className="mt-2 rounded-lg border border-dashed border-border bg-surface p-2 text-xs text-text-muted">
+                            <summary className="cursor-pointer select-none font-medium">
+                              Show the model's reasoning ({entry.reasoning.length.toLocaleString()} chars)
+                            </summary>
+                            <div className="mt-2 flex items-start justify-between gap-2">
+                              <p className="max-h-64 overflow-y-auto whitespace-pre-wrap italic">
+                                {entry.reasoning}
+                              </p>
+                              <button
+                                type="button"
+                                onClick={() => handleCopyReasoning(entry.reasoning)}
+                                title="Copy reasoning"
+                                className="shrink-0 text-text-muted hover:text-text"
+                              >
+                                <Copy size={14} />
+                              </button>
+                            </div>
+                          </details>
+                        )}
+                        {assistantMessage.tool_calls?.map((call) => (
+                          <div
+                            key={call.id}
+                            className="mt-1 flex items-start gap-2 rounded-lg bg-surface p-2 font-mono text-xs text-text"
+                          >
+                            <Wrench size={14} className="mt-0.5 shrink-0 text-primary" />
+                            <div>
+                              <span className="font-semibold">{call.function.name}</span>
+                              <span className="text-text-muted">({call.function.arguments})</span>
+                            </div>
+                          </div>
+                        ))}
+                        <div className="mt-2 flex items-center gap-3 border-t border-border pt-2 text-xs text-text-muted">
+                          <span>
+                            {entry.usage
+                              ? `${entry.usage.prompt_tokens} + ${entry.usage.completion_tokens} = ${entry.usage.total_tokens} tokens`
+                              : "tokens not reported (streamed)"}
+                          </span>
+                          <span>{entry.latencyMs} ms</span>
+                          <span className="ml-auto font-mono" title="Model that answered this turn">
+                            {entry.model}
+                          </span>
+                          <button
+                            type="button"
+                            onClick={() => handleCopy(assistantMessage)}
+                            title="Copy response"
+                            className="text-text-muted hover:text-text"
+                          >
+                            <Copy size={14} />
+                          </button>
+                          {isLastChatEntry && (
+                            <button
+                              type="button"
+                              onClick={handleRegenerate}
+                              disabled={isSending}
+                              title="Regenerate"
+                              className="text-text-muted hover:text-text disabled:opacity-40"
+                            >
+                              <RotateCcw size={14} />
+                            </button>
+                          )}
+                        </div>
+                      </div>
+                      {isLastChatEntry &&
+                        assistantMessage.tool_calls &&
+                        assistantMessage.tool_calls.length > 0 && (
+                          <div className="max-w-[80%] space-y-2 rounded-xl border border-dashed border-border bg-surface p-3">
+                            <p className="text-xs text-text-muted">
+                              The Playground doesn't execute tools for real — type a mock result to
+                              continue and see the model's final answer.
+                            </p>
+                            {assistantMessage.tool_calls.map((call) => (
+                              <div key={call.id} className="flex items-center gap-2">
+                                <span className="shrink-0 font-mono text-xs text-text-muted">
+                                  {call.function.name}:
+                                </span>
+                                <input
+                                  type="text"
+                                  value={toolResultDrafts[call.id] ?? ""}
+                                  onChange={(e) =>
+                                    setToolResultDrafts((prev) => ({ ...prev, [call.id]: e.target.value }))
+                                  }
+                                  placeholder="Mock result, e.g. 22C, sunny"
+                                  className={cn(inputClass, "text-xs")}
+                                />
+                              </div>
+                            ))}
+                            <button
+                              type="button"
+                              onClick={() => handleSubmitToolResults(assistantMessage.tool_calls)}
+                              disabled={isSending}
+                              className="rounded-lg bg-primary px-3 py-1.5 text-xs font-medium text-primary-foreground hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-40"
+                            >
+                              Submit result
+                            </button>
+                          </div>
+                        )}
+                    </div>
+                  );
+                }
+
+                if (entry.kind === "embedding") {
+                  return (
+                    <div key={i} className="space-y-3">
+                      <div className="ml-auto w-fit max-w-[80%] rounded-xl bg-primary px-4 py-2 text-sm text-primary-foreground">
+                        {entry.input}
+                      </div>
+                      <div className="rounded-xl border border-border bg-background px-4 py-3 text-sm text-text">
+                        <p className="font-mono text-xs text-text">
+                          [{entry.embedding
+                            .slice(0, EMBEDDING_PREVIEW_COUNT)
+                            .map((v) => v.toFixed(4))
+                            .join(", ")}
+                          {entry.embedding.length > EMBEDDING_PREVIEW_COUNT ? ", …" : ""}]
+                        </p>
+                        <div className="mt-2 flex items-center gap-3 border-t border-border pt-2 text-xs text-text-muted">
+                          <span>{entry.embedding.length} dimensions</span>
+                          <span>{entry.usage.total_tokens} tokens</span>
+                          <span>{entry.latencyMs} ms</span>
+                          <span className="ml-auto font-mono" title="Model that produced this embedding">
+                            {entry.model}
+                          </span>
+                          <button
+                            type="button"
+                            onClick={() => handleCopyEmbedding(entry.embedding)}
+                            title="Copy full vector as JSON"
+                            className="text-text-muted hover:text-text"
+                          >
+                            <Copy size={14} />
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+                  );
+                }
+
+                const imageIndex = imageEntries.indexOf(entry);
+                return (
+                  <div key={i} className="space-y-3">
+                    <div className="ml-auto w-fit max-w-[80%] rounded-xl bg-primary px-4 py-2 text-sm text-primary-foreground">
+                      {entry.prompt}
+                    </div>
+                    <div className="max-w-xs rounded-xl border border-border bg-background px-4 py-3 text-sm text-text">
+                      <button
+                        type="button"
+                        onClick={() => setExpandedImage(entry)}
+                        className="block cursor-zoom-in"
+                        title="Click to view full size"
+                      >
+                        <img
+                          src={`data:image/png;base64,${entry.b64Json}`}
+                          alt={entry.prompt}
+                          className="w-full rounded-lg border border-border"
+                        />
+                      </button>
+                      <div className="mt-2 flex items-center gap-3 border-t border-border pt-2 text-xs text-text-muted">
+                        <span className="shrink-0">{entry.latencyMs} ms</span>
+                        <span
+                          className="ml-auto truncate font-mono"
+                          title={`Model that generated this image: ${entry.model}`}
+                        >
+                          {entry.model}
+                        </span>
+                        <button
+                          type="button"
+                          onClick={() => handleDownloadImage(entry, imageIndex)}
+                          title="Download image"
+                          className="shrink-0 cursor-pointer text-text-muted hover:text-text"
+                        >
+                          <Download size={14} />
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                );
+              })
+            )}
+            {inProgress &&
+              inProgress.leading.map((m, j) =>
+                m.role === "tool" ? (
+                  <div
+                    key={j}
+                    className="ml-auto max-w-[80%] rounded-xl border border-dashed border-border bg-surface px-4 py-2 text-xs text-text-muted"
+                  >
+                    Tool result: {typeof m.content === "string" ? m.content : ""}
+                  </div>
+                ) : (
+                  <div
+                    key={j}
+                    className="ml-auto max-w-[80%] rounded-xl bg-primary px-4 py-2 text-sm text-primary-foreground"
+                  >
+                    <MessageContent content={m.content} onImageClick={setExpandedChatImageUrl} />
+                  </div>
+                ),
+              )}
+            {inProgress &&
+              !inProgress.content &&
+              inProgress.toolCalls.length === 0 &&
+              inProgress.reasoning && <ReasoningBox text={inProgress.reasoning} />}
+            {inProgress && (inProgress.content || inProgress.toolCalls.length > 0) && (
+              <div className="max-w-[80%] rounded-xl border border-border bg-background px-4 py-2 text-sm text-text">
+                {inProgress.content && (
+                  <p className="whitespace-pre-wrap">
+                    {inProgress.content}
+                    <span className="animate-pulse">▍</span>
+                  </p>
+                )}
+                {inProgress.toolCalls.map((call, idx) => (
+                  <div
+                    key={idx}
+                    className="mt-1 flex items-start gap-2 rounded-lg bg-surface p-2 font-mono text-xs text-text"
+                  >
+                    <Wrench size={14} className="mt-0.5 shrink-0 text-primary" />
+                    <div>
+                      <span className="font-semibold">{call.function.name || "…"}</span>
+                      <span className="text-text-muted">({call.function.arguments})</span>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+            {inProgress && !inProgress.content && !inProgress.reasoning && inProgress.toolCalls.length === 0 && (
+              <WaitingIndicator label={streamingEnabled ? "Streaming" : "Waiting for a response"} />
+            )}
+            {embeddings.isPending && <WaitingIndicator label="Generating embedding" />}
+            {imageGenerations.isPending && <WaitingIndicator label="Generating image" />}
+            <div ref={bottomRef} />
+          </div>
+
+          <ErrorBanner message={sendError} />
+          <ErrorBanner message={attachError} />
+          <ErrorBanner message={embedError} />
+          <ErrorBanner message={imageError} />
+
+          {attachedImage && (
+            <div className="mt-3 flex items-center gap-2 rounded-lg border border-border bg-surface p-2">
+              <img
+                src={attachedImage.dataUrl}
+                alt={attachedImage.name}
+                className="h-12 w-12 rounded object-cover"
+              />
+              <span className="flex-1 truncate text-xs text-text-muted">{attachedImage.name}</span>
+              <button
+                type="button"
+                onClick={() => setAttachedImage(null)}
+                title="Remove image"
+                className="cursor-pointer text-text-muted hover:text-text"
+              >
+                <X size={14} />
+              </button>
+            </div>
+          )}
+
+          <div className="mt-4 flex items-end gap-2">
+            {isVisionModel && (
+              <>
+                <input
+                  ref={imageInputRef}
+                  type="file"
+                  accept="image/*"
+                  onChange={handleImageFileSelected}
+                  className="hidden"
+                />
+                <button
+                  type="button"
+                  onClick={() => imageInputRef.current?.click()}
+                  disabled={isBusy}
+                  title="Attach an image"
+                  className="flex shrink-0 items-center justify-center self-stretch rounded-lg border border-border px-3 text-text-muted hover:bg-background disabled:cursor-not-allowed disabled:opacity-40"
+                >
+                  <Paperclip size={16} />
+                </button>
+              </>
+            )}
+            <textarea
+              rows={2}
+              value={draft}
+              onChange={(e) => setDraft(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter" && !e.shiftKey) {
+                  e.preventDefault();
+                  handleSend();
+                  return;
+                }
+                composerHistory.handleKeyDown(e, draft, setDraft);
+              }}
+              placeholder={placeholder()}
+              disabled={readyInstances.length === 0 || isBusy}
+              className={cn(inputClass, "flex-1")}
+            />
+            <button
+              type="button"
+              onClick={handleSend}
+              disabled={!selectedModel || isBusy || !canSendDraft}
+              className="flex items-center gap-2 rounded-lg bg-primary px-4 py-2.5 text-sm font-medium text-primary-foreground hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-40"
+            >
+              <Send size={16} />
+              {sendLabel()}
+            </button>
+          </div>
+        </div>
+
+        <aside className="w-72 shrink-0 space-y-5 overflow-y-auto border-l border-border bg-surface px-5 py-8">
+          <div>
+            <label htmlFor="playground-model" className="mb-1.5 block text-sm font-medium text-text">
+              Model
+            </label>
+            <PlaygroundModelPicker
+              instances={readyInstances}
+              value={selectedModel}
+              onChange={handleModelChange}
+            />
+          </div>
+
+          {isTextLike && (
+            <>
+              <div>
+                <label
+                  htmlFor="playground-system"
+                  className="mb-1.5 block text-sm font-medium text-text"
+                >
+                  System prompt
+                </label>
+                <textarea
+                  id="playground-system"
+                  rows={3}
+                  value={systemPrompt}
+                  onChange={(e) => setSystemPrompt(e.target.value)}
+                  placeholder="Optional — sets the assistant's behavior for this conversation."
+                  className={inputClass}
+                />
+              </div>
+
+              <label className="flex items-center gap-2 text-sm text-text">
+                <input
+                  type="checkbox"
+                  checked={streamingEnabled}
+                  onChange={(e) => setStreamingEnabled(e.target.checked)}
+                />
+                Stream response
+              </label>
+
+              <h2 className="text-xs font-medium uppercase tracking-wide text-text-muted">Parameters</h2>
+
+              <div>
+                <div className="mb-1.5 flex items-center justify-between text-sm text-text">
+                  <label htmlFor="playground-temperature">Temperature</label>
+                  <span className="text-text-muted">{temperature.toFixed(1)}</span>
+                </div>
+                <input
+                  id="playground-temperature"
+                  type="range"
+                  min={0}
+                  max={2}
+                  step={0.1}
+                  value={temperature}
+                  onChange={(e) => setTemperature(Number(e.target.value))}
+                  className="w-full"
+                />
+              </div>
+
+              <div>
+                <div className="mb-1.5 flex items-center justify-between text-sm text-text">
+                  <label htmlFor="playground-top-p">Top P</label>
+                  <span className="text-text-muted">{topP.toFixed(2)}</span>
+                </div>
+                <input
+                  id="playground-top-p"
+                  type="range"
+                  min={0.05}
+                  max={1}
+                  step={0.05}
+                  value={topP}
+                  onChange={(e) => setTopP(Number(e.target.value))}
+                  className="w-full"
+                />
+              </div>
+
+              <div>
+                <label htmlFor="playground-max-tokens" className="mb-1.5 block text-sm text-text">
+                  Max tokens
+                </label>
+                <input
+                  id="playground-max-tokens"
+                  type="number"
+                  min={1}
+                  value={maxTokens}
+                  onChange={(e) => setMaxTokens(Math.max(1, Number(e.target.value) || 1))}
+                  className={inputClass}
+                />
+              </div>
+
+              <div>
+                <label htmlFor="playground-stop" className="mb-1.5 block text-sm text-text">
+                  Stop sequences
+                </label>
+                <input
+                  id="playground-stop"
+                  type="text"
+                  value={stopInput}
+                  onChange={(e) => setStopInput(e.target.value)}
+                  placeholder="Comma-separated, optional"
+                  className={inputClass}
+                />
+              </div>
+
+              <h2 className="text-xs font-medium uppercase tracking-wide text-text-muted">
+                Tools (function calling)
+              </h2>
+
+              <div>
+                <label htmlFor="playground-tools" className="mb-1.5 block text-sm text-text">
+                  Tool definitions (JSON)
+                </label>
+                <textarea
+                  id="playground-tools"
+                  rows={6}
+                  value={toolsInput}
+                  onChange={(e) => setToolsInput(e.target.value)}
+                  placeholder={'Optional — an OpenAI-style tools array, e.g.\n[\n  {\n    "type": "function",\n    "function": {\n      "name": "get_weather",\n      "parameters": {"type": "object", "properties": {"city": {"type": "string"}}}\n    }\n  }\n]'}
+                  className={cn(inputClass, "font-mono text-xs")}
+                />
+                {toolsError && <p className="mt-1 text-xs text-red-600">{toolsError}</p>}
+              </div>
+
+              <div>
+                <label htmlFor="playground-tool-choice" className="mb-1.5 block text-sm text-text">
+                  Tool choice
+                </label>
+                <select
+                  id="playground-tool-choice"
+                  value={toolChoice}
+                  onChange={(e) => setToolChoice(e.target.value as "auto" | "required" | "none")}
+                  disabled={!toolsInput.trim()}
+                  className={cn(inputClass, !toolsInput.trim() && "opacity-40")}
+                >
+                  <option value="auto">auto</option>
+                  <option value="required">required</option>
+                  <option value="none">none</option>
+                </select>
+                {toolChoice === "required" && (
+                  <p className="mt-1 text-xs text-text-muted">
+                    "required" forces a tool call every turn — switch to "auto" after submitting a
+                    result if you want the model's final text answer instead of another call.
+                  </p>
+                )}
+              </div>
+            </>
+          )}
+
+          {modality === "embedding" && (
+            <p className="text-xs text-text-muted">
+              Embeddings are single-shot — each request is independent, there's no
+              conversation history to carry over between them.
+            </p>
+          )}
+
+          {modality === "image" && (
+            <p className="text-xs text-text-muted">
+              Each prompt is single-shot — there's no conversation history to carry over
+              between generations.
+            </p>
+          )}
+        </aside>
+      </main>
+      {expandedImage &&
+        createPortal(
+          <div
+            className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 p-8"
+            onClick={() => setExpandedImage(null)}
+          >
+            <div className="absolute right-6 top-6 flex items-center gap-4">
+              <button
+                type="button"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  handleDownloadImage(expandedImage, imageEntries.indexOf(expandedImage));
+                }}
+                aria-label="Download"
+                title="Download image"
+                className="cursor-pointer text-white/80 hover:text-white"
+              >
+                <Download size={24} />
+              </button>
+              <button
+                type="button"
+                onClick={() => setExpandedImage(null)}
+                aria-label="Close"
+                className="cursor-pointer text-white/80 hover:text-white"
+              >
+                <X size={28} />
+              </button>
+            </div>
+            <img
+              src={`data:image/png;base64,${expandedImage.b64Json}`}
+              alt={expandedImage.prompt}
+              onClick={(e) => e.stopPropagation()}
+              className="max-h-full max-w-full rounded-lg object-contain"
+            />
+          </div>,
+          document.body,
+        )}
+      {expandedChatImageUrl &&
+        createPortal(
+          <div
+            className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 p-8"
+            onClick={() => setExpandedChatImageUrl(null)}
+          >
+            <button
+              type="button"
+              onClick={() => setExpandedChatImageUrl(null)}
+              aria-label="Close"
+              className="absolute right-6 top-6 cursor-pointer text-white/80 hover:text-white"
+            >
+              <X size={28} />
+            </button>
+            <img
+              src={expandedChatImageUrl}
+              alt="Attached, full size"
+              onClick={(e) => e.stopPropagation()}
+              className="max-h-full max-w-full rounded-lg object-contain"
+            />
+          </div>,
+          document.body,
+        )}
+    </div>
+  );
+}

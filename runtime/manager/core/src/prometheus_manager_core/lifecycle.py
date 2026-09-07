@@ -21,7 +21,7 @@ import psutil
 
 from .config import ManagerConfig
 from .registry import Registry, RegistryEntry
-from .scanner import ProcessState, _normalize_probe_host, scan
+from .scanner import ProcessState, _health_path, _normalize_probe_host, scan
 from .telemetry import get_logger
 
 logger = get_logger(__name__)
@@ -179,11 +179,59 @@ def _build_sglang_cmd(binary: str, entry: RegistryEntry, port: int, bind_host: s
     ]
 
 
+def _build_sd_cpp_cmd(binary: str, entry: RegistryEntry, port: int, bind_host: str) -> list[str]:
+    """sd-server (stable-diffusion.cpp) — RM-38, image generation.
+
+    Verified against a real build + a real generation request this session,
+    not guessed from docs. Two real deviations from every other backend
+    here: its own --listen-ip/--listen-port flags (not --host/--port — see
+    scanner.py's per-signature port_flag/host_flag), and no --alias/
+    served-model-name equivalent, same as mlx_lm.server — identity is
+    tracked via the PID file instead. No context-length flag either:
+    sd-server has no LLM-style context-window concept, so entry.context_length
+    (required by RegistryEntry but not meaningful for a diffusion model) is
+    unused here, same as mlx's own --ctx-size omission.
+
+    RM-52: FLUX.1/SD3.5-class models ship as separate diffusion/VAE/text-
+    encoder files rather than one merged .gguf — confirmed against the real
+    installed sd-server --help. entry.vae_path set (or clip_l_path/
+    t5xxl_path) switches from -m/--model (path) to --diffusion-model (path)
+    + --vae/--clip_l/--t5xxl for whichever of those three are non-empty.
+
+    RM-52: entry.cfg_scale, when set, becomes --cfg-scale. sd-server's own
+    default (7.0, tuned for classic non-distilled SD) produces a blown-out,
+    uniform-color image on FLUX.1-dev — confirmed empirically: cfg=7.0
+    returned a solid-color PNG, cfg=1.0 (FLUX's own recommended value, its
+    guidance is baked into the distilled weights) returned a real image.
+    Also confirmed this is a request-time-JSON-vs-startup-flag distinction:
+    sd-server's /v1/images/generations body does NOT honor a per-request
+    cfg_scale override — only the process's own --cfg-scale startup flag
+    takes effect. None leaves sd-server's default in place, unchanged for
+    every existing single-file registration (e.g. SD-Turbo).
+    """
+    cmd = [binary]
+    if entry.vae_path or entry.clip_l_path or entry.t5xxl_path:
+        cmd += ["--diffusion-model", entry.path]
+        if entry.vae_path:
+            cmd += ["--vae", entry.vae_path]
+        if entry.clip_l_path:
+            cmd += ["--clip_l", entry.clip_l_path]
+        if entry.t5xxl_path:
+            cmd += ["--t5xxl", entry.t5xxl_path]
+    else:
+        cmd += ["--model", entry.path]
+    if entry.cfg_scale is not None:
+        cmd += ["--cfg-scale", str(entry.cfg_scale)]
+    cmd += ["--listen-ip", bind_host, "--listen-port", str(port)]
+    return cmd
+
+
 _COMMAND_BUILDERS = {
     "llama_cpp": _build_llama_cpp_cmd,
     "mlx": _build_mlx_cmd,
     "vllm": _build_vllm_cmd,
     "sglang": _build_sglang_cmd,
+    "sd_cpp": _build_sd_cpp_cmd,
 }
 
 
@@ -226,8 +274,10 @@ def start_instance(
             assigned=port,
         )
     # Persist the chosen port back to the registry so the next start uses it
-    # as the preferred value and so the gateway can discover the correct address.
-    registry.update(model_id, port=port, backend_url=f"http://127.0.0.1:{port}")
+    # as the preferred value and so the gateway can discover the correct
+    # address — backend_url is derived from port (RegistryEntry.backend_url
+    # is a computed property), so updating port alone is enough.
+    registry.update(model_id, port=port)
 
     # Build command
     binary = config.resolved_backend_binary(entry.backend)
@@ -260,7 +310,9 @@ def start_instance(
     # Write PID file
     pid_path.write_text(str(proc.pid))
 
-    # AC-5: wait for /health to return 200 within start_timeout_s
+    # AC-5: wait for the readiness endpoint to return 200 within start_timeout_s
+    # (RM-38: sd-server has no /health at all — _health_path resolves the
+    # right path per backend, "/health" for everything else, unchanged).
     deadline = time.monotonic() + start_timeout_s
     # Resolve probe host using the same logic as the scanner so both paths
     # behave identically: proxy_host (PMGR_PROXY_HOST / manager.toml [api])
@@ -277,7 +329,7 @@ def start_instance(
             raise LifecycleError(message)
         try:
             resp = httpx.get(
-                f"http://{probe_host}:{port}/health",
+                f"http://{probe_host}:{port}{_health_path(entry.backend)}",
                 timeout=_HEALTH_TIMEOUT,
             )
             if resp.status_code == 200:
@@ -423,6 +475,26 @@ def deregister_instance(
     stop_instance(model_id, config, registry, _require_running=False)
     if registry.get(model_id) is not None:
         registry.remove(model_id)
+
+
+def deregister_model(
+    catalog_id: str,
+    config: ManagerConfig,
+    registry: Registry,
+) -> None:
+    """Stop and remove every instance of *catalog_id*, then remove the
+    catalog entry itself — the cascade counterpart to deregister_instance().
+
+    Used by DELETE /v1/models/{catalog_id}/downloaded (RM-51) — the
+    "delete downloaded model" action on the Models/Library page, which
+    (unlike the Instances page's single-instance delete) must not leave
+    orphaned instances still pointing at a now-removed catalog row.
+    """
+    instance_ids = [e.id for e in registry.entries if e.model_id == catalog_id]
+    for instance_id in instance_ids:
+        deregister_instance(instance_id, config, registry)
+    if registry.get_catalog(catalog_id) is not None:
+        registry.remove_catalog(catalog_id)
 
 
 # ── helpers ──────────────────────────────────────────────────────────────────

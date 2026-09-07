@@ -46,6 +46,12 @@ class ModelEntry:
     # with image content parts), or "embedding" (/v1/embeddings). Determines
     # request routing/validation — see memory/wiki/model-registry.md.
     modality: str = "text"
+    # RM-51: which catalog (models) entry this instance belongs to, on its
+    # manager node — purely informational for the admin dashboard. Falls
+    # back to this entry's own id (matching manager-api's pre-upgrade
+    # behavior) when a node hasn't shipped model_id yet. Never used for
+    # request routing, which stays keyed by `id` exactly as before.
+    model_id: str = ""
 
 
 class ModelRegistry:

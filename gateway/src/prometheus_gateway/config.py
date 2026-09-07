@@ -40,6 +40,15 @@ class Settings(BaseSettings):
     # Per-endpoint overrides (AC-13)
     rate_limit_rpm_chat_completions: int | None = None
     rate_limit_tpm_chat_completions: int | None = None
+    # RM-51 follow-up: the admin dashboard (/admin/api/*) is one logged-in
+    # operator session firing several independent 5s polling queries at once
+    # (instances, nodes, catalog, metrics, ...) — sharing the generic
+    # per-client "default" budget with real inference traffic meant an
+    # ordinary delete-and-refetch could trip a 429. This is a trusted
+    # internal credential (same reasoning as backend-registry:read), not an
+    # external API consumer, so it gets its own, higher default.
+    rate_limit_rpm_admin: int | None = 600
+    rate_limit_tpm_admin: int | None = None
 
     # ── Circuit Breaker — memory/specs/007-rate-limiting-and-throughput.md ──────────
     # AC-14, AC-15, AC-16
@@ -179,6 +188,33 @@ class Settings(BaseSettings):
         """auth_service_token_url is required when ui_enabled=True."""
         if self.ui_enabled and not self.auth_service_token_url:
             raise ValueError("AUTH_SERVICE_TOKEN_URL is required when UI_ENABLED=true.")
+        return self
+
+    # ── Billing — docs/roadmap.md RM-60 ─────────────────────────────────────────
+    # Hard per-client monthly spend cap + softer alert thresholds, tracked in
+    # Redis via the SAME shared client used for rate limiting (main.py's
+    # app.state.shared_redis) — no new Redis URL setting. No
+    # ClientBillingSettings row for a client = no cap enforced (opt-in,
+    # matching pricing_file's "unset = disabled" convention).
+    budget_alert_thresholds_percent_default: str = "50,80,100"
+
+    # SMTP — optional email delivery for budget alerts. Unset = alerts
+    # silently skip (the in-app banner still fires) — same convention as
+    # pricing_file/grafana_url.
+    smtp_host: str | None = None
+    smtp_port: int = 587
+    smtp_username: str | None = None
+    smtp_password: str | None = None
+    smtp_from_address: str | None = None
+    smtp_use_tls: bool = True
+    billing_alert_email_to: str | None = None  # comma-separated
+
+    @model_validator(mode="after")
+    def validate_smtp_requirements(self) -> "Settings":
+        if self.smtp_host and not (self.smtp_from_address and self.billing_alert_email_to):
+            raise ValueError(
+                "SMTP_FROM_ADDRESS and BILLING_ALERT_EMAIL_TO are required when SMTP_HOST is set."
+            )
         return self
 
     @property

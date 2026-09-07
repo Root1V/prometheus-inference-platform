@@ -511,6 +511,91 @@ async def test_rate_limit_per_endpoint_override_AC13(
     assert "1 RPM" in r2.json()["detail"] or "1" in r2.json()["detail"]
 
 
+# ── RM-51 follow-up: /admin/api/* gets its own "admin" rate-limit budget ─────
+
+
+def test_endpoint_slug_maps_admin_api_prefix():
+    """Every /admin/api/* path — including dynamic segments like
+    {node}/{model_id} — must resolve to the "admin" slug, not "default"."""
+    from prometheus_gateway.rate_limit_middleware import _endpoint_slug
+
+    assert _endpoint_slug("/admin/api/instances") == "admin"
+    assert _endpoint_slug("/admin/api/models") == "admin"
+    assert _endpoint_slug("/admin/api/nodes/local/models/some-model") == "admin"
+    # Non-admin paths are unaffected.
+    assert _endpoint_slug("/v1/chat/completions") == "chat_completions"
+    assert _endpoint_slug("/v1/embeddings") == "default"
+    # The SPA shell itself (/admin, /admin/instances, /admin/assets/...) is
+    # exempt from rate limiting entirely (see _is_exempt) and never reaches
+    # _endpoint_slug — but confirm it's at least not misclassified as "admin"
+    # if that ever changed, since it isn't under the /admin/api/ prefix.
+    assert _endpoint_slug("/admin") == "default"
+    assert _endpoint_slug("/admin/instances") == "default"
+
+
+def test_resolve_limits_uses_admin_override(rsa_keys, tmp_path):
+    """Settings.rate_limit_rpm_admin overrides the global RPM for the
+    "admin" slug, mirroring the existing chat_completions override pattern."""
+    from prometheus_gateway.rate_limit_middleware import RateLimitMiddleware
+
+    key_file = tmp_path / "public.pem"
+    key_file.write_text(rsa_keys["public"])
+    settings = Settings(
+        jwt_issuer="https://auth.test",
+        jwt_public_key_file=str(key_file),
+        jwt_revocation_redis_url=None,
+        rate_limit_rpm=60,
+        rate_limit_rpm_admin=600,
+    )
+    middleware = RateLimitMiddleware(app=None, settings=settings)
+    assert middleware._resolve_limits("admin") == (600, settings.rate_limit_tpm)
+    assert middleware._resolve_limits("default") == (60, settings.rate_limit_tpm)
+
+
+async def test_admin_api_route_uses_higher_admin_rpm(rsa_keys, tmp_path, fake_redis):
+    """End-to-end: a global RPM low enough to trip immediately on a plain
+    endpoint must NOT trip on /admin/api/* once rate_limit_rpm_admin is set
+    high enough — reproduces the real incident (a delete + its cache-
+    invalidation refetch, alongside routine dashboard polling, tripping the
+    shared "default" 60 RPM budget)."""
+    from prometheus_gateway.main import create_app
+    from prometheus_gateway.models.registry import ModelRegistry
+
+    key_file = tmp_path / "public.pem"
+    key_file.write_text(rsa_keys["public"])
+    settings = Settings(
+        jwt_issuer="https://auth.test",
+        jwt_audience="prometheus-gateway",
+        jwt_public_key_file=str(key_file),
+        jwt_revocation_redis_url=None,
+        rate_limit_rpm=1,  # global — a single admin request would trip this
+        rate_limit_strict=True,
+        rate_limit_rpm_admin=600,
+        admin_dashboard_enabled=True,
+        manager_client_id="gw-service",
+        manager_client_secret="secret",
+        auth_service_token_url="https://auth.test/token",
+        auth_service_tls_verify=True,
+        auth_service_admin_url="https://auth.test/admin",
+        auth_service_admin_api_key="test-admin-secret",
+    )
+    registry = ModelRegistry.__new__(ModelRegistry)
+    registry._models = {}
+    app = create_app(settings=settings, registry=registry, redis_client=fake_redis)
+
+    token = make_token(rsa_keys["private"], scope="admin:read", sub="op-1", azp="admin-client")
+    headers = {"Authorization": f"Bearer {token}"}
+
+    with respx.mock:
+        respx.get("https://auth.test/admin/nodes").mock(return_value=Response(200, json=[]))
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
+            r1 = await c.get("/admin/api/instances", headers=headers)
+            r2 = await c.get("/admin/api/instances", headers=headers)
+
+    assert r1.status_code == 200
+    assert r2.status_code == 200  # would be 429 under the old shared "default" budget
+
+
 # ── AC-13b: Global limit applies when no per-endpoint override set ──────────
 
 
@@ -571,6 +656,9 @@ async def test_usage_endpoint_AC11(
             "total_tokens": 80,
             "request_count": 2,
             "estimated_cost_usd": None,
+            "prompt_cost_usd": None,
+            "completion_cost_usd": None,
+            "image_cost_usd": None,
         }
     ]
 
@@ -614,6 +702,13 @@ async def test_usage_endpoint_includes_estimated_cost(
     client_data = next(d for d in body["data"] if d["client_id"] == "client-a")
     assert client_data["estimated_cost_usd"] == pytest.approx(2.0)
     assert client_data["by_model"][0]["estimated_cost_usd"] == pytest.approx(2.0)
+    # RM-60 follow-up: the total is also broken into what's paid for each component.
+    assert client_data["prompt_cost_usd"] == pytest.approx(1.0)
+    assert client_data["completion_cost_usd"] == pytest.approx(1.0)
+    assert client_data["image_cost_usd"] is None
+    assert client_data["by_model"][0]["prompt_cost_usd"] == pytest.approx(1.0)
+    assert client_data["by_model"][0]["completion_cost_usd"] == pytest.approx(1.0)
+    assert client_data["by_model"][0]["image_cost_usd"] is None
 
 
 async def test_usage_endpoint_invalid_date_400(rl_app, admin_headers):  # RM-32

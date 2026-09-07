@@ -19,8 +19,8 @@ Status: `done` · `todo`
 | RM-10 | Gateway admin dashboard (phase 1) | done | React SPA — register/edit/start/stop/restart instances |
 | RM-11 | Auth & Users dashboard | done | Users section with roles; login via OAuth2 client_id/secret or email+password (default) |
 | RM-12 | E2E LLM tracing with Langfuse | todo | Prompt/completion/token-level tracing, alongside existing OTel/Tempo |
-| RM-13 | Live log viewer per instance | todo | Expand a dashboard row to tail that instance's log |
-| RM-14 | Model playground | todo | Send test prompts to a running instance from the dashboard |
+| RM-13 | Live log viewer per instance | done | Expand a dashboard row to tail that instance's log |
+| RM-14 | Model playground | done | Send test prompts to a running instance from the dashboard |
 | RM-15 | Usage: wire up today's per-client totals | done | New Usage page — connects the existing `GET /v1/usage`, no new backend work |
 | RM-16 | Routing & rate-limit visibility | done | Surface gateway's rate-limit/circuit-breaker state in the dashboard |
 | RM-17 | Guardrails / content filtering | todo | Speculative — no known need yet |
@@ -28,7 +28,7 @@ Status: `done` · `todo`
 | RM-19 | Dashboard branding: logo + favicon | done | Icon next to "Prometheus" in the sidebar, reused as the page favicon |
 | RM-20 | Node registry | done | Node inventory (name, manager-api URL, hardware type, tag) — replaces MANAGER_NODES as the live routing source |
 | RM-22 | Platform overview: page shell + at-a-glance strip | done | New landing page: node/instance/user counts, links to Instances/Nodes/Users |
-| RM-23 | Active sessions / connected users | todo | Who's connected now (dashboard, chat UI, API, SDK) and to what model |
+| RM-23 | Active sessions / connected users | done | Who's connected now (dashboard, chat UI, API, SDK) and to what model |
 | RM-24 | Model picker in Create User | done | Pick from the existing Instances/registry list instead of typing `model:<id>` scopes by hand |
 | RM-25 | Node SSH/remote-maintenance credentials | todo | Speculative — no consuming feature yet |
 | RM-26 | Instances list: numbered, paginated, active-first | done | Add a row-number column, paginate when the list is long, sort running instances first |
@@ -40,6 +40,34 @@ Status: `done` · `todo`
 | RM-32 | Usage: persisted history + per-model breakdown | done | Replaces Redis daily counters with a real store — needed for any trend chart |
 | RM-33 | Usage: pricing table + real cost | done | Per-model price config; turns token counts into a dollar figure |
 | RM-34 | Overview: wire the usage & cost card to real data | done | Replaces RM-30's placeholder once RM-32/33 land |
+| RM-35 | Native tool-calling (OpenAI-style function calling) | done | `tools`/`tool_calls` on `/v1/chat/completions` — new backend surface, not just a UI |
+| RM-36 | Playground: streaming responses | done | Gateway already supports `stream:true`; Playground deliberately shipped non-streaming first |
+| RM-37 | Playground: embedding model testing | done | New "Embeddings" tab — single input, vector preview + dims; also fixed a missing admin:write bypass on `/v1/embeddings` |
+| RM-38 | Image generation model support | done | New `sd_cpp` backend (stable-diffusion.cpp) + `image` modality, gateway endpoint, Playground UI |
+| RM-39 | Video generation model support | todo | Speculative — same as RM-38, even less proven for self-hosted use |
+| RM-40 | Playground: image upload for Vision/VLM models | done | Builds on RM-09's vision content parts; also fixed Chat's model picker excluding vision models entirely |
+| RM-41 | Playground: show which model answered | done | Small label next to the copy button per response — matters once you switch models mid-conversation |
+| RM-42 | Playground: animate the "waiting for a response" state | done | Replace the static text with something that reads as active waiting |
+| RM-43 | Stop stripping client-supplied system messages | done | Found while scoping RM-35 — broke the RM-14 Playground's own System prompt field |
+| RM-44 | Dashboard: light/dark mode, auto-detected + manual toggle | done | 3-way sidebar toggle (Light/System/Dark), live OS-preference sync, persisted choice, no per-component changes needed |
+| RM-45 | Let a client list which models it's actually allowed to use | done | New `GET /v1/models/mine` — authenticated, filtered to the caller's own `model:<id>` grants |
+| RM-46 | Per-model performance metrics: avg response time, TTFT, inter-token latency | done | New per-backend MetricsStore fields + a Latency column on Instances, verified live against a real request |
+| RM-47 | Evaluate whether `GET /v1/models` should stay unauthenticated | todo | Raised while building RM-45 — confirm nothing depends on public access before considering any change |
+| RM-48 | Dashboard: Models page — discover, download, and manage the model lifecycle | done | Search Hugging Face, read the model card, download with live progress/cancel/retry, delete removes the file too |
+| RM-49 | Model registry: migrate registry.yaml → SQLite | done | Fixes a real non-atomic-write bug; sync stdlib sqlite3 (no async, no new dependency); dropped dead `log_level`/redundant `backend_url` fields, consolidated `hf_filename`/`hf_filenames` |
+| RM-50 | fix: Registry data-quality cleanup — ghost downloads, port collision, size-undercounted shards | done | Deleted 3 broken entries + 1 orphan partial file, fixed the port collision, fixed `_file_size_bytes()` to sum all shards for manually-registered multi-part models |
+| RM-51 | fix: Separate the model catalog from running instances; confirm before deleting a model | done | `registry.db` split into `models` (catalog) + `instances` tables; deleting an instance no longer deletes the catalog entry; cascade model-delete requires `confirm=true` when instances are live |
+| RM-52 | sd_cpp: support split-file diffusion models (FLUX.1, SD3.5) | done | New `vae_path`/`clip_l_path`/`t5xxl_path`/`cfg_scale` fields; also fixed sd-server's wrong cfg-scale default and a too-short gateway backend timeout |
+| RM-53 | Playground: unify Chat/Embeddings/Images into one adaptive chat | done | One composer + one persistent mixed-content timeline whose config switches based on the selected model's modality; new `PlaygroundModelPicker` groups all ready instances by modality |
+| RM-54 | Audio/music generation support (text-to-audio, style transfer) | todo | New modality — prompt-to-music and audio-to-audio (upload a track, restyle or continue it); backend choice needs its own research pass, same as RM-38 |
+| RM-55 | Richer multi-instance-per-model management UX | todo | RM-51 made multi-instance possible; this adds the polished UI (per-model instance list, port-conflict-aware picker) deliberately deferred from that PR |
+| RM-56 | Admin dashboard: edit rate limits live, no restart | todo | Today's RPM/TPM limits (global + per-endpoint overrides) only change via `.env` + a gateway restart — raised while fixing RM-51's admin rate-limit 429 |
+| RM-57 | Multi-instance-per-model: a shared logical name for routing | todo | RM-51's schema allows several instances per catalog model, but each still needs its own unique client-facing id — no "these are replicas of each other" concept yet |
+| RM-58 | Gateway: intelligent load balancing across instances of the same model | todo | Depends on RM-57; candidates are round-robin, least-active-requests, or latency-aware using RM-46's existing per-instance metrics |
+| RM-59 | Dashboard: search/filter for Models and Instances | todo | Both tables sort/paginate today but have no text search — client-side filter, no new endpoint needed |
+| RM-60 | Billing: real per-client cost, multi-currency display, tax, dashboard, budget alerts | done | Fixed a retroactive-repricing bug (cost now stored at write time, not recomputed later); added an audit trail, CSV export, PEN/USD/EUR display, a tax line, a hard cap + soft alert thresholds, and a billing dashboard; real card charging stays deferred |
+| RM-61 | Peru/SUNAT e-invoicing compliance for individual (B2C) clients | todo | Blocked on the user's own business/legal decision (bill Peru individuals at all? which e-invoicing provider?) — not something to silently code under RM-60 |
+| RM-62 | Cost-based model price suggestion | done | Per-node $/hour field, a real prefill (prompt) tokens/sec metric, and a "Suggest price" calculator button in the Model Pricing table — break-even = node $/hour ÷ observed throughput, with an editable margin |
 
 Adding an item: append the next `RM-NN` row here with a one-liner, then add the full
 Why/Scope writeup to `docs/roadmap.md`.

@@ -277,6 +277,10 @@ class ManagerRegistrySync:
             discovery=True,  # manager already filtered by discovery=true
             node=node_name,
             modality=b.get("modality", "text"),
+            # RM-51: falls back to this instance's own id for a not-yet-
+            # upgraded manager node during a rolling deploy (pre-RM-51
+            # /v1/backends responses don't send model_id at all).
+            model_id=b.get("model_id") or model_id,
         )
 
     async def _sync(self) -> None:

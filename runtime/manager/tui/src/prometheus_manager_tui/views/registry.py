@@ -39,12 +39,13 @@ def _fmt_source(entry: RegistryEntry) -> str:
     if entry.path:
         return Path(entry.path).name
     if entry.hf_repo:
-        return f"hf:{entry.hf_repo}/{entry.hf_filename}"
+        hf_name = entry.hf_filenames[0] if entry.hf_filenames else ""
+        return f"hf:{entry.hf_repo}/{hf_name}"
     return "—"
 
 
 class RegistryView(Vertical):
-    """View 3: model catalog — one row per registry.yaml entry.
+    """View 3: model catalog — one row per registry.db entry.
 
     Columns: ID · Family · Quant · Ctx · Est.RAM · Dl · Discovery · Source · Size
     Downloaded entries first (α-sorted), not-downloaded entries after separator.
@@ -289,9 +290,10 @@ class RegistryView(Vertical):
         if entry.hf_sha256:
             sha = _esc(entry.hf_sha256[:14]) + "… ✓"
         file_size = fmt_size(entry.path) if entry.downloaded else "—"
+        hf_name = entry.hf_filenames[0] if entry.hf_filenames else ""
         acq_lines = [
             f"[dim]HF repo      [/dim]  {_esc(entry.hf_repo) if entry.hf_repo else '—'}",
-            f"[dim]HF filename  [/dim]  {_esc(entry.hf_filename) if entry.hf_filename else '—'}",
+            f"[dim]HF filename  [/dim]  {_esc(hf_name) if hf_name else '—'}",
             f"[dim]SHA-256      [/dim]  {sha}",
             f"[dim]Downloaded   [/dim]  {'✓' if entry.downloaded else '✗'}",
             f"[dim]File size    [/dim]  {file_size}",
@@ -301,8 +303,7 @@ class RegistryView(Vertical):
         # Model Spec
         spec_text = (
             f"[dim]Context window[/dim]  {entry.context_length:,} tokens    "
-            f"[dim]Est. RAM[/dim]  {_fmt_ram(entry.rss_estimate_mb)}    "
-            f"[dim]Log level[/dim]  {entry.log_level or 'info'}"
+            f"[dim]Est. RAM[/dim]  {_fmt_ram(entry.rss_estimate_mb)}"
         )
         self.query_one("#reg-detail-spec", Static).update(spec_text)
 
@@ -310,7 +311,7 @@ class RegistryView(Vertical):
         disc_str = "[green]● ON[/green]" if entry.discovery else "[dim]○ OFF[/dim]"
         deploy_text = (
             f"[dim]Port[/dim]  {entry.port}    "
-            f"[dim]Backend URL[/dim]  {entry.backend_url or f'http://127.0.0.1:{entry.port}'}    "
+            f"[dim]Backend URL[/dim]  {entry.backend_url}    "
             f"[dim]Discovery[/dim]  {disc_str}"
         )
         self.query_one("#reg-detail-deploy", Static).update(deploy_text)

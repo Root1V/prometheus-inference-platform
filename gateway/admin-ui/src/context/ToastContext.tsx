@@ -47,8 +47,8 @@ export function ToastProvider({ children }: { children: ReactNode }) {
             className={cn(
               "flex items-start gap-2 rounded-lg border p-3 text-sm shadow-md",
               toast.variant === "error"
-                ? "border-red-200 bg-red-50 text-red-800"
-                : "border-green-200 bg-green-50 text-green-800",
+                ? "border-red-200 bg-red-50 text-red-800 dark:border-red-900 dark:bg-red-500/10 dark:text-red-300"
+                : "border-green-200 bg-green-50 text-green-800 dark:border-green-900 dark:bg-green-500/10 dark:text-green-300",
             )}
           >
             {toast.variant === "error" ? (

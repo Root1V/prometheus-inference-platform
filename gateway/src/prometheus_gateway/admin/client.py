@@ -104,7 +104,11 @@ class ManagerApiClient:
         async with httpx.AsyncClient(timeout=_REQUEST_TIMEOUT_S) as client:
             return await client.patch(f"{node_url.rstrip('/')}{path}", headers=headers, json=json)
 
-    async def delete(self, node_url: str, path: str) -> httpx.Response:
+    async def delete(
+        self, node_url: str, path: str, params: dict[str, Any] | None = None
+    ) -> httpx.Response:
         headers = await self._headers()
         async with httpx.AsyncClient(timeout=_REQUEST_TIMEOUT_S) as client:
-            return await client.delete(f"{node_url.rstrip('/')}{path}", headers=headers)
+            return await client.delete(
+                f"{node_url.rstrip('/')}{path}", headers=headers, params=params
+            )

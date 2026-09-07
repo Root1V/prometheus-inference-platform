@@ -1,11 +1,29 @@
-"""Registry CRUD — runtime/manager/registry.yaml.
+"""Registry CRUD — runtime/manager/registry.db (SQLite).
 
 Implements: memory/specs/008-llama-server-manager.md — AC-3, AC-15, AC-16, AC-17, AC-18
+
+RM-51: split what used to be one conflated `models` row into two tables —
+`models` (the catalog: a downloaded/known model's file metadata, shared by
+however many instances of it) and `instances` (a specific running deployment,
+FK'd to its catalog row via `model_id`). This fixes a real incident: deleting
+an "instance" through the dashboard used to delete the whole row, wiping the
+model's catalog registration along with it (see docs/roadmap.md RM-51).
+
+`RegistryEntry` stays a flat, merged view — every field the pre-split schema
+had, computed via a join instead of read off one row — so lifecycle.py,
+scanner.py, capacity.py, and most of the manager-api/tui callers need no
+changes at all.
 """
 
 from __future__ import annotations
 
+import contextlib
+import json
+import os
 import re
+import shutil
+import sqlite3
+import threading
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -15,13 +33,155 @@ import yaml
 _ID_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{1,62}[a-z0-9]$")
 
 # See memory/wiki/inference-engines.md (RM-06) for the comparison behind this list.
-BACKENDS = ("llama_cpp", "mlx", "vllm", "sglang")
+# RM-38: sd_cpp (stable-diffusion.cpp's sd-server) is the odd one out — it
+# generates images rather than serving LLM completions, so it deviates from
+# the other four in lifecycle.py's command-building and scanner.py's
+# process-recognition (its own --listen-ip/--listen-port flags, no /health
+# endpoint). See lifecycle.py's _build_sd_cpp_cmd for specifics.
+BACKENDS = ("llama_cpp", "mlx", "vllm", "sglang", "sd_cpp")
 
 # RM-09: what kind of requests this model serves. Determines which flags
 # lifecycle.py adds to the launch command and how the gateway routes requests
 # (text -> /v1/chat/completions, embedding -> /v1/embeddings, vision -> chat
 # completions with image content parts). See memory/wiki/model-registry.md.
-MODALITIES = ("text", "embedding", "vision")
+# RM-38: "image" -> POST /v1/images/generations (sd_cpp only).
+MODALITIES = ("text", "embedding", "vision", "image")
+
+_SCHEMA_SQL = """
+CREATE TABLE IF NOT EXISTS models (
+    id TEXT PRIMARY KEY,
+    path TEXT NOT NULL DEFAULT '',
+    family TEXT NOT NULL DEFAULT '',
+    quantization TEXT NOT NULL DEFAULT '',
+    downloaded INTEGER NOT NULL DEFAULT 0,
+    hf_repo TEXT NOT NULL DEFAULT '',
+    hf_sha256 TEXT NOT NULL DEFAULT '',
+    hf_filenames TEXT NOT NULL DEFAULT '[]',
+    mmproj_path TEXT NOT NULL DEFAULT '',
+    vae_path TEXT NOT NULL DEFAULT '',
+    clip_l_path TEXT NOT NULL DEFAULT '',
+    t5xxl_path TEXT NOT NULL DEFAULT '',
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS instances (
+    id TEXT PRIMARY KEY,
+    model_id TEXT NOT NULL REFERENCES models(id),
+    port INTEGER NOT NULL,
+    backend TEXT NOT NULL DEFAULT 'llama_cpp',
+    modality TEXT NOT NULL DEFAULT 'text',
+    context_length INTEGER NOT NULL,
+    discovery INTEGER NOT NULL DEFAULT 0,
+    rss_estimate_mb INTEGER,
+    cfg_scale REAL,
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_instances_model_id ON instances(model_id);
+"""
+
+# Column order for the two new tables (excludes created_at, which every
+# INSERT sets to CURRENT_TIMESTAMP explicitly rather than round-tripping).
+_MODEL_COLUMNS = (
+    "id",
+    "path",
+    "family",
+    "quantization",
+    "downloaded",
+    "hf_repo",
+    "hf_sha256",
+    "hf_filenames",
+    "mmproj_path",
+    "vae_path",
+    "clip_l_path",
+    "t5xxl_path",
+)
+
+_INSTANCE_COLUMNS = (
+    "id",
+    "model_id",
+    "port",
+    "backend",
+    "modality",
+    "context_length",
+    "discovery",
+    "rss_estimate_mb",
+    "cfg_scale",
+)
+
+# Pre-RM-51 single-table column order — used only by the structural migration
+# to read legacy rows before the split (and by the legacy-YAML migration,
+# which also lands directly in the new two-table shape).
+_LEGACY_COLUMNS = (
+    "id",
+    "context_length",
+    "port",
+    "path",
+    "family",
+    "quantization",
+    "backend",
+    "modality",
+    "mmproj_path",
+    "downloaded",
+    "discovery",
+    "rss_estimate_mb",
+    "hf_repo",
+    "hf_sha256",
+    "hf_filenames",
+    "vae_path",
+    "clip_l_path",
+    "t5xxl_path",
+    "cfg_scale",
+)
+
+# RM-52: added after the single-table schema already existed in the wild —
+# needed here too so a very old legacy file (pre-dating RM-52) can still be
+# read before the RM-51 split runs on it.
+_LEGACY_MIGRATION_COLUMNS = (
+    ("vae_path", "TEXT NOT NULL DEFAULT ''"),
+    ("clip_l_path", "TEXT NOT NULL DEFAULT ''"),
+    ("t5xxl_path", "TEXT NOT NULL DEFAULT ''"),
+    ("cfg_scale", "REAL"),
+)
+
+
+class RegistryIntegrityError(ValueError):
+    """Raised when an operation would violate a catalog/instance invariant —
+    e.g. removing a catalog entry that still has instances referencing it."""
+
+
+@dataclass
+class CatalogEntry:
+    """RM-51: a downloaded/known model — the file metadata shared by however
+    many instances reference it via `model_id`."""
+
+    id: str
+    path: str = ""
+    family: str = ""
+    quantization: str = ""
+    downloaded: bool = False
+    hf_repo: str = ""
+    hf_sha256: str = ""
+    hf_filenames: list[str] = field(default_factory=list)
+    mmproj_path: str = ""
+    vae_path: str = ""
+    clip_l_path: str = ""
+    t5xxl_path: str = ""
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "id": self.id,
+            "path": self.path,
+            "family": self.family,
+            "quantization": self.quantization,
+            "downloaded": self.downloaded,
+            "hf_repo": self.hf_repo,
+            "hf_sha256": self.hf_sha256,
+            "hf_filenames": self.hf_filenames,
+            "mmproj_path": self.mmproj_path,
+            "vae_path": self.vae_path,
+            "clip_l_path": self.clip_l_path,
+            "t5xxl_path": self.t5xxl_path,
+        }
 
 
 @dataclass
@@ -42,133 +202,604 @@ class RegistryEntry:
     # Vision projector file (.gguf), required when modality="vision" on
     # llama_cpp — llama-server's --mmproj flag.
     mmproj_path: str = ""
-    log_level: str = "info"
     downloaded: bool = False
     discovery: bool = False  # See: memory/specs/010-registry-view-redesign.md
     rss_estimate_mb: int | None = None
-    backend_url: str = ""
     hf_repo: str = ""
-    hf_filename: str = ""
     hf_sha256: str = ""
-    # For multi-part sharded models; empty for single-file models.
+    # The downloaded file(s) for this model — a single-element list for
+    # single-file models, multiple for sharded ones. Always populated once a
+    # file is known (never a separate "first filename" field — RM-49).
     hf_filenames: list[str] = field(default_factory=list)
+    # RM-52: split-file diffusion models (FLUX.1, SD3.5) ship their diffusion
+    # weights, VAE, and text encoder(s) as separate files instead of one
+    # merged .gguf like SD-Turbo. sd_cpp-only — set any of these three and
+    # lifecycle.py's _build_sd_cpp_cmd switches from -m/--model (single file,
+    # `path`) to --diffusion-model (`path`) + --vae/--clip_l/--t5xxl. Leave
+    # all three empty for a merged single-file model.
+    vae_path: str = ""
+    clip_l_path: str = ""
+    t5xxl_path: str = ""
+    # RM-52: sd-server's --cfg-scale defaults to 7.0 (classic SD). FLUX.1/SD3.5
+    # are guidance-distilled and need ~1.0 — anything close to the SD default
+    # produces a blown-out/solid-color image (confirmed empirically: cfg=7.0
+    # against FLUX.1-dev returned a uniform dark blob; cfg=1.0 returned a real
+    # image). None means "let sd-server use its own default" — needed for
+    # backends/models that DO want it (unchanged SD-Turbo behavior).
+    cfg_scale: float | None = None
+    # RM-51: which catalog (models) row this instance belongs to. Populated
+    # correctly by Registry._load()'s join for every real loaded entry —
+    # callers constructing a transient RegistryEntry before Registry.add()
+    # don't need to set this, since add() derives the catalog id from the
+    # instance's own id (its one-shot "manual registration" path).
+    model_id: str = ""
 
-    def __post_init__(self) -> None:
-        if not self.backend_url:
-            self.backend_url = f"http://127.0.0.1:{self.port}"
+    @property
+    def backend_url(self) -> str:
+        """Always derived from `port` — see RM-49's schema evaluation for why
+        this was dropped as a stored field (it never carried information
+        beyond the port, on every real code path)."""
+        return f"http://127.0.0.1:{self.port}"
 
     def to_dict(self) -> dict[str, Any]:
-        d: dict[str, Any] = {
+        return {
             "id": self.id,
+            "model_id": self.model_id,
             "port": self.port,
             "context_length": self.context_length,
+            "path": self.path,
+            "family": self.family,
+            "quantization": self.quantization,
+            "backend": self.backend,
+            "modality": self.modality,
+            "mmproj_path": self.mmproj_path,
+            "downloaded": self.downloaded,
+            "discovery": self.discovery,
+            "rss_estimate_mb": self.rss_estimate_mb,
+            "backend_url": self.backend_url,
+            "hf_repo": self.hf_repo,
+            "hf_sha256": self.hf_sha256,
+            "hf_filenames": self.hf_filenames,
+            "vae_path": self.vae_path,
+            "clip_l_path": self.clip_l_path,
+            "t5xxl_path": self.t5xxl_path,
+            "cfg_scale": self.cfg_scale,
         }
-        for attr in (
-            "path",
-            "family",
-            "quantization",
-            "backend",
-            "modality",
-            "mmproj_path",
-            "log_level",
-            "downloaded",
-            "discovery",
-            "rss_estimate_mb",
-            "backend_url",
-            "hf_repo",
-            "hf_filename",
-            "hf_sha256",
-            "hf_filenames",
-        ):
-            val = getattr(self, attr)
-            if val not in (None, "", False, []) or attr in ("downloaded", "discovery"):
-                d[attr] = val
-        return d
 
 
 class Registry:
-    """Load and persist registry.yaml.
+    """Load and persist runtime/manager/registry.db.
 
     Implements: memory/specs/008-llama-server-manager.md — AC-3, AC-15, AC-16, AC-18
     """
 
     def __init__(self, path: Path) -> None:
         self._path = path
-        self._entries: dict[str, RegistryEntry] = {}
-        if path.exists():
-            self._load()
+        self._instances: dict[str, RegistryEntry] = {}
+        self._catalog: dict[str, CatalogEntry] = {}
+        self._lock = threading.RLock()
+        self._migrate_legacy_yaml_if_needed()
+        self._path.parent.mkdir(parents=True, exist_ok=True)
+        self._migrate_models_instances_split_if_needed()
+        self._conn = sqlite3.connect(str(self._path), check_same_thread=False)
+        self._conn.execute("PRAGMA journal_mode=WAL")
+        self._conn.execute("PRAGMA synchronous=NORMAL")
+        self._conn.executescript(_SCHEMA_SQL)
+        self._conn.commit()
+        self._load()
 
-    # ── public API ────────────────────────────────────────────────────────────
+    # ── public API: instances ────────────────────────────────────────────────
 
     @property
     def entries(self) -> list[RegistryEntry]:
-        return list(self._entries.values())
+        with self._lock:
+            return list(self._instances.values())
 
-    def get(self, model_id: str) -> RegistryEntry | None:
-        return self._entries.get(model_id)
+    def get(self, instance_id: str) -> RegistryEntry | None:
+        with self._lock:
+            return self._instances.get(instance_id)
 
     def add(self, entry: RegistryEntry) -> None:
-        """Validate and add entry; persist to disk."""
+        """Validate and add both a catalog row and an instance row under the
+        same id — today's exact behavior. Used by manual registration (a
+        hand-typed path, `pmgr register`, GPT4All-style local models) where
+        there's no separate catalog entry to reference yet."""
         _validate_id(entry.id)
         _validate_backend(entry.backend)
         _validate_modality(entry.modality)
         _validate_path(entry.path, entry.backend)
+        _validate_path(entry.vae_path, entry.backend)
+        _validate_path(entry.clip_l_path, entry.backend)
+        _validate_path(entry.t5xxl_path, entry.backend)
         _validate_port(entry.port)
-        self._entries[entry.id] = entry
-        self._save()
+        with self._lock:
+            self._conn.execute(
+                f"INSERT OR REPLACE INTO models ({', '.join(_MODEL_COLUMNS)}) "
+                f"VALUES ({', '.join('?' for _ in _MODEL_COLUMNS)})",
+                _model_row_params(_catalog_entry_from_registry_entry(entry)),
+            )
+            self._conn.execute(
+                f"INSERT OR REPLACE INTO instances ({', '.join(_INSTANCE_COLUMNS)}) "
+                f"VALUES ({', '.join('?' for _ in _INSTANCE_COLUMNS)})",
+                _instance_row_params(entry, model_id=entry.id),
+            )
+            self._conn.commit()
+            self._load()
 
-    def update(self, model_id: str, **kwargs: Any) -> None:
-        """Patch fields on an existing entry and persist."""
-        entry = self._entries[model_id]
-        for key, val in kwargs.items():
-            setattr(entry, key, val)
-        self._save()
+    def add_instance(
+        self,
+        id: str,
+        model_id: str,
+        *,
+        port: int,
+        backend: str = "llama_cpp",
+        modality: str = "text",
+        context_length: int = 4096,
+        discovery: bool = False,
+        rss_estimate_mb: int | None = None,
+        cfg_scale: float | None = None,
+    ) -> None:
+        """Create a new instance referencing an *existing* catalog entry —
+        the "create instance from a downloaded model" flow (RM-51)."""
+        with self._lock:
+            catalog = self._catalog.get(model_id)
+        if catalog is None:
+            raise ValueError(f"No catalog entry {model_id!r} — download or register it first.")
+        _validate_id(id)
+        _validate_backend(backend)
+        _validate_modality(modality)
+        _validate_path(catalog.path, backend)
+        _validate_path(catalog.vae_path, backend)
+        _validate_path(catalog.clip_l_path, backend)
+        _validate_path(catalog.t5xxl_path, backend)
+        _validate_port(port)
+        entry = RegistryEntry(
+            id=id,
+            model_id=model_id,
+            port=port,
+            backend=backend,
+            modality=modality,
+            context_length=context_length,
+            discovery=discovery,
+            rss_estimate_mb=rss_estimate_mb,
+            cfg_scale=cfg_scale,
+        )
+        with self._lock:
+            self._conn.execute(
+                f"INSERT OR REPLACE INTO instances ({', '.join(_INSTANCE_COLUMNS)}) "
+                f"VALUES ({', '.join('?' for _ in _INSTANCE_COLUMNS)})",
+                _instance_row_params(entry, model_id=model_id),
+            )
+            self._conn.commit()
+            self._load()
 
-    def remove(self, model_id: str) -> None:
-        """Remove entry from registry.
+    def update(self, instance_id: str, **kwargs: Any) -> None:
+        """Patch fields on an existing instance (routing each to the
+        instance or catalog table it actually belongs to) and persist.
+
+        No validation — deliberately permissive, matching pre-RM-51 behavior
+        (see test_lifecycle.py::test_start_instance_rejects_unknown_backend,
+        which relies on start_instance() doing its own downstream checks
+        rather than update() gatekeeping).
+        """
+        with self._lock:
+            if instance_id not in self._instances:
+                raise KeyError(instance_id)
+            model_id = self._instances[instance_id].model_id
+
+            instance_fields = {
+                k: v
+                for k, v in kwargs.items()
+                if k in _INSTANCE_COLUMNS and k not in ("id", "model_id")
+            }
+            model_fields = {k: v for k, v in kwargs.items() if k in _MODEL_COLUMNS and k != "id"}
+
+            if instance_fields:
+                self._conn.execute(
+                    f"UPDATE instances SET {', '.join(f'{c} = ?' for c in instance_fields)} "
+                    "WHERE id = ?",
+                    (*_encode_instance_values(instance_fields), instance_id),
+                )
+            if model_fields:
+                self._conn.execute(
+                    f"UPDATE models SET {', '.join(f'{c} = ?' for c in model_fields)} WHERE id = ?",
+                    (*_encode_model_values(model_fields), model_id),
+                )
+            self._conn.commit()
+            self._load()
+
+    def remove(self, instance_id: str) -> None:
+        """Remove an INSTANCE only. The catalog entry (and any other
+        instance referencing it) is left untouched — this is the RM-51 bug
+        fix: previously this deleted the whole conflated row.
 
         Implements: memory/specs/008-llama-server-manager.md — AC-18
         """
-        del self._entries[model_id]
-        self._save()
+        with self._lock:
+            if instance_id not in self._instances:
+                raise KeyError(instance_id)
+            self._conn.execute("DELETE FROM instances WHERE id = ?", (instance_id,))
+            self._conn.commit()
+            self._load()
 
     def reload(self) -> None:
-        self._load()
+        """Re-read every entry from the database."""
+        with self._lock:
+            self._load()
+
+    # ── public API: catalog ──────────────────────────────────────────────────
+
+    def add_catalog(self, entry: CatalogEntry) -> None:
+        _validate_id(entry.id)
+        _validate_path_traversal(entry.path)
+        _validate_path_traversal(entry.vae_path)
+        _validate_path_traversal(entry.clip_l_path)
+        _validate_path_traversal(entry.t5xxl_path)
+        with self._lock:
+            self._conn.execute(
+                f"INSERT OR REPLACE INTO models ({', '.join(_MODEL_COLUMNS)}) "
+                f"VALUES ({', '.join('?' for _ in _MODEL_COLUMNS)})",
+                _model_row_params(entry),
+            )
+            self._conn.commit()
+            self._load()
+
+    def get_catalog(self, model_id: str) -> CatalogEntry | None:
+        with self._lock:
+            return self._catalog.get(model_id)
+
+    def list_catalog(self) -> list[CatalogEntry]:
+        with self._lock:
+            return list(self._catalog.values())
+
+    def update_catalog(self, model_id: str, **kwargs: Any) -> None:
+        """Same permissive, no-validation contract as update(). Needed by
+        the download flow: a freshly-downloaded model has no instance row
+        yet, so there's nothing for the instance-keyed update() to route
+        through."""
+        with self._lock:
+            if model_id not in self._catalog:
+                raise KeyError(model_id)
+            fields = {k: v for k, v in kwargs.items() if k != "id"}
+            if fields:
+                self._conn.execute(
+                    f"UPDATE models SET {', '.join(f'{c} = ?' for c in fields)} WHERE id = ?",
+                    (*_encode_model_values(fields), model_id),
+                )
+                self._conn.commit()
+                self._load()
+
+    def remove_catalog(self, model_id: str) -> None:
+        """Remove a catalog entry. Raises RegistryIntegrityError if any
+        instance still references it — callers must remove those first (see
+        lifecycle.deregister_model for the cascade version used by the
+        Models/Library page's "delete downloaded file" action)."""
+        with self._lock:
+            if model_id not in self._catalog:
+                raise KeyError(model_id)
+            referencing = [e.id for e in self._instances.values() if e.model_id == model_id]
+            if referencing:
+                raise RegistryIntegrityError(
+                    f"Cannot remove catalog {model_id!r}: still referenced by "
+                    f"instances {referencing}"
+                )
+            self._conn.execute("DELETE FROM models WHERE id = ?", (model_id,))
+            self._conn.commit()
+            self._load()
 
     # ── persistence ──────────────────────────────────────────────────────────
 
     def _load(self) -> None:
-        with open(self._path) as fh:
-            data = yaml.safe_load(fh) or {}
-        self._entries = {}
-        for raw in data.get("models", []):
-            entry = RegistryEntry(
-                id=raw["id"],
-                path=raw.get("path", ""),
-                context_length=raw.get("context_length", 4096),
-                port=raw.get("port", 8080),
-                family=raw.get("family", ""),
-                quantization=raw.get("quantization", ""),
-                backend=raw.get("backend", "llama_cpp"),
-                modality=raw.get("modality", "text"),
-                mmproj_path=raw.get("mmproj_path", ""),
-                log_level=raw.get("log_level", "info"),
-                downloaded=raw.get("downloaded", False),
-                discovery=raw.get("discovery", False),
-                rss_estimate_mb=raw.get("rss_estimate_mb"),
-                backend_url=raw.get("backend_url", ""),
-                hf_repo=raw.get("hf_repo", ""),
-                hf_filename=raw.get("hf_filename", ""),
-                hf_sha256=raw.get("hf_sha256", ""),
-                hf_filenames=raw.get("hf_filenames", []),
+        cat_cursor = self._conn.execute(
+            f"SELECT {', '.join(_MODEL_COLUMNS)} FROM models ORDER BY rowid"
+        )
+        self._catalog = {}
+        for row in cat_cursor.fetchall():
+            cat_raw = dict(zip(_MODEL_COLUMNS, row, strict=True))
+            cat_entry = CatalogEntry(
+                id=cat_raw["id"],
+                path=cat_raw["path"],
+                family=cat_raw["family"],
+                quantization=cat_raw["quantization"],
+                downloaded=bool(cat_raw["downloaded"]),
+                hf_repo=cat_raw["hf_repo"],
+                hf_sha256=cat_raw["hf_sha256"],
+                hf_filenames=json.loads(cat_raw["hf_filenames"]),
+                mmproj_path=cat_raw["mmproj_path"],
+                vae_path=cat_raw["vae_path"],
+                clip_l_path=cat_raw["clip_l_path"],
+                t5xxl_path=cat_raw["t5xxl_path"],
             )
-            self._entries[entry.id] = entry
+            self._catalog[cat_entry.id] = cat_entry
 
-    def _save(self) -> None:
+        inst_cursor = self._conn.execute(
+            f"SELECT {', '.join(_INSTANCE_COLUMNS)} FROM instances ORDER BY rowid"
+        )
+        self._instances = {}
+        for row in inst_cursor.fetchall():
+            inst_raw = dict(zip(_INSTANCE_COLUMNS, row, strict=True))
+            catalog = self._catalog.get(inst_raw["model_id"])
+            inst_entry = RegistryEntry(
+                id=inst_raw["id"],
+                model_id=inst_raw["model_id"],
+                port=inst_raw["port"],
+                backend=inst_raw["backend"],
+                modality=inst_raw["modality"],
+                context_length=inst_raw["context_length"],
+                discovery=bool(inst_raw["discovery"]),
+                rss_estimate_mb=inst_raw["rss_estimate_mb"],
+                cfg_scale=inst_raw["cfg_scale"],
+                path=catalog.path if catalog else "",
+                family=catalog.family if catalog else "",
+                quantization=catalog.quantization if catalog else "",
+                mmproj_path=catalog.mmproj_path if catalog else "",
+                downloaded=catalog.downloaded if catalog else False,
+                hf_repo=catalog.hf_repo if catalog else "",
+                hf_sha256=catalog.hf_sha256 if catalog else "",
+                hf_filenames=catalog.hf_filenames if catalog else [],
+                vae_path=catalog.vae_path if catalog else "",
+                clip_l_path=catalog.clip_l_path if catalog else "",
+                t5xxl_path=catalog.t5xxl_path if catalog else "",
+            )
+            self._instances[inst_entry.id] = inst_entry
+
+    def _migrate_legacy_yaml_if_needed(self) -> None:
+        """One-time import from a legacy registry.yaml, if the new DB doesn't
+        exist yet but the old YAML file does. Non-destructive: the YAML is
+        renamed to .yaml.bak, never deleted. Builds the DB at a temp path and
+        os.replace()'s it into place only once fully populated, so a crash
+        mid-import leaves the next start with a clean retry (an orphaned .tmp
+        file and an untouched, still-migratable .yaml) rather than a
+        half-populated DB masquerading as complete.
+
+        RM-51: lands directly in the new two-table shape — every legacy YAML
+        model dict becomes one catalog row + one instance row, same id for
+        both, via the same _insert_split_row() helper the same-file
+        models->models+instances migration below uses.
+        """
+        if self._path.exists():
+            return
+        legacy = self._path.with_suffix(".yaml")
+        if not legacy.exists():
+            return
         self._path.parent.mkdir(parents=True, exist_ok=True)
-        data = {"models": [e.to_dict() for e in self._entries.values()]}
-        with open(self._path, "w") as fh:
-            yaml.safe_dump(data, fh, default_flow_style=False, allow_unicode=True)
+        tmp = self._path.with_suffix(".db.tmp")
+        tmp.unlink(missing_ok=True)
+        conn = sqlite3.connect(str(tmp))
+        try:
+            conn.executescript(_SCHEMA_SQL)
+            data = yaml.safe_load(legacy.read_text()) or {}
+            for raw in data.get("models", []):
+                entry = _entry_from_legacy_yaml(raw)
+                _insert_split_row(conn, entry)
+            conn.commit()
+        finally:
+            conn.close()
+        os.replace(tmp, self._path)
+        # A missing legacy file here means we lost a rare cross-process race —
+        # harmless, since the DB is already fully in place.
+        with contextlib.suppress(FileNotFoundError):
+            legacy.rename(legacy.with_suffix(".yaml.bak"))
+
+    def _migrate_models_instances_split_if_needed(self) -> None:
+        """RM-51: split a pre-existing single-table registry.db into the new
+        (models, instances) shape, in place.
+
+        Unlike the legacy-YAML migration above (source and destination are
+        different files, so renaming the source to .bak after the swap is
+        safe), source and destination are the SAME file here — so the backup
+        must be taken *before* any destructive step, via a copy (not a
+        rename, which would briefly leave self._path missing for no benefit).
+
+        Crash-safe: a crash before the atomic os.replace() leaves self._path
+        completely untouched (we only ever read from the backup copy) — the
+        next start detects the still-legacy shape and retries from scratch
+        (the backup-exists check below makes the copy step idempotent). A
+        crash after the swap leaves the .pre-rm51.bak file as a permanent
+        recovery snapshot, never deleted — mirrors the .yaml.bak convention.
+        """
+        if not self._path.exists():
+            return  # brand-new file — _SCHEMA_SQL creates the split shape directly
+
+        probe = sqlite3.connect(str(self._path))
+        try:
+            tables = {
+                r[0] for r in probe.execute("SELECT name FROM sqlite_master WHERE type='table'")
+            }
+            if "instances" in tables:
+                return  # already migrated
+            if "models" not in tables:
+                return  # unexpected/empty file — let _SCHEMA_SQL create fresh, don't touch
+            model_cols = {r[1] for r in probe.execute("PRAGMA table_info(models)")}
+            if "port" not in model_cols or "backend" not in model_cols:
+                return  # not the legacy single-table shape — safety no-op
+        finally:
+            probe.close()
+
+        # with_name (append), not with_suffix (replace) — self._path.suffix is
+        # ".db", and with_suffix(".pre-rm51.bak") would silently drop it,
+        # producing "registry.pre-rm51.bak" instead of the intended
+        # "registry.db.pre-rm51.bak".
+        backup = self._path.with_name(self._path.name + ".pre-rm51.bak")
+        if not backup.exists():
+            shutil.copy2(self._path, backup)
+
+        legacy_conn = sqlite3.connect(str(backup))
+        try:
+            _backfill_legacy_columns(legacy_conn)
+            rows = legacy_conn.execute(
+                f"SELECT {', '.join(_LEGACY_COLUMNS)} FROM models ORDER BY rowid"
+            ).fetchall()
+        finally:
+            legacy_conn.close()
+
+        tmp = self._path.with_suffix(".db.tmp")
+        tmp.unlink(missing_ok=True)
+        conn = sqlite3.connect(str(tmp))
+        try:
+            conn.executescript(_SCHEMA_SQL)
+            for row in rows:
+                raw: dict[str, Any] = dict(zip(_LEGACY_COLUMNS, row, strict=True))
+                entry = _entry_from_legacy_row(raw)
+                _insert_split_row(conn, entry)
+            conn.commit()
+        finally:
+            conn.close()
+        os.replace(tmp, self._path)
+
+
+def _backfill_legacy_columns(conn: sqlite3.Connection) -> None:
+    """Backfill RM-52's columns onto a legacy single-table `models` if this
+    is a very old registry.db that pre-dates them — same idempotent
+    PRAGMA-table_info-guarded ALTER TABLE this codebase has used since RM-52,
+    needed here so the RM-51 migration can read even a pre-RM-52 legacy file."""
+    existing = {row[1] for row in conn.execute("PRAGMA table_info(models)")}
+    for name, col_def in _LEGACY_MIGRATION_COLUMNS:
+        if name not in existing:
+            conn.execute(f"ALTER TABLE models ADD COLUMN {name} {col_def}")
+
+
+def _insert_split_row(conn: sqlite3.Connection, entry: RegistryEntry) -> None:
+    """Insert one flat legacy row as a (models, instances) pair sharing the
+    same id — used by both the YAML migration (RM-49) and the same-file
+    single-table migration (RM-51), so every already-registered model's
+    routing/PID-file name is unchanged post-migration."""
+    conn.execute(
+        f"INSERT OR REPLACE INTO models ({', '.join(_MODEL_COLUMNS)}, created_at) "
+        f"VALUES ({', '.join('?' for _ in _MODEL_COLUMNS)}, CURRENT_TIMESTAMP)",
+        _model_row_params(_catalog_entry_from_registry_entry(entry)),
+    )
+    conn.execute(
+        f"INSERT OR REPLACE INTO instances ({', '.join(_INSTANCE_COLUMNS)}, created_at) "
+        f"VALUES ({', '.join('?' for _ in _INSTANCE_COLUMNS)}, CURRENT_TIMESTAMP)",
+        _instance_row_params(entry, model_id=entry.id),
+    )
+
+
+def _catalog_entry_from_registry_entry(entry: RegistryEntry) -> CatalogEntry:
+    return CatalogEntry(
+        id=entry.id,
+        path=entry.path,
+        family=entry.family,
+        quantization=entry.quantization,
+        downloaded=entry.downloaded,
+        hf_repo=entry.hf_repo,
+        hf_sha256=entry.hf_sha256,
+        hf_filenames=entry.hf_filenames,
+        mmproj_path=entry.mmproj_path,
+        vae_path=entry.vae_path,
+        clip_l_path=entry.clip_l_path,
+        t5xxl_path=entry.t5xxl_path,
+    )
+
+
+def _model_row_params(entry: CatalogEntry) -> tuple[Any, ...]:
+    values = {
+        "id": entry.id,
+        "path": entry.path,
+        "family": entry.family,
+        "quantization": entry.quantization,
+        "downloaded": int(entry.downloaded),
+        "hf_repo": entry.hf_repo,
+        "hf_sha256": entry.hf_sha256,
+        "hf_filenames": json.dumps(entry.hf_filenames),
+        "mmproj_path": entry.mmproj_path,
+        "vae_path": entry.vae_path,
+        "clip_l_path": entry.clip_l_path,
+        "t5xxl_path": entry.t5xxl_path,
+    }
+    return tuple(values[c] for c in _MODEL_COLUMNS)
+
+
+def _instance_row_params(entry: RegistryEntry, *, model_id: str) -> tuple[Any, ...]:
+    values = {
+        "id": entry.id,
+        "model_id": model_id,
+        "port": entry.port,
+        "backend": entry.backend,
+        "modality": entry.modality,
+        "context_length": entry.context_length,
+        "discovery": int(entry.discovery),
+        "rss_estimate_mb": entry.rss_estimate_mb,
+        "cfg_scale": entry.cfg_scale,
+    }
+    return tuple(values[c] for c in _INSTANCE_COLUMNS)
+
+
+def _encode_model_values(fields: dict[str, Any]) -> tuple[Any, ...]:
+    def encode(name: str, value: Any) -> Any:
+        if name == "hf_filenames":
+            return json.dumps(value)
+        if name == "downloaded":
+            return int(value)
+        return value
+
+    return tuple(encode(k, v) for k, v in fields.items())
+
+
+def _encode_instance_values(fields: dict[str, Any]) -> tuple[Any, ...]:
+    def encode(name: str, value: Any) -> Any:
+        if name == "discovery":
+            return int(value)
+        return value
+
+    return tuple(encode(k, v) for k, v in fields.items())
+
+
+def _entry_from_legacy_yaml(raw: dict[str, Any]) -> RegistryEntry:
+    """Maps a legacy registry.yaml model dict onto RegistryEntry, folding the
+    old hf_filename/hf_filenames split into the single hf_filenames list and
+    dropping the removed log_level/backend_url fields (see RM-49)."""
+    hf_filenames = raw.get("hf_filenames") or []
+    if not hf_filenames and raw.get("hf_filename"):
+        hf_filenames = [raw["hf_filename"]]
+    return RegistryEntry(
+        id=raw["id"],
+        path=raw.get("path", ""),
+        context_length=raw.get("context_length", 4096),
+        port=raw.get("port", 8080),
+        family=raw.get("family", ""),
+        quantization=raw.get("quantization", ""),
+        backend=raw.get("backend", "llama_cpp"),
+        modality=raw.get("modality", "text"),
+        mmproj_path=raw.get("mmproj_path", ""),
+        downloaded=raw.get("downloaded", False),
+        discovery=raw.get("discovery", False),
+        rss_estimate_mb=raw.get("rss_estimate_mb"),
+        hf_repo=raw.get("hf_repo", ""),
+        hf_sha256=raw.get("hf_sha256", ""),
+        hf_filenames=hf_filenames,
+        vae_path=raw.get("vae_path", ""),
+        clip_l_path=raw.get("clip_l_path", ""),
+        t5xxl_path=raw.get("t5xxl_path", ""),
+        cfg_scale=raw.get("cfg_scale"),
+    )
+
+
+def _entry_from_legacy_row(raw: dict[str, Any]) -> RegistryEntry:
+    """Maps a pre-RM-51 single-table `models` row (read as a plain dict via
+    _LEGACY_COLUMNS) onto RegistryEntry, for the same-file split migration."""
+    return RegistryEntry(
+        id=raw["id"],
+        context_length=raw["context_length"],
+        port=raw["port"],
+        path=raw["path"],
+        family=raw["family"],
+        quantization=raw["quantization"],
+        backend=raw["backend"],
+        modality=raw["modality"],
+        mmproj_path=raw["mmproj_path"],
+        downloaded=bool(raw["downloaded"]),
+        discovery=bool(raw["discovery"]),
+        rss_estimate_mb=raw["rss_estimate_mb"],
+        hf_repo=raw["hf_repo"],
+        hf_sha256=raw["hf_sha256"],
+        hf_filenames=json.loads(raw["hf_filenames"]),
+        vae_path=raw["vae_path"],
+        clip_l_path=raw["clip_l_path"],
+        t5xxl_path=raw["t5xxl_path"],
+        cfg_scale=raw["cfg_scale"],
+    )
 
 
 # ── validators ────────────────────────────────────────────────────────────────
@@ -199,12 +830,22 @@ def _validate_path(path: str, backend: str = "llama_cpp") -> None:
     directly from a HuggingFace repo id (e.g. "mlx-community/..."), which is
     not a filesystem path, so only path-traversal safety is enforced for them.
     """
+    _validate_path_traversal(path)
     if not path:
         return  # path may be empty before download
-    if ".." in Path(path).parts:
-        raise ValueError(f"Path traversal detected in model path: {path!r}")
     if backend == "llama_cpp" and Path(path).resolve().suffix.lower() != ".gguf":
         raise ValueError(f"Model path must point to a .gguf file, got: {path!r}")
+
+
+def _validate_path_traversal(path: str) -> None:
+    """The backend-agnostic half of _validate_path — catalog rows have no
+    `backend` of their own, so add_catalog() uses this directly; add_instance()
+    re-runs the full _validate_path against the catalog's stored path once a
+    backend is chosen."""
+    if not path:
+        return
+    if ".." in Path(path).parts:
+        raise ValueError(f"Path traversal detected in model path: {path!r}")
 
 
 def _validate_port(port: int) -> None:

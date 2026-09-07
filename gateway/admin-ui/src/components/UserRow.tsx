@@ -1,4 +1,4 @@
-import { Pencil, Power, RotateCw, Trash2 } from "lucide-react";
+import { Pencil, Power, Receipt, RotateCw, Trash2 } from "lucide-react";
 import { useState } from "react";
 import {
   useDeactivateUser,
@@ -22,10 +22,12 @@ const MODEL_SCOPE_PREFIX = "model:";
 export function UserRow({
   user,
   onEdit,
+  onBilling,
   onRevealCredential,
 }: {
   user: Principal;
   onEdit: (user: Principal) => void;
+  onBilling: (user: Principal) => void;
   onRevealCredential: (clientId: string, secret: string, label: string) => void;
 }) {
   const { showToast } = useToast();
@@ -122,6 +124,16 @@ export function UserRow({
               className={cn(actionButtonClass, "text-text-muted hover:bg-background")}
             >
               <Pencil size={16} />
+            </button>
+            <button
+              type="button"
+              title="Billing settings"
+              aria-label={`Billing settings for ${user.client_name}`}
+              disabled={isBusy}
+              onClick={() => onBilling(user)}
+              className={cn(actionButtonClass, "text-text-muted hover:bg-background")}
+            >
+              <Receipt size={16} />
             </button>
             <button
               type="button"

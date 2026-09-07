@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 import click
+from prometheus_manager_core.registry import BACKENDS, MODALITIES
 from prometheus_manager_core.telemetry import configure_logging
 
 if TYPE_CHECKING:
@@ -64,6 +65,7 @@ def _registry(config: ManagerConfig) -> Registry:
     "--config",
     "-c",
     envvar="PMGR_CONFIG",
+    show_envvar=True,
     default=None,
     metavar="FILE",
     help="Path to manager.toml (default: manager.toml in cwd or defaults).",
@@ -159,7 +161,8 @@ def cmd_list(ctx: click.Context) -> None:
     for e in entries:
         running_mark = "[green]●[/green]" if e.id in running_aliases else "[dim]○[/dim]"
         dl_mark = "[green]✓[/green]" if e.downloaded else "[yellow]✗[/yellow]"
-        location = e.path if e.path else (f"hf:{e.hf_repo}/{e.hf_filename}" if e.hf_repo else "—")
+        hf_name = e.hf_filenames[0] if e.hf_filenames else ""
+        location = e.path if e.path else (f"hf:{e.hf_repo}/{hf_name}" if e.hf_repo else "—")
         table.add_row(e.id, e.backend, e.modality, str(e.port), dl_mark, running_mark, location)
 
     console.print(table)
@@ -322,7 +325,7 @@ def cmd_restart(ctx: click.Context, model_id: str) -> None:
 @click.option("--id", "model_id", prompt="Model ID", help="Unique model identifier.")
 @click.option(
     "--backend",
-    type=click.Choice(["llama_cpp", "mlx", "vllm", "sglang"]),
+    type=click.Choice(list(BACKENDS)),
     default="llama_cpp",
     prompt="Backend",
     help="Inference engine — see memory/wiki/inference-engines.md (RM-06).",
@@ -339,7 +342,7 @@ def cmd_restart(ctx: click.Context, model_id: str) -> None:
 @click.option("--quantization", default="", prompt="Quantization (e.g. Q4_0, mlx-4bit, awq)")
 @click.option(
     "--modality",
-    type=click.Choice(["text", "embedding", "vision"]),
+    type=click.Choice(list(MODALITIES)),
     default="text",
     help="What this model serves — see memory/wiki/model-registry.md (RM-09).",
 )
@@ -347,6 +350,25 @@ def cmd_restart(ctx: click.Context, model_id: str) -> None:
     "--mmproj-path",
     default="",
     help="Vision projector .gguf file — required for --modality vision on llama_cpp.",
+)
+@click.option(
+    "--vae-path",
+    default="",
+    help="RM-52: standalone VAE file — split-file sd_cpp models (FLUX.1, SD3.5) only. "
+    "Setting this (or --clip-l-path/--t5xxl-path) switches --path to mean "
+    "--diffusion-model instead of a merged -m/--model file.",
+)
+@click.option("--clip-l-path", default="", help="RM-52: clip-l text encoder — sd_cpp only.")
+@click.option("--t5xxl-path", default="", help="RM-52: t5xxl text encoder — sd_cpp only.")
+@click.option(
+    "--cfg-scale",
+    "cfg_scale",
+    type=float,
+    default=None,
+    help="RM-52: sd_cpp guidance scale — sd-server's own default (7.0) is wrong for "
+    "guidance-distilled models (FLUX.1, SD3.5-Turbo, SD-Turbo): use ~1.0 for those, "
+    "confirmed empirically (cfg=7.0 against FLUX.1-dev produced a blown-out solid-"
+    "color image). Leave unset to use sd-server's default.",
 )
 @click.option("--hf-repo", default="", help="HuggingFace repo id.")
 @click.option("--hf-filename", default="", help="Filename within the HF repo.")
@@ -363,6 +385,10 @@ def cmd_register(
     quantization: str,
     modality: str,
     mmproj_path: str,
+    vae_path: str,
+    clip_l_path: str,
+    t5xxl_path: str,
+    cfg_scale: float | None,
     hf_repo: str,
     hf_filename: str,
     hf_sha256: str,
@@ -388,8 +414,12 @@ def cmd_register(
         quantization=quantization,
         modality=modality,
         mmproj_path=mmproj_path,
+        vae_path=vae_path,
+        clip_l_path=clip_l_path,
+        t5xxl_path=t5xxl_path,
+        cfg_scale=cfg_scale,
         hf_repo=hf_repo,
-        hf_filename=hf_filename,
+        hf_filenames=[hf_filename] if hf_filename else [],
         hf_sha256=hf_sha256,
         downloaded=bool(model_path),
     )
@@ -486,7 +516,7 @@ def cmd_download(ctx: click.Context, model_id: str) -> None:
             dest = _dl(
                 model_id=model_id,
                 hf_repo=entry.hf_repo,
-                hf_filename=entry.hf_filename,
+                hf_filename=entry.hf_filenames[0] if entry.hf_filenames else "",
                 dest_dir=cfg.resolved_downloads_dir,
                 hf_token=cfg.hf_token,
                 expected_sha256=entry.hf_sha256 or None,

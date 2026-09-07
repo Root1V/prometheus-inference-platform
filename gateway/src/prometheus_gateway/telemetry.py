@@ -14,6 +14,7 @@ from __future__ import annotations
 import asyncio
 import time
 from collections import deque
+from collections.abc import Sequence
 from typing import Any
 
 # ── Re-export shared observability core ──────────────────────────────────────
@@ -35,6 +36,8 @@ __all__ = [
     "trace_id_from_context",
     "MetricsStore",
     "metrics_store",
+    "ActivityTracker",
+    "activity_tracker",
 ]
 
 
@@ -66,6 +69,32 @@ class MetricsStore:
         self._jwt_failed: int = 0
         # Per-backend counters: {backend_id: {"requests_total": int}}
         self._backends: dict[str, dict[str, Any]] = {}
+        # RM-46: per-backend samples, same sliding-window approach as the
+        # global _latencies deque above. ttft/inter_token are sparse — only
+        # streaming requests report ttft, and only llama.cpp-family backends
+        # report inter_token (from their `timings` object) — so these deques
+        # only grow when a backend actually reports the corresponding value.
+        self._backend_latencies: dict[str, deque[int]] = {}
+        self._backend_ttft: dict[str, deque[int]] = {}
+        self._backend_inter_token: dict[str, deque[float]] = {}
+        # RM-46 follow-up: throughput — confirmed via research as one of the
+        # field's own "core four" metrics (TTFT, inter-token, throughput,
+        # e2e latency) alongside the three above. Populated whenever
+        # completion_tokens > 0, unlike ttft/inter_token which depend on
+        # streaming or a specific backend's `timings` object.
+        self._backend_tps: dict[str, deque[float]] = {}
+        # RM-46 follow-up: images/second — the throughput analog for image-
+        # generation backends, which have no token concept at all (tps stays
+        # unused for them; this is the field embeddings/images each get one
+        # of — tps doubles as "output tok/s" for chat and "input tok/s" for
+        # embeddings, since both are genuinely tokens/second either way).
+        self._backend_ips: dict[str, deque[float]] = {}
+        # RM-62: prefill (prompt-processing) throughput — distinct from
+        # `_backend_tps`, which is decode-phase for chat. llama.cpp-family
+        # backends' `timings` object reports this directly
+        # (`prompt_per_second`); other backends never populate it, same
+        # sparse-population convention as ttft/inter_token above.
+        self._backend_prompt_tps: dict[str, deque[float]] = {}
 
     async def inc_requests_active(self) -> None:
         async with self._lock:
@@ -84,6 +113,11 @@ class MetricsStore:
         latency_ms: int,
         backend_id: str,
         error: bool = False,
+        ttft_ms: int | None = None,
+        inter_token_ms: float | None = None,
+        tokens_per_second: float | None = None,
+        images_per_second: float | None = None,
+        prompt_tokens_per_second: float | None = None,
     ) -> None:
         async with self._lock:
             self._tokens_prompt_total += prompt_tokens
@@ -93,7 +127,24 @@ class MetricsStore:
                 self._errors_total += 1
             if backend_id not in self._backends:
                 self._backends[backend_id] = {"requests_total": 0}
+                self._backend_latencies[backend_id] = deque(maxlen=self._MAX_LATENCY_SAMPLES)
+                self._backend_ttft[backend_id] = deque(maxlen=self._MAX_LATENCY_SAMPLES)
+                self._backend_inter_token[backend_id] = deque(maxlen=self._MAX_LATENCY_SAMPLES)
+                self._backend_tps[backend_id] = deque(maxlen=self._MAX_LATENCY_SAMPLES)
+                self._backend_ips[backend_id] = deque(maxlen=self._MAX_LATENCY_SAMPLES)
+                self._backend_prompt_tps[backend_id] = deque(maxlen=self._MAX_LATENCY_SAMPLES)
             self._backends[backend_id]["requests_total"] += 1
+            self._backend_latencies[backend_id].append(latency_ms)
+            if ttft_ms is not None:
+                self._backend_ttft[backend_id].append(ttft_ms)
+            if inter_token_ms is not None:
+                self._backend_inter_token[backend_id].append(inter_token_ms)
+            if tokens_per_second is not None:
+                self._backend_tps[backend_id].append(tokens_per_second)
+            if images_per_second is not None:
+                self._backend_ips[backend_id].append(images_per_second)
+            if prompt_tokens_per_second is not None:
+                self._backend_prompt_tps[backend_id].append(prompt_tokens_per_second)
 
     async def inc_jwt_ok(self) -> None:
         async with self._lock:
@@ -103,7 +154,7 @@ class MetricsStore:
         async with self._lock:
             self._jwt_failed += 1
 
-    def _percentile(self, samples: list[int], pct: float) -> int:
+    def _percentile(self, samples: Sequence[float], pct: float) -> float:
         if not samples:
             return 0
         sorted_samples = sorted(samples)
@@ -119,6 +170,12 @@ class MetricsStore:
         async with self._lock:
             latencies = list(self._latencies)
             backends_copy = dict(self._backends)
+            backend_latencies_copy = {k: list(v) for k, v in self._backend_latencies.items()}
+            backend_ttft_copy = {k: list(v) for k, v in self._backend_ttft.items()}
+            backend_inter_token_copy = {k: list(v) for k, v in self._backend_inter_token.items()}
+            backend_tps_copy = {k: list(v) for k, v in self._backend_tps.items()}
+            backend_ips_copy = {k: list(v) for k, v in self._backend_ips.items()}
+            backend_prompt_tps_copy = {k: list(v) for k, v in self._backend_prompt_tps.items()}
 
         uptime = int(time.monotonic() - self._start_time)
         inference: dict[str, Any] = {
@@ -136,6 +193,41 @@ class MetricsStore:
         backends_out: dict[str, Any] = {}
         for bid, counters in backends_copy.items():
             entry: dict[str, Any] = dict(counters)
+            # RM-46: per-model performance metrics — latency mirrors the global
+            # p50/p95/p99 above but scoped to this backend; ttft/inter_token
+            # only populate once a request has actually reported them (ttft
+            # needs streaming, inter_token needs a llama.cpp-family backend's
+            # `timings` object), hence the None default rather than 0 — a
+            # backend with no samples yet shouldn't look like a real 0ms.
+            backend_latency_samples = backend_latencies_copy.get(bid, [])
+            entry["latency_p50_ms"] = self._percentile(backend_latency_samples, 50)
+            entry["latency_p95_ms"] = self._percentile(backend_latency_samples, 95)
+            ttft_samples = backend_ttft_copy.get(bid, [])
+            entry["ttft_p50_ms"] = self._percentile(ttft_samples, 50) if ttft_samples else None
+            inter_token_samples = backend_inter_token_copy.get(bid, [])
+            entry["inter_token_ms_avg"] = (
+                round(sum(inter_token_samples) / len(inter_token_samples), 2)
+                if inter_token_samples
+                else None
+            )
+            tps_samples = backend_tps_copy.get(bid, [])
+            entry["tokens_per_second_avg"] = (
+                round(sum(tps_samples) / len(tps_samples), 2) if tps_samples else None
+            )
+            # RM-46 follow-up: images/second — the throughput analog for
+            # image-generation backends (no token concept applies to them).
+            ips_samples = backend_ips_copy.get(bid, [])
+            entry["images_per_second_avg"] = (
+                round(sum(ips_samples) / len(ips_samples), 3) if ips_samples else None
+            )
+            # RM-62: prefill throughput — separate from tokens_per_second_avg
+            # (decode-phase for chat), sparse (llama.cpp-family backends only).
+            prompt_tps_samples = backend_prompt_tps_copy.get(bid, [])
+            entry["prompt_tokens_per_second_avg"] = (
+                round(sum(prompt_tps_samples) / len(prompt_tps_samples), 2)
+                if prompt_tps_samples
+                else None
+            )
             if pool is not None:
                 cb = pool.get_circuit_breaker(bid)
                 if cb is not None:
@@ -162,3 +254,54 @@ class MetricsStore:
 
 # Module-level singleton — injected into the FastAPI app at startup
 metrics_store = MetricsStore()
+
+
+# ── In-process ActivityTracker — docs/roadmap.md RM-23 ───────────────────────
+
+
+class ActivityTracker:
+    """Last-seen-based "who's active right now" approximation.
+
+    Not a real session registry — JWTs are stateless, there's no server-side
+    session object to track. This just records the most recent request per
+    client_id and reports anything seen within the last 15 minutes. Same
+    single-process in-memory pattern as MetricsStore.
+    """
+
+    _STALE_AFTER_S = 15 * 60
+
+    def __init__(self) -> None:
+        self._lock = asyncio.Lock()
+        self._entries: dict[str, dict[str, Any]] = {}
+
+    async def touch(self, client_id: str, user_id: str, connection_type: str) -> None:
+        async with self._lock:
+            self._entries[client_id] = {
+                "client_id": client_id,
+                "user_id": user_id,
+                "connection_type": connection_type,
+                "last_seen": time.time(),
+            }
+
+    async def snapshot(self) -> list[dict[str, Any]]:
+        """Active entries (seen in the last 15 min), most recent first.
+
+        Prunes anything older than that while it's already got the lock.
+        """
+        now = time.time()
+        async with self._lock:
+            stale_ids = [
+                cid
+                for cid, e in self._entries.items()
+                if now - e["last_seen"] > self._STALE_AFTER_S
+            ]
+            for cid in stale_ids:
+                del self._entries[cid]
+            active = [
+                {**e, "last_seen_ago_s": int(now - e["last_seen"])} for e in self._entries.values()
+            ]
+        active.sort(key=lambda e: e["last_seen_ago_s"])
+        return active
+
+
+activity_tracker = ActivityTracker()

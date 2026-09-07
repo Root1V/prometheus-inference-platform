@@ -15,6 +15,7 @@ from prometheus_manager_core.lifecycle import (
     LifecycleError,
     _build_llama_cpp_cmd,
     _build_mlx_cmd,
+    _build_sd_cpp_cmd,
     _build_sglang_cmd,
     _build_vllm_cmd,
     _verify_pid_file,
@@ -115,6 +116,81 @@ class TestBackendCommandBuilders:
         assert "--embedding" not in _build_vllm_cmd("vllm", entry, 9090, "127.0.0.1")
         assert "--embedding" not in _build_sglang_cmd("python3", entry, 9090, "127.0.0.1")
 
+    def test_sd_cpp_cmd_uses_listen_ip_and_listen_port_flags(self):
+        """sd-server (verified via --help) uses --listen-ip/--listen-port, not --host/--port."""
+        cmd = _build_sd_cpp_cmd("sd-server", self._entry(), 9090, "127.0.0.1")
+        assert cmd == [
+            "sd-server",
+            "--model",
+            "/models/test-model",
+            "--listen-ip",
+            "127.0.0.1",
+            "--listen-port",
+            "9090",
+        ]
+        assert "--alias" not in cmd
+        assert "--ctx-size" not in cmd
+
+    def test_sd_cpp_cmd_uses_diffusion_model_when_split_files_given(self):
+        """RM-52: FLUX.1-class split models switch --model -> --diffusion-model
+        and add --vae/--clip_l/--t5xxl for whichever companion paths are set."""
+        entry = self._entry(
+            vae_path="/models/ae.safetensors",
+            clip_l_path="/models/clip_l.safetensors",
+            t5xxl_path="/models/t5xxl.safetensors",
+        )
+        cmd = _build_sd_cpp_cmd("sd-server", entry, 9090, "127.0.0.1")
+        assert cmd == [
+            "sd-server",
+            "--diffusion-model",
+            "/models/test-model",
+            "--vae",
+            "/models/ae.safetensors",
+            "--clip_l",
+            "/models/clip_l.safetensors",
+            "--t5xxl",
+            "/models/t5xxl.safetensors",
+            "--listen-ip",
+            "127.0.0.1",
+            "--listen-port",
+            "9090",
+        ]
+        assert "--model" not in cmd
+
+    def test_sd_cpp_cmd_adds_cfg_scale_flag_when_set(self):
+        """RM-52: sd-server's own --cfg-scale default (7.0) is wrong for
+        guidance-distilled models like FLUX.1 — confirmed empirically (7.0
+        produced a blown-out solid-color image, 1.0 a real one)."""
+        entry = self._entry(cfg_scale=1.0)
+        cmd = _build_sd_cpp_cmd("sd-server", entry, 9090, "127.0.0.1")
+        assert "--cfg-scale" in cmd
+        assert cmd[cmd.index("--cfg-scale") + 1] == "1.0"
+
+    def test_sd_cpp_cmd_omits_cfg_scale_flag_by_default(self):
+        """None (the default) leaves sd-server's own default in place —
+        doesn't change existing single-file registrations like SD-Turbo."""
+        cmd = _build_sd_cpp_cmd("sd-server", self._entry(), 9090, "127.0.0.1")
+        assert "--cfg-scale" not in cmd
+
+    def test_sd_cpp_cmd_split_mode_omits_unset_companion_flags(self):
+        """Only vae_path set (no clip_l/t5xxl) — e.g. an SD3.5-style split without
+        a separate clip_l file — must not emit empty --clip_l/--t5xxl flags."""
+        entry = self._entry(vae_path="/models/ae.safetensors")
+        cmd = _build_sd_cpp_cmd("sd-server", entry, 9090, "127.0.0.1")
+        assert cmd == [
+            "sd-server",
+            "--diffusion-model",
+            "/models/test-model",
+            "--vae",
+            "/models/ae.safetensors",
+            "--listen-ip",
+            "127.0.0.1",
+            "--listen-port",
+            "9090",
+        ]
+        assert "--clip_l" not in cmd
+        assert "--t5xxl" not in cmd
+
     def test_start_instance_dispatches_on_backend(self, default_config, populated_registry):
         """start_instance picks the command builder matching entry.backend."""
         populated_registry.update("test-model", backend="mlx", path="mlx-community/model-4bit")
@@ -138,6 +214,32 @@ class TestBackendCommandBuilders:
             cmd = mock_popen.call_args[0][0]
             assert cmd[0] == "mlx_lm.server"
             assert "mlx-community/model-4bit" in cmd
+
+    def test_start_instance_dispatches_on_sd_cpp_backend(self, default_config, populated_registry):
+        """sd_cpp uses its own command builder, same dispatch path as every other backend."""
+        populated_registry.update(
+            "test-model", backend="sd_cpp", path="/models/sd_turbo.gguf", modality="image"
+        )
+        mock_state = MagicMock(pid=42, port=9090, alias="test-model", model_id="test-model")
+
+        with (
+            patch("prometheus_manager_core.lifecycle._find_running", return_value=None),
+            patch("prometheus_manager_core.lifecycle._find_free_port", return_value=9090),
+            patch("prometheus_manager_core.lifecycle.subprocess.Popen") as mock_popen,
+            patch("prometheus_manager_core.lifecycle.httpx.get") as mock_get,
+            patch("prometheus_manager_core.lifecycle.scan", return_value=[mock_state]),
+        ):
+            mock_proc = MagicMock()
+            mock_proc.pid = 42
+            mock_proc.poll.return_value = None
+            mock_popen.return_value = mock_proc
+            mock_get.return_value = MagicMock(status_code=200)
+
+            start_instance("test-model", default_config, populated_registry)
+
+            cmd = mock_popen.call_args[0][0]
+            assert cmd[0] == "sd-server"
+            assert "/models/sd_turbo.gguf" in cmd
 
     def test_start_instance_rejects_unknown_backend(self, default_config, populated_registry):
         populated_registry.update("test-model", backend="does-not-exist")
@@ -513,6 +615,58 @@ class TestACDeregister:
 
         mock_stop.assert_called_once()
         assert populated_registry.get("test-model") is None
+
+
+# ── RM-51: deregister_model — cascade delete for a catalog entry ───────────────
+
+
+class TestDeregisterModel:
+    """RM-51: deregister_model stops+removes every instance of a catalog
+    entry, then removes the catalog entry itself — the cascade counterpart
+    to deregister_instance() used by the Models/Library page's "delete
+    downloaded file" action."""
+
+    def test_deregister_model_stops_and_removes_all_instances(
+        self, default_config, populated_registry
+    ):
+        from prometheus_manager_core.lifecycle import deregister_model
+
+        populated_registry.add_instance("test-model-2", "test-model", port=9091)
+
+        with patch("prometheus_manager_core.lifecycle.stop_instance") as mock_stop:
+            deregister_model("test-model", default_config, populated_registry)
+
+        assert mock_stop.call_count == 2
+        assert populated_registry.get("test-model") is None
+        assert populated_registry.get("test-model-2") is None
+        assert populated_registry.get_catalog("test-model") is None
+
+    def test_deregister_model_leaves_other_catalogs_untouched(
+        self, default_config, populated_registry
+    ):
+        from prometheus_manager_core.lifecycle import deregister_model
+        from prometheus_manager_core.registry import CatalogEntry
+
+        populated_registry.add_catalog(CatalogEntry(id="other-model"))
+        populated_registry.add_instance("other-instance", "other-model", port=9092)
+
+        with patch("prometheus_manager_core.lifecycle.stop_instance"):
+            deregister_model("test-model", default_config, populated_registry)
+
+        assert populated_registry.get_catalog("test-model") is None
+        assert populated_registry.get_catalog("other-model") is not None
+        assert populated_registry.get("other-instance") is not None
+
+    def test_deregister_model_with_zero_instances(self, default_config, empty_registry):
+        """A downloaded-but-never-instantiated catalog entry can still be
+        removed via the cascade path — deregister_model must not require at
+        least one instance to exist."""
+        from prometheus_manager_core.lifecycle import deregister_model
+        from prometheus_manager_core.registry import CatalogEntry
+
+        empty_registry.add_catalog(CatalogEntry(id="never-started"))
+        deregister_model("never-started", default_config, empty_registry)
+        assert empty_registry.get_catalog("never-started") is None
 
 
 # ── PID integrity (security)───────────────────────────────────────────────────

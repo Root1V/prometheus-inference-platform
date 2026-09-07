@@ -8,6 +8,9 @@ Implements: memory/specs/018-observability-telemetry.md — AC-8, AC-10, AC-23, 
 
 from __future__ import annotations
 
+import asyncio
+import csv
+import io
 import json
 import time
 from datetime import date as _date
@@ -16,12 +19,19 @@ from typing import TYPE_CHECKING, Any
 
 import httpx
 import structlog
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, Request, Response
 from fastapi.responses import JSONResponse, StreamingResponse
 
 from . import db, pricing
+from .budget import (
+    BudgetReservation,
+    BudgetTracker,
+    get_client_billing_settings_cached,
+    parse_thresholds,
+)
 from .models.registry import ModelRegistry
-from .models.schemas import ChatCompletionRequest, EmbeddingsRequest
+from .models.schemas import ChatCompletionRequest, EmbeddingsRequest, ImageGenerationRequest
+from .notifications import send_budget_alert_email
 from .telemetry import get_logger, get_tracer, metrics_store
 
 if TYPE_CHECKING:
@@ -37,6 +47,8 @@ _CHARS_PER_TOKEN = 4
 # vision content parts). Matches common VLM low/mid-resolution tile estimates —
 # not exact, just enough to keep the existing context-exceeded guard meaningful.
 _IMAGE_TOKEN_ESTIMATE = 512
+# RM-60: cap a single CSV export to ~1 year of usage_events at a time.
+_MAX_EXPORT_RANGE_DAYS = 366
 
 
 def _problem(
@@ -82,7 +94,8 @@ def _estimate_tokens(messages: list[dict[str, Any]]) -> int:
     """
     total_tokens = 0
     for m in messages:
-        content = m.get("content", "")
+        # RM-35: an assistant message that only calls a tool has content: None.
+        content = m.get("content") or ""
         if isinstance(content, list):
             for part in content:
                 if not isinstance(part, dict):
@@ -94,16 +107,6 @@ def _estimate_tokens(messages: list[dict[str, Any]]) -> int:
         else:
             total_tokens += len(str(content)) // _CHARS_PER_TOKEN
     return max(1, total_tokens)
-
-
-def _sanitise_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Strip all system-role messages from client-controlled input.
-
-    Implements: memory/specs/001-gateway-core.md — AC-6
-    The gateway itself does not inject system messages in this spec.
-    Any system message from the client payload is treated as an injection attempt.
-    """
-    return [msg for msg in messages if msg.get("role") != "system"]
 
 
 def create_router(registry: ModelRegistry, pool: "BackendPool") -> APIRouter:
@@ -137,6 +140,54 @@ def create_router(registry: ModelRegistry, pool: "BackendPool") -> APIRouter:
                         "modality": m.modality,
                     }
                     for m in models
+                ],
+            }
+
+    # ── GET /v1/models/mine ──────────────────────────────────────────────────
+    # RM-45: unlike GET /v1/models above (public, lists the full catalog),
+    # this requires a valid Bearer token and returns only the models the
+    # caller's own model:<id> scopes grant — model access can be assigned or
+    # changed after a client is created, so a client may want to check what
+    # it currently has before making an inference request.
+    @router.get("/v1/models/mine")
+    async def list_my_models(request: Request) -> Any:
+        """List only the models the caller's JWT authorizes it to use."""
+        from opentelemetry.trace import SpanKind
+
+        claims = getattr(getattr(request, "state", None), "claims", None)
+        if claims is None:
+            return _problem(
+                request,
+                401,
+                "missing-credentials",
+                "Unauthorized",
+                "This endpoint requires a valid Bearer token.",
+            )
+
+        with _tracer.start_as_current_span("models.list_mine", kind=SpanKind.INTERNAL) as span:
+            # RM-14: same admin:write carve-out used for the Playground's own
+            # inference calls — admin:write already implies full model
+            # management, so seeing every model here isn't a new privilege.
+            is_admin_bypass = claims.has_scope("admin:write")
+            authorized = [
+                m
+                for m in registry.list_active_models()
+                if is_admin_bypass or claims.has_model_scope(m.id)
+            ]
+            span.set_attribute("model_count", len(authorized))
+            return {
+                "object": "list",
+                "data": [
+                    {
+                        "id": m.id,
+                        "object": "model",
+                        "owned_by": "prometheus",
+                        "context_length": m.context_length,
+                        "family": m.family,
+                        "quantization": m.quantization,
+                        "modality": m.modality,
+                    }
+                    for m in authorized
                 ],
             }
 
@@ -278,7 +329,10 @@ def create_router(registry: ModelRegistry, pool: "BackendPool") -> APIRouter:
                     "Unable to read usage data from the store.",
                 )
 
-            price_table = pricing.get_pricing_table()
+            def _accumulate(entry: dict[str, Any], key: str, value: float | None) -> None:
+                if value is not None:
+                    entry[key] = (entry[key] or 0.0) + value
+
             by_client: dict[str, dict[str, Any]] = {}
             for row in rows:
                 entry = by_client.setdefault(
@@ -290,6 +344,12 @@ def create_router(registry: ModelRegistry, pool: "BackendPool") -> APIRouter:
                         "total_tokens": 0,
                         "request_count": 0,
                         "estimated_cost_usd": None,
+                        # RM-60 follow-up: cost broken into what's paid for
+                        # input tokens vs. inference (completion) tokens vs.
+                        # images, alongside the existing combined total.
+                        "prompt_cost_usd": None,
+                        "completion_cost_usd": None,
+                        "image_cost_usd": None,
                         "by_model": [],
                     },
                 )
@@ -297,11 +357,14 @@ def create_router(registry: ModelRegistry, pool: "BackendPool") -> APIRouter:
                 entry["completion_tokens"] += row.completion_tokens
                 entry["total_tokens"] += row.prompt_tokens + row.completion_tokens
                 entry["request_count"] += row.request_count
-                model_cost = price_table.estimate_cost_usd(
-                    row.model_id, row.prompt_tokens, row.completion_tokens
-                )
-                if model_cost is not None:
-                    entry["estimated_cost_usd"] = (entry["estimated_cost_usd"] or 0.0) + model_cost
+                # RM-60: read the cost stored at write time — never recompute
+                # against the *current* pricing table, or a price change +
+                # restart would silently re-price every past day.
+                model_cost = row.cost_usd
+                _accumulate(entry, "estimated_cost_usd", model_cost)
+                _accumulate(entry, "prompt_cost_usd", row.prompt_cost_usd)
+                _accumulate(entry, "completion_cost_usd", row.completion_cost_usd)
+                _accumulate(entry, "image_cost_usd", row.image_cost_usd)
                 entry["by_model"].append(
                     {
                         "model_id": row.model_id,
@@ -310,6 +373,9 @@ def create_router(registry: ModelRegistry, pool: "BackendPool") -> APIRouter:
                         "total_tokens": row.prompt_tokens + row.completion_tokens,
                         "request_count": row.request_count,
                         "estimated_cost_usd": model_cost,
+                        "prompt_cost_usd": row.prompt_cost_usd,
+                        "completion_cost_usd": row.completion_cost_usd,
+                        "image_cost_usd": row.image_cost_usd,
                     }
                 )
 
@@ -319,6 +385,134 @@ def create_router(registry: ModelRegistry, pool: "BackendPool") -> APIRouter:
                 "window": target_day.isoformat(),
                 "data": list(by_client.values()),
             }
+
+    # ── GET /v1/usage/export ─────────────────────────────────────────────────
+    # Implements: docs/roadmap.md — RM-60 (CSV export over an arbitrary date range)
+    @router.get("/v1/usage/export")
+    async def export_usage(
+        request: Request, start: str, end: str, client_id: str | None = None
+    ) -> Any:
+        """CSV export of raw usage_events over [start, end] (inclusive UTC days).
+
+        One row per request (not pre-aggregated) so a client can verify the
+        exact rate applied to each request, plus a final TOTAL reconciliation
+        row. Requires admin:read scope.
+        """
+        claims = getattr(getattr(request, "state", None), "claims", None)
+        if claims is None or not claims.has_scope("admin:read"):
+            return _problem(
+                request, 403, "forbidden", "Forbidden", "This endpoint requires admin:read scope."
+            )
+
+        try:
+            start_day = _date.fromisoformat(start)
+            end_day = _date.fromisoformat(end)
+        except ValueError:
+            return _problem(
+                request,
+                400,
+                "invalid-date",
+                "Invalid Date",
+                "start/end must be valid YYYY-MM-DD dates.",
+            )
+        if end_day < start_day:
+            return _problem(
+                request, 400, "invalid-range", "Invalid Range", "end must not be before start."
+            )
+        if (end_day - start_day).days > _MAX_EXPORT_RANGE_DAYS:
+            return _problem(
+                request,
+                400,
+                "range-too-large",
+                "Range Too Large",
+                f"Date range exceeds the {_MAX_EXPORT_RANGE_DAYS}-day maximum for a single export.",
+            )
+
+        try:
+            events = await db.query_usage_events_range(start_day, end_day, client_id)
+        except Exception as exc:
+            logger.error("usage.export_db_error", error=str(exc))
+            return _problem(
+                request,
+                503,
+                "usage-store-unavailable",
+                "Usage Store Unavailable",
+                "Unable to read usage data from the store.",
+            )
+
+        generated_at = datetime.now(tz=timezone.utc).isoformat()
+        buf = io.StringIO()
+        writer = csv.writer(buf)
+        writer.writerow(
+            [
+                "generated_at",
+                "period_start",
+                "period_end",
+                "client_id",
+                "recorded_at",
+                "model_id",
+                "request_kind",
+                "prompt_tokens",
+                "completion_tokens",
+                "image_count",
+                "prompt_price_per_1m",
+                "completion_price_per_1m",
+                "image_price_each",
+                "cost_usd",
+            ]
+        )
+        total_prompt = total_completion = total_images = 0
+        total_cost = 0.0
+        any_cost = False
+        for ev in events:
+            writer.writerow(
+                [
+                    generated_at,
+                    start_day.isoformat(),
+                    end_day.isoformat(),
+                    ev.client_id,
+                    ev.recorded_at.isoformat(),
+                    ev.model_id,
+                    ev.request_kind,
+                    ev.prompt_tokens,
+                    ev.completion_tokens,
+                    ev.image_count,
+                    ev.prompt_price_per_1m,
+                    ev.completion_price_per_1m,
+                    ev.image_price_each,
+                    f"{ev.cost_usd:.6f}" if ev.cost_usd is not None else "",
+                ]
+            )
+            total_prompt += ev.prompt_tokens
+            total_completion += ev.completion_tokens
+            total_images += ev.image_count
+            if ev.cost_usd is not None:
+                total_cost += ev.cost_usd
+                any_cost = True
+        writer.writerow(
+            [
+                generated_at,
+                start_day.isoformat(),
+                end_day.isoformat(),
+                client_id or "ALL",
+                "",
+                "TOTAL",
+                "",
+                total_prompt,
+                total_completion,
+                total_images,
+                "",
+                "",
+                "",
+                f"{total_cost:.6f}" if any_cost else "",
+            ]
+        )
+        filename = f"usage-{start_day.isoformat()}-to-{end_day.isoformat()}.csv"
+        return Response(
+            content=buf.getvalue(),
+            media_type="text/csv",
+            headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+        )
 
     # ── POST /v1/chat/completions ────────────────────────────────────────────
     @router.post("/v1/chat/completions")
@@ -363,8 +557,16 @@ def create_router(registry: ModelRegistry, pool: "BackendPool") -> APIRouter:
             # RM-07: inference:read/inference:stream were documented scopes but never
             # actually enforced here — any valid JWT could call any model.
             # See memory/wiki/auth-model.md.
+            # RM-14: admin:write holders (the admin dashboard's own session, used by
+            # the model playground) bypass both scope checks below — admin:write
+            # already implies full model management control (admin:models), so
+            # letting it also invoke any model for testing isn't a new privilege,
+            # just an explicit, narrow carve-out. Everything else about the request
+            # (usage/cost recording, rate limiting, circuit breaker) still applies
+            # exactly as for a real client — this is the real endpoint, not a proxy.
+            is_admin_bypass = claims is not None and claims.has_scope("admin:write")
             required_scope = "inference:stream" if body.stream else "inference:read"
-            if claims is None or not claims.has_scope(required_scope):
+            if claims is None or not (claims.has_scope(required_scope) or is_admin_bypass):
                 inf_span.set_attribute("http.status_code", 403)
                 return _problem(
                     request,
@@ -376,7 +578,7 @@ def create_router(registry: ModelRegistry, pool: "BackendPool") -> APIRouter:
 
             # RM-07: per-model grant, deny-by-default — a client with no model:*
             # scope at all has no model access, even with inference:read/stream.
-            if not claims.has_model_scope(body.model):
+            if not (claims.has_model_scope(body.model) or is_admin_bypass):
                 inf_span.set_attribute("http.status_code", 403)
                 return _problem(
                     request,
@@ -486,11 +688,61 @@ def create_router(registry: ModelRegistry, pool: "BackendPool") -> APIRouter:
                         "circuit_breaker.check_error", backend_id=entry.id, error=str(exc)
                     )
 
-            # AC-6 (001): sanitise messages (strip injected system messages)
-            sanitised = _sanitise_messages(raw_messages)
+            # RM-60: hard spend-cap reserve, before forwarding. Completion-token
+            # cost isn't known until generation finishes, so this reserves a
+            # conservative worst-case estimate (max_tokens, or the remaining
+            # context budget) and settles with the real cost once the response
+            # completes (non-streaming: below; streaming: _stream_response()).
+            budget_redis = getattr(pool, "_redis", None)
+            reservation: BudgetReservation | None = None
+            alert_thresholds_percent: list[int] = []
+            if claims is not None and budget_redis is not None:
+                billing_settings = await get_client_billing_settings_cached(claims.client_id)
+                cap_usd = billing_settings.monthly_spend_cap_usd if billing_settings else None
+                if cap_usd is not None:
+                    app_settings = getattr(getattr(request.app, "state", None), "settings", None)
+                    default_thresholds = getattr(
+                        app_settings, "budget_alert_thresholds_percent_default", "50,80,100"
+                    )
+                    alert_thresholds_percent = parse_thresholds(
+                        billing_settings.alert_thresholds_percent if billing_settings else None,
+                        default_thresholds,
+                    )
+                    worst_case_completion = (
+                        body.max_tokens
+                        if body.max_tokens is not None
+                        else max(0, entry.context_length - estimated_input_tokens)
+                    )
+                    est_cost = pricing.get_pricing_table().estimate_cost_usd(
+                        entry.id, estimated_input_tokens, worst_case_completion
+                    )
+                    if est_cost is not None:
+                        reservation = await BudgetTracker(budget_redis).reserve(
+                            claims.client_id,
+                            est_cost,
+                            cap_usd=cap_usd,
+                            alert_thresholds_percent=alert_thresholds_percent,
+                        )
+                        await _dispatch_threshold_alerts(
+                            request,
+                            claims.client_id,
+                            cap_usd,
+                            reservation.total_spend_usd,
+                            reservation.crossed_thresholds,
+                        )
+                        if not reservation.allowed:
+                            inf_span.set_attribute("http.status_code", 402)
+                            return _problem(
+                                request,
+                                402,
+                                "spend-cap-exceeded",
+                                "Spend Cap Exceeded",
+                                f"Client '{claims.client_id}' has reached its monthly spend cap "
+                                f"of ${cap_usd:.2f}. Current spend: ${reservation.total_spend_usd:.2f}. "
+                                "Contact the platform operator to raise the cap.",
+                            )
 
             payload = body.to_llama_payload()
-            payload["messages"] = sanitised
 
             target_url = f"{entry.backend_url.rstrip('/')}/v1/chat/completions"
 
@@ -514,7 +766,16 @@ def create_router(registry: ModelRegistry, pool: "BackendPool") -> APIRouter:
                 if body.stream:
                     # AC-7 (006): SSE streaming — retry NOT applied (AC-17c)
                     return await _stream_response(
-                        request, client, target_url, payload, pool, entry.id, trace_id
+                        request,
+                        client,
+                        target_url,
+                        payload,
+                        pool,
+                        entry.id,
+                        trace_id,
+                        budget_redis=budget_redis,
+                        reservation=reservation,
+                        alert_thresholds_percent=alert_thresholds_percent,
                     )
                 else:
                     await metrics_store.inc_requests_active()
@@ -534,11 +795,31 @@ def create_router(registry: ModelRegistry, pool: "BackendPool") -> APIRouter:
                         await metrics_store.dec_requests_active()
 
                     usage_obj: dict[str, Any] = {}
+                    # RM-46: llama.cpp-family backends include a `timings` object
+                    # (confirmed live: predicted_per_token_ms is the real average
+                    # inter-token latency for this request) — mlx/vllm/sglang
+                    # don't, hence the None default rather than assuming it exists.
+                    inter_token_ms: float | None = None
+                    # RM-62: prefill (prompt-processing) throughput — the same
+                    # `timings` object already reports this directly as
+                    # `prompt_per_second`; fall back to prompt_n/prompt_ms if a
+                    # backend only reports the raw pair.
+                    prompt_tps: float | None = None
                     try:
                         resp_body: Any = resp.json()
                         usage_obj = (
                             resp_body.get("usage", {}) if isinstance(resp_body, dict) else {}
                         )
+                        timings_obj = (
+                            resp_body.get("timings", {}) if isinstance(resp_body, dict) else {}
+                        )
+                        inter_token_ms = timings_obj.get("predicted_per_token_ms")
+                        prompt_tps = timings_obj.get("prompt_per_second")
+                        if prompt_tps is None:
+                            prompt_ms = timings_obj.get("prompt_ms")
+                            prompt_n = timings_obj.get("prompt_n")
+                            if prompt_ms and prompt_n:
+                                prompt_tps = prompt_n / (prompt_ms / 1000)
                     except Exception:
                         resp_body = {}
 
@@ -581,7 +862,9 @@ def create_router(registry: ModelRegistry, pool: "BackendPool") -> APIRouter:
                     if settings is not None and getattr(
                         settings, "log_include_prompt_summary", False
                     ):
-                        first_user = next((m for m in sanitised if m.get("role") == "user"), None)
+                        first_user = next(
+                            (m for m in raw_messages if m.get("role") == "user"), None
+                        )
                         if first_user:
                             log_fields["input"] = str(first_user.get("content", ""))[:200]
                         try:
@@ -598,10 +881,36 @@ def create_router(registry: ModelRegistry, pool: "BackendPool") -> APIRouter:
                         completion_tokens=completion_tokens,
                         latency_ms=backend_latency_ms,
                         backend_id=entry.id,
+                        inter_token_ms=inter_token_ms,
+                        tokens_per_second=round(tps, 2) if completion_tokens > 0 else None,
+                        prompt_tokens_per_second=(
+                            round(prompt_tps, 2) if prompt_tps is not None else None
+                        ),
                     )
 
                     # RM-32: record persisted daily usage
                     await _record_usage(claims, entry.id, prompt_tokens, completion_tokens)
+
+                    # RM-60: settle the spend-cap reservation with the real cost
+                    if reservation is not None and reservation.allowed and budget_redis is not None:
+                        actual_cost = pricing.get_pricing_table().estimate_cost_usd(
+                            entry.id, prompt_tokens, completion_tokens
+                        )
+                        if actual_cost is not None:
+                            newly_crossed = await BudgetTracker(budget_redis).settle(
+                                claims.client_id,
+                                reservation.reserved_usd,
+                                actual_cost,
+                                cap_usd=reservation.cap_usd,
+                                alert_thresholds_percent=alert_thresholds_percent,
+                            )
+                            await _dispatch_threshold_alerts(
+                                request,
+                                claims.client_id,
+                                reservation.cap_usd,
+                                reservation.total_spend_usd,
+                                newly_crossed,
+                            )
 
                     # Increment TPM counter with actual token usage
                     rl_redis = getattr(pool, "_redis", None)
@@ -706,7 +1015,11 @@ def create_router(registry: ModelRegistry, pool: "BackendPool") -> APIRouter:
                 f"Use GET /v1/models to find an embedding-capable model.",
             )
 
-        if claims is None or not claims.has_scope("inference:read"):
+        # RM-37: same admin:write carve-out as /v1/chat/completions (RM-14) — the
+        # Playground's own embeddings calls run under the admin dashboard's
+        # session, which has no inference:read/model:<id> grants of its own.
+        is_admin_bypass = claims is not None and claims.has_scope("admin:write")
+        if claims is None or not (claims.has_scope("inference:read") or is_admin_bypass):
             return _problem(
                 request,
                 403,
@@ -715,7 +1028,7 @@ def create_router(registry: ModelRegistry, pool: "BackendPool") -> APIRouter:
                 "This endpoint requires inference:read scope.",
             )
 
-        if not claims.has_model_scope(body.model):
+        if not (claims.has_model_scope(body.model) or is_admin_bypass):
             return _problem(
                 request,
                 403,
@@ -752,6 +1065,53 @@ def create_router(registry: ModelRegistry, pool: "BackendPool") -> APIRouter:
             except Exception as exc:
                 logger.warning("circuit_breaker.check_error", backend_id=entry.id, error=str(exc))
 
+        # RM-60: hard spend-cap reserve, before forwarding — mirrors chat
+        # completions' hook below. Worst-case estimate priced as prompt-only
+        # (embeddings have no completion tokens).
+        budget_redis = getattr(pool, "_redis", None)
+        reservation: BudgetReservation | None = None
+        alert_thresholds_percent: list[int] = []
+        if claims is not None and budget_redis is not None:
+            billing_settings = await get_client_billing_settings_cached(claims.client_id)
+            cap_usd = billing_settings.monthly_spend_cap_usd if billing_settings else None
+            if cap_usd is not None:
+                settings = getattr(getattr(request.app, "state", None), "settings", None)
+                default_thresholds = getattr(
+                    settings, "budget_alert_thresholds_percent_default", "50,80,100"
+                )
+                alert_thresholds_percent = parse_thresholds(
+                    billing_settings.alert_thresholds_percent if billing_settings else None,
+                    default_thresholds,
+                )
+                estimated_tokens = _estimate_text_tokens(body.input)
+                est_cost = pricing.get_pricing_table().estimate_cost_usd(
+                    entry.id, estimated_tokens, 0
+                )
+                if est_cost is not None:
+                    reservation = await BudgetTracker(budget_redis).reserve(
+                        claims.client_id,
+                        est_cost,
+                        cap_usd=cap_usd,
+                        alert_thresholds_percent=alert_thresholds_percent,
+                    )
+                    await _dispatch_threshold_alerts(
+                        request,
+                        claims.client_id,
+                        cap_usd,
+                        reservation.total_spend_usd,
+                        reservation.crossed_thresholds,
+                    )
+                    if not reservation.allowed:
+                        return _problem(
+                            request,
+                            402,
+                            "spend-cap-exceeded",
+                            "Spend Cap Exceeded",
+                            f"Client '{claims.client_id}' has reached its monthly spend cap of "
+                            f"${cap_usd:.2f}. Current spend: ${reservation.total_spend_usd:.2f}. "
+                            "Contact the platform operator to raise the cap.",
+                        )
+
         target_url = f"{entry.backend_url.rstrip('/')}/v1/embeddings"
         trace_id = getattr(getattr(request, "state", None), "trace_id", None)
         if trace_id is None:
@@ -764,6 +1124,12 @@ def create_router(registry: ModelRegistry, pool: "BackendPool") -> APIRouter:
             request_id=request_id,
         )
 
+        # RM-46 follow-up: this route never called record_inference() at all —
+        # embedding models had zero entries in GET /metrics's backends map,
+        # not just missing ttft/inter_token (neither concept applies to a
+        # single-shot embedding call anyway — no streaming, no autoregressive
+        # token generation).
+        backend_start = time.monotonic()
         client = pool.get(entry.backend_url)
         try:
             resp = await pool.forward(
@@ -780,6 +1146,13 @@ def create_router(registry: ModelRegistry, pool: "BackendPool") -> APIRouter:
                 backend_url=entry.backend_url,
                 error=str(exc),
             )
+            await metrics_store.record_inference(
+                prompt_tokens=0,
+                completion_tokens=0,
+                latency_ms=int((time.monotonic() - backend_start) * 1000),
+                backend_id=entry.id,
+                error=True,
+            )
             return _problem(
                 request,
                 503,
@@ -794,6 +1167,13 @@ def create_router(registry: ModelRegistry, pool: "BackendPool") -> APIRouter:
                 backend_url=entry.backend_url,
                 error=str(exc),
             )
+            await metrics_store.record_inference(
+                prompt_tokens=0,
+                completion_tokens=0,
+                latency_ms=int((time.monotonic() - backend_start) * 1000),
+                backend_id=entry.id,
+                error=True,
+            )
             return _problem(
                 request,
                 502,
@@ -806,28 +1186,360 @@ def create_router(registry: ModelRegistry, pool: "BackendPool") -> APIRouter:
             resp_body: Any = resp.json()
         except Exception:
             resp_body = {}
+        embeddings_usage = resp_body.get("usage", {}) if isinstance(resp_body, dict) else {}
+        embeddings_prompt_tokens = embeddings_usage.get("prompt_tokens", 0)
+        embeddings_latency_ms = int((time.monotonic() - backend_start) * 1000)
+
+        # RM-60: embeddings never called _record_usage() at all — usage/cost
+        # accounting was blind to this entire request type.
+        await _record_usage(claims, entry.id, embeddings_prompt_tokens, 0, request_kind="embedding")
+        if budget_redis is not None and reservation is not None and reservation.allowed:
+            actual_cost = pricing.get_pricing_table().estimate_cost_usd(
+                entry.id, embeddings_prompt_tokens, 0
+            )
+            if actual_cost is not None:
+                newly_crossed = await BudgetTracker(budget_redis).settle(
+                    claims.client_id,
+                    reservation.reserved_usd,
+                    actual_cost,
+                    cap_usd=reservation.cap_usd,
+                    alert_thresholds_percent=alert_thresholds_percent,
+                )
+                await _dispatch_threshold_alerts(
+                    request,
+                    claims.client_id,
+                    reservation.cap_usd,
+                    reservation.total_spend_usd,
+                    newly_crossed,
+                )
+        await metrics_store.record_inference(
+            prompt_tokens=embeddings_prompt_tokens,
+            completion_tokens=0,
+            latency_ms=embeddings_latency_ms,
+            backend_id=entry.id,
+            # RM-46 follow-up: embeddings have no completion tokens (no text
+            # is generated), so "tokens/sec" here means the input side —
+            # confirmed via research as the throughput metric that actually
+            # applies to embedding serving.
+            tokens_per_second=(
+                round(embeddings_prompt_tokens / (embeddings_latency_ms / 1000), 2)
+                if embeddings_latency_ms > 0 and embeddings_prompt_tokens > 0
+                else None
+            ),
+        )
         return JSONResponse(
             content=resp_body, status_code=resp.status_code, media_type="application/json"
+        )
+
+    # ── POST /v1/images/generations ─────────────────────────────────────────
+    # Implements: docs/roadmap.md — RM-38 (image generation)
+    @router.post("/v1/images/generations")
+    async def images_generations(body: ImageGenerationRequest, request: Request) -> Any:
+        """Proxy image-generation requests to an image-capable backend.
+
+        Mirrors /v1/embeddings: buffered, no streaming. Usage/cost is priced
+        per generated image rather than by token count (RM-60).
+        """
+        claims = getattr(getattr(request, "state", None), "claims", None)
+        request_id = getattr(getattr(request, "state", None), "request_id", "unknown")
+
+        entry = registry.get(body.model)
+        if entry is None:
+            return _problem(
+                request,
+                400,
+                "unknown-model",
+                "Unknown Model",
+                f"Model {body.model!r} is not registered. "
+                f"Use GET /v1/models for the list of available models.",
+            )
+
+        if entry.modality != "image":
+            return _problem(
+                request,
+                400,
+                "modality-mismatch",
+                "Modality Mismatch",
+                f"Model {body.model!r} is not an image model (modality={entry.modality!r}). "
+                f"Use GET /v1/models to find an image-capable model.",
+            )
+
+        is_admin_bypass = claims is not None and claims.has_scope("admin:write")
+        if claims is None or not (claims.has_scope("inference:read") or is_admin_bypass):
+            return _problem(
+                request,
+                403,
+                "forbidden",
+                "Forbidden",
+                "This endpoint requires inference:read scope.",
+            )
+
+        if not (claims.has_model_scope(body.model) or is_admin_bypass):
+            return _problem(
+                request,
+                403,
+                "forbidden",
+                "Forbidden",
+                f"This client is not authorized to use model {body.model!r}. "
+                "Contact the platform operator to request access.",
+            )
+
+        if entry.backend_url is None:
+            return _problem(
+                request,
+                503,
+                "model-not-loaded",
+                "Model Not Loaded",
+                f"Model {body.model!r} is registered but has no active backend. "
+                "Contact the platform operator.",
+            )
+
+        cb = pool.get_circuit_breaker(entry.id)
+        if cb is not None:
+            try:
+                if not await cb.allow_request():
+                    cb_state = await cb.get_state()
+                    retry_after = max(1, int((cb_state.recovery_at or 0) - time.time()))
+                    return _problem(
+                        request,
+                        503,
+                        "backend-unavailable",
+                        "Backend Unavailable",
+                        f"Backend '{entry.id}' circuit is {cb_state.state}.",
+                        extra_headers={"Retry-After": str(retry_after)},
+                    )
+            except Exception as exc:
+                logger.warning("circuit_breaker.check_error", backend_id=entry.id, error=str(exc))
+
+        # RM-60: hard spend-cap reserve, before forwarding — worst-case
+        # estimate priced per requested image (`n`, default 1).
+        budget_redis = getattr(pool, "_redis", None)
+        reservation: BudgetReservation | None = None
+        alert_thresholds_percent: list[int] = []
+        if claims is not None and budget_redis is not None:
+            billing_settings = await get_client_billing_settings_cached(claims.client_id)
+            cap_usd = billing_settings.monthly_spend_cap_usd if billing_settings else None
+            if cap_usd is not None:
+                settings = getattr(getattr(request.app, "state", None), "settings", None)
+                default_thresholds = getattr(
+                    settings, "budget_alert_thresholds_percent_default", "50,80,100"
+                )
+                alert_thresholds_percent = parse_thresholds(
+                    billing_settings.alert_thresholds_percent if billing_settings else None,
+                    default_thresholds,
+                )
+                est_cost = pricing.get_pricing_table().estimate_image_cost_usd(
+                    entry.id, body.n or 1
+                )
+                if est_cost is not None:
+                    reservation = await BudgetTracker(budget_redis).reserve(
+                        claims.client_id,
+                        est_cost,
+                        cap_usd=cap_usd,
+                        alert_thresholds_percent=alert_thresholds_percent,
+                    )
+                    await _dispatch_threshold_alerts(
+                        request,
+                        claims.client_id,
+                        cap_usd,
+                        reservation.total_spend_usd,
+                        reservation.crossed_thresholds,
+                    )
+                    if not reservation.allowed:
+                        return _problem(
+                            request,
+                            402,
+                            "spend-cap-exceeded",
+                            "Spend Cap Exceeded",
+                            f"Client '{claims.client_id}' has reached its monthly spend cap of "
+                            f"${cap_usd:.2f}. Current spend: ${reservation.total_spend_usd:.2f}. "
+                            "Contact the platform operator to raise the cap.",
+                        )
+
+        target_url = f"{entry.backend_url.rstrip('/')}/v1/images/generations"
+        trace_id = getattr(getattr(request, "state", None), "trace_id", None)
+        if trace_id is None:
+            trace_id = structlog.contextvars.get_contextvars().get("trace_id", "none")
+
+        logger.info(
+            "images_generations.forwarding",
+            model=body.model,
+            backend_url=entry.backend_url,
+            request_id=request_id,
+        )
+
+        # RM-46 follow-up: same gap as /v1/embeddings — this route never
+        # called record_inference() at all, so image models had zero entries
+        # in GET /metrics's backends map. No token count and no streaming for
+        # a single blocking image-generation call, so only latency applies.
+        backend_start = time.monotonic()
+        client = pool.get(entry.backend_url)
+        try:
+            resp = await pool.forward(
+                entry.id,
+                client,
+                target_url,
+                body.to_backend_payload(),
+                extra_headers={"X-Trace-ID": trace_id},
+            )
+        except (httpx.ConnectError, httpx.ConnectTimeout, httpx.RemoteProtocolError) as exc:
+            logger.error(
+                "images_generations.unreachable",
+                model=body.model,
+                backend_url=entry.backend_url,
+                error=str(exc),
+            )
+            await metrics_store.record_inference(
+                prompt_tokens=0,
+                completion_tokens=0,
+                latency_ms=int((time.monotonic() - backend_start) * 1000),
+                backend_id=entry.id,
+                error=True,
+            )
+            return _problem(
+                request,
+                503,
+                "backend-unavailable",
+                "Backend Unavailable",
+                "The inference backend is currently unreachable. Please try again later.",
+            )
+        except Exception as exc:
+            logger.error(
+                "images_generations.upstream_error",
+                model=body.model,
+                backend_url=entry.backend_url,
+                error=str(exc),
+            )
+            await metrics_store.record_inference(
+                prompt_tokens=0,
+                completion_tokens=0,
+                latency_ms=int((time.monotonic() - backend_start) * 1000),
+                backend_id=entry.id,
+                error=True,
+            )
+            return _problem(
+                request,
+                502,
+                "upstream-error",
+                "Upstream Error",
+                "The inference backend returned an unrecoverable error after retries.",
+            )
+
+        try:
+            resp_body_images: Any = resp.json()
+        except Exception:
+            resp_body_images = {}
+        images_latency_ms = int((time.monotonic() - backend_start) * 1000)
+        num_images = (
+            len(resp_body_images.get("data", [])) if isinstance(resp_body_images, dict) else 0
+        ) or 1
+
+        # RM-60: images/generations never called _record_usage() at all —
+        # usage/cost accounting was blind to this entire request type.
+        await _record_usage(claims, entry.id, 0, 0, request_kind="image", image_count=num_images)
+        if budget_redis is not None and reservation is not None and reservation.allowed:
+            actual_cost = pricing.get_pricing_table().estimate_image_cost_usd(entry.id, num_images)
+            if actual_cost is not None:
+                newly_crossed = await BudgetTracker(budget_redis).settle(
+                    claims.client_id,
+                    reservation.reserved_usd,
+                    actual_cost,
+                    cap_usd=reservation.cap_usd,
+                    alert_thresholds_percent=alert_thresholds_percent,
+                )
+                await _dispatch_threshold_alerts(
+                    request,
+                    claims.client_id,
+                    reservation.cap_usd,
+                    reservation.total_spend_usd,
+                    newly_crossed,
+                )
+        await metrics_store.record_inference(
+            prompt_tokens=0,
+            completion_tokens=0,
+            latency_ms=images_latency_ms,
+            backend_id=entry.id,
+            # RM-46 follow-up: images/second — confirmed via research
+            # (Images Per Second is the standard throughput metric for
+            # diffusion-model serving). num_images accounts for n > 1.
+            images_per_second=(
+                round(num_images / (images_latency_ms / 1000), 3) if images_latency_ms > 0 else None
+            ),
+        )
+        return JSONResponse(
+            content=resp_body_images, status_code=resp.status_code, media_type="application/json"
         )
 
     return router
 
 
 async def _record_usage(
-    claims: Any, model_id: str, prompt_tokens: int, completion_tokens: int
+    claims: Any,
+    model_id: str,
+    prompt_tokens: int,
+    completion_tokens: int,
+    *,
+    request_kind: str = "chat",
+    image_count: int = 0,
 ) -> None:
-    """Write persisted per-day, per-client, per-model token counters.
+    """Write an immutable usage_events row + persisted per-day rollup counters.
 
     Implements: docs/roadmap.md — RM-32 (replaces the old Redis daily-TTL counters).
+    Implements: docs/roadmap.md — RM-60 (#1, #2, #3 — write-time cost, audit
+    trail, and covers embeddings/images which previously never called this).
     """
     if claims is None:
         return
-    if prompt_tokens + completion_tokens == 0:
+    if request_kind == "image":
+        if image_count == 0:
+            return
+    elif prompt_tokens + completion_tokens == 0:
         return
     try:
-        await db.record_usage(claims.client_id, model_id, prompt_tokens, completion_tokens)
+        await db.record_usage(
+            claims.client_id,
+            model_id,
+            prompt_tokens,
+            completion_tokens,
+            request_kind=request_kind,
+            image_count=image_count,
+        )
     except Exception as exc:
         logger.warning("usage.db_write_error", error=str(exc))
+
+
+def _estimate_text_tokens(text_input: str | list[str]) -> int:
+    """Worst-case token estimate for an embeddings request's spend-cap reserve."""
+    if isinstance(text_input, str):
+        total_chars = len(text_input)
+    else:
+        total_chars = sum(len(s) for s in text_input)
+    return max(1, total_chars // _CHARS_PER_TOKEN)
+
+
+async def _dispatch_threshold_alerts(
+    request: Request,
+    client_id: str,
+    cap_usd: float | None,
+    spend_usd: float,
+    newly_crossed: list[int],
+) -> None:
+    """Fire an email for each newly-crossed alert threshold. Blocking smtplib
+    runs off the event loop via asyncio.to_thread; failures are logged, never
+    raised (an alert-delivery failure must not fail the inference request).
+    """
+    if not newly_crossed or cap_usd is None:
+        return
+    settings = getattr(getattr(request.app, "state", None), "settings", None)
+    if settings is None:
+        return
+    for threshold in newly_crossed:
+        try:
+            await asyncio.to_thread(
+                send_budget_alert_email, settings, client_id, threshold, spend_usd, cap_usd
+            )
+        except Exception as exc:
+            logger.warning("billing.alert_dispatch_error", error=str(exc))
 
 
 async def _stream_response(
@@ -838,6 +1550,10 @@ async def _stream_response(
     pool: "BackendPool",
     backend_id: str,
     trace_id: str = "none",
+    *,
+    budget_redis: Any = None,
+    reservation: "BudgetReservation | None" = None,
+    alert_thresholds_percent: list[int] | None = None,
 ) -> StreamingResponse:
     """Forward a streaming request using a pooled client.
 
@@ -847,6 +1563,8 @@ async def _stream_response(
     Implements: memory/specs/018-observability-telemetry.md — AC-8 (X-Trace-ID forwarded)
     Flushes each chunk immediately. Closes with 'data: [DONE]' per OpenAI convention.
     Retry is NOT applied (AC-17c: response headers already sent).
+    RM-60: budget_redis/reservation/alert_thresholds_percent settle the
+    caller's spend-cap reservation once the real token counts are known.
     """
     request_id = getattr(getattr(request, "state", None), "request_id", "unknown")
     claims = getattr(getattr(request, "state", None), "claims", None)
@@ -857,6 +1575,16 @@ async def _stream_response(
         prompt_tokens = 0
         completion_tokens = 0
         stream_error: Exception | None = None
+        # RM-46: time-to-first-token — set the first time a chunk carries real
+        # delta.content, i.e. the token a streaming client actually sees first
+        # (not the empty role-only opening chunk some backends send first).
+        ttft_ms: int | None = None
+        # See the non-streaming path's identical comment — same `timings`
+        # object, present on the backend's final chunk for llama.cpp-family
+        # backends only.
+        inter_token_ms: float | None = None
+        # RM-62: same prefill-throughput extraction as the non-streaming path.
+        prompt_tps: float | None = None
         try:
             # AC-8 (018): forward X-Trace-ID to backend for streaming requests
             async with client.stream(
@@ -875,6 +1603,35 @@ async def _stream_response(
                                 if usage:
                                     prompt_tokens = usage.get("prompt_tokens", 0)
                                     completion_tokens = usage.get("completion_tokens", 0)
+                                timings = chunk.get("timings") or {}
+                                if timings:
+                                    inter_token_ms = timings.get("predicted_per_token_ms")
+                                    # llama.cpp's streaming chunks don't carry a
+                                    # `usage` field at all (confirmed live —
+                                    # only the final chunk's `timings` does),
+                                    # so prompt_tokens/completion_tokens would
+                                    # otherwise stay 0 for every llama.cpp
+                                    # stream, breaking tokens/sec below. Same
+                                    # cache_n+prompt_n / predicted_n mapping
+                                    # already verified client-side for RM-36's
+                                    # Playground token counts.
+                                    if "predicted_n" in timings and "prompt_n" in timings:
+                                        prompt_tokens = (
+                                            timings.get("cache_n", 0) + timings["prompt_n"]
+                                        )
+                                        completion_tokens = timings["predicted_n"]
+                                    prompt_tps = timings.get("prompt_per_second")
+                                    if prompt_tps is None:
+                                        prompt_ms = timings.get("prompt_ms")
+                                        prompt_n = timings.get("prompt_n")
+                                        if prompt_ms and prompt_n:
+                                            prompt_tps = prompt_n / (prompt_ms / 1000)
+                                if ttft_ms is None:
+                                    delta_content = (
+                                        (chunk.get("choices") or [{}])[0].get("delta") or {}
+                                    ).get("content")
+                                    if delta_content:
+                                        ttft_ms = int((time.monotonic() - backend_start) * 1000)
                             except Exception:
                                 pass
                         yield f"{line}\n\n"
@@ -918,9 +1675,39 @@ async def _stream_response(
                 latency_ms=backend_latency_ms,
                 backend_id=backend_id,
                 error=stream_error is not None,
+                ttft_ms=ttft_ms,
+                inter_token_ms=inter_token_ms,
+                tokens_per_second=round(tps, 2) if completion_tokens > 0 else None,
+                prompt_tokens_per_second=round(prompt_tps, 2) if prompt_tps is not None else None,
             )
             # RM-32: persisted daily usage for streaming
             await _record_usage(claims, backend_id, prompt_tokens, completion_tokens)
+
+            # RM-60: settle the spend-cap reservation with the real cost
+            if (
+                claims is not None
+                and reservation is not None
+                and reservation.allowed
+                and budget_redis is not None
+            ):
+                actual_cost = pricing.get_pricing_table().estimate_cost_usd(
+                    backend_id, prompt_tokens, completion_tokens
+                )
+                if actual_cost is not None:
+                    newly_crossed = await BudgetTracker(budget_redis).settle(
+                        claims.client_id,
+                        reservation.reserved_usd,
+                        actual_cost,
+                        cap_usd=reservation.cap_usd,
+                        alert_thresholds_percent=alert_thresholds_percent or [],
+                    )
+                    await _dispatch_threshold_alerts(
+                        request,
+                        claims.client_id,
+                        reservation.cap_usd,
+                        reservation.total_spend_usd,
+                        newly_crossed,
+                    )
 
     logger.info("llama.forwarding_stream", backend_id=backend_id, request_id=request_id)
     return StreamingResponse(

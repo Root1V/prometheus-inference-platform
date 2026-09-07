@@ -9,7 +9,7 @@ import type {
   UpdateModelRequest,
 } from "../types/instance";
 
-const INSTANCES_KEY = ["instances"] as const;
+export const INSTANCES_KEY = ["instances"] as const;
 const NODE_NAMES_KEY = ["node-names"] as const;
 const POLL_INTERVAL_MS = 5000;
 
@@ -71,6 +71,27 @@ export function useUpdateModel() {
       data: UpdateModelRequest;
     }) => (await apiClient.patch<InstanceEntry>(`/nodes/${node}/models/${modelId}`, data)).data,
     onSuccess: () => queryClient.invalidateQueries({ queryKey: INSTANCES_KEY }),
+  });
+}
+
+interface InstanceLogsResponse {
+  model_id: string;
+  lines: string[];
+}
+
+/** RM-13: tails an instance's log file. Only polls while `enabled` (the row is expanded)
+ * — otherwise this would multiply request volume by the number of registered models. */
+export function useInstanceLogs(node: string, modelId: string, enabled: boolean) {
+  return useQuery({
+    queryKey: ["instance-logs", node, modelId] as const,
+    queryFn: async () =>
+      (
+        await apiClient.get<InstanceLogsResponse>(`/nodes/${node}/instances/${modelId}/logs`, {
+          params: { tail: 200 },
+        })
+      ).data,
+    enabled,
+    refetchInterval: enabled ? 3000 : false,
   });
 }
 

@@ -57,9 +57,12 @@ _UPDATABLE_FIELDS = frozenset(
         "mmproj_path",
         "discovery",
         "hf_repo",
-        "hf_filename",
         "hf_sha256",
         "port",
+        "vae_path",
+        "clip_l_path",
+        "t5xxl_path",
+        "cfg_scale",
     }
 )
 
@@ -94,17 +97,58 @@ async def register_backend(
     validators (_validate_id/_validate_backend/_validate_modality/_validate_path/
     _validate_port) below — avoids a second, drifting Pydantic schema.
 
+    RM-51: an optional `model_id` field selects a different mode — "create a
+    new instance of an already-catalogued model" (the admin dashboard's
+    RegisterModelModal uses this once a downloaded model is picked from the
+    catalog) instead of today's "register a brand-new model" (manual/
+    hand-typed-path registration, which upserts both a catalog row and an
+    instance row under the same id — unchanged, still the default when
+    `model_id` is absent).
+
     Implements: memory/specs/008-llama-server-manager.md — AC-3, AC-16, AC-17
-    Implements: docs/roadmap.md — RM-10
+    Implements: docs/roadmap.md — RM-10, RM-51
     """
     with _tracer.start_as_current_span("backend.register", kind=SpanKind.INTERNAL) as span:
         registry: Registry = request.app.state.registry
-        model_id = body.get("id", "")
-        span.set_attribute("model_id", model_id)
+        instance_id = body.get("id", "")
+        span.set_attribute("model_id", instance_id)
+
+        model_id = body.get("model_id")
+        if model_id:
+            if registry.get_catalog(model_id) is None:
+                span.set_attribute("http.status_code", 404)
+                raise _problem(
+                    404,
+                    "not-found",
+                    "Not Found",
+                    f"No catalog entry {model_id!r} — download or register it first.",
+                )
+            try:
+                registry.add_instance(
+                    instance_id,
+                    model_id,
+                    port=int(body.get("port", 0)),
+                    backend=body.get("backend", "llama_cpp"),
+                    modality=body.get("modality", "text"),
+                    context_length=int(body.get("context_length", 4096)),
+                    discovery=bool(body.get("discovery", False)),
+                    rss_estimate_mb=body.get("rss_estimate_mb"),
+                    cfg_scale=body.get("cfg_scale"),
+                )
+            except (ValueError, TypeError) as exc:
+                span.set_attribute("http.status_code", 400)
+                raise _problem(
+                    400, "invalid-registration", "Invalid Registration", str(exc)
+                ) from exc
+            span.set_attribute("http.status_code", 201)
+            created = registry.get(instance_id)
+            assert created is not None  # just added above
+            created_result: dict[str, Any] = created.to_dict()
+            return created_result
 
         try:
             entry: RegistryEntry = RegistryEntry(
-                id=model_id,
+                id=instance_id,
                 port=int(body.get("port", 0)),
                 context_length=int(body.get("context_length", 4096)),
                 path=body.get("path", ""),
@@ -115,9 +159,12 @@ async def register_backend(
                 mmproj_path=body.get("mmproj_path", ""),
                 discovery=bool(body.get("discovery", False)),
                 hf_repo=body.get("hf_repo", ""),
-                hf_filename=body.get("hf_filename", ""),
                 hf_sha256=body.get("hf_sha256", ""),
                 hf_filenames=body.get("hf_filenames", []),
+                vae_path=body.get("vae_path", ""),
+                clip_l_path=body.get("clip_l_path", ""),
+                t5xxl_path=body.get("t5xxl_path", ""),
+                cfg_scale=body.get("cfg_scale"),
             )
             registry.add(entry)
         except (ValueError, TypeError) as exc:
@@ -125,7 +172,12 @@ async def register_backend(
             raise _problem(400, "invalid-registration", "Invalid Registration", str(exc)) from exc
 
         span.set_attribute("http.status_code", 201)
-        result: dict[str, Any] = entry.to_dict()
+        # RM-51: add() sets the catalog FK to entry.id under the hood, but the
+        # in-memory `entry` built above never had .model_id assigned — return
+        # the freshly-persisted entry instead of the stale transient one.
+        persisted = registry.get(instance_id)
+        assert persisted is not None  # just added above
+        result: dict[str, Any] = persisted.to_dict()
         return result
 
 
@@ -160,11 +212,17 @@ async def update_backend(
         merged_path = updates.get("path", entry.path)
         merged_port = updates.get("port", entry.port)
         merged_modality = updates.get("modality", entry.modality)
+        merged_vae_path = updates.get("vae_path", entry.vae_path)
+        merged_clip_l_path = updates.get("clip_l_path", entry.clip_l_path)
+        merged_t5xxl_path = updates.get("t5xxl_path", entry.t5xxl_path)
 
         try:
             _validate_backend(merged_backend)
             _validate_modality(merged_modality)
             _validate_path(merged_path, merged_backend)
+            _validate_path(merged_vae_path, merged_backend)
+            _validate_path(merged_clip_l_path, merged_backend)
+            _validate_path(merged_t5xxl_path, merged_backend)
             _validate_port(int(merged_port))
         except (ValueError, TypeError) as exc:
             span.set_attribute("http.status_code", 400)
@@ -242,7 +300,7 @@ async def _control_action(action: str, model_id: str, request: Request) -> dict[
         if proc.model_id
     }
     assert entry is not None  # just validated above
-    return _merge(entry.__dict__, live.get(model_id), proxy_host, pid_dir=pid_dir)
+    return _merge(entry.to_dict(), live.get(model_id), proxy_host, pid_dir=pid_dir)
 
 
 @router.post("/v1/backends/{model_id}/start", tags=["backends"])

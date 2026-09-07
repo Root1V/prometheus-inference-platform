@@ -1,6 +1,13 @@
-import { Pencil, Play, RotateCw, Square, Trash2 } from "lucide-react";
-import { useState } from "react";
-import { useDeleteModel, useRestartInstance, useStartInstance, useStopInstance } from "../api/instances";
+import { ChevronDown, Pencil, Play, RotateCw, Square, Terminal, Trash2 } from "lucide-react";
+import { useEffect, useRef, useState } from "react";
+import {
+  useDeleteModel,
+  useInstanceLogs,
+  useRestartInstance,
+  useStartInstance,
+  useStopInstance,
+} from "../api/instances";
+import type { BackendMetrics } from "../api/metrics";
 import { useToast } from "../context/ToastContext";
 import { cn } from "../lib/cn";
 import { formatUptime } from "../lib/format";
@@ -9,20 +16,56 @@ import type { InstanceEntry } from "../types/instance";
 import { ConfirmDialog } from "./ConfirmDialog";
 import { StatusBadge } from "./StatusBadge";
 
+const COLUMN_COUNT = 17; // #, ID, Node, Backend, Modality, State, Port, CPU, RSS, P50, P95, TTFT, Tok/s, ms/tok, Img/s, Uptime, Actions
+
+function LogTail({ node, modelId }: { node: string; modelId: string }) {
+  const logsQuery = useInstanceLogs(node, modelId, true);
+  const lines = logsQuery.data?.lines ?? [];
+  const bottomRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    bottomRef.current?.scrollIntoView({ block: "end" });
+  }, [logsQuery.data?.lines]);
+
+  return (
+    <div className="max-h-72 overflow-y-auto rounded-lg bg-gray-950 p-3 font-mono text-xs text-gray-200">
+      {logsQuery.isLoading ? (
+        <p className="text-gray-400">Loading logs…</p>
+      ) : logsQuery.isError ? (
+        <p className="text-red-400">{getErrorMessage(logsQuery.error)}</p>
+      ) : lines.length === 0 ? (
+        <p className="text-gray-400">No log output yet.</p>
+      ) : (
+        lines.map((line, i) => (
+          <div key={i} className="whitespace-pre-wrap">
+            {line}
+          </div>
+        ))
+      )}
+      <div ref={bottomRef} />
+    </div>
+  );
+}
+
 const actionButtonClass =
   "rounded-md p-1.5 transition-colors disabled:cursor-not-allowed disabled:opacity-30";
 
 export function InstanceRow({
   rowNumber,
   instance,
+  metrics,
   onEdit,
 }: {
   rowNumber: number;
   instance: InstanceEntry;
+  /** RM-46: undefined until GET /metrics's first poll lands, or if this
+   * instance has never actually served a request yet (no samples recorded). */
+  metrics?: BackendMetrics;
   onEdit: (instance: InstanceEntry) => void;
 }) {
   const { showToast } = useToast();
   const [confirmDelete, setConfirmDelete] = useState(false);
+  const [showLogs, setShowLogs] = useState(false);
   const start = useStartInstance();
   const stop = useStopInstance();
   const restart = useRestartInstance();
@@ -55,6 +98,32 @@ export function InstanceRow({
         <td className="px-4 py-3 text-text-muted">{instance.port}</td>
         <td className="px-4 py-3 text-text-muted">{instance.cpu_percent.toFixed(1)}%</td>
         <td className="px-4 py-3 text-text-muted">{Math.round(instance.rss_mb)} MB</td>
+        <td className="px-4 py-3 text-text-muted">
+          {metrics && metrics.requests_total > 0 ? `${metrics.latency_p50_ms}ms` : "—"}
+        </td>
+        <td className="px-4 py-3 text-text-muted">
+          {metrics && metrics.requests_total > 0 ? `${metrics.latency_p95_ms}ms` : "—"}
+        </td>
+        <td className="px-4 py-3 text-text-muted">
+          {metrics?.ttft_p50_ms !== null && metrics?.ttft_p50_ms !== undefined
+            ? `${metrics.ttft_p50_ms}ms`
+            : "—"}
+        </td>
+        <td className="px-4 py-3 text-text-muted">
+          {metrics?.tokens_per_second_avg !== null && metrics?.tokens_per_second_avg !== undefined
+            ? metrics.tokens_per_second_avg
+            : "—"}
+        </td>
+        <td className="px-4 py-3 text-text-muted">
+          {metrics?.inter_token_ms_avg !== null && metrics?.inter_token_ms_avg !== undefined
+            ? metrics.inter_token_ms_avg
+            : "—"}
+        </td>
+        <td className="px-4 py-3 text-text-muted">
+          {metrics?.images_per_second_avg !== null && metrics?.images_per_second_avg !== undefined
+            ? metrics.images_per_second_avg
+            : "—"}
+        </td>
         <td className="px-4 py-3 text-text-muted">{formatUptime(instance.uptime_s)}</td>
         <td className="px-4 py-3">
           <div className="flex items-center gap-1.5">
@@ -108,9 +177,32 @@ export function InstanceRow({
             >
               <Trash2 size={16} />
             </button>
+            <button
+              type="button"
+              title="Logs"
+              aria-label={`${showLogs ? "Hide" : "Show"} logs for ${instance.id}`}
+              onClick={() => setShowLogs((v) => !v)}
+              className={cn(
+                actionButtonClass,
+                showLogs ? "text-primary" : "text-text-muted hover:bg-background",
+              )}
+            >
+              <Terminal size={16} />
+            </button>
           </div>
         </td>
       </tr>
+      {showLogs && (
+        <tr className="border-b border-border bg-background/30 last:border-0">
+          <td colSpan={COLUMN_COUNT} className="px-4 py-3">
+            <div className="mb-1.5 flex items-center gap-1.5 text-xs text-text-muted">
+              <ChevronDown size={12} />
+              {instance.id} — last 200 lines, refreshing every 3s
+            </div>
+            <LogTail node={instance.node} modelId={instance.id} />
+          </td>
+        </tr>
+      )}
       <ConfirmDialog
         open={confirmDelete}
         title={`Delete ${instance.id}?`}

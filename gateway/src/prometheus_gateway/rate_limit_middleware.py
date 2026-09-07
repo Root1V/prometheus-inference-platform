@@ -29,8 +29,16 @@ _ENDPOINT_SLUG_MAP: dict[str, str] = {
     "/v1/chat/completions": "chat_completions",
 }
 
+# RM-51 follow-up: every /admin/api/* route (dynamic path segments like
+# {node}/{model_id}, so a prefix check rather than the exact-match map above)
+# shares one "admin" budget, separate from inference traffic — see
+# Settings.rate_limit_rpm_admin.
+_ADMIN_API_PREFIX = "/admin/api/"
+
 
 def _endpoint_slug(path: str) -> str:
+    if path.startswith(_ADMIN_API_PREFIX):
+        return "admin"
     return _ENDPOINT_SLUG_MAP.get(path, _DEFAULT_ENDPOINT)
 
 
@@ -234,6 +242,11 @@ class RateLimitMiddleware:
                 rpm = self.settings.rate_limit_rpm_chat_completions
             if self.settings.rate_limit_tpm_chat_completions is not None:
                 tpm = self.settings.rate_limit_tpm_chat_completions
+        elif endpoint_slug == "admin":
+            if self.settings.rate_limit_rpm_admin is not None:
+                rpm = self.settings.rate_limit_rpm_admin
+            if self.settings.rate_limit_tpm_admin is not None:
+                tpm = self.settings.rate_limit_tpm_admin
 
         return rpm, tpm
 

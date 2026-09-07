@@ -1,6 +1,7 @@
 import { Plus } from "lucide-react";
 import { useState } from "react";
 import { useUsers } from "../api/users";
+import { ClientBillingSettingsModal } from "../components/ClientBillingSettingsModal";
 import { CreateUserModal } from "../components/CreateUserModal";
 import { CredentialRevealDialog } from "../components/CredentialRevealDialog";
 import { Sidebar } from "../components/Sidebar";
@@ -9,7 +10,11 @@ import type { CreatePrincipalResponse, Principal } from "../types/user";
 
 const EMPTY_USERS: Principal[] = [];
 
-type ModalState = { mode: "create" } | { mode: "edit"; user: Principal } | null;
+type ModalState =
+  | { mode: "create" }
+  | { mode: "edit"; user: Principal }
+  | { mode: "billing"; user: Principal }
+  | null;
 type RevealState = { clientId: string; secret: string; label: string } | null;
 
 export default function Users() {
@@ -31,7 +36,7 @@ export default function Users() {
   return (
     <div className="flex min-h-screen bg-background">
       <Sidebar />
-      <main className="flex-1 px-8 py-8">
+      <main className="min-w-0 flex-1 px-8 py-8">
         <div className="flex items-center justify-between">
           <h1 className="text-2xl font-semibold text-text">Users</h1>
           <button
@@ -53,6 +58,7 @@ export default function Users() {
             <UserTable
               users={users}
               onEdit={(user) => setModal({ mode: "edit", user })}
+              onBilling={(user) => setModal({ mode: "billing", user })}
               onRevealCredential={(clientId, secret, label) => setReveal({ clientId, secret, label })}
             />
           )}
@@ -61,10 +67,17 @@ export default function Users() {
 
       <CreateUserModal
         key={modal?.mode === "edit" ? modal.user.client_id : "create"}
-        open={modal !== null}
+        open={modal?.mode === "create" || modal?.mode === "edit"}
         editing={modal?.mode === "edit" ? modal.user : null}
         onClose={() => setModal(null)}
         onCreated={handleCreated}
+      />
+      <ClientBillingSettingsModal
+        key={modal?.mode === "billing" ? `billing-${modal.user.client_id}` : "billing-none"}
+        open={modal?.mode === "billing"}
+        clientId={modal?.mode === "billing" ? modal.user.client_id : ""}
+        clientName={modal?.mode === "billing" ? modal.user.client_name : ""}
+        onClose={() => setModal(null)}
       />
       <CredentialRevealDialog
         open={reveal !== null}

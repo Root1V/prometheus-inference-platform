@@ -33,7 +33,7 @@ from .telemetry import get_logger
 
 logger = get_logger(__name__)
 
-Status = Literal["queued", "downloading", "verifying", "done", "failed", "cancelled"]
+Status = Literal["queued", "downloading", "verifying", "done", "failed", "cancelled", "paused"]
 
 
 @dataclass
@@ -57,6 +57,10 @@ class DownloadState:
     speed_bps: float = 0.0
     eta_seconds: int | None = None
     cancel_requested: bool = False
+    # RM-48 follow-up: pause keeps the partial file on disk (unlike cancel,
+    # which deletes it) so a later download_model(..., resume=True) call can
+    # continue via an HTTP Range request instead of restarting from byte 0.
+    pause_requested: bool = False
 
     @property
     def progress(self) -> float:
@@ -88,6 +92,7 @@ def download_model(
     expected_sha256: str | None = None,
     on_progress: ProgressCallback | None = None,
     ca_bundle: str | Path | None = None,
+    resume: bool = False,
 ) -> Path:
     """Download a GGUF file from HuggingFace Hub with real-time progress reporting.
 
@@ -96,6 +101,13 @@ def download_model(
 
     build_hf_headers() provides the correct User-Agent that the HuggingFace CDN
     requires — without it, HF returns an HTML page instead of the binary.
+
+    RM-48 follow-up: when resume=True and a partial file from an earlier
+    paused download exists at the destination, requests an HTTP Range for the
+    remaining bytes and appends to it instead of restarting from byte 0. The
+    server is the authority on whether this is honored — a 206 response means
+    it was; anything else (e.g. a 200, meaning Range was ignored) falls back
+    to a normal full download, truncating any partial file.
 
     Implements: memory/specs/008-llama-server-manager.md — AC-20, AC-21
     Implements: memory/specs/011-downloads-view-redesign.md — AC-5–AC-11, AC-22–AC-24
@@ -128,12 +140,15 @@ def download_model(
     # dest_dir.mkdir() only creates the base dir; create intermediate dirs too.
     dest_path.parent.mkdir(parents=True, exist_ok=True)
 
+    existing_bytes = dest_path.stat().st_size if resume and dest_path.exists() else 0
+
     state = DownloadState(
         model_id=model_id,
         hf_repo=hf_repo,
         hf_filename=hf_filename,
         status="downloading",
         started_at=datetime.now(tz=UTC),
+        downloaded_bytes=existing_bytes,
     )
     if on_progress:
         on_progress(state)
@@ -156,6 +171,8 @@ def download_model(
     # build_hf_headers provides the correct User-Agent that HF CDN requires.
     # Without it, HF returns an HTML login/redirect page instead of the binary.
     headers: dict[str, str] = dict(build_hf_headers(token=hf_token))
+    if existing_bytes > 0:
+        headers["Range"] = f"bytes={existing_bytes}-"
 
     try:
         resp = _requests.get(
@@ -173,10 +190,25 @@ def download_model(
             on_progress(state)
         raise DownloadError(f"Download failed for {model_id}: {exc}") from exc
 
-    # AC-8: read Content-Length if present
-    content_length = resp.headers.get("Content-Length")
-    if content_length:
-        state.total_bytes = int(content_length)
+    # RM-48 follow-up: 206 means the server honored our Range request — the
+    # true total comes from Content-Range ("bytes X-Y/TOTAL"), and
+    # Content-Length here is only the *remaining* bytes. Anything else (a
+    # plain 200) means Range was ignored — write mode falls back to a fresh,
+    # full download regardless of what resume/existing_bytes said.
+    resumed = existing_bytes > 0 and resp.status_code == 206
+    if existing_bytes > 0 and not resumed:
+        existing_bytes = 0
+        state.downloaded_bytes = 0
+
+    if resumed:
+        content_range = resp.headers.get("Content-Range", "")
+        if "/" in content_range:
+            state.total_bytes = int(content_range.rsplit("/", 1)[-1])
+    else:
+        # AC-8: read Content-Length if present
+        content_length = resp.headers.get("Content-Length")
+        if content_length:
+            state.total_bytes = int(content_length)
 
     # Rolling speed window: deque of (timestamp, bytes_received) samples
     _SPEED_WINDOW = 10
@@ -186,7 +218,7 @@ def download_model(
     bytes_since_sample = 0
 
     try:
-        with open(dest_path, "wb") as fh:
+        with open(dest_path, "ab" if resumed else "wb") as fh:
             for chunk in resp.iter_content(chunk_size=65536):
                 if not chunk:
                     continue
@@ -196,6 +228,15 @@ def download_model(
                     fh.close()
                     dest_path.unlink(missing_ok=True)
                     state.status = "cancelled"
+                    if on_progress:
+                        on_progress(state)
+                    return dest_path
+
+                # RM-48 follow-up: pause keeps the partial file (unlike
+                # cancel) so a later resume=True call can continue it.
+                if state.pause_requested:
+                    fh.close()
+                    state.status = "paused"
                     if on_progress:
                         on_progress(state)
                     return dest_path

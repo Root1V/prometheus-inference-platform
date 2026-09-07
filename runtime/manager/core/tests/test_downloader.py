@@ -23,7 +23,10 @@ from prometheus_manager_core.downloader import (
 
 
 def _make_response(
-    content: bytes, status_code: int = 200, content_length: bool = True
+    content: bytes,
+    status_code: int = 200,
+    content_length: bool = True,
+    extra_headers: dict[str, str] | None = None,
 ) -> MagicMock:
     """Build a fake requests.Response that streams chunks."""
     resp = MagicMock()
@@ -32,13 +35,23 @@ def _make_response(
     chunks = [content[i : i + 65536] for i in range(0, len(content), 65536)] or [b""]
     resp.iter_content = MagicMock(return_value=iter(chunks))
     resp.headers = {"Content-Length": str(len(content))} if content_length else {}
+    if extra_headers:
+        resp.headers.update(extra_headers)
     return resp
 
 
-def _patch_hf(content: bytes, content_length: bool = True, hf_token: str | None = None):
+def _patch_hf(
+    content: bytes,
+    content_length: bool = True,
+    hf_token: str | None = None,
+    status_code: int = 200,
+    extra_headers: dict[str, str] | None = None,
+):
     """Context manager that patches all HF/requests module-level names."""
     url = "https://huggingface.co/fake/resolve/main/m.gguf"
-    resp = _make_response(content, content_length=content_length)
+    resp = _make_response(
+        content, status_code=status_code, content_length=content_length, extra_headers=extra_headers
+    )
     mock_req = MagicMock()
     mock_req.get.return_value = resp
     return (
@@ -406,3 +419,69 @@ class TestSha256Helper:
         f = tmp_path / "f"
         f.write_bytes(content)
         assert _sha256(f) == hashlib.sha256(content).hexdigest()
+
+
+class TestPauseAndResume:
+    """RM-48 follow-up: pause keeps the partial file, resume continues it via
+    an HTTP Range request instead of restarting from byte 0."""
+
+    def test_pause_requested_keeps_partial_file(self, tmp_path: Path):
+        content = b"a" * 200_000
+        state_holder: list[DownloadState] = []
+
+        def on_progress(s: DownloadState) -> None:
+            state_holder.append(s)
+            if s.status == "downloading" and not s.pause_requested:
+                s.pause_requested = True
+
+        patches, _mock_req, _resp = _patch_hf(content)
+        with patches[0], patches[1], patches[2]:
+            download_model("m", "a/b", "m.gguf", tmp_path, on_progress=on_progress)
+
+        assert any(s.status == "paused" for s in state_holder)
+        assert (tmp_path / "m.gguf").exists(), "Partial file must be kept on pause, unlike cancel"
+
+    def test_resume_sends_range_header_and_appends(self, tmp_path: Path):
+        """A partial file on disk + resume=True → Range header sent, response
+        appended (not overwritten), final file has the full original content."""
+        first_half = b"A" * 100_000
+        second_half = b"B" * 100_000
+        dest = tmp_path / "m.gguf"
+        dest.write_bytes(first_half)
+
+        patches, mock_req, _resp = _patch_hf(
+            second_half,
+            status_code=206,
+            content_length=False,
+            extra_headers={"Content-Range": f"bytes {len(first_half)}-199999/200000"},
+        )
+        with patches[0], patches[1], patches[2]:
+            result = download_model("m", "a/b", "m.gguf", tmp_path, resume=True)
+
+        sent_headers = mock_req.get.call_args.kwargs["headers"]
+        assert sent_headers["Range"] == f"bytes={len(first_half)}-"
+        assert result.read_bytes() == first_half + second_half
+
+    def test_resume_without_existing_file_behaves_like_fresh_download(self, tmp_path: Path):
+        """resume=True with nothing on disk yet — no Range header, normal download."""
+        content = b"c" * 50_000
+        patches, mock_req, _resp = _patch_hf(content)
+        with patches[0], patches[1], patches[2]:
+            result = download_model("m", "a/b", "m.gguf", tmp_path, resume=True)
+
+        assert "Range" not in mock_req.get.call_args.kwargs["headers"]
+        assert result.read_bytes() == content
+
+    def test_resume_falls_back_to_fresh_download_when_server_ignores_range(self, tmp_path: Path):
+        """Server responds 200 (not 206) to a Range request — must restart
+        from scratch rather than corrupt the file by appending onto stale data."""
+        stale_partial = b"OLD-STALE-DATA-" * 100
+        full_content = b"D" * 60_000
+        dest = tmp_path / "m.gguf"
+        dest.write_bytes(stale_partial)
+
+        patches, _mock_req, _resp = _patch_hf(full_content, status_code=200)
+        with patches[0], patches[1], patches[2]:
+            result = download_model("m", "a/b", "m.gguf", tmp_path, resume=True)
+
+        assert result.read_bytes() == full_content

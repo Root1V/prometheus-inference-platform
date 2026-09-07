@@ -2,11 +2,15 @@ import type { ReactNode } from "react";
 import { HashRouter, Navigate, Route, Routes } from "react-router-dom";
 import { AuthProvider, useAuth } from "./context/AuthContext";
 import { ToastProvider } from "./context/ToastContext";
+import Billing from "./routes/Billing";
 import Dashboard from "./routes/Dashboard";
 import Limits from "./routes/Limits";
 import Login from "./routes/Login";
+import Models from "./routes/Models";
 import Nodes from "./routes/Nodes";
 import Overview from "./routes/Overview";
+import Playground from "./routes/Playground";
+import Sessions from "./routes/Sessions";
 import Usage from "./routes/Usage";
 import Users from "./routes/Users";
 
@@ -40,6 +44,14 @@ export default function App() {
               }
             />
             <Route
+              path="/models"
+              element={
+                <ProtectedRoute>
+                  <Models />
+                </ProtectedRoute>
+              }
+            />
+            <Route
               path="/usage"
               element={
                 <ProtectedRoute>
@@ -56,6 +68,14 @@ export default function App() {
               }
             />
             <Route
+              path="/billing"
+              element={
+                <ProtectedRoute>
+                  <Billing />
+                </ProtectedRoute>
+              }
+            />
+            <Route
               path="/nodes"
               element={
                 <ProtectedRoute>
@@ -68,6 +88,22 @@ export default function App() {
               element={
                 <ProtectedRoute>
                   <Limits />
+                </ProtectedRoute>
+              }
+            />
+            <Route
+              path="/sessions"
+              element={
+                <ProtectedRoute>
+                  <Sessions />
+                </ProtectedRoute>
+              }
+            />
+            <Route
+              path="/playground"
+              element={
+                <ProtectedRoute>
+                  <Playground />
                 </ProtectedRoute>
               }
             />

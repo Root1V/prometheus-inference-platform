@@ -11,7 +11,7 @@ from .claims import Claims
 from .errors import auth_error_response
 from .jwks import fetch_jwks_keys, invalidate_jwks_cache
 from ..config import Settings
-from ..telemetry import get_logger, metrics_store
+from ..telemetry import activity_tracker, get_logger, metrics_store
 
 logger = get_logger(__name__)
 
@@ -40,6 +40,18 @@ def _is_exempt(path: str) -> bool:
     ):
         return True
     return False
+
+
+# RM-23: best-effort connection-type label from the URL prefix alone. Note
+# /ui/* (the web chat UI proxy) never reaches this — it's Bearer-exempt and
+# authenticates via its own session cookie (see ui/router.py's
+# _validate_session), so those sessions aren't visible to ActivityTracker.
+def _connection_type(path: str) -> str:
+    if path.startswith(_ADMIN_API_PREFIX):
+        return "dashboard"
+    if path.startswith("/v1"):
+        return "api"
+    return "other"
 
 
 _BEARER_RE = re.compile(r"^Bearer\s+(\S+)$", re.IGNORECASE)
@@ -182,6 +194,11 @@ class JWTAuthMiddleware:
         )
         # AC (018): count successful JWT validation
         await metrics_store.inc_jwt_ok()
+        # RM-23: last-seen presence tracking, keyed off the same claims already
+        # validated above — see ActivityTracker for what "active" means here.
+        await activity_tracker.touch(
+            claims.client_id, claims.user_id, _connection_type(request.url.path)
+        )
         await self.app(scope, receive, send)
 
     async def _validate_token(self, raw_token: str) -> Claims:

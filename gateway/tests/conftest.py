@@ -214,6 +214,13 @@ def modality_registry(tmp_path):
     quantization: F16
     backend_url: "http://127.0.0.1:18083"
     modality: embedding
+  - id: image-model
+    path: /dev/null
+    context_length: 0
+    family: sd-turbo
+    quantization: Q8_0
+    backend_url: "http://127.0.0.1:18084"
+    modality: image
 """
     registry_file = tmp_path / "registry.yaml"
     registry_file.write_text(yaml_content)
@@ -265,6 +272,20 @@ def clear_jwks_cache():
     _reset_cache_for_testing()
     yield
     _reset_cache_for_testing()
+
+
+@pytest.fixture(autouse=True)
+def clear_budget_settings_cache():
+    """RM-60: budget.py's in-process billing-settings cache is keyed only by
+    client_id, with no awareness of which (per-test, isolated) DB it came
+    from — without this, a client_id reused across tests within the cache's
+    30s TTL would see a stale cap/settings row from an earlier test's DB.
+    """
+    from prometheus_gateway.budget import _reset_cache_for_testing as _reset_budget_cache
+
+    _reset_budget_cache()
+    yield
+    _reset_budget_cache()
 
 
 @pytest.fixture(autouse=True)

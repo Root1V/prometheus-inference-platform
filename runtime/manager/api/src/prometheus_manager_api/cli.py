@@ -33,6 +33,7 @@ def _load(config_path: str | None) -> ManagerConfig:
     "-c",
     "config_path",
     envvar="PMGR_CONFIG",
+    show_envvar=True,
     default=None,
     metavar="FILE",
     help="Path to manager.toml (default: manager.toml in cwd or defaults).",

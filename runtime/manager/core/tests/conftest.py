@@ -38,7 +38,7 @@ def default_config(tmp_path: Path) -> ManagerConfig:
             start_timeout_s=5,
             stop_timeout_s=5,
         ),
-        registry=RegistryConfig(path=str(tmp_path / "registry.yaml")),
+        registry=RegistryConfig(path=str(tmp_path / "registry.db")),
         downloads=DownloadsConfig(dir=str(tmp_path / "models")),
         dashboard=DashboardConfig(refresh_interval_s=2),
     )
@@ -49,7 +49,7 @@ def default_config(tmp_path: Path) -> ManagerConfig:
 
 @pytest.fixture
 def registry_path(tmp_path: Path) -> Path:
-    return tmp_path / "registry.yaml"
+    return tmp_path / "registry.db"
 
 
 @pytest.fixture

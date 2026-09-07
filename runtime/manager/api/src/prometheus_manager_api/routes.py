@@ -1,10 +1,12 @@
 """API routes for the Prometheus Manager.
 
-GET /health            — liveness probe (no auth)
-GET /v1/backends       — all registered models + live state (requires JWT)
-GET /v1/backends/{id}  — single model + live state (requires JWT)
+GET /health                 — liveness probe (no auth)
+GET /v1/backends            — all registered models + live state (requires JWT)
+GET /v1/backends/{id}       — single model + live state (requires JWT)
+GET /v1/backends/{id}/logs  — tail that model's log file (requires JWT)
 
 Implements: memory/specs/008-llama-server-manager.md — AC-11, AC-12, AC-13
+Implements: docs/roadmap.md — RM-13 (live log viewer)
 """
 
 from __future__ import annotations
@@ -18,6 +20,7 @@ from typing import Annotated, Any
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from opentelemetry.trace import SpanKind
+from prometheus_manager_core.hf_discovery import shard_filenames
 from prometheus_manager_core.registry import Registry, RegistryEntry
 from prometheus_manager_core.scanner import ProcessState, scan
 from prometheus_manager_core.telemetry import get_tracer
@@ -94,7 +97,8 @@ async def list_backends(
             if live:
                 # We have live ProcessState entries visible via psutil; merge them.
                 backends = [
-                    _merge(entry.__dict__, live.get(entry.id), pid_dir=pid_dir) for entry in entries
+                    _merge(entry.to_dict(), live.get(entry.id), pid_dir=pid_dir)
+                    for entry in entries
                 ]
             else:
                 # Fallback: HTTP probing when psutil cannot see host processes.
@@ -105,7 +109,7 @@ async def list_backends(
                         probe_span.set_attribute("model_count", len(entries))
                         backends = [
                             _merge(
-                                entry.__dict__, await _probe_state(entry, proxy_host), proxy_host
+                                entry.to_dict(), await _probe_state(entry, proxy_host), proxy_host
                             )
                             for entry in entries
                         ]
@@ -118,7 +122,7 @@ async def list_backends(
                             probe_span.set_attribute("model_id", entry.id)
                             state = await _probe_state(entry, proxy_host)
                             probe_span.set_attribute("probe_result", state)
-                            backends.append(_merge(entry.__dict__, state, proxy_host))
+                            backends.append(_merge(entry.to_dict(), state, proxy_host))
         else:
             # Bare-metal mode: psutil-based process scanning.
             pid_dir = request.app.state.pid_dir
@@ -145,7 +149,7 @@ async def list_backends(
                         probe_span.set_attribute("model_id", entry.id)
                         probe_span.set_attribute("probe_result", state_str)
             backends = [
-                _merge(entry.__dict__, live.get(entry.id), pid_dir=pid_dir) for entry in entries
+                _merge(entry.to_dict(), live.get(entry.id), pid_dir=pid_dir) for entry in entries
             ]
 
         span.set_attribute("backend_count", len(backends))
@@ -207,9 +211,9 @@ async def get_backend(
             live = {proc.model_id: proc for proc in live_procs if proc.model_id}
             proc = live.get(model_id)
             if proc is not None:
-                result = _merge(entry.__dict__, proc, pid_dir=pid_dir)
+                result = _merge(entry.to_dict(), proc, pid_dir=pid_dir)
             else:
-                result = _merge(entry.__dict__, await _probe_state(entry, proxy_host), proxy_host)
+                result = _merge(entry.to_dict(), await _probe_state(entry, proxy_host), proxy_host)
         else:
             pid_dir = request.app.state.pid_dir
             live = {
@@ -217,16 +221,120 @@ async def get_backend(
                 for proc in await asyncio.to_thread(scan, pid_dir, {model_id})
                 if proc.model_id
             }
-            result = _merge(entry.__dict__, live.get(model_id), pid_dir=pid_dir)
+            result = _merge(entry.to_dict(), live.get(model_id), pid_dir=pid_dir)
 
         span.set_attribute("backend_state", result.get("state", "unknown"))
         span.set_attribute("http.status_code", 200)
         return result
 
 
+def _tail_lines(path: Path, n: int) -> list[str]:
+    """Return the last *n* lines of a text file. Simple whole-file read — fine for a
+    single model's log; revisit with a seek-based tail if this ever proves too slow."""
+    text = path.read_text(errors="replace")
+    lines = text.splitlines()
+    return lines[-n:]
+
+
+@router.get("/v1/backends/{model_id}/logs", tags=["backends"])
+async def get_backend_logs(
+    model_id: str,
+    request: Request,
+    _claims: Annotated[Claims, Depends(require_backend_registry_read)],
+    tail: Annotated[
+        int, Query(ge=1, le=2000, description="Number of trailing lines to return.")
+    ] = 200,
+) -> dict[str, Any]:
+    """Return the tail of a backend's log file (stdout+stderr, RM-13).
+
+    Implements: docs/roadmap.md — RM-13 (live log viewer)
+    """
+    with _tracer.start_as_current_span("backend.logs", kind=SpanKind.INTERNAL) as span:
+        span.set_attribute("model_id", model_id)
+        registry: Registry = request.app.state.registry
+        registry.reload()
+
+        from prometheus_manager_core.registry import _validate_id as _vid
+
+        try:
+            _vid(model_id)
+        except ValueError:
+            span.set_attribute("http.status_code", 404)
+            raise HTTPException(
+                status_code=404,
+                detail={
+                    "type": "https://prometheus.local/errors/not-found",
+                    "title": "Not Found",
+                    "status": 404,
+                    "detail": "Backend not found.",
+                },
+            ) from None
+
+        if registry.get(model_id) is None:
+            span.set_attribute("http.status_code", 404)
+            raise HTTPException(
+                status_code=404,
+                detail={
+                    "type": "https://prometheus.local/errors/not-found",
+                    "title": "Not Found",
+                    "status": 404,
+                    "detail": f"Backend '{model_id}' not found.",
+                },
+            )
+
+        config = request.app.state.config
+        log_path: Path = config.resolved_log_dir / f"{model_id}.log"
+        if not log_path.exists():
+            span.set_attribute("http.status_code", 200)
+            return {"model_id": model_id, "lines": []}
+
+        lines = await asyncio.to_thread(_tail_lines, log_path, tail)
+        span.set_attribute("line_count", len(lines))
+        span.set_attribute("http.status_code", 200)
+        return {"model_id": model_id, "lines": lines}
+
+
 def _uptime_s(ps: ProcessState) -> float:
     now = datetime.now(tz=UTC)
     return float((now - ps.started_at).total_seconds())
+
+
+def _file_size_bytes(entry: dict[str, Any]) -> int | None:
+    """Total on-disk size of a downloaded model's file(s) — RM-48 follow-up.
+
+    Sums every shard for a multi-part model, all resolved relative to the
+    single `path` field's own directory rather than reaching into
+    ManagerConfig, so _merge() stays self-contained. None when the entry
+    isn't downloaded, has no path, or a file is missing (e.g. deleted
+    out-of-band) — the admin dashboard shows that as "?".
+
+    `hf_filenames` (populated for anything registered through the Models
+    page's download flow) is trusted when present. Models registered
+    manually — e.g. a pre-existing local .gguf pointed at directly — never
+    get `hf_filenames` populated even when the file is one shard of many
+    (RM-50: found undercounting several real multi-shard models by up to
+    ~80% this way). For those, fall back to scanning the file's own
+    directory with the same shard-detection helper the Hugging Face
+    discovery flow uses, rather than assuming a single file.
+    """
+    path = entry.get("path")
+    if not entry.get("downloaded") or not path:
+        return None
+    base_dir = Path(path).parent
+    filenames = entry.get("hf_filenames") or None
+    if not filenames:
+        try:
+            siblings = [p.name for p in base_dir.iterdir() if p.is_file()]
+        except OSError:
+            return None
+        filenames = shard_filenames(Path(path).name, siblings)
+    total = 0
+    try:
+        for filename in filenames:
+            total += (base_dir / filename).stat().st_size
+    except OSError:
+        return None
+    return total
 
 
 def _merge(
@@ -248,8 +356,16 @@ def _merge(
     "{model_id}.error" marker written by lifecycle.py on a failed start —
     without it, a crashed-on-start model is indistinguishable from one
     that's simply never been started ("stopped" either way).
+
+    Callers must pass entry.to_dict(), not entry.__dict__ — RM-49 turned
+    backend_url into a derived @property (it's always http://127.0.0.1:<port>,
+    never a stored field), and a bare dataclass __dict__ omits properties
+    entirely. Passing __dict__ here silently drops backend_url from every
+    /v1/backends response, which is what the gateway's manager_sync relies on
+    to route requests at all (found while verifying RM-38 end-to-end).
     """
     result: dict[str, Any] = dict(entry)
+    result["file_size_bytes"] = _file_size_bytes(entry)
     # Rewrite backend_url for container consumers when proxy_host is set.
     if proxy_host and result.get("backend_url"):
         result["backend_url"] = (

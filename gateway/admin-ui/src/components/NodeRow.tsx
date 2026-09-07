@@ -28,6 +28,8 @@ export function NodeRow({ node, onEdit }: { node: Node; onEdit: (node: Node) => 
         <td className="px-4 py-3 text-text-muted">{node.manager_url}</td>
         <td className="px-4 py-3 text-text-muted capitalize">{node.node_type}</td>
         <td className="px-4 py-3 text-text-muted">{node.tag ?? "—"}</td>
+        <td className="px-4 py-3 text-text-muted">${node.hourly_cost_usd.toFixed(4)}</td>
+        <td className="px-4 py-3 text-text-muted">{node.price_margin_multiplier}×</td>
         <td className="px-4 py-3">
           <UserStatusBadge isActive={node.is_active} />
         </td>
