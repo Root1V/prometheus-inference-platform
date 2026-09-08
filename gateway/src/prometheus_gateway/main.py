@@ -217,9 +217,12 @@ def create_app(
         request_id = getattr(getattr(request, "state", None), "request_id", "unknown")
         trace_id = getattr(getattr(request, "state", None), "trace_id", "none")
         errors = exc.errors()
-        detail = "; ".join(
-            f"{'.'.join(str(p) for p in e.get('loc', []))}: {e.get('msg', '')}" for e in errors
-        ) or "Request validation failed."
+        detail = (
+            "; ".join(
+                f"{'.'.join(str(p) for p in e.get('loc', []))}: {e.get('msg', '')}" for e in errors
+            )
+            or "Request validation failed."
+        )
         return JSONResponse(
             status_code=422,
             content={
