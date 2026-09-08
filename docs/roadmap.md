@@ -2635,6 +2635,114 @@ output matches the formula by hand across two separate live requests (different 
 samples each time), and confirmed the currency-rates form loads and round-trips real PEN/EUR
 values through the existing PUT endpoint.
 
+## RM-63 — Prepaid credits/quotas (todo)
+
+**Why**: [[RM-60]] built post-paid, informational billing only — a client accrues cost
+through the month and sees what they owe, with a hard spend cap as the only real-time gate;
+real payment collection was explicitly out of scope ("solo mostrar cuánto deben pagar"). The
+user wants an actual prepaid commercial model on top of that: a client buys a credit balance
+in advance and draws it down as they use models, instead of (or alongside) a monthly invoice.
+(Tiered model access — originally requested alongside this — was split out into [[RM-64]]
+once it turned out to be a separable concern with its own design direction.)
+
+**Decided so far**:
+- **Coexistence, confirmed**: prepaid credits sit alongside [[RM-60]]'s post-paid model, not
+  as a replacement — which billing model applies is a per-client choice.
+- **Payment methods, confirmed**: card, e-wallets (Yape/Plin), and bank transfers. Some
+  reconcile automatically (card, presumably wallet APIs); bank transfers are confirmed
+  **manual** — an admin marks a transfer as received and credits the account, so the credit
+  ledger needs an explicit "pending confirmation" state, not just "paid".
+- **"Extend usage window", resolved — it's just a top-up**: the user clarified this isn't a
+  time-boxed subscription window at all. If a client buys 100 credits and burns through them
+  on day one, they simply buy more credits to keep going — no interaction with [[RM-60]]'s
+  calendar-month billing period to design around. This removes what was the least-scoped part
+  of the original ask.
+
+**Deferred idea, not needed now**: a real time-boxed access window (credits that expire, or a
+subscription-style period distinct from a simple top-up) was raised while scoping the "extend
+usage" question above. The user confirmed the immediate need is fully satisfied by plain
+top-ups, so this isn't part of RM-63's build — but it's kept here as a distinct idea for
+later, in case expiring credits or a subscription-style window becomes an actual requirement.
+If it's ever picked up, its interaction with [[RM-60]]'s calendar-month billing period
+(`month_bounds()`) is the open design question to start from.
+
+**Still open**:
+- Real payment collection (actually charging a card/wallet, and a manual-confirmation flow
+  for transfers) is required to sell credits at all — this can't ship without picking payment
+  processor(s) and building that integration, which [[RM-60]] deliberately deferred and this
+  item inherits.
+- **SUNAT reporting placement — recommendation**: put it in [[RM-61]], not here. SUNAT cares
+  about revenue from a Peru-based individual regardless of whether it came from a post-paid
+  invoice or a prepaid credit purchase — a second, RM-63-owned reporting path would duplicate
+  the actual compliance logic and risk drifting out of sync with it. RM-63's job is just to
+  make sure every credit purchase/payment event is captured with the fields RM-61's eventual
+  reporting will need (amount, currency, client, date, payment method) — not to build its own
+  summary. [[RM-61]] itself is still blocked on the underlying legal/business decision, so
+  this is a placement recommendation, not something ready to build either way.
+
+## RM-64 — Tiered model access by plan (todo)
+
+**Why**: split out of [[RM-63]] — originally requested together with prepaid credits, but
+"which models a client can call" and "how they pay for usage" are separable concerns, and
+this one already has enough industry research behind it to stand on its own.
+
+**Confirmed direction**: a hybrid plan model, industry-researched and confirmed by the user.
+A `plan` grants a default bundle of the existing `model:<id>` scopes ([[RM-07]]) automatically
+when assigned to a client; an admin can still add/remove individual model grants per client on
+top of whatever the plan gave them. This reuses RM-07's existing enforcement as-is — a plan is
+just a named bundle applied at grant time, not a new gateway-side check.
+
+Why this direction over the alternatives found in research:
+- **Not OpenAI/Anthropic's automatic spend-tier model** (tier rises automatically with
+  cumulative spend/account age) — that's really an anti-fraud/rate-limit mechanism, not a
+  purchased product, and this platform already has its own equivalent in [[RM-60]]'s spend
+  caps/alerts. Keeping "which plan you bought" separate from "how trusted your account is"
+  was a deliberate call, not an oversight.
+- **Not the ungated-marketplace pattern** (OpenRouter, Together.ai, Fireworks, Replicate —
+  full catalog open to everyone, price is the only differentiator) — doesn't fit the user's
+  explicit ask that purchasing a tier should unlock access to bigger/newer models.
+- **Not pure manual-grants-only** — doesn't scale as the client base grows, admin becomes a
+  bottleneck for routine plan assignments.
+
+**Still open**:
+- How a plan is assigned/changed in relation to [[RM-63]]'s prepaid credits — does buying a
+  particular credit package imply a plan, or are plan and credit balance orthogonal
+  purchases? Depends on RM-63's own design landing first.
+- Data model for a "plan" (name, ordered tier rank if any, its default `model:<id>` bundle)
+  and where plan assignment is surfaced in the admin dashboard (likely alongside the existing
+  per-client scope management).
+
+## RM-65 — fix: 422 validation errors break the RFC 9457 error contract (done)
+
+**Why**: `docs/sdk-integration-guide.md` (written for the Axonium team building Python/Go/Rust
+client SDKs) documented that every gateway error is RFC 9457 `application/problem+json` with
+a `type`/`request_id`/`trace_id` an SDK can key off. The Axonium team found this untrue for
+one case: a request body that fails Pydantic validation (missing/wrong-typed field) fell
+through to FastAPI's own default `RequestValidationError` handler, never reaching the
+gateway's `_problem()`/`_rl_problem()`/`auth_error_response()` builders — `Content-Type` was
+plain `application/json`, body was `{"detail": [...]}`, no `type`, no `request_id`. An SDK
+typing errors by `type` (as the guide itself instructs) got nothing to key off for this one
+status code, and 422 wasn't even in the guide's own error catalog.
+
+**Scope**: registered a `RequestValidationError` exception handler on the FastAPI app
+(`gateway/src/prometheus_gateway/main.py`) that builds the same envelope shape as the
+existing three independent copies (`router.py`'s `_problem()`, `auth/errors.py`,
+`rate_limit_middleware.py`'s `_rl_problem()`) — `type` suffix `validation-error`, status 422,
+`Content-Type: application/problem+json`. Pydantic's original per-field error list
+(`loc`/`msg`/`type`/`input`) is preserved under an `errors` extension member rather than
+discarded, so nothing is lost for programmatic or debugging use — `detail` is a
+human-readable summary derived from the same list. Didn't unify the three pre-existing
+duplicate envelope-builders into one shared function while touching this — that's a separate,
+larger refactor than what was reported, flagged here rather than done silently.
+
+**Verified**: reproduced live against the real gateway (missing `messages` field on
+`/v1/chat/completions` → confirmed the old `application/json`/`{"detail": [...]}` shape
+first, matching the report exactly), fixed, restarted, re-ran the identical request →
+confirmed `application/problem+json` with `type`/`request_id`/`trace_id`/`errors` all
+present. New regression test `test_rm65_body_validation_error_uses_problem_details_envelope`
+in `gateway/tests/test_gateway_core.py`; full suite (336 tests) green. Updated
+`docs/sdk-integration-guide.md` §5.1/§5.2 to document the fixed 422 shape.
+
 Append a new row to the table with the next `RM-NN` id and a new `## RM-NN — ...` section
 below, following the same shape (Why / Scope). Re-sort the table if the new item's
 priority isn't "last."

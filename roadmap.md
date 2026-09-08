@@ -68,6 +68,9 @@ Status: `done` · `todo`
 | RM-60 | Billing: real per-client cost, multi-currency display, tax, dashboard, budget alerts | done | Fixed a retroactive-repricing bug (cost now stored at write time, not recomputed later); added an audit trail, CSV export, PEN/USD/EUR display, a tax line, a hard cap + soft alert thresholds, and a billing dashboard; real card charging stays deferred |
 | RM-61 | Peru/SUNAT e-invoicing compliance for individual (B2C) clients | todo | Blocked on the user's own business/legal decision (bill Peru individuals at all? which e-invoicing provider?) — not something to silently code under RM-60 |
 | RM-62 | Cost-based model price suggestion | done | Per-node $/hour field, a real prefill (prompt) tokens/sec metric, and a "Suggest price" calculator button in the Model Pricing table — break-even = node $/hour ÷ observed throughput, with an editable margin |
+| RM-63 | Prepaid credits/quotas | todo | Clients buy a credit balance upfront and draw it down using models, topping up whenever it runs out; coexists with RM-60's post-paid billing — needs real payment collection (card, Yape/Plin, manual bank transfers), which RM-60 deliberately left out |
+| RM-64 | Tiered model access by plan | todo | A purchased plan grants a default bundle of the existing `model:<id>` scopes automatically; admin can still add/remove individual grants on top — split out of RM-63, direction confirmed after industry research |
+| RM-65 | fix: 422 validation errors break the RFC 9457 error contract | done | FastAPI's default validation-error handler returned `application/json`/`{"detail": [...]}` instead of the gateway's own problem+json envelope every other error uses — found live by the Axonium SDK integration team; now wrapped in the same envelope, per-field detail preserved under `errors` |
 
 Adding an item: append the next `RM-NN` row here with a one-liner, then add the full
 Why/Scope writeup to `docs/roadmap.md`.
