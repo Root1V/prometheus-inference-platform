@@ -535,12 +535,27 @@ practice regardless), it doesn't need to change — but you can now rely on `typ
 being present for 422s the same as any other gateway error, against a gateway that includes
 this fix.
 
+**Modality check on `/v1/chat/completions` was one-directional, fixed (RM-66)**: `/v1/embeddings`
+and `/v1/images/generations` always rejected a model of the wrong modality outright. Chat
+completions only checked modality when an image content part was present (to require a
+vision-capable model) — it never checked whether the target model could do chat/text
+generation *at all*. Calling `/v1/chat/completions` with an embedding or image-generation
+model used to return `200` with garbage/meaningless output (the model still ran, it just
+isn't meant to produce chat completions) — billing the caller for a real, wasted generation
+instead of a clear, free error. Found live by our own integration testing while building this
+guide. Fixed: any model whose modality isn't `text` or `vision` now returns `400
+modality-mismatch` immediately, before any backend call, for both streaming and
+non-streaming. If your SDK has a "wrong-modality" client-side check of its own as a
+convenience, it can stay — this fix just makes the server-side guarantee actually hold for
+every direction, so you no longer need to treat "did I pick the right endpoint for this
+model" as something only the SDK can catch.
+
 ### 5.2 Full error catalog (client-facing endpoints only)
 
 | Status | `type` suffix | Meaning | Retryable? |
 |---|---|---|---|
 | 400 | `unknown-model` | Model ID not registered. Checked *before* any scope check — an unrecognized model is always 400, never 403, regardless of what the token can access. | No |
-| 400 | `modality-mismatch` | e.g. sent an image content part to a non-vision model, or called `/v1/embeddings` with a non-embedding model. | No |
+| 400 | `modality-mismatch` | Calling `/v1/chat/completions` with a model whose modality isn't `text`/`vision` (e.g. an embedding or image-generation model — fixed in RM-66, see note below), sending an image content part to a non-vision model, or calling `/v1/embeddings`/`/v1/images/generations` with the wrong modality. | No |
 | 400 | `context-exceeded` | Request exceeds the model's context window. | No (shrink the request) |
 | 422 | `validation-error` | Request body failed schema validation (missing/wrong-typed field). `errors` extension member carries Pydantic's per-field detail. | No (fix the request) |
 | 401 | `missing-credentials` | No/malformed `Authorization` header, or token passed as a query param. | No (fix the request) |

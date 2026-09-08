@@ -589,6 +589,27 @@ def create_router(registry: ModelRegistry, pool: "BackendPool") -> APIRouter:
                     "Contact the platform operator to request access.",
                 )
 
+            # RM-66: reject any model whose modality isn't chat-capable at all —
+            # previously only images-into-a-non-vision-model were rejected (below);
+            # an embedding or image-generation model passed straight through to the
+            # backend and produced garbage output (confirmed live: an embedding
+            # model returned repeating-token junk with a 200), silently billing the
+            # caller for it instead of a clear error. /v1/embeddings and
+            # /v1/images/generations already reject the wrong modality
+            # unconditionally (router.py's embeddings/images handlers) — this was
+            # the one direction missing.
+            if entry.modality not in ("text", "vision"):
+                inf_span.set_attribute("http.status_code", 400)
+                return _problem(
+                    request,
+                    400,
+                    "modality-mismatch",
+                    "Modality Mismatch",
+                    f"Model {body.model!r} does not support chat completions "
+                    f"(modality={entry.modality!r}). Use /v1/embeddings or "
+                    f"/v1/images/generations for that modality instead.",
+                )
+
             # RM-09: reject image content parts against a non-vision model. Placed
             # with the other request-shape validation (400s), after the auth checks
             # above since it's about the request, not who's allowed to send it.

@@ -2743,6 +2743,33 @@ present. New regression test `test_rm65_body_validation_error_uses_problem_detai
 in `gateway/tests/test_gateway_core.py`; full suite (336 tests) green. Updated
 `docs/sdk-integration-guide.md` §5.1/§5.2 to document the fixed 422 shape.
 
+## RM-66 — fix: chat completions accepted a wrong-modality model (done)
+
+**Why**: [[RM-09]] added modality enforcement for vision content parts and `/v1/embeddings`/
+`/v1/images/generations` already reject a model of the wrong modality unconditionally on
+every call (`entry.modality != "embedding"` / `!= "image"`). `/v1/chat/completions` only
+checked modality reactively — `has_image and entry.modality != "vision"` — which means a
+plain-text chat request against an embedding or image-generation model had no modality gate
+at all. Confirmed live: calling `/v1/chat/completions` with an embedding model returned `200`
+with repeating-token garbage output (`"User-Agent-Agent.uaaaauseragentua"`) instead of an
+error — the caller pays for a real (wasted) generation instead of getting a clear, free 400.
+Found by the Axonium SDK integration team while testing against the real gateway, who
+correctly noted the check was "one-directional" (embeddings rejects a text model; chat never
+rejected an embedding model).
+
+**Scope**: `router.py`'s chat completions handler gained an unconditional modality gate —
+`entry.modality not in ("text", "vision")` → `400 modality-mismatch`, placed before the
+existing image-content-part check (which still runs after it, now only meaningfully reachable
+once the model is already known to be chat-capable). Runs before the streaming/non-streaming
+branch, so both paths are covered by one check.
+
+**Verified**: reproduced live first (the exact garbage-output response, confirmed the caller
+would have been billed for a real generation), fixed, restarted, re-ran the identical request
+→ confirmed `400 modality-mismatch` with no backend call made; also confirmed an
+image-generation model is rejected the same way. Two new regression tests in
+`gateway/tests/test_modality.py` (non-streaming and streaming); full suite (338 tests) green.
+Updated `docs/sdk-integration-guide.md` §5.1/§5.2.
+
 Append a new row to the table with the next `RM-NN` id and a new `## RM-NN — ...` section
 below, following the same shape (Why / Scope). Re-sort the table if the new item's
 priority isn't "last."

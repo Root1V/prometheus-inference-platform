@@ -96,6 +96,35 @@ async def test_image_content_on_text_model_returns_400(gw, rsa_keys):
     assert resp.json()["type"].endswith("modality-mismatch")
 
 
+async def test_chat_completions_on_embedding_model_returns_400(gw, rsa_keys):
+    """RM-66: an embedding model previously sailed straight through to the
+    backend on a plain-text chat request (no image content part, so the
+    has_image-gated vision check above never fired) and produced garbage
+    output with a 200 — found live by the Axonium SDK team. No respx mock is
+    registered for EMBED_URL here, so this also proves the fix short-circuits
+    before ever reaching the backend, not just that it happens to return 400.
+    """
+    headers = _headers(rsa_keys, "inference:read model:embed-model")
+    body = {"model": "embed-model", "messages": [{"role": "user", "content": "hello"}]}
+    resp = await gw.post("/v1/chat/completions", json=body, headers=headers)
+    assert resp.status_code == 400
+    assert resp.json()["type"].endswith("modality-mismatch")
+
+
+async def test_chat_completions_streaming_on_embedding_model_returns_400(gw, rsa_keys):
+    """Same gap, streaming path — the modality check runs before the
+    stream/non-stream branch, so both need covering."""
+    headers = _headers(rsa_keys, "inference:stream model:embed-model")
+    body = {
+        "model": "embed-model",
+        "messages": [{"role": "user", "content": "hello"}],
+        "stream": True,
+    }
+    resp = await gw.post("/v1/chat/completions", json=body, headers=headers)
+    assert resp.status_code == 400
+    assert resp.json()["type"].endswith("modality-mismatch")
+
+
 async def test_image_content_on_vision_model_forwards_ok(gw, rsa_keys):
     headers = _headers(rsa_keys, "inference:read model:vlm-model")
     body = {
