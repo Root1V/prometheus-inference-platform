@@ -6,6 +6,8 @@ from pathlib import Path
 from typing import Any
 
 from fastapi import FastAPI, Request, Response
+from fastapi.exceptions import RequestValidationError
+from fastapi.responses import JSONResponse
 
 from .auth.middleware import JWTAuthMiddleware
 from .config import Settings
@@ -199,6 +201,39 @@ def create_app(
         response = await call_next(request)
         response.headers["X-Request-ID"] = request.state.request_id
         return response
+
+    @app.exception_handler(RequestValidationError)
+    async def _validation_error_handler(
+        request: Request, exc: RequestValidationError
+    ) -> JSONResponse:
+        """RM-65: FastAPI's default 422 body (`{"detail": [...]}`, application/json)
+        broke the RFC 9457 contract every other gateway error follows (router.py's
+        _problem(), auth/errors.py, rate_limit_middleware.py's own copies of the
+        same envelope) — an SDK typing errors by `type`/checking `request_id` got
+        nothing for a body-validation failure. Wraps it in the same envelope,
+        keeping Pydantic's per-field errors available under `errors` for
+        programmatic/debugging use.
+        """
+        request_id = getattr(getattr(request, "state", None), "request_id", "unknown")
+        trace_id = getattr(getattr(request, "state", None), "trace_id", "none")
+        errors = exc.errors()
+        detail = "; ".join(
+            f"{'.'.join(str(p) for p in e.get('loc', []))}: {e.get('msg', '')}" for e in errors
+        ) or "Request validation failed."
+        return JSONResponse(
+            status_code=422,
+            content={
+                "type": "https://prometheus.internal/errors/validation-error",
+                "title": "Validation Error",
+                "status": 422,
+                "detail": detail,
+                "instance": str(request.url.path),
+                "request_id": request_id,
+                "trace_id": trace_id,
+                "errors": errors,
+            },
+            media_type="application/problem+json",
+        )
 
     @app.get("/health")
     async def health() -> dict[str, str]:

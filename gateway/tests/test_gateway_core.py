@@ -183,6 +183,33 @@ async def test_gateway_core_AC5_unknown_model(gw, auth_headers):  # memory/specs
     assert "nonexistent-model-xyz" in data["detail"]
 
 
+async def test_rm65_body_validation_error_uses_problem_details_envelope(gw, auth_headers):
+    """RM-65: a request body that fails Pydantic validation (missing `messages`)
+    used to fall through to FastAPI's default `{"detail": [...]}` shape instead
+    of the RFC 9457 envelope every other gateway error follows — no `type`, no
+    `request_id`, `Content-Type: application/json` instead of
+    `application/problem+json`. Found live by an SDK integration team relying on
+    the documented "every gateway error is problem+json" contract.
+    """
+    resp = await gw.post(
+        "/v1/chat/completions",
+        json={"model": "llama3-8b-q4"},  # missing required `messages`
+        headers=auth_headers,
+    )
+
+    assert resp.status_code == 422
+    assert resp.headers["content-type"] == "application/problem+json"
+    data = resp.json()
+    assert data["status"] == 422
+    assert "validation-error" in data["type"]
+    assert data["title"] == "Validation Error"
+    assert data["instance"] == "/v1/chat/completions"
+    assert data["request_id"]
+    assert "trace_id" in data
+    # Pydantic's per-field detail is preserved for programmatic/debugging use.
+    assert data["errors"][0]["loc"] == ["body", "messages"]
+
+
 # ── Client-supplied system messages are forwarded (RM-43) ─────────────────
 
 
