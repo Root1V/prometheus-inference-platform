@@ -2526,20 +2526,26 @@ preferring the fastest one.
   already does — this is about picking among instances the gateway already aggregates,
   not a new distributed-systems layer.
 
-## RM-59 — Dashboard: search/filter for Models and Instances (todo)
+## RM-59 — Dashboard: search/filter for Models and Instances (done)
 
-**Why**: raised in passing — the Instances table ([[RM-26]], numbered/paginated/active-first)
-and the Models/Library table ([[RM-51]]'s catalog view) both support sorting and pagination
-but have no text search/filter. With dozens of registered models (33 in the real registry.db
-as of RM-51), finding one specific model means scanning pages by eye.
+**Why**: both tables already sort and paginate, but with ~29 catalog models and a growing
+instance list, finding a specific one meant scanning or paging. Deliberately client-side:
+both tables already hold their full dataset in memory (the catalog and instance list are
+fetched whole and polled), so a text filter needs no endpoint, no query param, and no refetch.
 
-**Scope**:
-- A single text filter input on both the Instances page and the Models/Library tab,
-  matching against `id`/`family`/`quantization` client-side (the full list is already
-  fetched for sorting/pagination — no new endpoint needed, just filter before paginating).
-- Out of scope: fuzzy/ranked search, filtering by numeric ranges (size, context length) —
-  a plain substring match covers the actual "I know roughly what it's called" use case this
-  was raised for.
+**Scope**: a shared `TableSearchInput` component (search icon, clear button, match count)
+rendered above `InstanceTable` and `DownloadedModelsTable`. Instances match on id, model_id,
+node, backend, modality, state and port; models match on name, family and quantization —
+case-insensitive substring. Filtering is applied *before* the existing sort and pagination so
+both keep operating on what's actually shown, and typing resets `InstanceTable` to page 1 (a
+filter that shrinks the result set below the current page would otherwise leave the operator
+on a page that no longer exists). A no-matches state is distinct from the never-registered
+empty state — the latter still says "click Register model", which would be wrong copy for a
+search that simply found nothing.
+
+**Verified**: live in the browser against the real dashboard — Instances filtered by modality
+("vision" → 2 of 10), the no-match state, and Models filtered by family ("gemma" → 5 of 29)
+with row numbers renumbering correctly. `tsc`/`eslint`/`build` clean.
 
 ## RM-60 — Billing: real per-client cost, multi-currency display, tax, dashboard, budget alerts (done)
 

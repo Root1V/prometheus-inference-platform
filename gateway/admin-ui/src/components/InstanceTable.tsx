@@ -3,6 +3,7 @@ import { useMemo, useState } from "react";
 import type { BackendMetrics } from "../api/metrics";
 import type { InstanceEntry, InstanceState } from "../types/instance";
 import { InstanceRow } from "./InstanceRow";
+import { TableSearchInput } from "./TableSearchInput";
 
 /** RM-46 follow-up: header tooltips explain what each performance column
  * means once, here — the per-row cells no longer need to repeat it. */
@@ -74,16 +75,30 @@ export function InstanceTable({
   onEdit: (instance: InstanceEntry) => void;
 }) {
   const [page, setPage] = useState(1);
+  const [query, setQuery] = useState("");
 
   const sorted = useMemo(
     () => [...instances].sort((a, b) => STATE_RANK[a.state] - STATE_RANK[b.state]),
     [instances],
   );
 
-  const totalPages = Math.max(1, Math.ceil(sorted.length / PAGE_SIZE));
+  // RM-59: client-side filter over the fields an operator actually scans for
+  // when hunting a specific instance. Everything here is already in memory —
+  // no refetch, no new endpoint.
+  const filtered = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    if (q === "") return sorted;
+    return sorted.filter((i) =>
+      [i.id, i.model_id, i.node, i.backend, i.modality, i.state, String(i.port)].some((field) =>
+        field.toLowerCase().includes(q),
+      ),
+    );
+  }, [sorted, query]);
+
+  const totalPages = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE));
   const currentPage = Math.min(page, totalPages);
   const startIndex = (currentPage - 1) * PAGE_SIZE;
-  const pageItems = sorted.slice(startIndex, startIndex + PAGE_SIZE);
+  const pageItems = filtered.slice(startIndex, startIndex + PAGE_SIZE);
 
   if (instances.length === 0) {
     return (
@@ -95,6 +110,24 @@ export function InstanceTable({
 
   return (
     <div className="overflow-x-auto rounded-xl border border-border bg-surface">
+      <TableSearchInput
+        value={query}
+        onChange={(v) => {
+          setQuery(v);
+          // Reset to the first page — otherwise a filter that shrinks the
+          // result set below the current page leaves the operator looking at
+          // a page that no longer exists.
+          setPage(1);
+        }}
+        placeholder="Filter by id, model, node, backend, modality, state or port…"
+        resultLabel={`${filtered.length} of ${instances.length}`}
+      />
+
+      {filtered.length === 0 ? (
+        <div className="p-12 text-center text-text-muted">
+          No instances match “{query.trim()}”.
+        </div>
+      ) : (
       <table className="w-full min-w-[900px] text-left text-sm">
         <thead>
           <tr className="border-b border-border text-xs uppercase tracking-wide text-text-muted">
@@ -121,11 +154,13 @@ export function InstanceTable({
           ))}
         </tbody>
       </table>
+      )}
 
       {totalPages > 1 && (
         <div className="flex items-center justify-between border-t border-border px-4 py-3 text-sm text-text-muted">
           <span>
-            Showing {startIndex + 1}–{Math.min(startIndex + PAGE_SIZE, sorted.length)} of {sorted.length}
+            Showing {startIndex + 1}–{Math.min(startIndex + PAGE_SIZE, filtered.length)} of{" "}
+            {filtered.length}
           </span>
           <div className="flex items-center gap-2">
             <button

@@ -9,6 +9,7 @@ import type { InstanceEntry } from "../types/instance";
 import type { ModelCatalogEntry } from "../types/models";
 import { Badge } from "./Badge";
 import { ConfirmDialog } from "./ConfirmDialog";
+import { TableSearchInput } from "./TableSearchInput";
 
 type SortKey = "family" | "size" | "instances";
 type SortDir = "asc" | "desc";
@@ -160,6 +161,7 @@ export function DownloadedModelsTable({
 }) {
   const [sortKey, setSortKey] = useState<SortKey | null>(null);
   const [sortDir, setSortDir] = useState<SortDir>("asc");
+  const [query, setQuery] = useState("");
 
   function handleSort(key: SortKey) {
     if (sortKey === key) {
@@ -170,10 +172,21 @@ export function DownloadedModelsTable({
     }
   }
 
+  // RM-59: client-side filter — the catalog is already fully in memory, so
+  // this needs no endpoint and no refetch. Applied before sorting so the
+  // sort operates on what's actually shown.
+  const filtered = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    if (q === "") return models;
+    return models.filter((m) =>
+      [m.id, m.family, m.quantization].some((field) => field.toLowerCase().includes(q)),
+    );
+  }, [models, query]);
+
   const sorted = useMemo(() => {
-    if (!sortKey) return models;
+    if (!sortKey) return filtered;
     const dir = sortDir === "asc" ? 1 : -1;
-    return [...models].sort((a, b) => {
+    return [...filtered].sort((a, b) => {
       switch (sortKey) {
         case "family":
           return a.family.localeCompare(b.family) * dir;
@@ -185,7 +198,7 @@ export function DownloadedModelsTable({
           return 0;
       }
     });
-  }, [models, sortKey, sortDir]);
+  }, [filtered, sortKey, sortDir]);
 
   if (models.length === 0) {
     return (
@@ -199,6 +212,18 @@ export function DownloadedModelsTable({
 
   return (
     <div className="overflow-x-auto rounded-xl border border-border bg-surface">
+      <TableSearchInput
+        value={query}
+        onChange={setQuery}
+        placeholder="Filter by name, family or quantization…"
+        resultLabel={`${sorted.length} of ${models.length}`}
+      />
+
+      {sorted.length === 0 ? (
+        <div className="p-12 text-center text-text-muted">
+          No models match “{query.trim()}”.
+        </div>
+      ) : (
       <table className="w-full min-w-[720px] text-left text-sm">
         <thead>
           <tr className="border-b border-border text-xs uppercase tracking-wide text-text-muted">
@@ -233,6 +258,7 @@ export function DownloadedModelsTable({
           ))}
         </tbody>
       </table>
+      )}
     </div>
   );
 }
