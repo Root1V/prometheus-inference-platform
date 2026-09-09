@@ -47,11 +47,34 @@ class ModelEntry:
     # request routing/validation — see memory/wiki/model-registry.md.
     modality: str = "text"
     # RM-51: which catalog (models) entry this instance belongs to, on its
-    # manager node — purely informational for the admin dashboard. Falls
-    # back to this entry's own id (matching manager-api's pre-upgrade
-    # behavior) when a node hasn't shipped model_id yet. Never used for
-    # request routing, which stays keyed by `id` exactly as before.
+    # manager node. Falls back to this entry's own id (matching manager-api's
+    # pre-upgrade behavior) when a node hasn't shipped model_id yet.
+    # RM-57: this is now also the *logical* name a client can route to — every
+    # instance sharing a model_id is a replica of the same servable model.
     model_id: str = ""
+
+
+@dataclass(frozen=True)
+class ModelResolution:
+    """What a client-facing model name resolves to — RM-57.
+
+    `members` is every active instance serving `name`. It has one element for
+    the ordinary single-instance case, which is why routing through this is
+    behaviour-preserving; more than one means replicas, and picking among them
+    is RM-58's job.
+    """
+
+    name: str
+    members: tuple[ModelEntry, ...]
+    # Agreed across all members. context_length is the *minimum* of the group:
+    # a request that fits the smallest replica fits every one of them, so
+    # validation can happen before a replica is chosen.
+    modality: str
+    context_length: int
+    # Set when members disagree on something that makes the group unroutable
+    # (see _resolve_group) — the caller turns this into a 400 rather than
+    # silently serving from an arbitrary subset.
+    mismatch: str | None = None
 
 
 class ModelRegistry:
@@ -115,6 +138,85 @@ class ModelRegistry:
         Implements: memory/specs/006-multi-model-gateway.md — AC-1
         """
         return [m for m in self._models.values() if m.backend_url is not None]
+
+    # ── RM-57: logical (catalog) names as routable groups ────────────────────
+
+    def resolve(self, name: str) -> ModelResolution | None:
+        """Resolve a client-supplied model name to the instances serving it.
+
+        Group first, instance id second — and deliberately so. manager-api
+        sets `model_id = id` when a model is registered directly, so the first
+        instance of a model usually *is* named after its catalog entry. Looking
+        up the instance id first would therefore match that one exactly and
+        never notice the replicas added later under the same catalog name: the
+        operator would think they were load-balancing while every request went
+        to a single instance.
+
+        Returns None only when the name is unknown entirely. A known name whose
+        instances are all stopped resolves with no members, so the caller can
+        still answer "registered but not loaded" (503) rather than demoting it
+        to "no such model" (400).
+        """
+        known = [m for m in self._models.values() if m.model_id == name]
+        if not known:
+            # Not a catalog name — fall back to addressing one instance
+            # directly by its own id, which stays supported.
+            entry = self._models.get(name)
+            if entry is None:
+                return None
+            known = [entry]
+        members = [m for m in known if m.backend_url is not None]
+        if not members:
+            return ModelResolution(
+                name=name,
+                members=(),
+                modality=known[0].modality,
+                context_length=known[0].context_length,
+            )
+        # Stable order so "which replica" is deterministic until RM-58 makes
+        # it a real decision.
+        members.sort(key=lambda m: (m.node, m.id))
+        return self._resolve_group(name, members)
+
+    @staticmethod
+    def _resolve_group(name: str, members: list[ModelEntry]) -> ModelResolution:
+        modalities = {m.modality for m in members}
+        mismatch = None
+        if len(modalities) > 1:
+            # Serving a chat request from an embedding backend would produce
+            # confident nonsense rather than an error, so refuse the whole
+            # group and name the disagreement instead of quietly dropping the
+            # odd instance out.
+            detail = ", ".join(
+                f"{m.id}={m.modality!r}" for m in sorted(members, key=lambda m: m.id)
+            )
+            mismatch = (
+                f"Instances serving {name!r} disagree on modality ({detail}). "
+                "Fix the mismatched instance, or give it its own model id."
+            )
+        return ModelResolution(
+            name=name,
+            members=tuple(members),
+            modality=members[0].modality,
+            context_length=min(m.context_length for m in members),
+            mismatch=mismatch,
+        )
+
+    def list_served_names(self) -> list[ModelResolution]:
+        """Every routable name, logical ones included — RM-57.
+
+        Instance ids stay listed (they remain individually addressable), plus
+        one entry per catalog name that isn't already an instance id, so a
+        client can discover the name that actually load-balances.
+        """
+        resolutions: dict[str, ModelResolution] = {}
+        for entry in self.list_active_models():
+            for name in (entry.model_id, entry.id):
+                if name and name not in resolutions:
+                    resolved = self.resolve(name)
+                    if resolved is not None:
+                        resolutions[name] = resolved
+        return list(resolutions.values())
 
 
 def load_registry(path: Path | str | None = None) -> ModelRegistry:

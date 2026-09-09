@@ -2482,28 +2482,57 @@ values and chat went back to 200. In the browser: saved from the form (toast, ba
 `staleTime: Infinity` config cache is invalidated on save), then reset back. 10 new tests in
 `test_admin.py`; full suite green.
 
-## RM-57 — Multi-instance-per-model: a shared logical name for routing (todo)
+## RM-57 — Multi-instance-per-model: a shared logical name for routing (done)
 
-**Why**: [[RM-51]]'s schema lets several `instances` reference one catalog `model_id`, and
-this was confirmed live (creating a second instance of an already-catalogued model works
-today) — but each instance still needs its own unique id, which is also the name a client
-must call it by (`"model": "<instance-id>"` in a chat-completions request). There's no
-concept yet of "N instances all serving the same logical model name" from the gateway's
-routing perspective — a client has to know and pick a specific instance id itself. That's
-the missing piece before [[RM-58]] (load balancing) can mean anything: you can't balance
-across replicas the gateway doesn't know are replicas of each other.
+**Why**: [[RM-51]]'s schema lets several instances reference one catalog model, but each
+instance's own id was also the name a client had to call it by — so replicas were invisible as
+replicas, and a client had to pick one itself. That's the missing piece before [[RM-58]] can
+balance across anything.
 
-**Scope** (not yet designed in detail):
-- A way to declare "these instances are interchangeable" — likely a shared `served_name`
-  (or reuse the catalog's own id as the default public name) distinct from each instance's
-  internal id/PID-file/port identity, so `gateway/src/prometheus_gateway/models/registry.py`'s
-  `ModelRegistry`/`ManagerRegistrySync` can group multiple `ModelEntry`s under one routable
-  name instead of today's 1 name = 1 entry assumption.
-- Decide what happens when instances of the same served name have *different* modality/
-  context_length/backend (the schema allows it, per-instance) — probably: require them to
-  match for a group to be valid, reject/warn otherwise, rather than silently picking one.
-- Out of scope here: the actual selection logic when multiple instances match a request —
-  that's [[RM-58]]. This item is just "can the gateway see and group them at all."
+**What it turned out to be**: much smaller than the roadmap assumed. It speculated a new
+`served_name` field; in fact manager-api already ships the catalog `model_id` on every instance
+and `ManagerRegistrySync` already stores it — `ModelEntry.model_id` carried a comment saying
+"never used for request routing". Two instances of one catalog model already coexisted in the
+registry under distinct ids without colliding. So this item is about *using* the grouping key
+that was already there, with no schema or manager change at all.
+
+**Scope**: `ModelRegistry.resolve(name)` returns a `ModelResolution` — the active instances
+serving that name, plus the modality and context length that hold for all of them. The three
+inference handlers validate against the resolution and pick a member afterwards; today that
+pick is `members[0]`, deterministic, because *choosing well* is [[RM-58]].
+
+Decisions worth recording:
+- **Group first, instance id second.** manager-api sets `model_id = id` on direct
+  registration, so the first instance of a model is usually named after its catalog entry.
+  Resolving the instance id first would match that one exactly and silently ignore every
+  replica added later — the operator would believe they were balancing while everything went
+  to one instance. Confirmed live: with `qwen3-0-6b-iq4-nl-local-2` as both the catalog id and
+  an instance id, a request to that name resolves to the group of 2.
+- **A group whose members disagree on modality is refused** (400 `inconsistent-model-group`,
+  naming the disagreement) rather than served from an arbitrary subset — serving a chat request
+  from an embedding backend produces confident nonsense instead of an error. Operator's call.
+- **`context_length` is the minimum across members**, since validation runs before a replica is
+  chosen; a request that fits the smallest replica fits all of them.
+- **Usage and pricing are attributed to the requested name, metrics and the circuit breaker to
+  the replica that served.** Operator's call. Billing then matches what the client asked for —
+  one price and one usage line per logical model — while observability still points at the
+  machine that did the work, so a slow replica stays visible.
+- A stopped model still resolves (with no members) rather than vanishing, so `503
+  model-not-loaded` doesn't get demoted to `400 unknown-model` — a regression this nearly
+  introduced.
+
+`GET /v1/models` and `/v1/models/mine` now list every routable name with a `served_by` count,
+and the dashboard's ScopePicker offers the catalog name (badged with its replica count)
+alongside instance ids — granting only an instance id would pin a client to one replica.
+
+**Not changed**: two instances sharing the *same* id on different nodes are still dropped with a
+warning by `manager_sync` (RM-08 phase 2). Replicas are expressed by sharing a catalog
+`model_id` with distinct instance ids, which is what the manager's own `add_instance` produces.
+
+**Verified**: 21 tests, plus a live run against the real stack — registered and started a second
+real instance of a model, watched the gateway group them on its own (`served_by=2`), routed to
+both the logical name and an individual replica, and confirmed per-instance metrics counted 1
+request each. Torn down afterwards; the registry is back to its original state.
 
 ## RM-58 — Gateway: intelligent load balancing across instances of the same model (todo)
 

@@ -35,8 +35,31 @@ export function ScopePicker({
   // RM-24: model access is granted per model id, not per node — the same model
   // can be served by more than one node, so dedupe by id (first occurrence wins
   // for the displayed family/modality).
+  // RM-57: a client can also be granted the catalog name, which routes across
+  // every replica of that model. Offer it alongside the instance ids, marked
+  // with how many instances back it — granting only an instance id would pin
+  // that client to one replica and skip the load balancing entirely.
   const seenIds = new Set<string>();
-  const modelOptions: { id: string; family: string; modality: string }[] = [];
+  const modelOptions: { id: string; family: string; modality: string; servedBy?: number }[] = [];
+  const replicaCounts = new Map<string, number>();
+  for (const entry of instances) {
+    if (entry.model_id) {
+      replicaCounts.set(entry.model_id, (replicaCounts.get(entry.model_id) ?? 0) + 1);
+    }
+  }
+  for (const [modelId, count] of replicaCounts) {
+    // Skip catalog names that are already an instance id — that's the ordinary
+    // single-instance case, where the two are the same name.
+    if (instances.some((i) => i.id === modelId)) continue;
+    seenIds.add(modelId);
+    const first = instances.find((i) => i.model_id === modelId)!;
+    modelOptions.push({
+      id: modelId,
+      family: first.family,
+      modality: first.modality,
+      servedBy: count,
+    });
+  }
   for (const entry of instances) {
     if (seenIds.has(entry.id)) continue;
     seenIds.add(entry.id);
@@ -85,6 +108,14 @@ export function ScopePicker({
                   <span className="text-xs text-text-muted">
                     {model.family} · {model.modality}
                   </span>
+                  {model.servedBy !== undefined && (
+                    <span
+                      title="Routes across every replica of this model, instead of pinning the client to one instance"
+                      className="rounded-full bg-primary/10 px-2 py-0.5 text-xs text-primary"
+                    >
+                      {model.servedBy} replicas
+                    </span>
+                  )}
                 </label>
               );
             })}

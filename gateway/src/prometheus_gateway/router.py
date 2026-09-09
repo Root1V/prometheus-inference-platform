@@ -125,21 +125,25 @@ def create_router(registry: ModelRegistry, pool: "BackendPool") -> APIRouter:
         from opentelemetry.trace import SpanKind
 
         with _tracer.start_as_current_span("models.list", kind=SpanKind.INTERNAL) as span:
-            models = registry.list_active_models()
+            # RM-57: every routable name — instance ids as before, plus the
+            # catalog name that load-balances across replicas. `served_by` is
+            # how a client tells the two apart.
+            models = registry.list_served_names()
             span.set_attribute("model_count", len(models))
             return {
                 "object": "list",
                 "data": [
                     {
-                        "id": m.id,
+                        "id": r.name,
                         "object": "model",
                         "owned_by": "prometheus",
-                        "context_length": m.context_length,
-                        "family": m.family,
-                        "quantization": m.quantization,
-                        "modality": m.modality,
+                        "context_length": r.context_length,
+                        "family": r.members[0].family,
+                        "quantization": r.members[0].quantization,
+                        "modality": r.modality,
+                        "served_by": len(r.members),
                     }
-                    for m in models
+                    for r in models
                 ],
             }
 
@@ -169,25 +173,29 @@ def create_router(registry: ModelRegistry, pool: "BackendPool") -> APIRouter:
             # inference calls — admin:write already implies full model
             # management, so seeing every model here isn't a new privilege.
             is_admin_bypass = claims.has_scope("admin:write")
+            # RM-57: filter on the routable name, so a client granted the
+            # catalog name sees it here even though no single instance is
+            # called that.
             authorized = [
-                m
-                for m in registry.list_active_models()
-                if is_admin_bypass or claims.has_model_scope(m.id)
+                r
+                for r in registry.list_served_names()
+                if is_admin_bypass or claims.has_model_scope(r.name)
             ]
             span.set_attribute("model_count", len(authorized))
             return {
                 "object": "list",
                 "data": [
                     {
-                        "id": m.id,
+                        "id": r.name,
                         "object": "model",
                         "owned_by": "prometheus",
-                        "context_length": m.context_length,
-                        "family": m.family,
-                        "quantization": m.quantization,
-                        "modality": m.modality,
+                        "context_length": r.context_length,
+                        "family": r.members[0].family,
+                        "quantization": r.members[0].quantization,
+                        "modality": r.modality,
+                        "served_by": len(r.members),
                     }
-                    for m in authorized
+                    for r in authorized
                 ],
             }
 
@@ -542,8 +550,11 @@ def create_router(registry: ModelRegistry, pool: "BackendPool") -> APIRouter:
             # scope checks below — GET /v1/models is public ("No auth required"), so
             # the model catalog isn't secret and there's nothing to protect by hiding
             # existence behind authorization.
-            entry = registry.get(body.model)
-            if entry is None:
+            # RM-57: `body.model` may name a single instance (as before) or a
+            # catalog model served by several replicas. Validation below runs
+            # against the group; which replica serves it is decided after.
+            resolution = registry.resolve(body.model)
+            if resolution is None:
                 inf_span.set_attribute("http.status_code", 400)
                 return _problem(
                     request,
@@ -552,6 +563,15 @@ def create_router(registry: ModelRegistry, pool: "BackendPool") -> APIRouter:
                     "Unknown Model",
                     f"Model {body.model!r} is not registered. "
                     f"Use GET /v1/models for the list of available models.",
+                )
+            if resolution.mismatch is not None:
+                inf_span.set_attribute("http.status_code", 400)
+                return _problem(
+                    request,
+                    400,
+                    "inconsistent-model-group",
+                    "Inconsistent Model Group",
+                    resolution.mismatch,
                 )
 
             # RM-07: inference:read/inference:stream were documented scopes but never
@@ -598,7 +618,7 @@ def create_router(registry: ModelRegistry, pool: "BackendPool") -> APIRouter:
             # /v1/images/generations already reject the wrong modality
             # unconditionally (router.py's embeddings/images handlers) — this was
             # the one direction missing.
-            if entry.modality not in ("text", "vision"):
+            if resolution.modality not in ("text", "vision"):
                 inf_span.set_attribute("http.status_code", 400)
                 return _problem(
                     request,
@@ -606,7 +626,7 @@ def create_router(registry: ModelRegistry, pool: "BackendPool") -> APIRouter:
                     "modality-mismatch",
                     "Modality Mismatch",
                     f"Model {body.model!r} does not support chat completions "
-                    f"(modality={entry.modality!r}). Use /v1/embeddings or "
+                    f"(modality={resolution.modality!r}). Use /v1/embeddings or "
                     f"/v1/images/generations for that modality instead.",
                 )
 
@@ -617,7 +637,7 @@ def create_router(registry: ModelRegistry, pool: "BackendPool") -> APIRouter:
                 isinstance(m.content, list) and any(part.type == "image_url" for part in m.content)
                 for m in body.messages
             )
-            if has_image and entry.modality != "vision":
+            if has_image and resolution.modality != "vision":
                 inf_span.set_attribute("http.status_code", 400)
                 return _problem(
                     request,
@@ -625,11 +645,11 @@ def create_router(registry: ModelRegistry, pool: "BackendPool") -> APIRouter:
                     "modality-mismatch",
                     "Modality Mismatch",
                     f"Model {body.model!r} does not support image input "
-                    f"(modality={entry.modality!r}). Use a vision-capable model.",
+                    f"(modality={resolution.modality!r}). Use a vision-capable model.",
                 )
 
             # AC-6 (007): enforce max_tokens ≤ context_length
-            if body.max_tokens is not None and body.max_tokens > entry.context_length:
+            if body.max_tokens is not None and body.max_tokens > resolution.context_length:
                 inf_span.set_attribute("http.status_code", 400)
                 return _problem(
                     request,
@@ -637,13 +657,13 @@ def create_router(registry: ModelRegistry, pool: "BackendPool") -> APIRouter:
                     "context-exceeded",
                     "Context Exceeded",
                     f"max_tokens={body.max_tokens} exceeds the context length "
-                    f"({entry.context_length}) for model {body.model!r}.",
+                    f"({resolution.context_length}) for model {body.model!r}.",
                 )
 
             # AC-12 (007): validate estimated message tokens ≤ context_length
             raw_messages = [m.model_dump() for m in body.messages]
             estimated_input_tokens = _estimate_tokens(raw_messages)
-            if estimated_input_tokens > entry.context_length:
+            if estimated_input_tokens > resolution.context_length:
                 inf_span.set_attribute("http.status_code", 400)
                 return _problem(
                     request,
@@ -651,11 +671,11 @@ def create_router(registry: ModelRegistry, pool: "BackendPool") -> APIRouter:
                     "context-exceeded",
                     "Context Exceeded",
                     f"Estimated message tokens ({estimated_input_tokens}) exceed the context length "
-                    f"({entry.context_length}) for model {body.model!r}.",
+                    f"({resolution.context_length}) for model {body.model!r}.",
                 )
             if (
                 body.max_tokens is not None
-                and (estimated_input_tokens + body.max_tokens) > entry.context_length
+                and (estimated_input_tokens + body.max_tokens) > resolution.context_length
             ):
                 inf_span.set_attribute("http.status_code", 400)
                 return _problem(
@@ -664,11 +684,12 @@ def create_router(registry: ModelRegistry, pool: "BackendPool") -> APIRouter:
                     "context-exceeded",
                     "Context Exceeded",
                     f"Estimated total tokens ({estimated_input_tokens + body.max_tokens}) exceed "
-                    f"the context length ({entry.context_length}) for model {body.model!r}.",
+                    f"the context length ({resolution.context_length}) for model {body.model!r}.",
                 )
 
-            # AC-4 (006): model registered but no active backend
-            if entry.backend_url is None:
+            # AC-4 (006): model registered but no active backend. RM-57: with
+            # replicas this means *none* of them is up, not just "the one".
+            if not resolution.members:
                 inf_span.set_attribute("http.status_code", 503)
                 return _problem(
                     request,
@@ -678,6 +699,14 @@ def create_router(registry: ModelRegistry, pool: "BackendPool") -> APIRouter:
                     f"Model {body.model!r} is registered but has no active backend. "
                     "Contact the platform operator.",
                 )
+
+            # RM-57: one member for an ordinary model, several for replicas.
+            # Deterministic pick for now — choosing well is RM-58.
+            entry = resolution.members[0]
+            # resolve() only ever returns members that have a backend_url;
+            # binding it states that invariant for the type checker.
+            assert entry.backend_url is not None
+            backend_url = entry.backend_url
 
             # AC-14 (007): circuit breaker check — fast-fail if circuit is OPEN
             cb = pool.get_circuit_breaker(entry.id)
@@ -735,7 +764,7 @@ def create_router(registry: ModelRegistry, pool: "BackendPool") -> APIRouter:
                         else max(0, entry.context_length - estimated_input_tokens)
                     )
                     est_cost = pricing.get_pricing_table().estimate_cost_usd(
-                        entry.id, estimated_input_tokens, worst_case_completion
+                        resolution.name, estimated_input_tokens, worst_case_completion
                     )
                     if est_cost is not None:
                         reservation = await BudgetTracker(budget_redis).reserve(
@@ -781,7 +810,7 @@ def create_router(registry: ModelRegistry, pool: "BackendPool") -> APIRouter:
             )
 
             # AC-15 (006): use shared pooled client
-            client = pool.get(entry.backend_url)
+            client = pool.get(backend_url)
 
             try:
                 if body.stream:
@@ -794,6 +823,7 @@ def create_router(registry: ModelRegistry, pool: "BackendPool") -> APIRouter:
                         pool,
                         entry.id,
                         trace_id,
+                        served_name=resolution.name,
                         budget_redis=budget_redis,
                         reservation=reservation,
                         alert_thresholds_percent=alert_thresholds_percent,
@@ -910,12 +940,12 @@ def create_router(registry: ModelRegistry, pool: "BackendPool") -> APIRouter:
                     )
 
                     # RM-32: record persisted daily usage
-                    await _record_usage(claims, entry.id, prompt_tokens, completion_tokens)
+                    await _record_usage(claims, resolution.name, prompt_tokens, completion_tokens)
 
                     # RM-60: settle the spend-cap reservation with the real cost
                     if reservation is not None and reservation.allowed and budget_redis is not None:
                         actual_cost = pricing.get_pricing_table().estimate_cost_usd(
-                            entry.id, prompt_tokens, completion_tokens
+                            resolution.name, prompt_tokens, completion_tokens
                         )
                         if actual_cost is not None:
                             newly_crossed = await BudgetTracker(budget_redis).settle(
@@ -1015,8 +1045,9 @@ def create_router(registry: ModelRegistry, pool: "BackendPool") -> APIRouter:
         claims = getattr(getattr(request, "state", None), "claims", None)
         request_id = getattr(getattr(request, "state", None), "request_id", "unknown")
 
-        entry = registry.get(body.model)
-        if entry is None:
+        # RM-57: may name one instance or a catalog model with replicas.
+        resolution = registry.resolve(body.model)
+        if resolution is None:
             return _problem(
                 request,
                 400,
@@ -1025,14 +1056,22 @@ def create_router(registry: ModelRegistry, pool: "BackendPool") -> APIRouter:
                 f"Model {body.model!r} is not registered. "
                 f"Use GET /v1/models for the list of available models.",
             )
+        if resolution.mismatch is not None:
+            return _problem(
+                request,
+                400,
+                "inconsistent-model-group",
+                "Inconsistent Model Group",
+                resolution.mismatch,
+            )
 
-        if entry.modality != "embedding":
+        if resolution.modality != "embedding":
             return _problem(
                 request,
                 400,
                 "modality-mismatch",
                 "Modality Mismatch",
-                f"Model {body.model!r} is not an embedding model (modality={entry.modality!r}). "
+                f"Model {body.model!r} is not an embedding model (modality={resolution.modality!r}). "
                 f"Use GET /v1/models to find an embedding-capable model.",
             )
 
@@ -1059,7 +1098,8 @@ def create_router(registry: ModelRegistry, pool: "BackendPool") -> APIRouter:
                 "Contact the platform operator to request access.",
             )
 
-        if entry.backend_url is None:
+        # RM-57: no replica of this model is up (not just "the one").
+        if not resolution.members:
             return _problem(
                 request,
                 503,
@@ -1068,6 +1108,14 @@ def create_router(registry: ModelRegistry, pool: "BackendPool") -> APIRouter:
                 f"Model {body.model!r} is registered but has no active backend. "
                 "Contact the platform operator.",
             )
+
+        # RM-57: one member for an ordinary model, several for replicas.
+        # Deterministic pick for now — choosing well is RM-58.
+        entry = resolution.members[0]
+        # resolve() only ever returns members that have a backend_url;
+        # binding it states that invariant for the type checker.
+        assert entry.backend_url is not None
+        backend_url = entry.backend_url
 
         cb = pool.get_circuit_breaker(entry.id)
         if cb is not None:
@@ -1106,7 +1154,7 @@ def create_router(registry: ModelRegistry, pool: "BackendPool") -> APIRouter:
                 )
                 estimated_tokens = _estimate_text_tokens(body.input)
                 est_cost = pricing.get_pricing_table().estimate_cost_usd(
-                    entry.id, estimated_tokens, 0
+                    resolution.name, estimated_tokens, 0
                 )
                 if est_cost is not None:
                     reservation = await BudgetTracker(budget_redis).reserve(
@@ -1151,7 +1199,7 @@ def create_router(registry: ModelRegistry, pool: "BackendPool") -> APIRouter:
         # single-shot embedding call anyway — no streaming, no autoregressive
         # token generation).
         backend_start = time.monotonic()
-        client = pool.get(entry.backend_url)
+        client = pool.get(backend_url)
         try:
             resp = await pool.forward(
                 entry.id,
@@ -1213,10 +1261,12 @@ def create_router(registry: ModelRegistry, pool: "BackendPool") -> APIRouter:
 
         # RM-60: embeddings never called _record_usage() at all — usage/cost
         # accounting was blind to this entire request type.
-        await _record_usage(claims, entry.id, embeddings_prompt_tokens, 0, request_kind="embedding")
+        await _record_usage(
+            claims, resolution.name, embeddings_prompt_tokens, 0, request_kind="embedding"
+        )
         if budget_redis is not None and reservation is not None and reservation.allowed:
             actual_cost = pricing.get_pricing_table().estimate_cost_usd(
-                entry.id, embeddings_prompt_tokens, 0
+                resolution.name, embeddings_prompt_tokens, 0
             )
             if actual_cost is not None:
                 newly_crossed = await BudgetTracker(budget_redis).settle(
@@ -1264,8 +1314,9 @@ def create_router(registry: ModelRegistry, pool: "BackendPool") -> APIRouter:
         claims = getattr(getattr(request, "state", None), "claims", None)
         request_id = getattr(getattr(request, "state", None), "request_id", "unknown")
 
-        entry = registry.get(body.model)
-        if entry is None:
+        # RM-57: may name one instance or a catalog model with replicas.
+        resolution = registry.resolve(body.model)
+        if resolution is None:
             return _problem(
                 request,
                 400,
@@ -1274,14 +1325,22 @@ def create_router(registry: ModelRegistry, pool: "BackendPool") -> APIRouter:
                 f"Model {body.model!r} is not registered. "
                 f"Use GET /v1/models for the list of available models.",
             )
+        if resolution.mismatch is not None:
+            return _problem(
+                request,
+                400,
+                "inconsistent-model-group",
+                "Inconsistent Model Group",
+                resolution.mismatch,
+            )
 
-        if entry.modality != "image":
+        if resolution.modality != "image":
             return _problem(
                 request,
                 400,
                 "modality-mismatch",
                 "Modality Mismatch",
-                f"Model {body.model!r} is not an image model (modality={entry.modality!r}). "
+                f"Model {body.model!r} is not an image model (modality={resolution.modality!r}). "
                 f"Use GET /v1/models to find an image-capable model.",
             )
 
@@ -1305,7 +1364,8 @@ def create_router(registry: ModelRegistry, pool: "BackendPool") -> APIRouter:
                 "Contact the platform operator to request access.",
             )
 
-        if entry.backend_url is None:
+        # RM-57: no replica of this model is up (not just "the one").
+        if not resolution.members:
             return _problem(
                 request,
                 503,
@@ -1314,6 +1374,14 @@ def create_router(registry: ModelRegistry, pool: "BackendPool") -> APIRouter:
                 f"Model {body.model!r} is registered but has no active backend. "
                 "Contact the platform operator.",
             )
+
+        # RM-57: one member for an ordinary model, several for replicas.
+        # Deterministic pick for now — choosing well is RM-58.
+        entry = resolution.members[0]
+        # resolve() only ever returns members that have a backend_url;
+        # binding it states that invariant for the type checker.
+        assert entry.backend_url is not None
+        backend_url = entry.backend_url
 
         cb = pool.get_circuit_breaker(entry.id)
         if cb is not None:
@@ -1394,7 +1462,7 @@ def create_router(registry: ModelRegistry, pool: "BackendPool") -> APIRouter:
         # in GET /metrics's backends map. No token count and no streaming for
         # a single blocking image-generation call, so only latency applies.
         backend_start = time.monotonic()
-        client = pool.get(entry.backend_url)
+        client = pool.get(backend_url)
         try:
             resp = await pool.forward(
                 entry.id,
@@ -1457,9 +1525,13 @@ def create_router(registry: ModelRegistry, pool: "BackendPool") -> APIRouter:
 
         # RM-60: images/generations never called _record_usage() at all —
         # usage/cost accounting was blind to this entire request type.
-        await _record_usage(claims, entry.id, 0, 0, request_kind="image", image_count=num_images)
+        await _record_usage(
+            claims, resolution.name, 0, 0, request_kind="image", image_count=num_images
+        )
         if budget_redis is not None and reservation is not None and reservation.allowed:
-            actual_cost = pricing.get_pricing_table().estimate_image_cost_usd(entry.id, num_images)
+            actual_cost = pricing.get_pricing_table().estimate_image_cost_usd(
+                resolution.name, num_images
+            )
             if actual_cost is not None:
                 newly_crossed = await BudgetTracker(budget_redis).settle(
                     claims.client_id,
@@ -1572,6 +1644,10 @@ async def _stream_response(
     backend_id: str,
     trace_id: str = "none",
     *,
+    # RM-57: what the client asked for. Usage and pricing are attributed to
+    # this, while metrics and the circuit breaker stay on backend_id — the
+    # replica that actually did the work.
+    served_name: str | None = None,
     budget_redis: Any = None,
     reservation: "BudgetReservation | None" = None,
     alert_thresholds_percent: list[int] | None = None,
@@ -1591,6 +1667,9 @@ async def _stream_response(
     claims = getattr(getattr(request, "state", None), "claims", None)
     backend_start = time.monotonic()
     cb = pool.get_circuit_breaker(backend_id)
+    # Falls back to the backend id when called without a served name, so this
+    # function still behaves as it did when used on its own.
+    billed_name = served_name or backend_id
 
     async def event_generator() -> Any:
         prompt_tokens = 0
@@ -1702,7 +1781,7 @@ async def _stream_response(
                 prompt_tokens_per_second=round(prompt_tps, 2) if prompt_tps is not None else None,
             )
             # RM-32: persisted daily usage for streaming
-            await _record_usage(claims, backend_id, prompt_tokens, completion_tokens)
+            await _record_usage(claims, billed_name, prompt_tokens, completion_tokens)
 
             # RM-60: settle the spend-cap reservation with the real cost
             if (
@@ -1712,7 +1791,7 @@ async def _stream_response(
                 and budget_redis is not None
             ):
                 actual_cost = pricing.get_pricing_table().estimate_cost_usd(
-                    backend_id, prompt_tokens, completion_tokens
+                    billed_name, prompt_tokens, completion_tokens
                 )
                 if actual_cost is not None:
                     newly_crossed = await BudgetTracker(budget_redis).settle(
