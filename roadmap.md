@@ -82,6 +82,7 @@ Status: `done` · `todo`
 | RM-73 | Billing traceability per replica + per-model metrics rollup | done | `usage_events` records which replica served alongside the model id and slug; metrics gain a per-model aggregate so the dashboard can show a model's throughput rather than N loose instance rows |
 
 | RM-74 | Retired model names are never reused | done | Deleting a model now archives it instead: it stops routing, listing and accepting instances, but keeps its row. Usage is billed against the slug and `model:<slug>` grants are written against it, so recycling a name would merge two models' invoices and silently transfer every client's access; restoring is the escape hatch |
+| RM-75 | fix: manager registry path resolved against the process's cwd | done | `[registry].path` is relative, so `resolved_registry_path` returned a cwd-relative path — any `pmgr` command run from `runtime/manager/` silently created and wrote to a nested `runtime/manager/runtime/manager/registry.db` instead of the real registry; relative paths now anchor to the repo root, absolute ones (the container's `PMGR_REGISTRY_PATH=/data/...`) are untouched |
 
 Adding an item: append the next `RM-NN` row here with a one-liner, then add the full
 Why/Scope writeup to `docs/roadmap.md`.

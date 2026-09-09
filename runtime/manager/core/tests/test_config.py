@@ -7,7 +7,13 @@ from pathlib import Path
 
 import pytest
 
-from prometheus_manager_core.config import DownloadsConfig, ManagerConfig, ServerConfig, load_config
+from prometheus_manager_core.config import (
+    DownloadsConfig,
+    ManagerConfig,
+    RegistryConfig,
+    ServerConfig,
+    load_config,
+)
 
 
 class TestConfigAC19:
@@ -117,3 +123,41 @@ class TestCABundleConfig:
         cfg = load_config(path=toml_file)
         assert cfg.downloads.ca_bundle == "/etc/pki/tls-ca-bundle.pem"
         assert cfg.resolved_ca_bundle == Path("/etc/pki/tls-ca-bundle.pem")
+
+
+class TestRegistryPathResolution:
+    """The registry path must not depend on the manager's cwd."""
+
+    def test_default_registry_path_is_absolute(self):
+        """A relative default resolves to an absolute path, not a cwd-relative one."""
+        assert ManagerConfig().resolved_registry_path.is_absolute()
+
+    def test_default_registry_path_is_the_repo_registry(self):
+        """The default anchors to <repo root>/runtime/manager/registry.db."""
+        repo_root = Path(__file__).resolve().parents[4]
+        expected = repo_root / "runtime" / "manager" / "registry.db"
+        assert ManagerConfig().resolved_registry_path == expected
+
+    def test_registry_path_is_identical_from_any_cwd(self, tmp_path, monkeypatch):
+        """Running from runtime/manager/ must not produce a nested registry.db."""
+        cfg = ManagerConfig()
+        from_repo_root = cfg.resolved_registry_path
+
+        monkeypatch.chdir(tmp_path)
+        assert cfg.resolved_registry_path == from_repo_root
+
+        nested = tmp_path / "runtime" / "manager"
+        nested.mkdir(parents=True)
+        monkeypatch.chdir(nested)
+        assert cfg.resolved_registry_path == from_repo_root
+
+    def test_absolute_registry_path_is_left_alone(self, tmp_path: Path):
+        """An absolute path — what PMGR_REGISTRY_PATH sets — is used unchanged."""
+        abs_path = tmp_path / "elsewhere" / "registry.db"
+        cfg = ManagerConfig(registry=RegistryConfig(path=str(abs_path)))
+        assert cfg.resolved_registry_path == abs_path
+
+    def test_env_override_with_absolute_path_is_left_alone(self, monkeypatch):
+        """PMGR_REGISTRY_PATH=/data/registry.db is honoured verbatim (container path)."""
+        monkeypatch.setenv("PMGR_REGISTRY_PATH", "/data/registry.db")
+        assert load_config(path=None).resolved_registry_path == Path("/data/registry.db")

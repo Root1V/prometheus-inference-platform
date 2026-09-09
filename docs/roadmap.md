@@ -3058,6 +3058,35 @@ throughput — the only unit a consumer cares about.
   reports "2 models" for two replicas of one.
 - Depends on [[RM-70]].
 
+## RM-75 — fix: manager registry path resolved against the process's cwd (done)
+
+**Why**: `RegistryConfig.path` defaults to the relative `runtime/manager/registry.db`, and
+`resolved_registry_path` handed it to `Registry` as-is, so the registry a manager opened
+depended on the directory it happened to be started from. `Registry.__init__` does
+`self._path.parent.mkdir(parents=True, exist_ok=True)`, so instead of failing loudly it
+silently created a fresh, empty database — running any `pmgr` command from
+`runtime/manager/` produced a nested `runtime/manager/runtime/manager/registry.db`. The
+live manager only ever used the right file because it was launched from the repo root.
+
+**Scope**: `resolved_registry_path` now anchors a relative path to the repo root
+(`Path(__file__).resolve().parents[5]`, the same trick the gateway's model registry
+already uses) and leaves absolute paths alone, so the container's
+`PMGR_REGISTRY_PATH=/data/...` is unaffected. Path resolution only — no config-loading or
+`Registry` changes, and the relative default in `manager.toml` stays as-is since it now
+means the same thing from anywhere. Deliberately out of scope: the sibling
+cwd-relative paths (`[server].log_dir`/`pid_dir`, `[downloads].dir`, `[tui].log_file_path`)
+have the same weakness but write logs and models rather than the source of truth.
+
+**Verified**: reproduced first — `pmgr list` from `runtime/manager/` created the nested
+copy, and re-running it after the fix did not. The package test suites were *not* the
+cause, contrary to the initial guess: all three pass from inside `runtime/manager/` without
+creating anything, because their fixtures pass an absolute `tmp_path`. New tests cover the
+default being absolute, resolving identically from three different cwds (including
+`runtime/manager/`), and absolute paths — config and `PMGR_REGISTRY_PATH` — surviving
+untouched. The stray nested file was empty (a `models` table with 0 rows, no `instances`
+table) and confirmed via `lsof` not to be open by the running manager, which holds the real
+`runtime/manager/registry.db`; deleted, with the manager left healthy (29 models, 10
+instances, `/health` 200).
 Append a new row to the table with the next `RM-NN` id and a new `## RM-NN — ...` section
 below, following the same shape (Why / Scope). Re-sort the table if the new item's
 priority isn't "last."

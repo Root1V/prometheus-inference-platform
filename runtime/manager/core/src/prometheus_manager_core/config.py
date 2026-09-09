@@ -11,6 +11,10 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+# Repo root — this file is <root>/runtime/manager/core/src/prometheus_manager_core/config.py.
+# Used to anchor relative paths so they don't depend on the process's cwd.
+_REPO_ROOT = Path(__file__).resolve().parents[5]
+
 _DEFAULT_CONFIG = """
 [api]
 host = "0.0.0.0"
@@ -200,7 +204,17 @@ class ManagerConfig:
 
     @property
     def resolved_registry_path(self) -> Path:
-        return Path(self.registry.path)
+        """Absolute path to registry.db, independent of the process's cwd.
+
+        A bare Path("runtime/manager/registry.db") is resolved against
+        whatever directory the manager happened to be started from, so
+        running any registry command from runtime/manager/ silently created
+        and wrote to a nested runtime/manager/runtime/manager/registry.db
+        instead of the real one. Absolute paths — what the container sets via
+        PMGR_REGISTRY_PATH — are used unchanged.
+        """
+        path = Path(self.registry.path).expanduser()
+        return path if path.is_absolute() else _REPO_ROOT / path
 
     @property
     def resolved_ca_bundle(self) -> Path | None:
