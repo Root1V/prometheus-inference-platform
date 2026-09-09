@@ -9,6 +9,7 @@ from fastapi import FastAPI, Request, Response
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 
+from . import rate_limits
 from .auth.middleware import JWTAuthMiddleware
 from .config import Settings
 from .models.backends import BackendPool
@@ -113,9 +114,20 @@ def create_app(
     async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
         app.state.backend_pool = pool
 
-        from .db import create_tables, list_model_price_configs
+        from .db import create_tables, get_rate_limit_config, list_model_price_configs
 
         await create_tables(db_engine)
+
+        # RM-56: admin-configured rate limits override .env, same idea as the
+        # DB-configured prices below. app.state.rate_limit_env_defaults (set
+        # in create_app, before this runs) keeps the .env values so a reset
+        # can restore them without a restart.
+        rate_limit_row = await get_rate_limit_config()
+        if rate_limit_row is not None:
+            rate_limits.apply_limits(
+                settings,
+                {field: getattr(rate_limit_row, field) for field in rate_limits.RATE_LIMIT_FIELDS},
+            )
 
         # RM-60 follow-up: DB-configured prices (set via the admin dashboard)
         # override whatever pricing.yaml loaded above — this is what lets a
@@ -183,6 +195,10 @@ def create_app(
     # RateLimitMiddleware above — billing_router.py reads it here rather than
     # reaching into pool's private _redis attribute from another module.
     app.state.shared_redis = _redis_instance
+    # RM-56: what .env asked for, captured before any DB override is applied —
+    # this is what "Reset to defaults" restores, and what the Limits page shows
+    # next to each editable value.
+    app.state.rate_limit_env_defaults = rate_limits.snapshot_env_defaults(settings)
 
     # Middleware stack — innermost added first (see gateway.instructions.md)
     # Order: [request-id+trace-id] → [auth] → [rate-limit] → router

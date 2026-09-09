@@ -2770,6 +2770,43 @@ image-generation model is rejected the same way. Two new regression tests in
 `gateway/tests/test_modality.py` (non-streaming and streaming); full suite (338 tests) green.
 Updated `docs/sdk-integration-guide.md` §5.1/§5.2.
 
+## RM-56 — Admin dashboard: edit rate limits live, no restart (done)
+
+**Why**: RPM/TPM limits (global plus the per-endpoint chat/admin overrides) only changed via
+`.env` + a gateway restart — raised while fixing RM-51's admin rate-limit 429. Restarting to
+retune a limit means dropping in-flight inference requests, which is a poor trade for a knob
+an operator wants to adjust while watching traffic.
+
+**Scope**: mirrors [[RM-60]]'s DB-backed pricing override. A single-row `rate_limit_config`
+table holds the admin-set values; its presence means "an operator configured these", its
+absence means the `.env` values are in effect. `GET`/`PUT`/`DELETE /admin/api/limits`
+(admin:read / admin:write) read, save and reset them, and an editable form on the Limits page
+replaces that page's "read-only" disclaimer.
+
+The live-apply turned out to need no middleware change at all: `_resolve_limits` already read
+`self.settings.<field>` fresh on every request, and that Settings object is the same instance
+as `app.state.settings` — so writing the field *is* the live update. `create_app` snapshots
+the `.env` values into `app.state.rate_limit_env_defaults` before anything can overwrite them,
+which is what "Reset to .env" restores and what the form shows beside each input. The env
+snapshot deliberately lives on `app.state` rather than a module singleton, so apps built side
+by side in tests can't leak limits into each other.
+
+One guard worth naming: the endpoint refuses any value that would drop the admin bucket below
+60 RPM (whether set directly or inherited from a too-small global). The dashboard polls
+continuously, so a lower value would rate-limit the very page needed to undo the mistake —
+leaving `.env` + a restart as the only way back, which is precisely what this item removes.
+Values below 1 are rejected for the same class of reason. `rate_limit_strict` stays
+`.env`-only: fail-open vs fail-closed is a deployment decision, not a tuning knob.
+
+**Verified**: live against the real gateway — set chat completions to 3 RPM via the API and
+confirmed the very next requests 429'd with `"rate limit of 3 RPM for endpoint
+'chat_completions'"`, no restart; confirmed the lockout guard and the zero-value rejection
+both 400 without applying or persisting anything; confirmed `DELETE` restored the `.env`
+values and chat went back to 200. In the browser: saved from the form (toast, badge flipped
+`from .env` → `custom`, and the read-only StatCard above updated from 60 to 90 — proving the
+`staleTime: Infinity` config cache is invalidated on save), then reset back. 10 new tests in
+`test_admin.py`; full suite green.
+
 Append a new row to the table with the next `RM-NN` id and a new `## RM-NN — ...` section
 below, following the same shape (Why / Scope). Re-sort the table if the new item's
 priority isn't "last."

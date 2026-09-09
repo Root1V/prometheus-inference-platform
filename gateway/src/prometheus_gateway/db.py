@@ -17,6 +17,7 @@ from sqlalchemy import (
     DateTime,
     Float,
     Index,
+    Integer,
     String,
     UniqueConstraint,
     case,
@@ -156,6 +157,36 @@ class ModelPriceConfig(Base):
     prompt_price_per_1m: Mapped[float | None] = mapped_column(Float, nullable=True)
     completion_price_per_1m: Mapped[float | None] = mapped_column(Float, nullable=True)
     image_price: Mapped[float | None] = mapped_column(Float, nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+        onupdate=lambda: datetime.now(timezone.utc),
+    )
+
+
+class RateLimitConfig(Base):
+    """Admin-configured rate limits — RM-56.
+
+    Persists what used to require editing .env + restarting the gateway.
+    Single row (`id` is always 1): its presence means "an operator has set
+    limits from the dashboard", and those values replace the .env ones
+    wholesale; deleting the row restores whatever .env said, which is why
+    create_app snapshots the env values before anything can overwrite them.
+    Applied to the live Settings object at startup and on every admin write,
+    so a change takes effect on the very next request — the rate-limit
+    middleware already re-reads Settings per request.
+    """
+
+    __tablename__ = "rate_limit_config"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, default=1)
+    rate_limit_rpm: Mapped[int] = mapped_column(Integer, nullable=False)
+    rate_limit_tpm: Mapped[int] = mapped_column(Integer, nullable=False)
+    rate_limit_rpm_chat_completions: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    rate_limit_tpm_chat_completions: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    rate_limit_rpm_admin: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    rate_limit_tpm_admin: Mapped[int | None] = mapped_column(Integer, nullable=True)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         nullable=False,
@@ -534,6 +565,57 @@ async def delete_model_price_config(model_id: str) -> bool:
     session_factory = get_session_factory()
     async with session_factory() as session:
         row: ModelPriceConfig | None = await session.get(ModelPriceConfig, model_id)
+        if row is None:
+            return False
+        await session.delete(row)
+        await session.commit()
+        return True
+
+
+# ── RM-56: admin-configured rate limits (single row, id=1) ───────────────────
+
+_RATE_LIMIT_CONFIG_ID = 1
+
+
+async def get_rate_limit_config() -> RateLimitConfig | None:
+    """None means no admin override — the .env values are in effect."""
+    session_factory = get_session_factory()
+    async with session_factory() as session:
+        row: RateLimitConfig | None = await session.get(RateLimitConfig, _RATE_LIMIT_CONFIG_ID)
+        return row
+
+
+async def upsert_rate_limit_config(
+    *,
+    rate_limit_rpm: int,
+    rate_limit_tpm: int,
+    rate_limit_rpm_chat_completions: int | None,
+    rate_limit_tpm_chat_completions: int | None,
+    rate_limit_rpm_admin: int | None,
+    rate_limit_tpm_admin: int | None,
+) -> RateLimitConfig:
+    session_factory = get_session_factory()
+    async with session_factory() as session:
+        row: RateLimitConfig | None = await session.get(RateLimitConfig, _RATE_LIMIT_CONFIG_ID)
+        if row is None:
+            row = RateLimitConfig(id=_RATE_LIMIT_CONFIG_ID)
+            session.add(row)
+        row.rate_limit_rpm = rate_limit_rpm
+        row.rate_limit_tpm = rate_limit_tpm
+        row.rate_limit_rpm_chat_completions = rate_limit_rpm_chat_completions
+        row.rate_limit_tpm_chat_completions = rate_limit_tpm_chat_completions
+        row.rate_limit_rpm_admin = rate_limit_rpm_admin
+        row.rate_limit_tpm_admin = rate_limit_tpm_admin
+        await session.commit()
+        await session.refresh(row)
+        return row
+
+
+async def delete_rate_limit_config() -> bool:
+    """Returns False if no override existed (already on the .env values)."""
+    session_factory = get_session_factory()
+    async with session_factory() as session:
+        row: RateLimitConfig | None = await session.get(RateLimitConfig, _RATE_LIMIT_CONFIG_ID)
         if row is None:
             return False
         await session.delete(row)

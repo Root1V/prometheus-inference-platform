@@ -1,6 +1,7 @@
 import { useDashboardConfig } from "../api/config";
 import { useMetrics } from "../api/metrics";
 import { CircuitBadge } from "../components/CircuitBadge";
+import { RateLimitsForm } from "../components/RateLimitsForm";
 import { Sidebar } from "../components/Sidebar";
 import { StatCard } from "../components/StatCard";
 import { AlertOctagon, Gauge, RotateCw, ShieldAlert } from "lucide-react";
@@ -19,8 +20,8 @@ export default function Limits() {
         <h1 className="text-2xl font-semibold text-text">Limits</h1>
         <p className="mt-1 text-sm text-text-muted">
           Current rate-limit and circuit-breaker configuration, and live per-model circuit
-          state. Read-only — these values come from the gateway's own config, not something
-          editable here.
+          state. Rate limits are editable below and apply without a restart; circuit-breaker
+          settings still come from the gateway's own config.
         </p>
 
         <h2 className="mt-8 text-sm font-medium uppercase tracking-wide text-text-muted">
@@ -60,6 +61,10 @@ export default function Limits() {
             value={config ? (config.rate_limit_strict ? "Deny (strict)" : "Allow (fail-open)") : "—"}
             icon={ShieldAlert}
           />
+        </div>
+
+        <div className="mt-4">
+          <RateLimitsForm />
         </div>
 
         <h2 className="mt-10 text-sm font-medium uppercase tracking-wide text-text-muted">

@@ -43,6 +43,9 @@ POST   /admin/api/users/{client_id}/rotate-secret            — oauth2 principa
 POST   /admin/api/users/{client_id}/reset-password           — password principals
 POST   /admin/api/users/{client_id}/share                    — one-time credential link
 POST   /admin/api/users/share/{token_id}/revoke
+GET    /admin/api/limits                                    — current rate limits + .env defaults (RM-56)
+PUT    /admin/api/limits                                    — set limits live, persisted (RM-56)
+DELETE /admin/api/limits                                    — drop the override, back to .env (RM-56)
 GET    /admin/api/config                                    — dashboard-facing settings (RM-31)
 GET    /admin/api/sessions                                  — clients active in the last 15m (RM-23)
 
@@ -64,6 +67,7 @@ import httpx
 from fastapi import APIRouter, Request, Response
 from fastapi.responses import JSONResponse
 
+from .. import db, rate_limits
 from ..config import Settings
 from ..router import _problem
 from ..telemetry import activity_tracker, get_logger
@@ -671,8 +675,9 @@ def create_admin_router(manager_client: ManagerApiClient) -> APIRouter:
     @router.get("/admin/api/config")
     async def get_dashboard_config(request: Request) -> Any:
         """Dashboard-facing settings — Grafana link (RM-31), rate-limit/circuit-breaker
-        config (RM-16). Read-only: live-editing these stays out of scope — .env remains
-        the single source of truth.
+        config (RM-16). The rate-limit values here reflect whatever is live right
+        now, including an admin override applied via PUT /admin/api/limits (RM-56);
+        circuit-breaker settings remain .env-only.
         """
         if (forbidden := _require_scope(request, "admin:read")) is not None:
             return forbidden
@@ -688,6 +693,109 @@ def create_admin_router(manager_client: ManagerApiClient) -> APIRouter:
             "circuit_breaker_recovery_timeout": settings.circuit_breaker_recovery_timeout,
             "circuit_breaker_success_threshold": settings.circuit_breaker_success_threshold,
         }
+
+    # ── RM-56: live-editable rate limits ─────────────────────────────────────
+
+    def _limits_payload(request: Request, *, is_overridden: bool) -> dict[str, Any]:
+        settings: Settings = request.app.state.settings
+        return {
+            "limits": rate_limits.current_limits(settings),
+            "env_defaults": request.app.state.rate_limit_env_defaults,
+            # False = the .env values are in effect verbatim.
+            "is_overridden": is_overridden,
+            # Not editable here — changing fail-open/fail-closed behaviour is a
+            # deployment decision, not a tuning knob.
+            "rate_limit_strict": settings.rate_limit_strict,
+            "min_admin_rpm": rate_limits.MIN_ADMIN_RPM,
+        }
+
+    @router.get("/admin/api/limits")
+    async def get_rate_limits(request: Request) -> Any:
+        """Current effective limits plus what .env asked for — RM-56."""
+        if (forbidden := _require_scope(request, "admin:read")) is not None:
+            return forbidden
+        row = await db.get_rate_limit_config()
+        return _limits_payload(request, is_overridden=row is not None)
+
+    @router.put("/admin/api/limits")
+    async def put_rate_limits(body: dict[str, Any], request: Request) -> Any:
+        """Persist limits and apply them to the live Settings object — RM-56.
+
+        The rate-limit middleware re-reads Settings on every request, so the
+        next request is already limited by the new values; the DB row is what
+        makes that survive a restart.
+        """
+        if (forbidden := _require_scope(request, "admin:write")) is not None:
+            return forbidden
+
+        def _parse(key: str, *, required: bool) -> int | None:
+            raw = body.get(key)
+            if raw is None:
+                if required:
+                    raise ValueError(f"{key} is required.")
+                return None
+            if isinstance(raw, bool) or not isinstance(raw, (int, float)) or int(raw) != raw:
+                raise ValueError(f"{key} must be a whole number.")
+            value = int(raw)
+            if value < 1:
+                raise ValueError(f"{key} must be at least 1 — 0 would reject every request.")
+            return value
+
+        try:
+            values: dict[str, int | None] = {
+                "rate_limit_rpm": _parse("rate_limit_rpm", required=True),
+                "rate_limit_tpm": _parse("rate_limit_tpm", required=True),
+                "rate_limit_rpm_chat_completions": _parse(
+                    "rate_limit_rpm_chat_completions", required=False
+                ),
+                "rate_limit_tpm_chat_completions": _parse(
+                    "rate_limit_tpm_chat_completions", required=False
+                ),
+                "rate_limit_rpm_admin": _parse("rate_limit_rpm_admin", required=False),
+                "rate_limit_tpm_admin": _parse("rate_limit_tpm_admin", required=False),
+            }
+        except ValueError as exc:
+            return _problem(request, 400, "invalid-limit", "Invalid Limit", str(exc))
+
+        # The admin bucket is the operator's own way back in — see
+        # rate_limits.MIN_ADMIN_RPM. Applies to whichever limit /admin/api/*
+        # actually lands on: its own override, or the global when unset.
+        effective_admin_rpm = values["rate_limit_rpm_admin"] or values["rate_limit_rpm"]
+        if effective_admin_rpm is not None and effective_admin_rpm < rate_limits.MIN_ADMIN_RPM:
+            return _problem(
+                request,
+                400,
+                "invalid-limit",
+                "Invalid Limit",
+                f"The admin API would be limited to {effective_admin_rpm} RPM, below the "
+                f"{rate_limits.MIN_ADMIN_RPM} RPM floor. The dashboard polls several endpoints "
+                "continuously, so a lower value would rate-limit the very page needed to undo "
+                "it — leaving .env plus a restart as the only way back.",
+            )
+
+        await db.upsert_rate_limit_config(
+            rate_limit_rpm=values["rate_limit_rpm"],  # type: ignore[arg-type]
+            rate_limit_tpm=values["rate_limit_tpm"],  # type: ignore[arg-type]
+            rate_limit_rpm_chat_completions=values["rate_limit_rpm_chat_completions"],
+            rate_limit_tpm_chat_completions=values["rate_limit_tpm_chat_completions"],
+            rate_limit_rpm_admin=values["rate_limit_rpm_admin"],
+            rate_limit_tpm_admin=values["rate_limit_tpm_admin"],
+        )
+        rate_limits.apply_limits(request.app.state.settings, values)
+        logger.info("admin.rate_limits_updated", **{k: v for k, v in values.items()})
+        return _limits_payload(request, is_overridden=True)
+
+    @router.delete("/admin/api/limits")
+    async def reset_rate_limits(request: Request) -> Any:
+        """Drop the override and go back to what .env said — RM-56."""
+        if (forbidden := _require_scope(request, "admin:write")) is not None:
+            return forbidden
+        await db.delete_rate_limit_config()
+        rate_limits.apply_limits(
+            request.app.state.settings, request.app.state.rate_limit_env_defaults
+        )
+        logger.info("admin.rate_limits_reset")
+        return _limits_payload(request, is_overridden=False)
 
     @router.get("/admin/api/sessions")
     async def list_sessions(request: Request) -> Any:

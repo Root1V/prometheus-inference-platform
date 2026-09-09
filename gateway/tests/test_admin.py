@@ -950,3 +950,177 @@ async def test_get_sessions_reports_a_client_seen_via_the_dashboard(gw, rsa_keys
 async def test_get_sessions_requires_admin_read(gw, rsa_keys):
     resp = await gw.get("/admin/api/sessions", headers=_headers(rsa_keys, "inference:read"))
     assert resp.status_code == 403
+
+
+# ── RM-56: live-editable rate limits (/admin/api/limits) ────────────────────
+
+
+async def test_get_limits_reports_env_values_when_not_overridden(gw, rsa_keys):
+    from prometheus_gateway import db
+
+    await db.create_tables(db.get_engine())
+    resp = await gw.get("/admin/api/limits", headers=_headers(rsa_keys, "admin:read"))
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["is_overridden"] is False
+    assert body["limits"]["rate_limit_rpm"] == 60
+    assert body["limits"]["rate_limit_tpm"] == 40_000
+    # env_defaults mirrors limits exactly while nothing has been overridden.
+    assert body["env_defaults"] == body["limits"]
+
+
+async def test_get_limits_requires_admin_read(gw, rsa_keys):
+    resp = await gw.get("/admin/api/limits", headers=_headers(rsa_keys, "inference:read"))
+    assert resp.status_code == 403
+
+
+async def test_put_limits_requires_admin_write(gw, rsa_keys):
+    resp = await gw.put(
+        "/admin/api/limits",
+        json={"rate_limit_rpm": 100, "rate_limit_tpm": 50_000},
+        headers=_headers(rsa_keys, "admin:read"),
+    )
+    assert resp.status_code == 403
+
+
+async def test_put_limits_applies_live_and_persists(gw, rsa_keys, admin_app):
+    """The middleware re-reads Settings per request, so a saved limit must be
+    in effect immediately — and land in the DB so it survives a restart.
+    """
+    from prometheus_gateway import db
+
+    await db.create_tables(db.get_engine())
+    resp = await gw.put(
+        "/admin/api/limits",
+        json={
+            "rate_limit_rpm": 120,
+            "rate_limit_tpm": 90_000,
+            "rate_limit_rpm_chat_completions": 30,
+            "rate_limit_tpm_chat_completions": None,
+            "rate_limit_rpm_admin": 600,
+            "rate_limit_tpm_admin": None,
+        },
+        headers=_headers(rsa_keys, "admin:write"),
+    )
+
+    assert resp.status_code == 200
+    assert resp.json()["is_overridden"] is True
+
+    # Live: the same Settings object the rate-limit middleware reads.
+    settings = admin_app.state.settings
+    assert settings.rate_limit_rpm == 120
+    assert settings.rate_limit_tpm == 90_000
+    assert settings.rate_limit_rpm_chat_completions == 30
+
+    # Persisted.
+    row = await db.get_rate_limit_config()
+    assert row is not None
+    assert row.rate_limit_rpm == 120
+    assert row.rate_limit_rpm_chat_completions == 30
+
+    # And the middleware's own resolver now returns the new values.
+    from prometheus_gateway.rate_limit_middleware import RateLimitMiddleware
+
+    middleware = RateLimitMiddleware(app=None, settings=settings)
+    assert middleware._resolve_limits("chat_completions") == (30, 90_000)
+    assert middleware._resolve_limits("default") == (120, 90_000)
+
+
+async def test_put_limits_is_reflected_by_get_config(gw, rsa_keys):
+    """GET /admin/api/config reads the same live Settings — RM-16's read-only
+    view must not keep showing the stale .env numbers after an override.
+    """
+    from prometheus_gateway import db
+
+    await db.create_tables(db.get_engine())
+    await gw.put(
+        "/admin/api/limits",
+        json={"rate_limit_rpm": 77, "rate_limit_tpm": 12_345},
+        headers=_headers(rsa_keys, "admin:write"),
+    )
+
+    resp = await gw.get("/admin/api/config", headers=_headers(rsa_keys, "admin:read"))
+    assert resp.json()["rate_limit_rpm"] == 77
+    assert resp.json()["rate_limit_tpm"] == 12_345
+
+
+async def test_delete_limits_restores_env_defaults(gw, rsa_keys, admin_app):
+    from prometheus_gateway import db
+
+    await db.create_tables(db.get_engine())
+    await gw.put(
+        "/admin/api/limits",
+        json={"rate_limit_rpm": 500, "rate_limit_tpm": 1_000},
+        headers=_headers(rsa_keys, "admin:write"),
+    )
+    assert admin_app.state.settings.rate_limit_rpm == 500
+
+    resp = await gw.delete("/admin/api/limits", headers=_headers(rsa_keys, "admin:write"))
+
+    assert resp.status_code == 200
+    assert resp.json()["is_overridden"] is False
+    # Back to what .env asked for, without a restart.
+    assert admin_app.state.settings.rate_limit_rpm == 60
+    assert admin_app.state.settings.rate_limit_tpm == 40_000
+    assert await db.get_rate_limit_config() is None
+
+
+async def test_put_limits_rejects_zero(gw, rsa_keys):
+    from prometheus_gateway import db
+
+    await db.create_tables(db.get_engine())
+    resp = await gw.put(
+        "/admin/api/limits",
+        json={"rate_limit_rpm": 0, "rate_limit_tpm": 40_000},
+        headers=_headers(rsa_keys, "admin:write"),
+    )
+    assert resp.status_code == 400
+    assert "invalid-limit" in resp.json()["type"]
+
+
+async def test_put_limits_rejects_non_integer(gw, rsa_keys):
+    from prometheus_gateway import db
+
+    await db.create_tables(db.get_engine())
+    resp = await gw.put(
+        "/admin/api/limits",
+        json={"rate_limit_rpm": "sixty", "rate_limit_tpm": 40_000},
+        headers=_headers(rsa_keys, "admin:write"),
+    )
+    assert resp.status_code == 400
+
+
+async def test_put_limits_refuses_to_lock_the_operator_out(gw, rsa_keys, admin_app):
+    """An admin bucket below the floor would 429 the dashboard itself, leaving
+    .env + a restart as the only way back — exactly what RM-56 removes.
+    """
+    from prometheus_gateway import db
+
+    await db.create_tables(db.get_engine())
+    resp = await gw.put(
+        "/admin/api/limits",
+        json={"rate_limit_rpm": 100, "rate_limit_tpm": 40_000, "rate_limit_rpm_admin": 5},
+        headers=_headers(rsa_keys, "admin:write"),
+    )
+
+    assert resp.status_code == 400
+    assert "invalid-limit" in resp.json()["type"]
+    # Nothing was applied or persisted.
+    assert admin_app.state.settings.rate_limit_rpm == 60
+    assert await db.get_rate_limit_config() is None
+
+
+async def test_put_limits_low_global_still_blocked_when_admin_inherits_it(gw, rsa_keys):
+    """With no admin override, /admin/api/* falls back to the global RPM — so
+    a tiny global is the same lockout by another route.
+    """
+    from prometheus_gateway import db
+
+    await db.create_tables(db.get_engine())
+    resp = await gw.put(
+        "/admin/api/limits",
+        json={"rate_limit_rpm": 5, "rate_limit_tpm": 40_000, "rate_limit_rpm_admin": None},
+        headers=_headers(rsa_keys, "admin:write"),
+    )
+    assert resp.status_code == 400

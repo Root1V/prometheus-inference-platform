@@ -17,13 +17,15 @@ export interface DashboardConfig {
   circuit_breaker_success_threshold: number;
 }
 
-const CONFIG_KEY = ["gateway-dashboard-config"] as const;
+export const CONFIG_KEY = ["gateway-dashboard-config"] as const;
 
 export function useDashboardConfig() {
   return useQuery({
     queryKey: CONFIG_KEY,
     queryFn: async () => (await apiClient.get<DashboardConfig>("/config")).data,
-    // Static until the gateway restarts — no need to poll.
+    // Nothing here changes on its own, so polling would be waste — but the
+    // rate-limit values are editable since RM-56, so api/limits.ts invalidates
+    // this key on save rather than leaving a stale snapshot on screen.
     staleTime: Infinity,
   });
 }
