@@ -2445,31 +2445,42 @@ of scope there, per the user's own call, to keep that PR's blast radius containe
 - Any dedicated UI for comparing/managing multiple instances of the same model side-by-side
   (the Models/Library page's "Instances" column today is just a count).
 
-## RM-56 — Admin dashboard: edit rate limits live, no restart (todo)
+## RM-56 — Admin dashboard: edit rate limits live, no restart (done)
 
-**Why**: raised while explaining [[RM-51]]'s follow-up fix (giving `/admin/api/*` its own
-`rate_limit_rpm_admin` budget) — today every rate limit (`rate_limit_rpm`, `rate_limit_tpm`,
-the `chat_completions`/`admin` per-endpoint overrides) is a `Settings` field, only
-changeable via `gateway/.env` + a gateway restart. An operator tuning limits in response to
-real traffic (e.g. loosening `rate_limit_rpm_admin` after a false-positive 429, or
-tightening a leaky client's budget) has to edit a file and bounce the process.
+**Why**: RPM/TPM limits (global plus the per-endpoint chat/admin overrides) only changed via
+`.env` + a gateway restart — raised while fixing RM-51's admin rate-limit 429. Restarting to
+retune a limit means dropping in-flight inference requests, which is a poor trade for a knob
+an operator wants to adjust while watching traffic.
 
-**Scope** (not yet designed in detail):
-- A new admin-only settings surface (Limits page already exists in the dashboard nav —
-  today it likely only *displays* circuit-breaker/rate-limit state; check its current scope
-  before assuming it needs to be created from scratch) to view and edit the global RPM/TPM
-  and the per-endpoint (`chat_completions`, `admin`) overrides.
-- "Take effect hot" means `RateLimitMiddleware._resolve_limits()` needs to read from a
-  live-mutable source instead of the frozen `Settings` object constructed at startup —
-  likely a small in-memory/Redis-backed override store the middleware checks first, falling
-  back to the `.env`-configured defaults when nothing's been overridden. Needs a decision on
-  whether an override persists across a gateway restart (Redis-backed) or is
-  process-lifetime only (in-memory, simpler, matches how `update_models_config` in
-  `discovery.py` already documents itself as "in-memory only, this session" for a similar
-  don't-persist-to-disk tradeoff).
-- Per-client overrides (not just per-endpoint) are a plausible extension but not required
-  for the initial cut — today's `rate_limit_rpm_admin` is already a blunt "every admin
-  session" budget, not per-operator.
+**Scope**: mirrors [[RM-60]]'s DB-backed pricing override. A single-row `rate_limit_config`
+table holds the admin-set values; its presence means "an operator configured these", its
+absence means the `.env` values are in effect. `GET`/`PUT`/`DELETE /admin/api/limits`
+(admin:read / admin:write) read, save and reset them, and an editable form on the Limits page
+replaces that page's "read-only" disclaimer.
+
+The live-apply turned out to need no middleware change at all: `_resolve_limits` already read
+`self.settings.<field>` fresh on every request, and that Settings object is the same instance
+as `app.state.settings` — so writing the field *is* the live update. `create_app` snapshots
+the `.env` values into `app.state.rate_limit_env_defaults` before anything can overwrite them,
+which is what "Reset to .env" restores and what the form shows beside each input. The env
+snapshot deliberately lives on `app.state` rather than a module singleton, so apps built side
+by side in tests can't leak limits into each other.
+
+One guard worth naming: the endpoint refuses any value that would drop the admin bucket below
+60 RPM (whether set directly or inherited from a too-small global). The dashboard polls
+continuously, so a lower value would rate-limit the very page needed to undo the mistake —
+leaving `.env` + a restart as the only way back, which is precisely what this item removes.
+Values below 1 are rejected for the same class of reason. `rate_limit_strict` stays
+`.env`-only: fail-open vs fail-closed is a deployment decision, not a tuning knob.
+
+**Verified**: live against the real gateway — set chat completions to 3 RPM via the API and
+confirmed the very next requests 429'd with `"rate limit of 3 RPM for endpoint
+'chat_completions'"`, no restart; confirmed the lockout guard and the zero-value rejection
+both 400 without applying or persisting anything; confirmed `DELETE` restored the `.env`
+values and chat went back to 200. In the browser: saved from the form (toast, badge flipped
+`from .env` → `custom`, and the read-only StatCard above updated from 60 to 90 — proving the
+`staleTime: Infinity` config cache is invalidated on save), then reset back. 10 new tests in
+`test_admin.py`; full suite green.
 
 ## RM-57 — Multi-instance-per-model: a shared logical name for routing (todo)
 
@@ -2769,43 +2780,6 @@ would have been billed for a real generation), fixed, restarted, re-ran the iden
 image-generation model is rejected the same way. Two new regression tests in
 `gateway/tests/test_modality.py` (non-streaming and streaming); full suite (338 tests) green.
 Updated `docs/sdk-integration-guide.md` §5.1/§5.2.
-
-## RM-56 — Admin dashboard: edit rate limits live, no restart (done)
-
-**Why**: RPM/TPM limits (global plus the per-endpoint chat/admin overrides) only changed via
-`.env` + a gateway restart — raised while fixing RM-51's admin rate-limit 429. Restarting to
-retune a limit means dropping in-flight inference requests, which is a poor trade for a knob
-an operator wants to adjust while watching traffic.
-
-**Scope**: mirrors [[RM-60]]'s DB-backed pricing override. A single-row `rate_limit_config`
-table holds the admin-set values; its presence means "an operator configured these", its
-absence means the `.env` values are in effect. `GET`/`PUT`/`DELETE /admin/api/limits`
-(admin:read / admin:write) read, save and reset them, and an editable form on the Limits page
-replaces that page's "read-only" disclaimer.
-
-The live-apply turned out to need no middleware change at all: `_resolve_limits` already read
-`self.settings.<field>` fresh on every request, and that Settings object is the same instance
-as `app.state.settings` — so writing the field *is* the live update. `create_app` snapshots
-the `.env` values into `app.state.rate_limit_env_defaults` before anything can overwrite them,
-which is what "Reset to .env" restores and what the form shows beside each input. The env
-snapshot deliberately lives on `app.state` rather than a module singleton, so apps built side
-by side in tests can't leak limits into each other.
-
-One guard worth naming: the endpoint refuses any value that would drop the admin bucket below
-60 RPM (whether set directly or inherited from a too-small global). The dashboard polls
-continuously, so a lower value would rate-limit the very page needed to undo the mistake —
-leaving `.env` + a restart as the only way back, which is precisely what this item removes.
-Values below 1 are rejected for the same class of reason. `rate_limit_strict` stays
-`.env`-only: fail-open vs fail-closed is a deployment decision, not a tuning knob.
-
-**Verified**: live against the real gateway — set chat completions to 3 RPM via the API and
-confirmed the very next requests 429'd with `"rate limit of 3 RPM for endpoint
-'chat_completions'"`, no restart; confirmed the lockout guard and the zero-value rejection
-both 400 without applying or persisting anything; confirmed `DELETE` restored the `.env`
-values and chat went back to 200. In the browser: saved from the form (toast, badge flipped
-`from .env` → `custom`, and the read-only StatCard above updated from 60 to 90 — proving the
-`staleTime: Infinity` config cache is invalidated on save), then reset back. 10 new tests in
-`test_admin.py`; full suite green.
 
 Append a new row to the table with the next `RM-NN` id and a new `## RM-NN — ...` section
 below, following the same shape (Why / Scope). Re-sort the table if the new item's
