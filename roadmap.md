@@ -72,6 +72,7 @@ Status: `done` · `todo`
 | RM-64 | Tiered model access by plan | todo | A purchased plan grants a default bundle of the existing `model:<id>` scopes automatically; admin can still add/remove individual grants on top — split out of RM-63, direction confirmed after industry research |
 | RM-65 | fix: 422 validation errors break the RFC 9457 error contract | done | FastAPI's default validation-error handler returned `application/json`/`{"detail": [...]}` instead of the gateway's own problem+json envelope every other error uses — found live by the Axonium SDK integration team; now wrapped in the same envelope, per-field detail preserved under `errors` |
 | RM-66 | fix: chat completions accepted a wrong-modality model | done | An embedding/image model called via `/v1/chat/completions` returned 200 with garbage output instead of 400 — the modality check only fired when an image content part was present, never as a baseline gate; `/v1/embeddings`/`/v1/images/generations` already rejected the wrong modality unconditionally, chat completions didn't — found live by the Axonium SDK integration team |
+| RM-67 | Admin dashboard: edit circuit-breaker thresholds live | done | Same treatment as RM-56 for failure/recovery/success thresholds — but these needed an explicit push into BackendPool and every live CircuitBreaker, which hold their own copies instead of re-reading Settings per request |
 
 Adding an item: append the next `RM-NN` row here with a one-liner, then add the full
 Why/Scope writeup to `docs/roadmap.md`.

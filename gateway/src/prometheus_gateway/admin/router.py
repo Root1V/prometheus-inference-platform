@@ -46,6 +46,9 @@ POST   /admin/api/users/share/{token_id}/revoke
 GET    /admin/api/limits                                    — current rate limits + .env defaults (RM-56)
 PUT    /admin/api/limits                                    — set limits live, persisted (RM-56)
 DELETE /admin/api/limits                                    — drop the override, back to .env (RM-56)
+GET    /admin/api/circuit-breaker                           — current CB thresholds + .env defaults (RM-67)
+PUT    /admin/api/circuit-breaker                           — set them live, persisted (RM-67)
+DELETE /admin/api/circuit-breaker                           — drop the override, back to .env (RM-67)
 GET    /admin/api/config                                    — dashboard-facing settings (RM-31)
 GET    /admin/api/sessions                                  — clients active in the last 15m (RM-23)
 
@@ -796,6 +799,102 @@ def create_admin_router(manager_client: ManagerApiClient) -> APIRouter:
         )
         logger.info("admin.rate_limits_reset")
         return _limits_payload(request, is_overridden=False)
+
+    # ── RM-67: live-editable circuit-breaker thresholds ──────────────────────
+
+    _CB_FIELDS = (
+        "circuit_breaker_failure_threshold",
+        "circuit_breaker_recovery_timeout",
+        "circuit_breaker_success_threshold",
+    )
+    # A typo here has a lasting, silent effect — a healthy backend stays cut
+    # off for however long was entered — so cap it at an hour.
+    _MAX_RECOVERY_TIMEOUT = 3600
+
+    def _cb_payload(request: Request, *, is_overridden: bool) -> dict[str, Any]:
+        settings: Settings = request.app.state.settings
+        return {
+            "settings": {field: getattr(settings, field) for field in _CB_FIELDS},
+            "env_defaults": request.app.state.circuit_breaker_env_defaults,
+            "is_overridden": is_overridden,
+            "max_recovery_timeout": _MAX_RECOVERY_TIMEOUT,
+        }
+
+    @router.get("/admin/api/circuit-breaker")
+    async def get_circuit_breaker_settings(request: Request) -> Any:
+        """Current thresholds plus what .env asked for — RM-67."""
+        if (forbidden := _require_scope(request, "admin:read")) is not None:
+            return forbidden
+        row = await db.get_circuit_breaker_config()
+        return _cb_payload(request, is_overridden=row is not None)
+
+    @router.put("/admin/api/circuit-breaker")
+    async def put_circuit_breaker_settings(body: dict[str, Any], request: Request) -> Any:
+        """Persist thresholds and push them into the live pool — RM-67.
+
+        Unlike the rate limits, this can't rely on Settings being re-read per
+        request: BackendPool and every CircuitBreaker it already built hold
+        their own copies, so both are updated explicitly.
+        """
+        if (forbidden := _require_scope(request, "admin:write")) is not None:
+            return forbidden
+
+        def _parse(key: str) -> int:
+            raw = body.get(key)
+            if raw is None:
+                raise ValueError(f"{key} is required.")
+            if isinstance(raw, bool) or not isinstance(raw, (int, float)) or int(raw) != raw:
+                raise ValueError(f"{key} must be a whole number.")
+            value = int(raw)
+            if value < 1:
+                raise ValueError(f"{key} must be at least 1.")
+            return value
+
+        try:
+            values = {field: _parse(field) for field in _CB_FIELDS}
+        except ValueError as exc:
+            return _problem(request, 400, "invalid-threshold", "Invalid Threshold", str(exc))
+
+        if values["circuit_breaker_recovery_timeout"] > _MAX_RECOVERY_TIMEOUT:
+            return _problem(
+                request,
+                400,
+                "invalid-threshold",
+                "Invalid Threshold",
+                f"circuit_breaker_recovery_timeout is capped at {_MAX_RECOVERY_TIMEOUT} seconds "
+                "— a longer value would keep a recovered backend cut off with nothing "
+                "surfacing the mistake.",
+            )
+
+        await db.upsert_circuit_breaker_config(**values)
+        settings: Settings = request.app.state.settings
+        for field, value in values.items():
+            setattr(settings, field, value)
+        request.app.state.backend_pool.update_circuit_breaker_settings(
+            failure_threshold=values["circuit_breaker_failure_threshold"],
+            recovery_timeout=values["circuit_breaker_recovery_timeout"],
+            success_threshold=values["circuit_breaker_success_threshold"],
+        )
+        logger.info("admin.circuit_breaker_updated", **values)
+        return _cb_payload(request, is_overridden=True)
+
+    @router.delete("/admin/api/circuit-breaker")
+    async def reset_circuit_breaker_settings(request: Request) -> Any:
+        """Drop the override and go back to what .env said — RM-67."""
+        if (forbidden := _require_scope(request, "admin:write")) is not None:
+            return forbidden
+        await db.delete_circuit_breaker_config()
+        defaults = request.app.state.circuit_breaker_env_defaults
+        settings: Settings = request.app.state.settings
+        for field, value in defaults.items():
+            setattr(settings, field, value)
+        request.app.state.backend_pool.update_circuit_breaker_settings(
+            failure_threshold=defaults["circuit_breaker_failure_threshold"],
+            recovery_timeout=defaults["circuit_breaker_recovery_timeout"],
+            success_threshold=defaults["circuit_breaker_success_threshold"],
+        )
+        logger.info("admin.circuit_breaker_reset")
+        return _cb_payload(request, is_overridden=False)
 
     @router.get("/admin/api/sessions")
     async def list_sessions(request: Request) -> Any:

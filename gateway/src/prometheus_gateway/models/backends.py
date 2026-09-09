@@ -90,6 +90,36 @@ class BackendPool:
             )
         return self._circuit_breakers[backend_id]
 
+    def update_circuit_breaker_settings(
+        self,
+        *,
+        failure_threshold: int,
+        recovery_timeout: int,
+        success_threshold: int,
+    ) -> None:
+        """Re-tune circuit breakers without a restart — RM-67.
+
+        Two layers hold their own copies of these numbers: this pool (used as
+        the defaults for breakers created later) and every CircuitBreaker
+        already built for a backend. Both are updated here, otherwise a saved
+        change would only reach models that happen to be touched for the
+        first time afterwards.
+
+        Note this reaches currently-open circuits too: `recovery_at` is derived
+        as `opened_at + recovery_timeout` each time state is read, not frozen
+        when the circuit tripped — so shortening the timeout brings an
+        already-open backend back sooner, and lengthening it defers the probe.
+        """
+        self._failure_threshold = failure_threshold
+        self._recovery_timeout = recovery_timeout
+        self._success_threshold = success_threshold
+        for breaker in self._circuit_breakers.values():
+            breaker.update_settings(
+                failure_threshold=failure_threshold,
+                recovery_timeout=recovery_timeout,
+                success_threshold=success_threshold,
+            )
+
     async def forward(
         self,
         backend_id: str,

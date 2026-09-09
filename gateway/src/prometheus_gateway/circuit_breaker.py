@@ -81,6 +81,22 @@ class CircuitBreaker:
         # Tracks successes in HALF-OPEN before closing
         self._half_open_successes: int = 0
 
+    def update_settings(
+        self,
+        *,
+        failure_threshold: int,
+        recovery_timeout: int,
+        success_threshold: int,
+    ) -> None:
+        """Re-tune this breaker in place — RM-67 (admin edits the thresholds
+        from the dashboard). Deliberately leaves the current state alone: a
+        circuit that is open stays open, it just recovers on the new timeout,
+        since `recovery_at` is derived from `opened_at` on every read.
+        """
+        self._failure_threshold = failure_threshold
+        self._recovery_timeout = recovery_timeout
+        self._success_threshold = success_threshold
+
     # ── Redis key helpers ──────────────────────────────────────────────────
 
     def _state_key(self) -> str:

@@ -2781,6 +2781,48 @@ image-generation model is rejected the same way. Two new regression tests in
 `gateway/tests/test_modality.py` (non-streaming and streaming); full suite (338 tests) green.
 Updated `docs/sdk-integration-guide.md` §5.1/§5.2.
 
+## RM-67 — Admin dashboard: edit circuit-breaker thresholds live (done)
+
+**Why**: asked for straight after [[RM-56]] — the Limits page now edits rate limits without a
+restart, but the three circuit-breaker thresholds (failure / recovery timeout / success) sitting
+right beside them were still `.env`-only. Same argument: restarting to retune a knob means
+dropping in-flight inference.
+
+**Scope**: mirrors [[RM-56]] — a single-row `circuit_breaker_config` table,
+`GET`/`PUT`/`DELETE /admin/api/circuit-breaker`, an env-defaults snapshot on `app.state`, and a
+second form on the Limits page.
+
+The interesting difference is how the change reaches the running system. RM-56 needed nothing
+beyond writing to Settings, because the rate-limit middleware re-reads it per request. The
+circuit breaker doesn't: `BackendPool` captures the three values at construction and uses them
+as defaults for breakers it creates, and each `CircuitBreaker` captures its own copy again — so
+writing Settings alone would silently miss every backend already in service. The endpoint
+therefore pushes into both layers via a new `BackendPool.update_circuit_breaker_settings()`,
+which delegates to a new `CircuitBreaker.update_settings()` rather than reaching into another
+class's private attributes.
+
+That also reaches currently-open circuits, which is the desirable behaviour and worth stating
+explicitly: `recovery_at` is derived as `opened_at + recovery_timeout` every time state is read,
+not frozen when the circuit tripped, so shortening the timeout brings an open backend back
+sooner and lengthening it defers the probe. The breaker's state itself is left alone — an open
+circuit stays open.
+
+`circuit_breaker_recovery_timeout` is capped at 3600s: unlike a bad threshold, a typo'd timeout
+(30000 instead of 300) has a lasting, silent effect — a recovered backend stays cut off with
+nothing surfacing why. All three reject values below 1.
+
+**Verified**: the case that matters is covered by a test asserting a breaker built *before* the
+edit picks up the new numbers, alongside one built after — that's the failure mode the whole
+item exists to avoid. Live against the real gateway: saved and read back through the API,
+confirmed `GET /admin/api/config` reflects it, confirmed the 3600s cap and the below-1 rejection
+400 without applying or persisting anything, and — the path unit tests can't reach, since
+`ASGITransport` skips lifespan — restarted the gateway and confirmed the saved thresholds were
+loaded from the DB and pushed into the pool while `env_defaults` still reported what `.env` says.
+In the browser: the form showed the saved values beside the `.env` ones, and Reset restored them.
+Not verified end-to-end: an actually-open circuit adopting a new timeout — inducing one would
+have meant killing a running model server, so that rests on the read-time `recovery_at`
+derivation above plus the live-object test.
+
 Append a new row to the table with the next `RM-NN` id and a new `## RM-NN — ...` section
 below, following the same shape (Why / Scope). Re-sort the table if the new item's
 priority isn't "last."

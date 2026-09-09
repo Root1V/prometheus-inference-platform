@@ -195,6 +195,30 @@ class RateLimitConfig(Base):
     )
 
 
+class CircuitBreakerConfig(Base):
+    """Admin-configured circuit-breaker thresholds — RM-67.
+
+    Same single-row shape as RateLimitConfig above, for the same reason:
+    presence means "an operator tuned these from the dashboard", absence
+    means the .env values stand. Unlike rate limits, applying these needs an
+    explicit push into BackendPool — the pool and each live CircuitBreaker
+    hold their own copies rather than re-reading Settings per request.
+    """
+
+    __tablename__ = "circuit_breaker_config"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, default=1)
+    circuit_breaker_failure_threshold: Mapped[int] = mapped_column(Integer, nullable=False)
+    circuit_breaker_recovery_timeout: Mapped[int] = mapped_column(Integer, nullable=False)
+    circuit_breaker_success_threshold: Mapped[int] = mapped_column(Integer, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+        onupdate=lambda: datetime.now(timezone.utc),
+    )
+
+
 _engine: AsyncEngine | None = None
 _session_factory: sessionmaker | None = None  # type: ignore[type-arg]
 
@@ -616,6 +640,57 @@ async def delete_rate_limit_config() -> bool:
     session_factory = get_session_factory()
     async with session_factory() as session:
         row: RateLimitConfig | None = await session.get(RateLimitConfig, _RATE_LIMIT_CONFIG_ID)
+        if row is None:
+            return False
+        await session.delete(row)
+        await session.commit()
+        return True
+
+
+# ── RM-67: admin-configured circuit-breaker thresholds (single row, id=1) ────
+
+_CIRCUIT_BREAKER_CONFIG_ID = 1
+
+
+async def get_circuit_breaker_config() -> CircuitBreakerConfig | None:
+    """None means no admin override — the .env values are in effect."""
+    session_factory = get_session_factory()
+    async with session_factory() as session:
+        row: CircuitBreakerConfig | None = await session.get(
+            CircuitBreakerConfig, _CIRCUIT_BREAKER_CONFIG_ID
+        )
+        return row
+
+
+async def upsert_circuit_breaker_config(
+    *,
+    circuit_breaker_failure_threshold: int,
+    circuit_breaker_recovery_timeout: int,
+    circuit_breaker_success_threshold: int,
+) -> CircuitBreakerConfig:
+    session_factory = get_session_factory()
+    async with session_factory() as session:
+        row: CircuitBreakerConfig | None = await session.get(
+            CircuitBreakerConfig, _CIRCUIT_BREAKER_CONFIG_ID
+        )
+        if row is None:
+            row = CircuitBreakerConfig(id=_CIRCUIT_BREAKER_CONFIG_ID)
+            session.add(row)
+        row.circuit_breaker_failure_threshold = circuit_breaker_failure_threshold
+        row.circuit_breaker_recovery_timeout = circuit_breaker_recovery_timeout
+        row.circuit_breaker_success_threshold = circuit_breaker_success_threshold
+        await session.commit()
+        await session.refresh(row)
+        return row
+
+
+async def delete_circuit_breaker_config() -> bool:
+    """Returns False if no override existed (already on the .env values)."""
+    session_factory = get_session_factory()
+    async with session_factory() as session:
+        row: CircuitBreakerConfig | None = await session.get(
+            CircuitBreakerConfig, _CIRCUIT_BREAKER_CONFIG_ID
+        )
         if row is None:
             return False
         await session.delete(row)

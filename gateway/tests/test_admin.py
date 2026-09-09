@@ -1124,3 +1124,170 @@ async def test_put_limits_low_global_still_blocked_when_admin_inherits_it(gw, rs
         headers=_headers(rsa_keys, "admin:write"),
     )
     assert resp.status_code == 400
+
+
+# ── RM-67: live-editable circuit-breaker thresholds ─────────────────────────
+
+
+async def test_get_circuit_breaker_reports_env_values_when_not_overridden(gw, rsa_keys):
+    from prometheus_gateway import db
+
+    await db.create_tables(db.get_engine())
+    resp = await gw.get("/admin/api/circuit-breaker", headers=_headers(rsa_keys, "admin:read"))
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["is_overridden"] is False
+    assert body["settings"]["circuit_breaker_failure_threshold"] == 5
+    assert body["settings"]["circuit_breaker_recovery_timeout"] == 30
+    assert body["settings"]["circuit_breaker_success_threshold"] == 2
+    assert body["env_defaults"] == body["settings"]
+
+
+async def test_get_circuit_breaker_requires_admin_read(gw, rsa_keys):
+    resp = await gw.get("/admin/api/circuit-breaker", headers=_headers(rsa_keys, "inference:read"))
+    assert resp.status_code == 403
+
+
+async def test_put_circuit_breaker_requires_admin_write(gw, rsa_keys):
+    resp = await gw.put(
+        "/admin/api/circuit-breaker",
+        json={
+            "circuit_breaker_failure_threshold": 3,
+            "circuit_breaker_recovery_timeout": 10,
+            "circuit_breaker_success_threshold": 1,
+        },
+        headers=_headers(rsa_keys, "admin:read"),
+    )
+    assert resp.status_code == 403
+
+
+async def test_put_circuit_breaker_reaches_an_already_built_breaker(gw, rsa_keys, admin_app):
+    """The point of RM-67: the pool and every CircuitBreaker it already
+    created hold their own copies, so a saved change has to be pushed into
+    both — not just written to Settings.
+    """
+    import fakeredis.aioredis as fakeredis
+
+    from prometheus_gateway import db
+
+    await db.create_tables(db.get_engine())
+    pool = admin_app.state.backend_pool
+    # Force a breaker to exist *before* the edit, as a live backend would.
+    pool._redis = fakeredis.FakeRedis()
+    breaker = pool.get_circuit_breaker("already-running-model")
+    assert breaker._failure_threshold == 5
+
+    resp = await gw.put(
+        "/admin/api/circuit-breaker",
+        json={
+            "circuit_breaker_failure_threshold": 9,
+            "circuit_breaker_recovery_timeout": 90,
+            "circuit_breaker_success_threshold": 4,
+        },
+        headers=_headers(rsa_keys, "admin:write"),
+    )
+
+    assert resp.status_code == 200
+    assert resp.json()["is_overridden"] is True
+    # The pre-existing breaker picked it up...
+    assert breaker._failure_threshold == 9
+    assert breaker._recovery_timeout == 90
+    assert breaker._success_threshold == 4
+    # ...and so does one created afterwards.
+    fresh = pool.get_circuit_breaker("model-seen-later")
+    assert fresh._failure_threshold == 9
+    # Persisted, and mirrored onto Settings for GET /admin/api/config.
+    row = await db.get_circuit_breaker_config()
+    assert row is not None and row.circuit_breaker_failure_threshold == 9
+    assert admin_app.state.settings.circuit_breaker_failure_threshold == 9
+
+
+async def test_put_circuit_breaker_is_reflected_by_get_config(gw, rsa_keys):
+    from prometheus_gateway import db
+
+    await db.create_tables(db.get_engine())
+    await gw.put(
+        "/admin/api/circuit-breaker",
+        json={
+            "circuit_breaker_failure_threshold": 7,
+            "circuit_breaker_recovery_timeout": 45,
+            "circuit_breaker_success_threshold": 3,
+        },
+        headers=_headers(rsa_keys, "admin:write"),
+    )
+
+    resp = await gw.get("/admin/api/config", headers=_headers(rsa_keys, "admin:read"))
+    body = resp.json()
+    assert body["circuit_breaker_failure_threshold"] == 7
+    assert body["circuit_breaker_recovery_timeout"] == 45
+    assert body["circuit_breaker_success_threshold"] == 3
+
+
+async def test_delete_circuit_breaker_restores_env_defaults(gw, rsa_keys, admin_app):
+    import fakeredis.aioredis as fakeredis
+
+    from prometheus_gateway import db
+
+    await db.create_tables(db.get_engine())
+    pool = admin_app.state.backend_pool
+    pool._redis = fakeredis.FakeRedis()
+    breaker = pool.get_circuit_breaker("some-model")
+
+    await gw.put(
+        "/admin/api/circuit-breaker",
+        json={
+            "circuit_breaker_failure_threshold": 20,
+            "circuit_breaker_recovery_timeout": 300,
+            "circuit_breaker_success_threshold": 8,
+        },
+        headers=_headers(rsa_keys, "admin:write"),
+    )
+    assert breaker._failure_threshold == 20
+
+    resp = await gw.delete("/admin/api/circuit-breaker", headers=_headers(rsa_keys, "admin:write"))
+
+    assert resp.status_code == 200
+    assert resp.json()["is_overridden"] is False
+    # The live breaker is back on the .env thresholds, no restart involved.
+    assert breaker._failure_threshold == 5
+    assert breaker._recovery_timeout == 30
+    assert breaker._success_threshold == 2
+    assert admin_app.state.settings.circuit_breaker_failure_threshold == 5
+    assert await db.get_circuit_breaker_config() is None
+
+
+async def test_put_circuit_breaker_rejects_zero(gw, rsa_keys):
+    from prometheus_gateway import db
+
+    await db.create_tables(db.get_engine())
+    resp = await gw.put(
+        "/admin/api/circuit-breaker",
+        json={
+            "circuit_breaker_failure_threshold": 0,
+            "circuit_breaker_recovery_timeout": 30,
+            "circuit_breaker_success_threshold": 2,
+        },
+        headers=_headers(rsa_keys, "admin:write"),
+    )
+    assert resp.status_code == 400
+    assert "invalid-threshold" in resp.json()["type"]
+
+
+async def test_put_circuit_breaker_caps_recovery_timeout(gw, rsa_keys, admin_app):
+    from prometheus_gateway import db
+
+    await db.create_tables(db.get_engine())
+    resp = await gw.put(
+        "/admin/api/circuit-breaker",
+        json={
+            "circuit_breaker_failure_threshold": 5,
+            "circuit_breaker_recovery_timeout": 86_400,
+            "circuit_breaker_success_threshold": 2,
+        },
+        headers=_headers(rsa_keys, "admin:write"),
+    )
+    assert resp.status_code == 400
+    # Nothing applied or persisted.
+    assert admin_app.state.settings.circuit_breaker_recovery_timeout == 30
+    assert await db.get_circuit_breaker_config() is None

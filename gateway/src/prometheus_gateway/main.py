@@ -114,9 +114,28 @@ def create_app(
     async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
         app.state.backend_pool = pool
 
-        from .db import create_tables, get_rate_limit_config, list_model_price_configs
+        from .db import (
+            create_tables,
+            get_circuit_breaker_config,
+            get_rate_limit_config,
+            list_model_price_configs,
+        )
 
         await create_tables(db_engine)
+
+        # RM-67: same idea as the rate limits below, but the values have to be
+        # pushed into the pool — it and each live CircuitBreaker keep their own
+        # copies rather than re-reading Settings per request.
+        cb_row = await get_circuit_breaker_config()
+        if cb_row is not None:
+            settings.circuit_breaker_failure_threshold = cb_row.circuit_breaker_failure_threshold
+            settings.circuit_breaker_recovery_timeout = cb_row.circuit_breaker_recovery_timeout
+            settings.circuit_breaker_success_threshold = cb_row.circuit_breaker_success_threshold
+            pool.update_circuit_breaker_settings(
+                failure_threshold=cb_row.circuit_breaker_failure_threshold,
+                recovery_timeout=cb_row.circuit_breaker_recovery_timeout,
+                success_threshold=cb_row.circuit_breaker_success_threshold,
+            )
 
         # RM-56: admin-configured rate limits override .env, same idea as the
         # DB-configured prices below. app.state.rate_limit_env_defaults (set
@@ -199,6 +218,12 @@ def create_app(
     # this is what "Reset to defaults" restores, and what the Limits page shows
     # next to each editable value.
     app.state.rate_limit_env_defaults = rate_limits.snapshot_env_defaults(settings)
+    # RM-67: same snapshot, for the circuit-breaker thresholds.
+    app.state.circuit_breaker_env_defaults = {
+        "circuit_breaker_failure_threshold": settings.circuit_breaker_failure_threshold,
+        "circuit_breaker_recovery_timeout": settings.circuit_breaker_recovery_timeout,
+        "circuit_breaker_success_threshold": settings.circuit_breaker_success_threshold,
+    }
 
     # Middleware stack — innermost added first (see gateway.instructions.md)
     # Order: [request-id+trace-id] → [auth] → [rate-limit] → router

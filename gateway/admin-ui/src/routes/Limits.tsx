@@ -1,6 +1,7 @@
 import { useDashboardConfig } from "../api/config";
 import { useMetrics } from "../api/metrics";
 import { CircuitBadge } from "../components/CircuitBadge";
+import { CircuitBreakerForm } from "../components/CircuitBreakerForm";
 import { RateLimitsForm } from "../components/RateLimitsForm";
 import { Sidebar } from "../components/Sidebar";
 import { StatCard } from "../components/StatCard";
@@ -20,8 +21,8 @@ export default function Limits() {
         <h1 className="text-2xl font-semibold text-text">Limits</h1>
         <p className="mt-1 text-sm text-text-muted">
           Current rate-limit and circuit-breaker configuration, and live per-model circuit
-          state. Rate limits are editable below and apply without a restart; circuit-breaker
-          settings still come from the gateway's own config.
+          state. Rate limits and circuit-breaker thresholds are both editable below and apply
+          without a restart.
         </p>
 
         <h2 className="mt-8 text-sm font-medium uppercase tracking-wide text-text-muted">
@@ -89,6 +90,10 @@ export default function Limits() {
             sub="successes to fully close"
             icon={AlertOctagon}
           />
+        </div>
+
+        <div className="mt-4">
+          <CircuitBreakerForm />
         </div>
 
         <h2 className="mt-10 text-sm font-medium uppercase tracking-wide text-text-muted">
