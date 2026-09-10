@@ -48,16 +48,23 @@ export function ScopePicker({
     }
   }
   for (const [modelId, count] of replicaCounts) {
-    // Skip catalog names that are already an instance id — that's the ordinary
-    // single-instance case, where the two are the same name.
-    if (instances.some((i) => i.id === modelId)) continue;
+    // manager-api sets model_id = id when a model is registered directly, so a
+    // catalog name normally *is* the first instance's id too. That collision is
+    // the ordinary single-instance case — skip it here and let the loop below
+    // list the name once, plainly. But once a second instance joins that
+    // catalog name it becomes a real group, and it has to be offered as such
+    // even though the name still collides: granting only the other replica's
+    // own id would pin the client to one instance.
+    if (count === 1 && instances.some((i) => i.id === modelId)) continue;
     seenIds.add(modelId);
     const first = instances.find((i) => i.model_id === modelId)!;
     modelOptions.push({
       id: modelId,
       family: first.family,
       modality: first.modality,
-      servedBy: count,
+      // Only a genuine group earns the badge — a lone instance reachable under
+      // a catalog name that differs from its own id is still just one instance.
+      servedBy: count > 1 ? count : undefined,
     });
   }
   for (const entry of instances) {
