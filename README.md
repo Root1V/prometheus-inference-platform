@@ -488,6 +488,7 @@ edge-ai-inference/
 | v0.1.0 | 2026-03-28 | Gateway core, JWT auth, llama.cpp runtime scripts |
 | v0.2.0 | 2026-03-28 | Auth Service (OAuth2 client credentials + JWKS), full E2E stack via Podman Compose |
 | v1.3.0 | 2026-08-24 | Multi-backend model manager (llama.cpp/MLX/vLLM/SGLang), distributed inference across hosts, fine-grained per-model auth scopes, VLM + embeddings support, and a new React admin dashboard for lifecycle management |
+| v1.4.0 | 2026-09-10 | Image generation (sd.cpp, FLUX.1/SD3.5), SQLite model registry with catalog/instance separation, Hugging Face model discovery and downloads, a full-featured Playground (streaming, tool calling, vision, history), per-model latency/throughput metrics, real per-client billing with write-time cost and spend caps, live-editable rate limits and circuit-breaker thresholds, replica routing under a shared logical model name, and an SDK integration guide |
 
 ---
 
