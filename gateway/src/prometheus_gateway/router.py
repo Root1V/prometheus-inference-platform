@@ -15,7 +15,7 @@ import json
 import time
 from datetime import date as _date
 from datetime import datetime, timezone
-from typing import TYPE_CHECKING, Any, NamedTuple
+from typing import TYPE_CHECKING, Any, Literal, NamedTuple
 
 import httpx
 import structlog
@@ -85,6 +85,43 @@ def _problem(
         media_type="application/problem+json",
         headers=extra_headers or {},
     )
+
+
+# RM-70 (decision #2): a client can still target one replica, but through a
+# header rather than by putting an instance id in `model`. Keeping `model` for
+# models alone is what lets /v1/models list models, lets one grant cover a
+# whole group, and lets a request be billed to the model whatever served it.
+INSTANCE_HEADER = "X-Prometheus-Instance"
+
+
+def _served_by_headers(entry: "ModelEntry") -> dict[str, str]:
+    """Tell the caller which replica answered — RM-72.
+
+    Without this, a client watching a load-balanced model has no way to tell
+    whether balancing is happening at all, or which instance to look at when
+    one of them misbehaves. Same idea as LiteLLM's x-litellm-model-id.
+    """
+    return {INSTANCE_HEADER: entry.label or entry.id, "X-Prometheus-Instance-Id": entry.id}
+
+
+def _pin_to_instance(
+    resolution: "ModelResolution", requested: str
+) -> "ModelEntry | None | Literal[False]":
+    """Resolve an X-Prometheus-Instance value against the group.
+
+    Accepts either the instance id or its per-model label ("#2"), since the
+    request already names the model and the label is unique within it.
+
+    Returns the member, or False when the name doesn't belong to this group —
+    the caller turns that into a 400. A pin is explicit: it must never quietly
+    fall back to a different replica, because the reason to pin is to reach
+    *that* one (reproducing a bug, comparing two engines, draining a node).
+    """
+    wanted = requested.strip()
+    for member in resolution.members:
+        if wanted in (member.id, member.label):
+            return member
+    return False
 
 
 def _may_use(claims: Any, requested: str, resolution: "ModelResolution") -> bool:
@@ -846,6 +883,24 @@ def create_router(registry: ModelRegistry, pool: "BackendPool") -> APIRouter:
                 inf_span.set_attribute("http.status_code", 503)
                 return _no_replica_available(request, body.model, health)
 
+            pinned = request.headers.get(INSTANCE_HEADER)
+            if pinned:
+                target = _pin_to_instance(resolution, pinned)
+                if target is False:
+                    inf_span.set_attribute("http.status_code", 400)
+                    return _problem(
+                        request,
+                        400,
+                        "unknown-instance",
+                        "Unknown Instance",
+                        f"No instance {pinned!r} serves model {body.model!r}. "
+                        f"Drop the {INSTANCE_HEADER} header to let the gateway choose.",
+                    )
+                if target not in health.usable:
+                    inf_span.set_attribute("http.status_code", 503)
+                    return _no_replica_available(request, body.model, health)
+                health = health._replace(usable=[target])
+
             entry = health.usable[0]
             # resolve() only ever returns members that have a backend_url;
             # binding it states that invariant for the type checker.
@@ -938,6 +993,7 @@ def create_router(registry: ModelRegistry, pool: "BackendPool") -> APIRouter:
                         entry.id,
                         trace_id,
                         served_name=resolution.model_key,
+                        served_by_headers=_served_by_headers(entry),
                         budget_redis=budget_redis,
                         reservation=reservation,
                         alert_thresholds_percent=alert_thresholds_percent,
@@ -1057,7 +1113,11 @@ def create_router(registry: ModelRegistry, pool: "BackendPool") -> APIRouter:
 
                     # RM-32: record persisted daily usage
                     await _record_usage(
-                        claims, resolution.model_key, prompt_tokens, completion_tokens
+                        claims,
+                        resolution.model_key,
+                        prompt_tokens,
+                        completion_tokens,
+                        instance_id=entry.id,
                     )
 
                     # RM-60: settle the spend-cap reservation with the real cost
@@ -1100,6 +1160,7 @@ def create_router(registry: ModelRegistry, pool: "BackendPool") -> APIRouter:
                         content=resp_body,
                         status_code=resp.status_code,
                         media_type="application/json",
+                        headers=_served_by_headers(entry),
                     )
 
             except (httpx.ConnectError, httpx.ConnectTimeout, httpx.RemoteProtocolError) as exc:
@@ -1231,6 +1292,22 @@ def create_router(registry: ModelRegistry, pool: "BackendPool") -> APIRouter:
         health = await _healthy_members(pool, request, resolution.members)
         if not health.usable:
             return _no_replica_available(request, body.model, health)
+
+        pinned = request.headers.get(INSTANCE_HEADER)
+        if pinned:
+            target = _pin_to_instance(resolution, pinned)
+            if target is False:
+                return _problem(
+                    request,
+                    400,
+                    "unknown-instance",
+                    "Unknown Instance",
+                    f"No instance {pinned!r} serves model {body.model!r}. "
+                    f"Drop the {INSTANCE_HEADER} header to let the gateway choose.",
+                )
+            if target not in health.usable:
+                return _no_replica_available(request, body.model, health)
+            health = health._replace(usable=[target])
 
         entry = health.usable[0]
         # resolve() only ever returns members that have a backend_url;
@@ -1365,7 +1442,12 @@ def create_router(registry: ModelRegistry, pool: "BackendPool") -> APIRouter:
         # RM-60: embeddings never called _record_usage() at all — usage/cost
         # accounting was blind to this entire request type.
         await _record_usage(
-            claims, resolution.model_key, embeddings_prompt_tokens, 0, request_kind="embedding"
+            claims,
+            resolution.model_key,
+            embeddings_prompt_tokens,
+            0,
+            request_kind="embedding",
+            instance_id=entry.id,
         )
         if budget_redis is not None and reservation is not None and reservation.allowed:
             actual_cost = pricing.get_pricing_table().estimate_cost_usd(
@@ -1402,7 +1484,10 @@ def create_router(registry: ModelRegistry, pool: "BackendPool") -> APIRouter:
             ),
         )
         return JSONResponse(
-            content=resp_body, status_code=resp.status_code, media_type="application/json"
+            content=resp_body,
+            status_code=resp.status_code,
+            media_type="application/json",
+            headers=_served_by_headers(entry),
         )
 
     # ── POST /v1/images/generations ─────────────────────────────────────────
@@ -1482,6 +1567,22 @@ def create_router(registry: ModelRegistry, pool: "BackendPool") -> APIRouter:
         health = await _healthy_members(pool, request, resolution.members)
         if not health.usable:
             return _no_replica_available(request, body.model, health)
+
+        pinned = request.headers.get(INSTANCE_HEADER)
+        if pinned:
+            target = _pin_to_instance(resolution, pinned)
+            if target is False:
+                return _problem(
+                    request,
+                    400,
+                    "unknown-instance",
+                    "Unknown Instance",
+                    f"No instance {pinned!r} serves model {body.model!r}. "
+                    f"Drop the {INSTANCE_HEADER} header to let the gateway choose.",
+                )
+            if target not in health.usable:
+                return _no_replica_available(request, body.model, health)
+            health = health._replace(usable=[target])
 
         entry = health.usable[0]
         # resolve() only ever returns members that have a backend_url;
@@ -1613,7 +1714,13 @@ def create_router(registry: ModelRegistry, pool: "BackendPool") -> APIRouter:
         # RM-60: images/generations never called _record_usage() at all —
         # usage/cost accounting was blind to this entire request type.
         await _record_usage(
-            claims, resolution.model_key, 0, 0, request_kind="image", image_count=num_images
+            claims,
+            resolution.model_key,
+            0,
+            0,
+            request_kind="image",
+            image_count=num_images,
+            instance_id=entry.id,
         )
         if budget_redis is not None and reservation is not None and reservation.allowed:
             actual_cost = pricing.get_pricing_table().estimate_image_cost_usd(
@@ -1647,7 +1754,10 @@ def create_router(registry: ModelRegistry, pool: "BackendPool") -> APIRouter:
             ),
         )
         return JSONResponse(
-            content=resp_body_images, status_code=resp.status_code, media_type="application/json"
+            content=resp_body_images,
+            status_code=resp.status_code,
+            media_type="application/json",
+            headers=_served_by_headers(entry),
         )
 
     return router
@@ -1661,6 +1771,7 @@ async def _record_usage(
     *,
     request_kind: str = "chat",
     image_count: int = 0,
+    instance_id: str | None = None,
 ) -> None:
     """Write an immutable usage_events row + persisted per-day rollup counters.
 
@@ -1683,6 +1794,7 @@ async def _record_usage(
             completion_tokens,
             request_kind=request_kind,
             image_count=image_count,
+            instance_id=instance_id,
         )
     except Exception as exc:
         logger.warning("usage.db_write_error", error=str(exc))
@@ -1738,6 +1850,7 @@ async def _stream_response(
     budget_redis: Any = None,
     reservation: "BudgetReservation | None" = None,
     alert_thresholds_percent: list[int] | None = None,
+    served_by_headers: dict[str, str] | None = None,
 ) -> StreamingResponse:
     """Forward a streaming request using a pooled client.
 
@@ -1883,7 +1996,13 @@ async def _stream_response(
                 prompt_tokens_per_second=round(prompt_tps, 2) if prompt_tps is not None else None,
             )
             # RM-32: persisted daily usage for streaming
-            await _record_usage(claims, billed_name, prompt_tokens, completion_tokens)
+            await _record_usage(
+                claims,
+                billed_name,
+                prompt_tokens,
+                completion_tokens,
+                instance_id=backend_id,
+            )
 
             # RM-60: settle the spend-cap reservation with the real cost
             if (
@@ -1915,5 +2034,9 @@ async def _stream_response(
     return StreamingResponse(
         event_generator(),
         media_type="text/event-stream",
-        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+            **(served_by_headers or {}),
+        },
     )

@@ -13,7 +13,6 @@ import pytest
 import sqlalchemy
 from alembic.autogenerate import compare_metadata
 from alembic.migration import MigrationContext
-from sqlalchemy.ext.asyncio import create_async_engine
 
 from prometheus_gateway import db
 
@@ -56,11 +55,19 @@ async def test_pre_alembic_database_is_adopted_without_losing_data(tmp_path):
     """
     path = f"{tmp_path}/legacy.db"
 
-    # Build it the old way — create_all, no alembic_version — and put a row in.
-    engine = create_async_engine(f"sqlite+aiosqlite:///{path}")
-    async with engine.begin() as conn:
-        await conn.run_sync(db.Base.metadata.create_all)
-    await engine.dispose()
+    # Build the *baseline* schema, then strip alembic_version — which is
+    # exactly what a database created before migrations existed looks like.
+    # Deliberately not create_all(): that builds today's models, so the
+    # simulation would already contain columns later migrations add, and the
+    # test would pass for the wrong reason.
+    db.init_db_engine(f"sqlite+aiosqlite:///{path}")
+    await db.create_tables(db.get_engine())
+    stripped = sqlite3.connect(path)
+    stripped.execute("DROP TABLE alembic_version")
+    for column in ("instance_id",):  # columns added after the baseline
+        stripped.execute(f"ALTER TABLE usage_events DROP COLUMN {column}")
+    stripped.commit()
+    stripped.close()
 
     conn = sqlite3.connect(path)
     conn.execute(

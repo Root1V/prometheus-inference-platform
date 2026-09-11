@@ -92,6 +92,11 @@ class UsageEvent(Base):
     day: Mapped[date] = mapped_column(Date, nullable=False)
     client_id: Mapped[str] = mapped_column(String(64), nullable=False)
     model_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    # RM-73: which replica actually served this request. The model is what gets
+    # billed (RM-69); this is what makes a billing question answerable down to a
+    # machine — "why was this one slow", "which node produced this output".
+    # Nullable: rows written before RM-73 have no answer to give.
+    instance_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
     request_kind: Mapped[str] = mapped_column(
         String(16), nullable=False
     )  # "chat" | "embedding" | "image"
@@ -312,6 +317,13 @@ def _migrate_to_head(sync_conn: Connection) -> None:
 
     tables = set(inspect(sync_conn).get_table_names())
     if tables and "alembic_version" not in tables:
+        # create_all fills in tables a database older than the baseline never
+        # had (one predating RM-60's billing tables, say). It builds them from
+        # *today's* models, though, so such a table arrives already carrying
+        # columns that post-baseline migrations then try to add — which is why
+        # those migrations guard against the column already existing. The
+        # alternative, refusing to adopt anything older than the baseline,
+        # would strand exactly the databases migrations exist to rescue.
         Base.metadata.create_all(sync_conn)
         _ensure_usage_daily_cost_column(sync_conn)
         command.stamp(config, _BASELINE_REVISION)
@@ -390,6 +402,7 @@ async def record_usage(
     *,
     request_kind: str = "chat",
     image_count: int = 0,
+    instance_id: str | None = None,
     day: date | None = None,
 ) -> None:
     """Record one request's usage: an immutable `usage_events` row (the audit
@@ -429,6 +442,7 @@ async def record_usage(
                 day=d,
                 client_id=client_id,
                 model_id=model_id,
+                instance_id=instance_id,
                 request_kind=request_kind,
                 prompt_tokens=prompt_tokens,
                 completion_tokens=completion_tokens,

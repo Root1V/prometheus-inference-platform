@@ -514,3 +514,86 @@ async def test_no_model_grant_is_still_denied(gw, rsa_keys):
     )
 
     assert resp.status_code == 403
+
+
+# ── RM-70/72: targeting one replica, and knowing which one answered ─────────
+
+
+@respx.mock
+async def test_the_response_says_which_replica_served(gw, rsa_keys):
+    respx.post(f"{REPLICA_A_URL}/v1/chat/completions").mock(
+        return_value=Response(200, json=CHAT_RESPONSE)
+    )
+
+    resp = await gw.post(
+        "/v1/chat/completions",
+        json={"model": "llama", "messages": [{"role": "user", "content": "hi"}], "max_tokens": 5},
+        headers=_headers(rsa_keys, "inference:read model:llama"),
+    )
+
+    assert resp.status_code == 200
+    assert resp.headers["X-Prometheus-Instance-Id"] == "llama-a"
+
+
+@respx.mock
+async def test_a_header_pins_the_request_to_one_replica(gw, rsa_keys):
+    """`model` stays the model. Targeting a replica goes in a header, which is
+    what lets one grant cover a whole group and keeps /v1/models listing models."""
+    respx.post(f"{REPLICA_A_URL}/v1/chat/completions").mock(
+        return_value=Response(200, json=CHAT_RESPONSE)
+    )
+    second = respx.post(f"{REPLICA_B_URL}/v1/chat/completions").mock(
+        return_value=Response(200, json=CHAT_RESPONSE)
+    )
+
+    resp = await gw.post(
+        "/v1/chat/completions",
+        json={"model": "llama", "messages": [{"role": "user", "content": "hi"}], "max_tokens": 5},
+        headers={
+            **_headers(rsa_keys, "inference:read model:llama"),
+            "X-Prometheus-Instance": "llama-b",
+        },
+    )
+
+    assert resp.status_code == 200
+    assert second.called
+    assert resp.headers["X-Prometheus-Instance-Id"] == "llama-b"
+
+
+@respx.mock
+async def test_an_instance_from_another_model_is_refused(gw, rsa_keys):
+    resp = await gw.post(
+        "/v1/chat/completions",
+        json={"model": "llama", "messages": [{"role": "user", "content": "hi"}], "max_tokens": 5},
+        headers={
+            **_headers(rsa_keys, "inference:read model:llama"),
+            "X-Prometheus-Instance": "some-other-model",
+        },
+    )
+
+    assert resp.status_code == 400
+    assert resp.json()["type"].endswith("unknown-instance")
+
+
+@respx.mock
+async def test_usage_records_which_replica_served(gw, rsa_keys):
+    """RM-73: the model is what gets billed, but a billing question has to be
+    answerable down to a machine — which node produced this, why was it slow."""
+    from prometheus_gateway import db
+
+    await db.create_tables(db.get_engine())
+    respx.post(f"{REPLICA_B_URL}/v1/chat/completions").mock(
+        return_value=Response(200, json=CHAT_RESPONSE)
+    )
+
+    await gw.post(
+        "/v1/chat/completions",
+        json={"model": "llama", "messages": [{"role": "user", "content": "hi"}], "max_tokens": 5},
+        headers={
+            **_headers(rsa_keys, "inference:read model:llama"),
+            "X-Prometheus-Instance": "llama-b",
+        },
+    )
+
+    events = await db.query_usage_events_range(date.today(), date.today())
+    assert [(e.model_id, e.instance_id) for e in events] == [("llama", "llama-b")]
