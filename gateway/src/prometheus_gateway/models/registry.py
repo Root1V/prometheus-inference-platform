@@ -52,6 +52,13 @@ class ModelEntry:
     # RM-57: this is now also the *logical* name a client can route to — every
     # instance sharing a model_id is a replica of the same servable model.
     model_id: str = ""
+    # RM-70: the catalog's public, immutable name. Falls back to model_id for a
+    # manager node that hasn't shipped it yet, so a rolling deploy resolves the
+    # same way it did before.
+    model_slug: str = ""
+    # RM-70: this instance's handle within its model ("#1", "#2"). Display and
+    # ops only — never a routing key.
+    label: str = ""
 
 
 @dataclass(frozen=True)
@@ -163,7 +170,13 @@ class ModelRegistry:
         still answer "registered but not loaded" (503) rather than demoting it
         to "no such model" (400).
         """
-        known = [m for m in self._models.values() if m.model_id == name]
+        # RM-70: the slug is the public name, and the two older spellings stay
+        # resolvable as aliases so every token and SDK call issued before the
+        # identity split keeps working. Today the backfill makes all three the
+        # same string; they only diverge once a model is given a real slug.
+        known = [m for m in self._models.values() if m.model_slug and m.model_slug == name]
+        if not known:
+            known = [m for m in self._models.values() if m.model_id == name]
         if not known:
             # Not a catalog name — fall back to addressing one instance
             # directly by its own id, which stays supported.
@@ -178,7 +191,7 @@ class ModelRegistry:
                 members=(),
                 modality=known[0].modality,
                 context_length=known[0].context_length,
-                model_key=known[0].model_id or name,
+                model_key=known[0].model_slug or known[0].model_id or name,
             )
         # Stable order so "which replica" is deterministic until RM-58 makes
         # it a real decision.
@@ -207,7 +220,7 @@ class ModelRegistry:
             modality=members[0].modality,
             context_length=min(m.context_length for m in members),
             mismatch=mismatch,
-            model_key=members[0].model_id or name,
+            model_key=members[0].model_slug or members[0].model_id or name,
         )
 
     def list_served_names(self) -> list[ModelResolution]:
@@ -219,7 +232,10 @@ class ModelRegistry:
         """
         resolutions: dict[str, ModelResolution] = {}
         for entry in self.list_active_models():
-            for name in (entry.model_id, entry.id):
+            # Slug first so a model whose slug differs from its ids is listed
+            # under the name clients should actually send; the older spellings
+            # follow as aliases, and dedupe collapses them while all three match.
+            for name in (entry.model_slug, entry.model_id, entry.id):
                 if name and name not in resolutions:
                     resolved = self.resolve(name)
                     if resolved is not None:

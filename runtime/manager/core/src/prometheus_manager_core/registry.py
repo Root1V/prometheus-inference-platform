@@ -272,6 +272,10 @@ class RegistryEntry:
     # Registry, never typed by an operator — inventing a globally-unique
     # instance id is what leaked "-1"/"-2" suffixes into the scope picker.
     label: str = ""
+    # RM-70: the catalog's public name, merged in the same way path/family/
+    # quantization already are. This is what a client routes on, so the gateway
+    # needs it per instance to group replicas under one name.
+    model_slug: str = ""
 
     @property
     def backend_url(self) -> str:
@@ -284,6 +288,7 @@ class RegistryEntry:
         return {
             "id": self.id,
             "model_id": self.model_id,
+            "model_slug": self.model_slug,
             "label": self.label,
             "port": self.port,
             "context_length": self.context_length,
@@ -613,6 +618,7 @@ class Registry:
                 discovery=bool(inst_raw["discovery"]),
                 rss_estimate_mb=inst_raw["rss_estimate_mb"],
                 cfg_scale=inst_raw["cfg_scale"],
+                model_slug=catalog.slug if catalog else "",
                 path=catalog.path if catalog else "",
                 family=catalog.family if catalog else "",
                 quantization=catalog.quantization if catalog else "",

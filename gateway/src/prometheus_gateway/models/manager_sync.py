@@ -281,6 +281,10 @@ class ManagerRegistrySync:
             # upgraded manager node during a rolling deploy (pre-RM-51
             # /v1/backends responses don't send model_id at all).
             model_id=b.get("model_id") or model_id,
+            # RM-70: same rolling-deploy fallback — a node that predates the
+            # catalog slug keeps resolving under its model_id.
+            model_slug=b.get("model_slug") or b.get("model_id") or model_id,
+            label=b.get("label", ""),
         )
 
     async def _sync(self) -> None:

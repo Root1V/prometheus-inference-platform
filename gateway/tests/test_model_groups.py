@@ -27,6 +27,7 @@ def _entry(
     id: str,
     *,
     model_id: str = "",
+    model_slug: str = "",
     node: str = "local",
     modality: str = "text",
     context_length: int = 4096,
@@ -43,6 +44,7 @@ def _entry(
         node=node,
         modality=modality,
         model_id=model_id or id,
+        model_slug=model_slug or model_id or id,
     )
 
 
@@ -400,3 +402,65 @@ async def test_metrics_stay_on_the_replica_that_served(gw, rsa_keys, replica_app
     snapshot = await metrics_store.snapshot()
     assert "llama-a" in snapshot["backends"]
     assert "llama" not in snapshot["backends"]
+
+
+# ── RM-70: the catalog slug is the public name; older spellings are aliases ──
+
+
+def test_the_slug_is_what_routes():
+    registry = _registry(
+        _entry("inst-a", model_id="cat-id", model_slug="qwen3-0.6b"),
+        _entry("inst-b", model_id="cat-id", model_slug="qwen3-0.6b"),
+    )
+
+    resolved = registry.resolve("qwen3-0.6b")
+
+    assert resolved is not None
+    assert [m.id for m in resolved.members] == ["inst-a", "inst-b"]
+
+
+def test_the_old_catalog_id_still_resolves_as_an_alias():
+    """Tokens and SDK calls issued before the identity split keep working —
+    that's what makes the migration safe to ship without a flag day."""
+    registry = _registry(_entry("inst-a", model_id="cat-id", model_slug="qwen3-0.6b"))
+
+    resolved = registry.resolve("cat-id")
+
+    assert resolved is not None
+    assert [m.id for m in resolved.members] == ["inst-a"]
+
+
+def test_an_instance_id_still_resolves_as_an_alias():
+    registry = _registry(_entry("inst-a", model_id="cat-id", model_slug="qwen3-0.6b"))
+
+    resolved = registry.resolve("inst-a")
+
+    assert resolved is not None
+    assert [m.id for m in resolved.members] == ["inst-a"]
+
+
+def test_every_alias_bills_to_the_slug():
+    """RM-69 made pricing key off the group rather than the string the client
+    sent; RM-70 makes that key the public slug, so no alias is a cheaper or
+    free route to the same model."""
+    registry = _registry(_entry("inst-a", model_id="cat-id", model_slug="qwen3-0.6b"))
+
+    keys = {
+        name: registry.resolve(name).model_key  # type: ignore[union-attr]
+        for name in ("qwen3-0.6b", "cat-id", "inst-a")
+    }
+
+    assert keys == {"qwen3-0.6b": "qwen3-0.6b", "cat-id": "qwen3-0.6b", "inst-a": "qwen3-0.6b"}
+
+
+def test_served_names_lead_with_the_slug():
+    registry = _registry(
+        _entry("inst-a", model_id="cat-id", model_slug="qwen3-0.6b"),
+        _entry("inst-b", model_id="cat-id", model_slug="qwen3-0.6b"),
+    )
+
+    names = [r.name for r in registry.list_served_names()]
+
+    assert names[0] == "qwen3-0.6b"
+    # The aliases stay listed so a client can still discover them.
+    assert set(names) == {"qwen3-0.6b", "cat-id", "inst-a", "inst-b"}
