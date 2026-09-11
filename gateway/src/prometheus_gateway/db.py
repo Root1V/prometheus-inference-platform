@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import uuid
 from datetime import date, datetime, timezone
+from pathlib import Path
 from typing import Any
 
 from sqlalchemy import (
@@ -256,8 +257,8 @@ _USAGE_DAILY_ADDED_COLUMNS = (
 
 
 def _ensure_usage_daily_cost_column(sync_conn: Connection) -> None:
-    """RM-60 stopgap, not a real migration tool. Idempotent, safe to run on
-    every startup.
+    """RM-60 stopgap. Kept only to lift a pre-Alembic database to the RM-68
+    baseline; it is never used for schema changes made after that. Idempotent.
     """
     inspector = inspect(sync_conn)
     if "usage_daily" not in inspector.get_table_names():
@@ -268,10 +269,60 @@ def _ensure_usage_daily_cost_column(sync_conn: Connection) -> None:
             sync_conn.execute(text(f"ALTER TABLE usage_daily ADD COLUMN {column_name} FLOAT"))
 
 
+# RM-68: the first Alembic revision, which describes the schema exactly as it
+# shipped in v1.4.0 — i.e. what every database created before migrations
+# existed already contains.
+_BASELINE_REVISION = "4aad3b8652af"
+_ALEMBIC_INI = Path(__file__).resolve().parents[2] / "alembic.ini"
+
+
+def _migrate_to_head(sync_conn: Connection) -> None:
+    """Bring one connection's database to the latest revision — RM-68.
+
+    Three cases, and the middle one is why this isn't just `upgrade(head)`:
+
+    * **New database** — no tables at all. Alembic runs every revision from
+      scratch, baseline included.
+    * **Pre-Alembic database** — has tables but no `alembic_version`. It is
+      already at the baseline in everything but name, so running the baseline
+      revision would fail on "table already exists". Instead it is lifted to
+      exactly the baseline shape (`create_all` fills in any table added between
+      its creation and v1.4.0; the RM-60 stopgap fills in the columns
+      `create_all` can't), stamped, and then upgraded like any other.
+    * **Already managed** — just upgraded to head.
+
+    Without the middle case the first real migration would destroy or refuse to
+    touch a database holding live usage and billing rows.
+    """
+    import logging
+
+    # Alembic announces each autogenerate plugin it loads at INFO — seven lines
+    # of noise in the gateway's startup log on every boot, saying nothing an
+    # operator needs. Registration happens while `alembic` is imported, so this
+    # has to come first to have any effect. Migration events stay visible.
+    logging.getLogger("alembic.runtime.plugins").setLevel(logging.WARNING)
+
+    from alembic import command
+    from alembic.config import Config
+
+    config = Config(str(_ALEMBIC_INI))
+    # Hands env.py the transaction we are already inside, so the schema change
+    # and the version bump commit together.
+    config.attributes["connection"] = sync_conn
+
+    tables = set(inspect(sync_conn).get_table_names())
+    if tables and "alembic_version" not in tables:
+        Base.metadata.create_all(sync_conn)
+        _ensure_usage_daily_cost_column(sync_conn)
+        command.stamp(config, _BASELINE_REVISION)
+
+    command.upgrade(config, "head")
+
+
 async def create_tables(engine: AsyncEngine) -> None:
+    """Apply pending migrations. Named for its callers, which predate RM-68."""
     async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
-        await conn.run_sync(_ensure_usage_daily_cost_column)
+        await conn.run_sync(_migrate_to_head)
 
 
 def _accumulate_nullable_cost(existing_col: Any, new_col: Any) -> Any:

@@ -2863,7 +2863,7 @@ Not verified end-to-end: an actually-open circuit adopting a new timeout — ind
 have meant killing a running model server, so that rests on the read-time `recovery_at`
 derivation above plus the live-object test.
 
-## RM-68 — Alembic migrations for the gateway database (todo)
+## RM-68 — Alembic migrations for the gateway database (done)
 
 **Why**: `create_tables()` is a bare `Base.metadata.create_all`, which only ever creates
 *missing tables* and never alters existing ones. [[RM-60]] already needed a hand-rolled,
@@ -2877,6 +2877,13 @@ hold real usage and billing data — doing that by hand again is how data gets l
 - Decide and document how migrations run (explicit command vs. on startup) — they must be
   idempotent either way, since SQLite and Postgres are both supported.
 - Out of scope: the manager's registry DB, which uses raw SQL and its own schema handling.
+
+**Verified**: against a copy of the real `gateway.db` (57 usage events, 6 model prices, 2
+billing settings) — adopted, stamped, every row intact — and then against the real one by
+restarting the gateway. Three tests cover the fresh / pre-Alembic / re-run paths; a fourth
+diffs the migrated schema against the models, so a model edit without its migration fails
+the suite instead of a deployment. The RM-60 `ALTER TABLE` stopgap survives only as the
+"lift a pre-Alembic database to the baseline" step and never grows again.
 
 ## RM-69 — Replica failover, active health checks, and group-based pricing (todo)
 
