@@ -115,8 +115,13 @@ async def _healthy_members(
     recovery timeout. Spending that on a replica we then don't use would delay
     its recovery just because a sibling happened to be healthy — so the probing
     path is only entered while nothing usable has been found yet.
+
+    RM-72: candidates are ordered least-loaded first, so the replica already
+    handling the fewest requests is preferred. Ties keep registry order, which
+    leaves a single-instance model behaving exactly as it did before.
     """
     monitor = getattr(getattr(request.app, "state", None), "health_monitor", None)
+    members = sorted(members, key=lambda m: pool.in_flight(m.id))
 
     usable: list[ModelEntry] = []
     skipped: dict[str, str] = {}
@@ -1736,7 +1741,22 @@ async def _stream_response(
     # function still behaves as it did when used on its own.
     billed_name = served_name or backend_id
 
+    # RM-72: claimed here, synchronously, rather than inside the generator —
+    # the generator doesn't start until the response is consumed, by which time
+    # other requests have already selected. A streamed response occupies its
+    # backend for as long as it generates, which is exactly when least-loaded
+    # routing matters most, so the claim spans the whole generator and is
+    # released by it.
+    pool.acquire(backend_id)
+
     async def event_generator() -> Any:
+        try:
+            async for chunk in _stream_events():
+                yield chunk
+        finally:
+            pool.release(backend_id)
+
+    async def _stream_events() -> Any:
         prompt_tokens = 0
         completion_tokens = 0
         stream_error: Exception | None = None

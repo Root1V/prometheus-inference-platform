@@ -224,22 +224,22 @@ class ModelRegistry:
         )
 
     def list_served_names(self) -> list[ModelResolution]:
-        """Every routable name, logical ones included — RM-57.
+        """One entry per servable model — RM-70.
 
-        Instance ids stay listed (they remain individually addressable), plus
-        one entry per catalog name that isn't already an instance id, so a
-        client can discover the name that actually load-balances.
+        Models, not names: the catalog id and each instance id still *resolve*
+        as aliases, but advertising them here would show a client three
+        entries for what is one model with one replica, and an SDK building a
+        model picker from this would render duplicates. A client that wants a
+        specific replica addresses it deliberately; it shouldn't have to tell
+        replicas apart from models in a list.
         """
         resolutions: dict[str, ModelResolution] = {}
         for entry in self.list_active_models():
-            # Slug first so a model whose slug differs from its ids is listed
-            # under the name clients should actually send; the older spellings
-            # follow as aliases, and dedupe collapses them while all three match.
-            for name in (entry.model_slug, entry.model_id, entry.id):
-                if name and name not in resolutions:
-                    resolved = self.resolve(name)
-                    if resolved is not None:
-                        resolutions[name] = resolved
+            name = entry.model_slug or entry.model_id or entry.id
+            if name and name not in resolutions:
+                resolved = self.resolve(name)
+                if resolved is not None:
+                    resolutions[name] = resolved
         return list(resolutions.values())
 
 

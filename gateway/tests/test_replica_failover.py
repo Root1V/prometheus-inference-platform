@@ -73,11 +73,19 @@ class _StubBreaker:
 
 
 class _StubPool:
-    def __init__(self, breakers: dict[str, _StubBreaker]) -> None:
+    def __init__(
+        self,
+        breakers: dict[str, _StubBreaker],
+        in_flight: dict[str, int] | None = None,
+    ) -> None:
         self._breakers = breakers
+        self._in_flight = in_flight or {}
 
     def get_circuit_breaker(self, backend_id: str):
         return self._breakers.get(backend_id)
+
+    def in_flight(self, backend_id: str) -> int:
+        return self._in_flight.get(backend_id, 0)
 
 
 def _request(monitor: object = None):
@@ -273,3 +281,64 @@ def test_a_stopped_model_still_reports_a_billing_key():
     assert resolved is not None
     assert resolved.members == ()
     assert resolved.model_key == "llama"
+
+
+# ── RM-72: least-loaded routing ─────────────────────────────────────────────
+
+
+async def test_the_least_busy_replica_is_preferred():
+    members = [_entry("llama-a", REPLICA_A_URL), _entry("llama-b", REPLICA_B_URL)]
+    pool = _StubPool({}, in_flight={"llama-a": 3, "llama-b": 1})
+
+    health = await _healthy_members(pool, _request(), members)
+
+    assert [m.id for m in health.usable] == ["llama-b", "llama-a"]
+
+
+async def test_equal_load_keeps_registry_order():
+    """Ties must stay deterministic, so a single-instance model behaves exactly
+    as it did before balancing existed."""
+    members = [_entry("llama-a", REPLICA_A_URL), _entry("llama-b", REPLICA_B_URL)]
+    pool = _StubPool({}, in_flight={"llama-a": 2, "llama-b": 2})
+
+    health = await _healthy_members(pool, _request(), members)
+
+    assert [m.id for m in health.usable] == ["llama-a", "llama-b"]
+
+
+async def test_load_never_outranks_health():
+    """An idle replica whose circuit is open is still not a candidate — being
+    unused is not the same as being usable."""
+    members = [_entry("llama-a", REPLICA_A_URL), _entry("llama-b", REPLICA_B_URL)]
+    pool = _StubPool(
+        {"llama-b": _StubBreaker("open", recovery_at=time.time() + 30)},
+        in_flight={"llama-a": 5, "llama-b": 0},
+    )
+
+    health = await _healthy_members(pool, _request(), members)
+
+    assert [m.id for m in health.usable] == ["llama-a"]
+    assert "llama-b" in health.skipped
+
+
+def test_the_pool_counts_a_request_for_its_whole_lifetime():
+    from prometheus_gateway.models.backends import BackendPool
+
+    pool = BackendPool()
+    assert pool.in_flight("b") == 0
+    with pool.track("b"):
+        assert pool.in_flight("b") == 1
+        with pool.track("b"):
+            assert pool.in_flight("b") == 2
+        assert pool.in_flight("b") == 1
+    assert pool.in_flight("b") == 0
+
+
+def test_the_count_is_released_even_when_the_request_raises():
+    from prometheus_gateway.models.backends import BackendPool
+
+    pool = BackendPool()
+    with pytest.raises(RuntimeError):
+        with pool.track("b"):
+            raise RuntimeError("backend blew up")
+    assert pool.in_flight("b") == 0

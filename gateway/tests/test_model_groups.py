@@ -196,7 +196,10 @@ def test_matching_modalities_do_not_trip_the_mismatch_check():
 # ── Discovery listing ───────────────────────────────────────────────────────
 
 
-def test_served_names_include_both_the_group_and_its_instances():
+def test_served_names_list_the_group_once_not_its_instances():
+    """RM-57 listed replicas alongside the group; RM-70 stopped, because a
+    client reading this to build a model picker would see three entries for
+    one model. Each replica still resolves — it just isn't advertised."""
     registry = _registry(
         _entry("llama-a", model_id="llama"),
         _entry("llama-b", model_id="llama"),
@@ -204,7 +207,8 @@ def test_served_names_include_both_the_group_and_its_instances():
 
     names = {r.name for r in registry.list_served_names()}
 
-    assert names == {"llama", "llama-a", "llama-b"}
+    assert names == {"llama"}
+    assert registry.resolve("llama-b") is not None
 
 
 def test_served_names_do_not_duplicate_a_single_instance():
@@ -340,13 +344,12 @@ async def test_context_limit_is_the_smallest_replica(gw, rsa_keys):
     assert "context-exceeded" in resp.json()["type"]
 
 
-async def test_models_list_shows_the_group_and_its_replicas(gw):
+async def test_models_list_shows_one_entry_per_model(gw):
     resp = await gw.get("/v1/models")
 
     data = {m["id"]: m for m in resp.json()["data"]}
-    assert set(data) == {"llama", "llama-a", "llama-b"}
+    assert set(data) == {"llama"}
     assert data["llama"]["served_by"] == 2
-    assert data["llama-a"]["served_by"] == 1
     # The group advertises the limit that holds for every replica.
     assert data["llama"]["context_length"] == 4096
 
@@ -453,14 +456,28 @@ def test_every_alias_bills_to_the_slug():
     assert keys == {"qwen3-0.6b": "qwen3-0.6b", "cat-id": "qwen3-0.6b", "inst-a": "qwen3-0.6b"}
 
 
-def test_served_names_lead_with_the_slug():
+def test_the_model_list_shows_models_not_replicas():
+    """RM-70: the aliases still resolve, but listing them would show a client
+    four entries for one model with one replica — and an SDK building a model
+    picker from this would render duplicates."""
     registry = _registry(
         _entry("inst-a", model_id="cat-id", model_slug="qwen3-0.6b"),
         _entry("inst-b", model_id="cat-id", model_slug="qwen3-0.6b"),
     )
 
-    names = [r.name for r in registry.list_served_names()]
+    listed = registry.list_served_names()
 
-    assert names[0] == "qwen3-0.6b"
-    # The aliases stay listed so a client can still discover them.
-    assert set(names) == {"qwen3-0.6b", "cat-id", "inst-a", "inst-b"}
+    assert [r.name for r in listed] == ["qwen3-0.6b"]
+    assert len(listed[0].members) == 2
+    # …and every alias still routes, it just isn't advertised.
+    assert registry.resolve("cat-id") is not None
+    assert registry.resolve("inst-b") is not None
+
+
+def test_two_different_models_are_both_listed():
+    registry = _registry(
+        _entry("a", model_id="a", model_slug="alpha"),
+        _entry("b", model_id="b", model_slug="beta"),
+    )
+
+    assert {r.name for r in registry.list_served_names()} == {"alpha", "beta"}

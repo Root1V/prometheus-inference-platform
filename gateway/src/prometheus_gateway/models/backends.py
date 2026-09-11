@@ -8,8 +8,9 @@ Implements: memory/specs/018-observability-telemetry.md — AC-1 (structlog migr
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import random
-from collections.abc import Sequence
+from collections.abc import Iterator, Sequence
 from typing import Any
 
 import httpx
@@ -60,6 +61,8 @@ class BackendPool:
         retry_backoff_base_ms: int = 200,
     ) -> None:
         self._clients: dict[str, httpx.AsyncClient] = {}
+        # RM-72: per-backend in-flight count, the signal least-loaded routing uses.
+        self._in_flight: dict[str, int] = {}
         self._circuit_breakers: dict[str, CircuitBreaker] = {}
         self._redis = redis_client
         self._failure_threshold = failure_threshold
@@ -67,6 +70,41 @@ class BackendPool:
         self._success_threshold = success_threshold
         self._retry_max = retry_max
         self._retry_backoff_base_ms = retry_backoff_base_ms
+
+    def in_flight(self, backend_id: str) -> int:
+        """Requests this backend is handling right now — RM-72."""
+        return self._in_flight.get(backend_id, 0)
+
+    def acquire(self, backend_id: str) -> None:
+        """Claim a slot on *backend_id*. Pair with release()."""
+        self._in_flight[backend_id] = self._in_flight.get(backend_id, 0) + 1
+
+    def release(self, backend_id: str) -> None:
+        remaining = self._in_flight.get(backend_id, 1) - 1
+        if remaining > 0:
+            self._in_flight[backend_id] = remaining
+        else:
+            self._in_flight.pop(backend_id, None)
+
+    @contextlib.contextmanager
+    def track(self, backend_id: str) -> Iterator[None]:
+        """Count a request against *backend_id* for its whole lifetime.
+
+        Counted here rather than read from the engine because it has to work
+        for every backend: sd.cpp exposes no metrics endpoint at all (verified
+        against a running sd-server), so anything derived from the engine's own
+        numbers would silently stop balancing image generation.
+
+        Synchronous on purpose — it only mutates a dict, and making it async
+        would add an await point between the check and the increment that the
+        event loop could interleave, which is exactly the race it exists to
+        avoid.
+        """
+        self.acquire(backend_id)
+        try:
+            yield
+        finally:
+            self.release(backend_id)
 
     def get(self, backend_url: str) -> httpx.AsyncClient:
         """Return the shared client for *backend_url*, creating it on first access."""
@@ -207,17 +245,28 @@ class BackendPool:
         Returns the response together with the backend that produced it, since
         metrics and the circuit breaker belong to the replica that did the work.
         """
+        # RM-72: ordered here, not by the caller, because this is the last
+        # moment before the count is taken. The router selects a candidate well
+        # before forwarding — budget reservation and validation sit in between —
+        # so concurrent requests all finished selecting before any of them had
+        # incremented anything, and every one of them picked the same replica.
+        # Confirmed live: six concurrent requests to a two-replica model all
+        # landed on the same instance. Sorting and tracking with no await
+        # between them is what makes the count mean something.
+        ordered = sorted(candidates, key=lambda c: self.in_flight(c[0]))
+
         last_exc: Exception | None = None
-        for index, (backend_id, origin) in enumerate(candidates):
+        for index, (backend_id, origin) in enumerate(ordered):
             url = f"{origin.rstrip('/')}{path}"
             try:
-                response = await self.forward(
-                    backend_id,
-                    self.get(origin),
-                    url,
-                    payload,
-                    extra_headers=extra_headers,
-                )
+                with self.track(backend_id):
+                    response = await self.forward(
+                        backend_id,
+                        self.get(origin),
+                        url,
+                        payload,
+                        extra_headers=extra_headers,
+                    )
                 if index > 0:
                     logger.info(
                         "backend.failover_succeeded",
@@ -235,7 +284,7 @@ class BackendPool:
                 logger.warning(
                     "backend.failing_over",
                     backend_id=backend_id,
-                    remaining=len(candidates) - index - 1,
+                    remaining=len(ordered) - index - 1,
                     error=str(exc),
                 )
 
