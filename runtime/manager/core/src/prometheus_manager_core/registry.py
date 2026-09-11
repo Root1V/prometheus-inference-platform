@@ -345,11 +345,16 @@ class Registry:
         with self._lock:
             return self._instances.get(instance_id)
 
-    def add(self, entry: RegistryEntry) -> None:
+    def add(self, entry: RegistryEntry, *, slug: str = "", name: str = "") -> None:
         """Validate and add both a catalog row and an instance row under the
         same id — today's exact behavior. Used by manual registration (a
         hand-typed path, `pmgr register`, GPT4All-style local models) where
-        there's no separate catalog entry to reference yet."""
+        there's no separate catalog entry to reference yet.
+
+        RM-70: `slug` is the model's public, immutable routing name and `name`
+        its display label; both default to the instance id, which is what every
+        pre-RM-70 registration effectively used.
+        """
         _validate_id(entry.id)
         _validate_backend(entry.backend)
         _validate_modality(entry.modality)
@@ -358,6 +363,7 @@ class Registry:
         _validate_path(entry.clip_l_path, entry.backend)
         _validate_path(entry.t5xxl_path, entry.backend)
         _validate_port(entry.port)
+        self._assert_slug_free(slug or entry.id, owner_id=entry.id)
         # RM-70: manual registration creates the catalog row too, so this is
         # always the model's first instance unless the same id is being
         # re-registered — in which case it keeps the label it already had.
@@ -367,7 +373,7 @@ class Registry:
             self._conn.execute(
                 f"INSERT OR REPLACE INTO models ({', '.join(_MODEL_COLUMNS)}) "
                 f"VALUES ({', '.join('?' for _ in _MODEL_COLUMNS)})",
-                _model_row_params(_catalog_entry_from_registry_entry(entry)),
+                _model_row_params(_catalog_entry_from_registry_entry(entry, slug=slug, name=name)),
             )
             self._conn.execute(
                 f"INSERT OR REPLACE INTO instances ({', '.join(_INSTANCE_COLUMNS)}) "
@@ -376,6 +382,21 @@ class Registry:
             )
             self._conn.commit()
             self._load()
+
+    def _assert_slug_free(self, slug: str, *, owner_id: str) -> None:
+        """A slug is what clients route on, so two models sharing one would make
+        routing ambiguous rather than merely untidy.
+        """
+        with self._lock:
+            clash = next(
+                (c for c in self._catalog.values() if c.slug == slug and c.id != owner_id),
+                None,
+            )
+        if clash is not None:
+            raise RegistryIntegrityError(
+                f"Slug {slug!r} is already used by model {clash.id!r}. "
+                "A slug is what clients route on, so it has to be unique."
+            )
 
     def _next_label(self, model_id: str) -> str:
         """ "#1", "#2"… — one past the highest this model has handed out.
@@ -509,17 +530,7 @@ class Registry:
         # RM-70: the INSERT below is OR REPLACE so that re-registering the same
         # id upserts. On a duplicate *slug* that would silently delete the other
         # model's row and orphan its instances, so refuse explicitly instead.
-        slug = entry.slug or entry.id
-        with self._lock:
-            clash = next(
-                (c for c in self._catalog.values() if c.slug == slug and c.id != entry.id),
-                None,
-            )
-        if clash is not None:
-            raise RegistryIntegrityError(
-                f"Slug {slug!r} is already used by model {clash.id!r}. "
-                "A slug is what clients route on, so it has to be unique."
-            )
+        self._assert_slug_free(entry.slug or entry.id, owner_id=entry.id)
         with self._lock:
             self._conn.execute(
                 f"INSERT OR REPLACE INTO models ({', '.join(_MODEL_COLUMNS)}) "
@@ -839,13 +850,15 @@ def _insert_split_row(conn: sqlite3.Connection, entry: RegistryEntry) -> None:
     )
 
 
-def _catalog_entry_from_registry_entry(entry: RegistryEntry) -> CatalogEntry:
+def _catalog_entry_from_registry_entry(
+    entry: RegistryEntry, *, slug: str = "", name: str = ""
+) -> CatalogEntry:
     return CatalogEntry(
         id=entry.id,
         # RM-70: manual registration creates catalog and instance under one id,
-        # so that id is also the model's first public name.
-        slug=entry.id,
-        name=entry.id,
+        # so that id is the default public name when none was given.
+        slug=slug or entry.id,
+        name=name or entry.id,
         modality=entry.modality,
         path=entry.path,
         family=entry.family,

@@ -553,3 +553,94 @@ class TestLifecycleControl:
             _clear_override()
         assert resp.status_code == 200
         assert resp.json()["state"] == "ready"
+
+
+class TestModelIdentity:
+    """RM-70: the catalog's public slug and display name over the API."""
+
+    def test_registering_with_a_slug_sets_the_public_name(self, tmp_path: Path):
+        client = _authed(_make_client(tmp_path))
+        try:
+            resp = client.post(
+                "/v1/backends",
+                json={
+                    "id": "qwen3-06b-a",
+                    "port": 8099,
+                    "path": "/models/qwen3.gguf",
+                    "slug": "qwen3-0.6b",
+                    "name": "Qwen3 0.6B Instruct",
+                },
+                headers={"Authorization": "Bearer dummy"},
+            )
+            catalog = app.state.registry.get_catalog("qwen3-06b-a")
+        finally:
+            _clear_override()
+        assert resp.status_code == 201
+        assert catalog is not None
+        assert catalog.slug == "qwen3-0.6b"
+        assert catalog.name == "Qwen3 0.6B Instruct"
+        # The merged instance view carries it, which is how the gateway groups.
+        assert resp.json()["model_slug"] == "qwen3-0.6b"
+
+    def test_registering_without_a_slug_falls_back_to_the_id(self, tmp_path: Path):
+        client = _authed(_make_client(tmp_path))
+        try:
+            resp = client.post(
+                "/v1/backends",
+                json={"id": "plain-model", "port": 8098, "path": "/models/p.gguf"},
+                headers={"Authorization": "Bearer dummy"},
+            )
+        finally:
+            _clear_override()
+        assert resp.status_code == 201
+        assert resp.json()["model_slug"] == "plain-model"
+
+    def test_a_duplicate_slug_is_rejected(self, tmp_path: Path):
+        client = _authed(_make_client(tmp_path))
+        try:
+            client.post(
+                "/v1/backends",
+                json={"id": "first", "port": 8097, "path": "/m/a.gguf", "slug": "shared"},
+                headers={"Authorization": "Bearer dummy"},
+            )
+            resp = client.post(
+                "/v1/backends",
+                json={"id": "second", "port": 8096, "path": "/m/b.gguf", "slug": "shared"},
+                headers={"Authorization": "Bearer dummy"},
+            )
+        finally:
+            _clear_override()
+        assert resp.status_code == 400
+
+    def test_changing_a_slug_is_refused_rather_than_ignored(self, tmp_path: Path):
+        """Silently dropping it would read as a successful rename, and the
+        caller would believe clients could route on the new name.
+        """
+        client = _authed(_make_client(tmp_path))
+        try:
+            resp = client.patch(
+                "/v1/backends/llama3-test",
+                json={"slug": "something-else"},
+                headers={"Authorization": "Bearer dummy"},
+            )
+            catalog = app.state.registry.get_catalog("llama3-test")
+        finally:
+            _clear_override()
+        assert resp.status_code == 400
+        assert catalog is not None
+        assert catalog.slug == "llama3-test"
+
+    def test_the_display_name_can_be_changed(self, tmp_path: Path):
+        client = _authed(_make_client(tmp_path))
+        try:
+            resp = client.patch(
+                "/v1/backends/llama3-test",
+                json={"name": "Llama 3 (production)"},
+                headers={"Authorization": "Bearer dummy"},
+            )
+            catalog = app.state.registry.get_catalog("llama3-test")
+        finally:
+            _clear_override()
+        assert resp.status_code == 200
+        assert catalog is not None
+        assert catalog.name == "Llama 3 (production)"

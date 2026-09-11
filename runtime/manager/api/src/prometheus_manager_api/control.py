@@ -63,6 +63,10 @@ _UPDATABLE_FIELDS = frozenset(
         "clip_l_path",
         "t5xxl_path",
         "cfg_scale",
+        # RM-70: display label only. `slug` is deliberately NOT here — it is
+        # immutable, and update_backend rejects it explicitly rather than
+        # dropping it silently, which would look like a successful rename.
+        "name",
     }
 )
 
@@ -166,7 +170,9 @@ async def register_backend(
                 t5xxl_path=body.get("t5xxl_path", ""),
                 cfg_scale=body.get("cfg_scale"),
             )
-            registry.add(entry)
+            # RM-70: both default to the instance id inside add(), matching
+            # every registration made before slugs existed.
+            registry.add(entry, slug=body.get("slug", ""), name=body.get("name", ""))
         except (ValueError, TypeError) as exc:
             span.set_attribute("http.status_code", 400)
             raise _problem(400, "invalid-registration", "Invalid Registration", str(exc)) from exc
@@ -206,6 +212,17 @@ async def update_backend(
         if entry is None:
             span.set_attribute("http.status_code", 404)
             raise _problem(404, "not-found", "Not Found", f"Model {model_id!r} not registered.")
+
+        if "slug" in body:
+            span.set_attribute("http.status_code", 400)
+            raise _problem(
+                400,
+                "invalid-update",
+                "Invalid Update",
+                "A model's slug is immutable — clients route on it and both usage "
+                "records and model:<slug> grants key off it. Register a new model "
+                "instead, or change `name` if you only want a different label.",
+            )
 
         updates = {k: v for k, v in body.items() if k in _UPDATABLE_FIELDS}
         merged_backend = updates.get("backend", entry.backend)
