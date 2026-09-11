@@ -50,6 +50,17 @@ MODALITIES = ("text", "embedding", "vision", "image")
 _SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS models (
     id TEXT PRIMARY KEY,
+    -- RM-70: the public, routable name — what a client sends as `model`.
+    -- Immutable for the life of the model; renaming means a new model, which
+    -- is what keeps `model:<slug>` grants and usage rows meaningful without a
+    -- slug-history table or cross-service grant rewrites.
+    slug TEXT NOT NULL DEFAULT '',
+    -- RM-70: display label. Free to change precisely because nothing keys off it.
+    name TEXT NOT NULL DEFAULT '',
+    -- RM-70: modality is a property of the weights, not of a process, so it
+    -- belongs here rather than per instance. Two replicas of one model can't
+    -- disagree about it by construction.
+    modality TEXT NOT NULL DEFAULT '',
     path TEXT NOT NULL DEFAULT '',
     family TEXT NOT NULL DEFAULT '',
     quantization TEXT NOT NULL DEFAULT '',
@@ -67,6 +78,11 @@ CREATE TABLE IF NOT EXISTS models (
 CREATE TABLE IF NOT EXISTS instances (
     id TEXT PRIMARY KEY,
     model_id TEXT NOT NULL REFERENCES models(id),
+    -- RM-70: human handle for ops, unique within the model ("#1", "#2").
+    -- Auto-assigned, so adding a replica no longer asks the operator to invent
+    -- a globally-unique id — which is what leaked "-1"/"-2" suffixes into the
+    -- scope picker and made every replica look like a separate model.
+    label TEXT NOT NULL DEFAULT '',
     port INTEGER NOT NULL,
     backend TEXT NOT NULL DEFAULT 'llama_cpp',
     modality TEXT NOT NULL DEFAULT 'text',
@@ -77,12 +93,18 @@ CREATE TABLE IF NOT EXISTS instances (
     created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 CREATE INDEX IF NOT EXISTS idx_instances_model_id ON instances(model_id);
+-- The unique index on models(slug) is created by _backfill_identity_columns,
+-- not here: on a database that predates RM-70 the CREATE TABLE above is a
+-- no-op, so `slug` does not exist yet and indexing it would fail outright.
 """
 
 # Column order for the two new tables (excludes created_at, which every
 # INSERT sets to CURRENT_TIMESTAMP explicitly rather than round-tripping).
 _MODEL_COLUMNS = (
     "id",
+    "slug",
+    "name",
+    "modality",
     "path",
     "family",
     "quantization",
@@ -99,6 +121,7 @@ _MODEL_COLUMNS = (
 _INSTANCE_COLUMNS = (
     "id",
     "model_id",
+    "label",
     "port",
     "backend",
     "modality",
@@ -155,6 +178,15 @@ class CatalogEntry:
     many instances reference it via `model_id`."""
 
     id: str
+    # RM-70: the public name clients route on. Immutable; renaming is a new
+    # model. Empty only for a transient entry before Registry.add_catalog(),
+    # which derives it from `id`.
+    slug: str = ""
+    # RM-70: display label, safe to change — nothing keys off it.
+    name: str = ""
+    # RM-70: a property of the weights, so it lives here rather than on each
+    # instance, which makes replicas disagreeing about it impossible.
+    modality: str = "text"
     path: str = ""
     family: str = ""
     quantization: str = ""
@@ -170,6 +202,9 @@ class CatalogEntry:
     def to_dict(self) -> dict[str, Any]:
         return {
             "id": self.id,
+            "slug": self.slug,
+            "name": self.name,
+            "modality": self.modality,
             "path": self.path,
             "family": self.family,
             "quantization": self.quantization,
@@ -233,6 +268,10 @@ class RegistryEntry:
     # don't need to set this, since add() derives the catalog id from the
     # instance's own id (its one-shot "manual registration" path).
     model_id: str = ""
+    # RM-70: ops handle, unique within the model ("#1", "#2"). Assigned by
+    # Registry, never typed by an operator — inventing a globally-unique
+    # instance id is what leaked "-1"/"-2" suffixes into the scope picker.
+    label: str = ""
 
     @property
     def backend_url(self) -> str:
@@ -245,6 +284,7 @@ class RegistryEntry:
         return {
             "id": self.id,
             "model_id": self.model_id,
+            "label": self.label,
             "port": self.port,
             "context_length": self.context_length,
             "path": self.path,
@@ -285,6 +325,7 @@ class Registry:
         self._conn.execute("PRAGMA journal_mode=WAL")
         self._conn.execute("PRAGMA synchronous=NORMAL")
         self._conn.executescript(_SCHEMA_SQL)
+        _backfill_identity_columns(self._conn)
         self._conn.commit()
         self._load()
 
@@ -312,6 +353,11 @@ class Registry:
         _validate_path(entry.clip_l_path, entry.backend)
         _validate_path(entry.t5xxl_path, entry.backend)
         _validate_port(entry.port)
+        # RM-70: manual registration creates the catalog row too, so this is
+        # always the model's first instance unless the same id is being
+        # re-registered — in which case it keeps the label it already had.
+        if not entry.label:
+            entry.label = self._next_label(entry.id)
         with self._lock:
             self._conn.execute(
                 f"INSERT OR REPLACE INTO models ({', '.join(_MODEL_COLUMNS)}) "
@@ -325,6 +371,25 @@ class Registry:
             )
             self._conn.commit()
             self._load()
+
+    def _next_label(self, model_id: str) -> str:
+        """ "#1", "#2"… — one past the highest this model has handed out.
+
+        Deliberately not "lowest free": removing #2 from #1/#2/#3 and handing
+        #2 to the next replica would make two different processes share a label
+        across time, so a log or a dashboard screenshot mentioning "#2" would be
+        ambiguous. Removing the *highest* replica does still free its number —
+        closing that too would mean persisting a high-water mark, which isn't
+        worth it for a label.
+        """
+        with self._lock:
+            taken = [
+                inst.label
+                for inst in self._instances.values()
+                if inst.model_id == model_id and inst.label.startswith("#")
+            ]
+        highest = max((int(label[1:]) for label in taken if label[1:].isdigit()), default=0)
+        return f"#{highest + 1}"
 
     def add_instance(
         self,
@@ -356,6 +421,7 @@ class Registry:
         entry = RegistryEntry(
             id=id,
             model_id=model_id,
+            label=self._next_label(model_id),
             port=port,
             backend=backend,
             modality=modality,
@@ -435,6 +501,20 @@ class Registry:
         _validate_path_traversal(entry.vae_path)
         _validate_path_traversal(entry.clip_l_path)
         _validate_path_traversal(entry.t5xxl_path)
+        # RM-70: the INSERT below is OR REPLACE so that re-registering the same
+        # id upserts. On a duplicate *slug* that would silently delete the other
+        # model's row and orphan its instances, so refuse explicitly instead.
+        slug = entry.slug or entry.id
+        with self._lock:
+            clash = next(
+                (c for c in self._catalog.values() if c.slug == slug and c.id != entry.id),
+                None,
+            )
+        if clash is not None:
+            raise RegistryIntegrityError(
+                f"Slug {slug!r} is already used by model {clash.id!r}. "
+                "A slug is what clients route on, so it has to be unique."
+            )
         with self._lock:
             self._conn.execute(
                 f"INSERT OR REPLACE INTO models ({', '.join(_MODEL_COLUMNS)}) "
@@ -498,6 +578,9 @@ class Registry:
             cat_raw = dict(zip(_MODEL_COLUMNS, row, strict=True))
             cat_entry = CatalogEntry(
                 id=cat_raw["id"],
+                slug=cat_raw["slug"],
+                name=cat_raw["name"],
+                modality=cat_raw["modality"] or "text",
                 path=cat_raw["path"],
                 family=cat_raw["family"],
                 quantization=cat_raw["quantization"],
@@ -522,6 +605,7 @@ class Registry:
             inst_entry = RegistryEntry(
                 id=inst_raw["id"],
                 model_id=inst_raw["model_id"],
+                label=inst_raw["label"],
                 port=inst_raw["port"],
                 backend=inst_raw["backend"],
                 modality=inst_raw["modality"],
@@ -648,6 +732,79 @@ class Registry:
         os.replace(tmp, self._path)
 
 
+# RM-70: added to a schema already in the wild, so the same idempotent,
+# PRAGMA-guarded ALTER this file has used since RM-52. Every column defaults to
+# empty and is filled in by _backfill_identity_columns below, because a DEFAULT
+# can't express "derive it from the row you're on".
+_IDENTITY_MIGRATION_COLUMNS = (
+    ("models", "slug", "TEXT NOT NULL DEFAULT ''"),
+    ("models", "name", "TEXT NOT NULL DEFAULT ''"),
+    ("models", "modality", "TEXT NOT NULL DEFAULT ''"),
+    ("instances", "label", "TEXT NOT NULL DEFAULT ''"),
+)
+
+
+def _backfill_identity_columns(conn: sqlite3.Connection) -> None:
+    """Add and populate RM-70's identity columns. Idempotent.
+
+    Deliberately additive: no primary key changes, so every existing model and
+    instance id survives untouched. That matters beyond tidiness — lifecycle.py
+    names each running process's PID and log file after its instance id
+    (`{id}.pid`, `{id}.log`), so renaming ids under a live manager would strand
+    the processes it is currently supervising.
+
+    Backfill rules:
+    * `models.slug` = the model's current id, which *is* the name clients
+      already send, so routing is unchanged on the first boot after upgrading.
+    * `models.name` = the same, as a starting display label.
+    * `models.modality` = whatever its instances already agree on, since the
+      column is moving up from `instances`. A model whose instances disagree
+      keeps the most common answer — the disagreement was already a
+      misconfiguration ([[RM-57]] had to detect it at request time).
+    * `instances.label` = "#1", "#2"… in creation order within each model, so
+      the oldest replica keeps the lowest number.
+    """
+    for table, column, col_def in _IDENTITY_MIGRATION_COLUMNS:
+        existing = {row[1] for row in conn.execute(f"PRAGMA table_info({table})")}
+        if column not in existing:
+            conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {col_def}")
+
+    conn.execute("UPDATE models SET slug = id WHERE slug = ''")
+    conn.execute("UPDATE models SET name = id WHERE name = ''")
+    conn.execute(
+        """
+        UPDATE models SET modality = COALESCE((
+            SELECT i.modality FROM instances i
+            WHERE i.model_id = models.id
+            GROUP BY i.modality
+            ORDER BY COUNT(*) DESC, i.modality
+            LIMIT 1
+        ), 'text')
+        WHERE modality = ''
+        """
+    )
+
+    unlabelled = [
+        r[0] for r in conn.execute("SELECT DISTINCT model_id FROM instances WHERE label = ''")
+    ]
+    for model_id in unlabelled:
+        rows = conn.execute(
+            "SELECT id FROM instances WHERE model_id = ? ORDER BY created_at, id",
+            (model_id,),
+        ).fetchall()
+        for position, (instance_id,) in enumerate(rows, start=1):
+            conn.execute(
+                "UPDATE instances SET label = ? WHERE id = ?",
+                (f"#{position}", instance_id),
+            )
+
+    # Only now that every row has a slug — indexing the column before the
+    # backfill would fail on a pre-RM-70 database, where it doesn't exist yet.
+    conn.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_models_slug ON models(slug) WHERE slug != ''"
+    )
+
+
 def _backfill_legacy_columns(conn: sqlite3.Connection) -> None:
     """Backfill RM-52's columns onto a legacy single-table `models` if this
     is a very old registry.db that pre-dates them — same idempotent
@@ -679,6 +836,11 @@ def _insert_split_row(conn: sqlite3.Connection, entry: RegistryEntry) -> None:
 def _catalog_entry_from_registry_entry(entry: RegistryEntry) -> CatalogEntry:
     return CatalogEntry(
         id=entry.id,
+        # RM-70: manual registration creates catalog and instance under one id,
+        # so that id is also the model's first public name.
+        slug=entry.id,
+        name=entry.id,
+        modality=entry.modality,
         path=entry.path,
         family=entry.family,
         quantization=entry.quantization,
@@ -696,6 +858,11 @@ def _catalog_entry_from_registry_entry(entry: RegistryEntry) -> CatalogEntry:
 def _model_row_params(entry: CatalogEntry) -> tuple[Any, ...]:
     values = {
         "id": entry.id,
+        # A catalog row written without an explicit slug falls back to its id,
+        # matching what _backfill_identity_columns does for pre-RM-70 rows.
+        "slug": entry.slug or entry.id,
+        "name": entry.name or entry.id,
+        "modality": entry.modality or "text",
         "path": entry.path,
         "family": entry.family,
         "quantization": entry.quantization,
@@ -715,6 +882,7 @@ def _instance_row_params(entry: RegistryEntry, *, model_id: str) -> tuple[Any, .
     values = {
         "id": entry.id,
         "model_id": model_id,
+        "label": entry.label,
         "port": entry.port,
         "backend": entry.backend,
         "modality": entry.modality,
