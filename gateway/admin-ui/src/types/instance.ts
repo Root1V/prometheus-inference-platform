@@ -64,6 +64,9 @@ export interface RegisterModelRequest {
    * of registering a brand-new one — manager-api pulls path/family/
    * quantization/etc. from the catalog entry server-side. */
   model_id?: string;
+  /** RM-70: the model's public routing name. Settable once, while it is still
+   * the id the migration backfilled; frozen afterwards. */
+  slug?: string;
 }
 
 /** PATCH /admin/api/nodes/{node}/models/{id} — every field optional, `id` excluded (it's the registry key, not editable in place). */

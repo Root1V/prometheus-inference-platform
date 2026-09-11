@@ -36,6 +36,7 @@ const BACKENDS: Backend[] = ["llama_cpp", "mlx", "vllm", "sglang", "sd_cpp"];
 const MODALITIES: Modality[] = ["text", "vision", "embedding", "image"];
 
 interface FormState {
+  slug: string;
   node: string;
   id: string;
   port: string;
@@ -53,6 +54,7 @@ interface FormState {
 
 function initialState(defaultNode: string): FormState {
   return {
+    slug: "",
     node: defaultNode,
     id: "",
     port: "",
@@ -71,6 +73,7 @@ function initialState(defaultNode: string): FormState {
 
 function stateFromInstance(instance: InstanceEntry): FormState {
   return {
+    slug: instance.model_slug,
     node: instance.node,
     id: instance.id,
     port: String(instance.port),
@@ -113,6 +116,10 @@ export function RegisterModelModal({
   const registerModel = useRegisterModel();
   const updateModel = useUpdateModel();
   const isEditing = editing !== null;
+  // RM-70 backfilled slug = model id for everything that predated slugs, so a
+  // slug still equal to its id was never chosen — that's the one case where
+  // naming is allowed. manager-api enforces the same rule.
+  const isUnnamed = editing !== null && editing.model_slug === (editing.model_id || editing.id);
   const [form, setForm] = useState<FormState>(() =>
     editing ? stateFromInstance(editing) : initialState(""),
   );
@@ -175,6 +182,10 @@ export function RegisterModelModal({
         hf_repo: form.hf_repo,
         hf_sha256: form.hf_sha256,
       };
+      // RM-70: only sent when it actually changed. A model whose slug is still
+      // the id has never been named, and manager-api allows naming it once;
+      // sending an unchanged slug would just be refused as a rename.
+      if (form.slug && form.slug !== editing!.model_slug) body.slug = form.slug;
       updateModel.mutate(
         { node: selectedNode, modelId: form.id, data: body },
         {
@@ -256,6 +267,23 @@ export function RegisterModelModal({
                 className={cn(inputClass, isEditing && "cursor-not-allowed opacity-60")}
               />
             </Field>
+            {isEditing && (
+              <Field label="Public name">
+                <input
+                  value={form.slug}
+                  onChange={(e) => update("slug", e.target.value)}
+                  disabled={!isUnnamed}
+                  pattern="^[a-zA-Z0-9][a-zA-Z0-9._-]{1,62}[a-zA-Z0-9]$"
+                  title="Letters, digits, dots, hyphens, underscores"
+                  className={cn(inputClass, !isUnnamed && "cursor-not-allowed opacity-60")}
+                />
+                <span className="mt-1 block text-xs text-text-muted">
+                  {isUnnamed
+                    ? "What clients send as `model`. Can be set once — after that it's frozen, because clients route on it and their grants key off it."
+                    : "Frozen: clients already route on this name."}
+                </span>
+              </Field>
+            )}
             {!isEditing && (
               <Field label="Model" required>
                 {modelsOnNode.length === 0 ? (

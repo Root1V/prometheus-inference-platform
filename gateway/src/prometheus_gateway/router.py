@@ -29,7 +29,7 @@ from .budget import (
     get_client_billing_settings_cached,
     parse_thresholds,
 )
-from .models.registry import ModelEntry, ModelRegistry
+from .models.registry import ModelEntry, ModelRegistry, ModelResolution
 from .models.schemas import ChatCompletionRequest, EmbeddingsRequest, ImageGenerationRequest
 from .notifications import send_budget_alert_email
 from .telemetry import get_logger, get_tracer, metrics_store
@@ -84,6 +84,23 @@ def _problem(
         },
         media_type="application/problem+json",
         headers=extra_headers or {},
+    )
+
+
+def _may_use(claims: Any, requested: str, resolution: "ModelResolution") -> bool:
+    """Whether this token may use the model *requested* names — RM-70.
+
+    A grant on the model's slug covers every alias it answers to, so naming a
+    model doesn't strand clients that were granted it under an older spelling,
+    and a client sending the new name doesn't need a second grant. The
+    requested string is still accepted on its own, so a grant issued against an
+    older name keeps working until it's reissued.
+
+    Deny-by-default is unchanged: a token with no `model:*` scope at all has no
+    model access, whatever it asks for.
+    """
+    return claims.has_model_scope(requested) or (
+        bool(resolution.model_key) and claims.has_model_scope(resolution.model_key)
     )
 
 
@@ -719,7 +736,7 @@ def create_router(registry: ModelRegistry, pool: "BackendPool") -> APIRouter:
 
             # RM-07: per-model grant, deny-by-default — a client with no model:*
             # scope at all has no model access, even with inference:read/stream.
-            if not (claims.has_model_scope(body.model) or is_admin_bypass):
+            if not (_may_use(claims, body.model, resolution) or is_admin_bypass):
                 inf_span.set_attribute("http.status_code", 403)
                 return _problem(
                     request,
@@ -1189,7 +1206,7 @@ def create_router(registry: ModelRegistry, pool: "BackendPool") -> APIRouter:
                 "This endpoint requires inference:read scope.",
             )
 
-        if not (claims.has_model_scope(body.model) or is_admin_bypass):
+        if not (_may_use(claims, body.model, resolution) or is_admin_bypass):
             return _problem(
                 request,
                 403,
@@ -1440,7 +1457,7 @@ def create_router(registry: ModelRegistry, pool: "BackendPool") -> APIRouter:
                 "This endpoint requires inference:read scope.",
             )
 
-        if not (claims.has_model_scope(body.model) or is_admin_bypass):
+        if not (_may_use(claims, body.model, resolution) or is_admin_bypass):
             return _problem(
                 request,
                 403,

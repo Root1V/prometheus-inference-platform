@@ -63,9 +63,9 @@ _UPDATABLE_FIELDS = frozenset(
         "clip_l_path",
         "t5xxl_path",
         "cfg_scale",
-        # RM-70: display label only. `slug` is deliberately NOT here — it is
-        # immutable, and update_backend rejects it explicitly rather than
-        # dropping it silently, which would look like a successful rename.
+        # RM-70: display label only. `slug` is deliberately NOT here — it goes
+        # through registry.set_slug(), which enforces the once-only rule that a
+        # plain column update would bypass.
         "name",
     }
 )
@@ -220,16 +220,16 @@ async def update_backend(
             span.set_attribute("http.status_code", 404)
             raise _problem(404, "not-found", "Not Found", f"Model {model_id!r} not registered.")
 
+        # RM-70: naming a model is allowed exactly once, while its slug is
+        # still the placeholder the migration left behind (slug == model id).
+        # After that it's frozen: clients route on it and their grants key off
+        # it, which is what immutability is protecting. set_slug enforces both.
         if "slug" in body:
-            span.set_attribute("http.status_code", 400)
-            raise _problem(
-                400,
-                "invalid-update",
-                "Invalid Update",
-                "A model's slug is immutable — clients route on it and both usage "
-                "records and model:<slug> grants key off it. Register a new model "
-                "instead, or change `name` if you only want a different label.",
-            )
+            try:
+                registry.set_slug(entry.model_id or entry.id, str(body["slug"]))
+            except (ValueError, TypeError) as exc:
+                span.set_attribute("http.status_code", 400)
+                raise _problem(400, "invalid-update", "Invalid Update", str(exc)) from exc
 
         updates = {k: v for k, v in body.items() if k in _UPDATABLE_FIELDS}
         merged_backend = updates.get("backend", entry.backend)

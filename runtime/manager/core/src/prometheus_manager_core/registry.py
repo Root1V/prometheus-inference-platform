@@ -32,6 +32,13 @@ import yaml
 
 _ID_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{1,62}[a-z0-9]$")
 
+# RM-70: a slug becomes a `model:<slug>` scope, so it must fit what
+# auth-service accepts there — see its schemas.py _MODEL_SCOPE_RE. Kept
+# deliberately narrower than that regex's open-ended tail (bounded length, no
+# trailing separator) but never wider: a slug auth-service would reject is a
+# model nobody could ever be granted.
+_SLUG_RE = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9._-]{1,62}[a-zA-Z0-9]$")
+
 # See memory/wiki/inference-engines.md (RM-06) for the comparison behind this list.
 # RM-38: sd_cpp (stable-diffusion.cpp's sd-server) is the odd one out — it
 # generates images rather than serving LLM completions, so it deviates from
@@ -402,6 +409,32 @@ class Registry:
         while f"{base}-{position}" in taken:
             position += 1
         return f"{base}-{position}"
+
+    def set_slug(self, model_id: str, slug: str) -> None:
+        """Name a model whose slug is still the placeholder the migration left.
+
+        RM-70 backfilled `slug = id` for every model that predated slugs, so
+        nothing was ever *chosen* — the ids just happen to sit in the field.
+        Letting that placeholder be replaced once is not a rename: it's the
+        naming that never happened. Once a real slug is in place it is frozen,
+        because clients route on it and `model:<slug>` grants key off it, and
+        changing it under them is the thing immutability exists to prevent.
+        """
+        with self._lock:
+            catalog = self._catalog.get(model_id)
+        if catalog is None:
+            raise KeyError(model_id)
+        if catalog.slug != model_id:
+            raise RegistryIntegrityError(
+                f"Model {model_id!r} is already published as {catalog.slug!r}. A slug is "
+                "frozen once set — clients route on it and their grants key off it."
+            )
+        _validate_slug(slug)
+        self._assert_slug_free(slug, owner_id=model_id)
+        with self._lock:
+            self._conn.execute("UPDATE models SET slug = ? WHERE id = ?", (slug, model_id))
+            self._conn.commit()
+            self._load()
 
     def _assert_slug_free(self, slug: str, *, owner_id: str) -> None:
         """A slug is what clients route on, so two models sharing one would make
@@ -1017,6 +1050,15 @@ def _validate_id(model_id: str) -> None:
     if not _ID_RE.match(model_id):
         raise ValueError(
             f"Invalid model ID {model_id!r}. Must match ^[a-z0-9][a-z0-9_-]{{1,62}}[a-z0-9]$"
+        )
+
+
+def _validate_slug(slug: str) -> None:
+    if not _SLUG_RE.match(slug):
+        raise ValueError(
+            f"Invalid slug {slug!r}. Must match {_SLUG_RE.pattern} — it becomes a "
+            "`model:<slug>` scope, so anything auth-service would reject here is a "
+            "model nobody could be granted access to."
         )
 
 

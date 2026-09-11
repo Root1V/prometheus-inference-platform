@@ -612,15 +612,37 @@ class TestModelIdentity:
             _clear_override()
         assert resp.status_code == 400
 
-    def test_changing_a_slug_is_refused_rather_than_ignored(self, tmp_path: Path):
-        """Silently dropping it would read as a successful rename, and the
-        caller would believe clients could route on the new name.
-        """
+    def test_a_model_can_be_named_once(self, tmp_path: Path):
+        """The migration backfilled slug = id for every pre-RM-70 model, so
+        nothing was ever chosen. Replacing that placeholder is the naming that
+        never happened, not a rename."""
         client = _authed(_make_client(tmp_path))
         try:
             resp = client.patch(
                 "/v1/backends/llama3-test",
-                json={"slug": "something-else"},
+                json={"slug": "llama3"},
+                headers={"Authorization": "Bearer dummy"},
+            )
+            catalog = app.state.registry.get_catalog("llama3-test")
+        finally:
+            _clear_override()
+        assert resp.status_code == 200
+        assert catalog is not None
+        assert catalog.slug == "llama3"
+
+    def test_renaming_a_published_slug_is_refused(self, tmp_path: Path):
+        """Once a real name is out there, clients route on it and their grants
+        key off it — which is exactly what immutability protects."""
+        client = _authed(_make_client(tmp_path))
+        try:
+            client.patch(
+                "/v1/backends/llama3-test",
+                json={"slug": "llama3"},
+                headers={"Authorization": "Bearer dummy"},
+            )
+            resp = client.patch(
+                "/v1/backends/llama3-test",
+                json={"slug": "llama3-again"},
                 headers={"Authorization": "Bearer dummy"},
             )
             catalog = app.state.registry.get_catalog("llama3-test")
@@ -628,7 +650,21 @@ class TestModelIdentity:
             _clear_override()
         assert resp.status_code == 400
         assert catalog is not None
-        assert catalog.slug == "llama3-test"
+        assert catalog.slug == "llama3"
+
+    def test_a_slug_auth_service_would_reject_is_refused(self, tmp_path: Path):
+        """A slug becomes a `model:<slug>` scope. One auth-service won't accept
+        is a model nobody could ever be granted."""
+        client = _authed(_make_client(tmp_path))
+        try:
+            resp = client.patch(
+                "/v1/backends/llama3-test",
+                json={"slug": "has spaces/and slashes"},
+                headers={"Authorization": "Bearer dummy"},
+            )
+        finally:
+            _clear_override()
+        assert resp.status_code == 400
 
     def test_the_display_name_can_be_changed(self, tmp_path: Path):
         client = _authed(_make_client(tmp_path))

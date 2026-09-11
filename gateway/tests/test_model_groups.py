@@ -481,3 +481,36 @@ def test_two_different_models_are_both_listed():
     )
 
     assert {r.name for r in registry.list_served_names()} == {"alpha", "beta"}
+
+
+# ── RM-70: a grant on the slug covers every alias the model answers to ──────
+
+
+@respx.mock
+async def test_a_slug_grant_covers_a_request_made_under_an_older_name(gw, rsa_keys):
+    """Naming a model must not strand clients granted it under an older
+    spelling, and a client sending the new name must not need a second grant."""
+    respx.post(f"{REPLICA_A_URL}/v1/chat/completions").mock(
+        return_value=Response(200, json=CHAT_RESPONSE)
+    )
+
+    resp = await gw.post(
+        "/v1/chat/completions",
+        json={"model": "llama-a", "messages": [{"role": "user", "content": "hi"}], "max_tokens": 5},
+        # granted the group, asking for one replica by its own id
+        headers=_headers(rsa_keys, "inference:read model:llama"),
+    )
+
+    assert resp.status_code == 200
+
+
+async def test_no_model_grant_is_still_denied(gw, rsa_keys):
+    """Deny-by-default is unchanged — widening to the slug must not become a
+    way in for a token holding no model grant at all."""
+    resp = await gw.post(
+        "/v1/chat/completions",
+        json={"model": "llama", "messages": [{"role": "user", "content": "hi"}], "max_tokens": 5},
+        headers=_headers(rsa_keys, "inference:read"),
+    )
+
+    assert resp.status_code == 403
