@@ -69,6 +69,8 @@ class MetricsStore:
         self._jwt_failed: int = 0
         # Per-backend counters: {backend_id: {"requests_total": int}}
         self._backends: dict[str, dict[str, Any]] = {}
+        # RM-73: which model each backend serves, for the per-model rollup.
+        self._backend_model: dict[str, str] = {}
         # RM-46: per-backend samples, same sliding-window approach as the
         # global _latencies deque above. ttft/inter_token are sparse — only
         # streaming requests report ttft, and only llama.cpp-family backends
@@ -112,6 +114,7 @@ class MetricsStore:
         completion_tokens: int,
         latency_ms: int,
         backend_id: str,
+        model_id: str | None = None,
         error: bool = False,
         ttft_ms: int | None = None,
         inter_token_ms: float | None = None,
@@ -133,6 +136,12 @@ class MetricsStore:
                 self._backend_tps[backend_id] = deque(maxlen=self._MAX_LATENCY_SAMPLES)
                 self._backend_ips[backend_id] = deque(maxlen=self._MAX_LATENCY_SAMPLES)
                 self._backend_prompt_tps[backend_id] = deque(maxlen=self._MAX_LATENCY_SAMPLES)
+            if model_id:
+                # RM-73: remembered per backend rather than accumulated in a
+                # parallel set of deques — the rollup below re-derives itself
+                # from the same samples, so a model's percentiles come from
+                # real observations instead of an average of averages.
+                self._backend_model[backend_id] = model_id
             self._backends[backend_id]["requests_total"] += 1
             self._backend_latencies[backend_id].append(latency_ms)
             if ttft_ms is not None:
@@ -176,6 +185,7 @@ class MetricsStore:
             backend_tps_copy = {k: list(v) for k, v in self._backend_tps.items()}
             backend_ips_copy = {k: list(v) for k, v in self._backend_ips.items()}
             backend_prompt_tps_copy = {k: list(v) for k, v in self._backend_prompt_tps.items()}
+            backend_model_copy = dict(self._backend_model)
 
         uptime = int(time.monotonic() - self._start_time)
         inference: dict[str, Any] = {
@@ -240,6 +250,33 @@ class MetricsStore:
                     entry["circuit_state"] = "closed"
             backends_out[bid] = entry
 
+        # RM-73: the same numbers grouped by model. With replicas, per-backend
+        # rows alone force whoever is looking to add up N instances by hand to
+        # answer "how is this model doing" — which is the only unit a consumer
+        # of the model cares about. Percentiles are recomputed from the pooled
+        # samples rather than averaged across backends, which would weight a
+        # replica that served three requests the same as one that served a
+        # thousand.
+        models_out: dict[str, Any] = {}
+        for model_id in sorted(set(backend_model_copy.values())):
+            member_ids = [b for b, m in backend_model_copy.items() if m == model_id]
+            pooled_latency = [s for b in member_ids for s in backend_latencies_copy.get(b, [])]
+            pooled_ttft = [s for b in member_ids for s in backend_ttft_copy.get(b, [])]
+            pooled_tps = [s for b in member_ids for s in backend_tps_copy.get(b, [])]
+            models_out[model_id] = {
+                "instances": len(member_ids),
+                "instance_ids": sorted(member_ids),
+                "requests_total": sum(
+                    int(backends_copy.get(b, {}).get("requests_total", 0)) for b in member_ids
+                ),
+                "latency_p50_ms": self._percentile(pooled_latency, 50),
+                "latency_p95_ms": self._percentile(pooled_latency, 95),
+                "ttft_p50_ms": self._percentile(pooled_ttft, 50) if pooled_ttft else None,
+                "tokens_per_second_avg": (
+                    round(sum(pooled_tps) / len(pooled_tps), 2) if pooled_tps else None
+                ),
+            }
+
         return {
             "service": "gateway",
             "uptime_seconds": uptime,
@@ -249,6 +286,7 @@ class MetricsStore:
                 "jwt_validations_failed": self._jwt_failed,
             },
             "backends": backends_out,
+            "models": models_out,
         }
 
 

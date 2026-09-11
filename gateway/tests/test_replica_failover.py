@@ -342,3 +342,46 @@ def test_the_count_is_released_even_when_the_request_raises():
         with pool.track("b"):
             raise RuntimeError("backend blew up")
     assert pool.in_flight("b") == 0
+
+
+# ── RM-71: observed capacity, never a derived limit ─────────────────────────
+
+
+@respx.mock
+async def test_capacity_counts_slots_only_from_backends_that_report():
+    """llama.cpp reports its slots; sd.cpp has no /slots at all. A backend that
+    says nothing must be left out rather than counted as zero capacity, which
+    would understate the platform and read as an outage."""
+    respx.get(f"{REPLICA_A_URL}/health").mock(return_value=Response(200))
+    respx.get(f"{REPLICA_A_URL}/slots").mock(return_value=Response(200, json=[{}, {}, {}, {}]))
+    respx.get(f"{REPLICA_B_URL}/health").mock(return_value=Response(404))
+    respx.get(f"{REPLICA_B_URL}/slots").mock(return_value=Response(404))
+
+    registry = ModelRegistry.__new__(ModelRegistry)
+    registry._models = {
+        "llama-a": _entry("llama-a", REPLICA_A_URL),
+        "sd": _entry("sd", REPLICA_B_URL),
+    }
+    monitor = BackendHealthMonitor(registry=registry)
+    await monitor.probe_once()
+
+    assert monitor.capacity() == {"slots": 4, "reporting": 1}
+    await monitor.stop()
+
+
+@respx.mock
+async def test_an_unreachable_backend_stops_counting_toward_capacity():
+    route = respx.get(f"{REPLICA_A_URL}/health")
+    route.mock(return_value=Response(200))
+    respx.get(f"{REPLICA_A_URL}/slots").mock(return_value=Response(200, json=[{}, {}]))
+    registry = ModelRegistry.__new__(ModelRegistry)
+    registry._models = {"llama-a": _entry("llama-a", REPLICA_A_URL)}
+    monitor = BackendHealthMonitor(registry=registry)
+
+    await monitor.probe_once()
+    assert monitor.capacity()["slots"] == 2
+
+    route.mock(side_effect=httpx.ConnectError("refused"))
+    await monitor.probe_once()
+    assert monitor.capacity() == {"slots": 0, "reporting": 0}
+    await monitor.stop()

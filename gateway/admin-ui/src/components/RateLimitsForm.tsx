@@ -123,6 +123,19 @@ function RateLimitsFormLoaded({ data }: { data: RateLimitsResponse }) {
             blank means that endpoint uses the global limit. The admin API can't go below{" "}
             {data.min_admin_rpm} RPM, so a mistake here can never lock you out of this page.
           </p>
+          {data.capacity?.reporting > 0 && (
+            <p className="mt-2 text-xs text-text-muted">
+              Right now the running backends report{" "}
+              <span className="font-medium text-text">
+                {data.capacity.slots} concurrent slots
+              </span>{" "}
+              across {data.capacity.reporting} instance
+              {data.capacity.reporting === 1 ? "" : "s"} — what the hardware can genuinely work
+              on at once. It isn&rsquo;t a suggested limit: how many requests a slot absorbs
+              depends on the model and the prompt. It&rsquo;s here so the number above
+              isn&rsquo;t set blind.
+            </p>
+          )}
         </div>
         <span
           className={

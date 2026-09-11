@@ -25,6 +25,10 @@ export interface RateLimitsResponse {
   /** Floor the server enforces on the admin bucket, to keep the dashboard
    * itself reachable. */
   min_admin_rpm: number;
+  /** RM-71: concurrent slots the running backends actually report. Shown beside
+   * the limit so it isn't set blind; never used to derive one. `reporting` is
+   * how many backends the number covers — engines like sd.cpp report none. */
+  capacity: { slots: number | null; reporting: number };
 }
 
 const LIMITS_KEY = ["rate-limits"] as const;

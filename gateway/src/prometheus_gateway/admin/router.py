@@ -699,6 +699,13 @@ def create_admin_router(manager_client: ManagerApiClient) -> APIRouter:
 
     # ── RM-56: live-editable rate limits ─────────────────────────────────────
 
+    def _observed_capacity(request: Request) -> dict[str, Any]:
+        monitor = getattr(request.app.state, "health_monitor", None)
+        if monitor is None:
+            return {"slots": None, "reporting": 0}
+        capacity: dict[str, Any] = dict(monitor.capacity())
+        return capacity
+
     def _limits_payload(request: Request, *, is_overridden: bool) -> dict[str, Any]:
         settings: Settings = request.app.state.settings
         return {
@@ -710,6 +717,11 @@ def create_admin_router(manager_client: ManagerApiClient) -> APIRouter:
             # deployment decision, not a tuning knob.
             "rate_limit_strict": settings.rate_limit_strict,
             "min_admin_rpm": rate_limits.MIN_ADMIN_RPM,
+            # RM-71 (decision #8): observed capacity shown next to the limit,
+            # never used to derive one. Inferring a limit from slots, model size
+            # and quantization is guesswork that throttles or over-admits in
+            # silence; this just stops the operator setting the number blind.
+            "capacity": _observed_capacity(request),
         }
 
     @router.get("/admin/api/limits")

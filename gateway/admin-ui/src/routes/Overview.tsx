@@ -131,7 +131,10 @@ export default function Overview() {
           <StatCard
             label="Circuits open"
             value={openCircuits}
-            sub={`of ${backendEntries.length} models${halfOpenCircuits > 0 ? ` · ${halfOpenCircuits} half-open` : ""}`}
+            // RM-73: these are backends, not models. With replicas the old
+            // "of N models" was simply wrong — two instances of one model read
+            // as two models.
+            sub={`of ${backendEntries.length} instance${backendEntries.length === 1 ? "" : "s"}${halfOpenCircuits > 0 ? ` · ${halfOpenCircuits} half-open` : ""}`}
             icon={AlertOctagon}
           />
         </div>

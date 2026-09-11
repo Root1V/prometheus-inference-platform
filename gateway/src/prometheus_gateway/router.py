@@ -1104,6 +1104,7 @@ def create_router(registry: ModelRegistry, pool: "BackendPool") -> APIRouter:
                         completion_tokens=completion_tokens,
                         latency_ms=backend_latency_ms,
                         backend_id=entry.id,
+                        model_id=resolution.model_key,
                         inter_token_ms=inter_token_ms,
                         tokens_per_second=round(tps, 2) if completion_tokens > 0 else None,
                         prompt_tokens_per_second=(
@@ -1175,6 +1176,7 @@ def create_router(registry: ModelRegistry, pool: "BackendPool") -> APIRouter:
                     completion_tokens=0,
                     latency_ms=0,
                     backend_id=entry.id,
+                    model_id=resolution.model_key,
                     error=True,
                 )
                 inf_span.set_attribute("http.status_code", 503)
@@ -1199,6 +1201,7 @@ def create_router(registry: ModelRegistry, pool: "BackendPool") -> APIRouter:
                     completion_tokens=0,
                     latency_ms=0,
                     backend_id=entry.id,
+                    model_id=resolution.model_key,
                     error=True,
                 )
                 inf_span.set_attribute("http.status_code", 502)
@@ -1400,6 +1403,7 @@ def create_router(registry: ModelRegistry, pool: "BackendPool") -> APIRouter:
                 completion_tokens=0,
                 latency_ms=int((time.monotonic() - backend_start) * 1000),
                 backend_id=entry.id,
+                model_id=resolution.model_key,
                 error=True,
             )
             return _problem(
@@ -1421,6 +1425,7 @@ def create_router(registry: ModelRegistry, pool: "BackendPool") -> APIRouter:
                 completion_tokens=0,
                 latency_ms=int((time.monotonic() - backend_start) * 1000),
                 backend_id=entry.id,
+                model_id=resolution.model_key,
                 error=True,
             )
             return _problem(
@@ -1473,6 +1478,7 @@ def create_router(registry: ModelRegistry, pool: "BackendPool") -> APIRouter:
             completion_tokens=0,
             latency_ms=embeddings_latency_ms,
             backend_id=entry.id,
+            model_id=resolution.model_key,
             # RM-46 follow-up: embeddings have no completion tokens (no text
             # is generated), so "tokens/sec" here means the input side —
             # confirmed via research as the throughput metric that actually
@@ -1671,6 +1677,7 @@ def create_router(registry: ModelRegistry, pool: "BackendPool") -> APIRouter:
                 completion_tokens=0,
                 latency_ms=int((time.monotonic() - backend_start) * 1000),
                 backend_id=entry.id,
+                model_id=resolution.model_key,
                 error=True,
             )
             return _problem(
@@ -1692,6 +1699,7 @@ def create_router(registry: ModelRegistry, pool: "BackendPool") -> APIRouter:
                 completion_tokens=0,
                 latency_ms=int((time.monotonic() - backend_start) * 1000),
                 backend_id=entry.id,
+                model_id=resolution.model_key,
                 error=True,
             )
             return _problem(
@@ -1746,6 +1754,7 @@ def create_router(registry: ModelRegistry, pool: "BackendPool") -> APIRouter:
             completion_tokens=0,
             latency_ms=images_latency_ms,
             backend_id=entry.id,
+            model_id=resolution.model_key,
             # RM-46 follow-up: images/second — confirmed via research
             # (Images Per Second is the standard throughput metric for
             # diffusion-model serving). num_images accounts for n > 1.
@@ -1989,6 +1998,7 @@ async def _stream_response(
                 completion_tokens=completion_tokens,
                 latency_ms=backend_latency_ms,
                 backend_id=backend_id,
+                model_id=billed_name,
                 error=stream_error is not None,
                 ttft_ms=ttft_ms,
                 inter_token_ms=inter_token_ms,

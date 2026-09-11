@@ -48,11 +48,31 @@ class BackendHealthMonitor:
         self._registry = registry
         self._interval_s = interval_s
         self._unreachable: set[str] = set()
+        # RM-71: concurrent slots each backend reports, for the capacity figure
+        # shown beside the configured rate limit. Absent for engines that don't
+        # report any — sd.cpp has no /slots at all.
+        self._slots: dict[str, int] = {}
         self._task: asyncio.Task[None] | None = None
         self._client: httpx.AsyncClient | None = None
 
     def unreachable(self, backend_url: str) -> bool:
         return backend_url in self._unreachable
+
+    def capacity(self) -> dict[str, int]:
+        """Concurrent slots across reachable backends — RM-71 (decision #8).
+
+        A fact, not an estimate: llama.cpp reports how many requests it can
+        genuinely work on at once. Deliberately *not* turned into a suggested
+        rate limit — inferring one from model size, quantization and slots is
+        guesswork, and a wrong formula throttles or over-admits in silence. The
+        operator sets the limit; this just stops them setting it blind.
+
+        `reporting` says how many backends the number actually covers, so an
+        engine that reports nothing (sd.cpp) is visible as a gap rather than
+        silently counted as zero capacity.
+        """
+        live = {u: n for u, n in self._slots.items() if u not in self._unreachable}
+        return {"slots": sum(live.values()), "reporting": len(live)}
 
     async def start(self) -> None:
         if self._interval_s <= 0:
@@ -108,10 +128,27 @@ class BackendHealthMonitor:
 
     async def _probe(self, backend_url: str) -> bool:
         assert self._client is not None
+        base = backend_url.rstrip("/")
         try:
-            await self._client.get(f"{backend_url.rstrip('/')}/health")
+            await self._client.get(f"{base}/health")
         except Exception:
             # Any answer at all — 200, 404, even 500 — means the process is
             # alive and accepting connections, which is all this asks.
             return False
+        await self._read_slots(base)
         return True
+
+    async def _read_slots(self, base: str) -> None:
+        """Record how many concurrent slots this backend has, if it says.
+
+        Failure is not an error: sd.cpp has no /slots route, and a backend that
+        doesn't report is simply left out of the capacity figure rather than
+        counted as having none.
+        """
+        try:
+            resp = await self._client.get(f"{base}/slots")  # type: ignore[union-attr]
+            slots = resp.json()
+            if isinstance(slots, list) and slots:
+                self._slots[base] = len(slots)
+        except Exception:
+            self._slots.pop(base, None)
