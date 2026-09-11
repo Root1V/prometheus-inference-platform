@@ -383,6 +383,26 @@ class Registry:
             self._conn.commit()
             self._load()
 
+    def next_instance_id(self, model_id: str) -> str:
+        """A free instance id for the next replica of *model_id* — RM-70.
+
+        Instance ids are still the primary key, and lifecycle.py names each
+        process's PID and log file after one, so they can't be opaque yet. But
+        nobody should have to *invent* one: asking an operator for a globally
+        unique id is what produced the "-1"/"-2" suffixes that leaked into the
+        scope picker and made replicas look like separate models.
+
+        Derived from the catalog id rather than the slug, so the id stays
+        stable if the display-facing naming ever changes.
+        """
+        base = model_id
+        with self._lock:
+            taken = set(self._instances)
+        position = 2  # the first instance is normally the model id itself
+        while f"{base}-{position}" in taken:
+            position += 1
+        return f"{base}-{position}"
+
     def _assert_slug_free(self, slug: str, *, owner_id: str) -> None:
         """A slug is what clients route on, so two models sharing one would make
         routing ambiguous rather than merely untidy.

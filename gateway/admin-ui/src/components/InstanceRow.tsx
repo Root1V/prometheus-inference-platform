@@ -1,4 +1,13 @@
-import { ChevronDown, Pencil, Play, RotateCw, Square, Terminal, Trash2 } from "lucide-react";
+import {
+  ChevronDown,
+  CopyPlus,
+  Pencil,
+  Play,
+  RotateCw,
+  Square,
+  Terminal,
+  Trash2,
+} from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import {
   useDeleteModel,
@@ -55,6 +64,7 @@ export function InstanceRow({
   instance,
   metrics,
   onEdit,
+  onAddInstance,
 }: {
   rowNumber: number;
   instance: InstanceEntry;
@@ -62,6 +72,7 @@ export function InstanceRow({
    * instance has never actually served a request yet (no samples recorded). */
   metrics?: BackendMetrics;
   onEdit: (instance: InstanceEntry) => void;
+  onAddInstance: (instance: InstanceEntry) => void;
 }) {
   const { showToast } = useToast();
   const [confirmDelete, setConfirmDelete] = useState(false);
@@ -156,6 +167,16 @@ export function InstanceRow({
               className={cn(actionButtonClass, "text-blue-600 hover:bg-blue-50")}
             >
               <RotateCw size={16} />
+            </button>
+            <button
+              type="button"
+              title="Add another instance of this model"
+              aria-label={`Add instance of ${instance.model_slug || instance.model_id}`}
+              disabled={isBusy}
+              onClick={() => onAddInstance(instance)}
+              className={cn(actionButtonClass, "text-text-muted hover:bg-background")}
+            >
+              <CopyPlus size={16} />
             </button>
             <button
               type="button"

@@ -644,3 +644,41 @@ class TestModelIdentity:
         assert resp.status_code == 200
         assert catalog is not None
         assert catalog.name == "Llama 3 (production)"
+
+    def test_adding_a_replica_without_an_id_derives_one(self, tmp_path: Path):
+        """RM-70: going from one instance to two should be a port and a node,
+        not an exercise in inventing a globally unique string."""
+        client = _authed(_make_client(tmp_path))
+        try:
+            first = client.post(
+                "/v1/backends",
+                json={"model_id": "llama3-test", "port": 8081},
+                headers={"Authorization": "Bearer dummy"},
+            )
+            second = client.post(
+                "/v1/backends",
+                json={"model_id": "llama3-test", "port": 8082},
+                headers={"Authorization": "Bearer dummy"},
+            )
+        finally:
+            _clear_override()
+        assert first.status_code == 201
+        assert second.status_code == 201
+        assert first.json()["id"] == "llama3-test-2"
+        assert second.json()["id"] == "llama3-test-3"
+        # And each gets its own label within the model, assigned the same way.
+        assert first.json()["label"] == "#2"
+        assert second.json()["label"] == "#3"
+
+    def test_an_explicit_instance_id_is_still_honoured(self, tmp_path: Path):
+        client = _authed(_make_client(tmp_path))
+        try:
+            resp = client.post(
+                "/v1/backends",
+                json={"id": "my-own-name", "model_id": "llama3-test", "port": 8081},
+                headers={"Authorization": "Bearer dummy"},
+            )
+        finally:
+            _clear_override()
+        assert resp.status_code == 201
+        assert resp.json()["id"] == "my-own-name"

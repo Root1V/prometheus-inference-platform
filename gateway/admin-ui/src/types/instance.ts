@@ -6,6 +6,12 @@ export interface InstanceEntry {
   id: string;
   /** RM-51: the catalog (models) entry this instance belongs to. */
   model_id: string;
+  /** RM-70: the catalog's public, immutable name — what clients send as
+   * `model`, and what a `model:<slug>` grant should reference. */
+  model_slug: string;
+  /** RM-70: this instance's handle within its model ("#1", "#2"). Display
+   * only — never a routing key. */
+  label: string;
   context_length: number;
   port: number;
   path: string;
@@ -40,7 +46,9 @@ export interface InstanceEntry {
 export type InstanceActionResult = Omit<InstanceEntry, "node">;
 
 export interface RegisterModelRequest {
-  id: string;
+  /** RM-70: optional when `model_id` is set — manager-api derives the next
+   * free instance id, so adding a replica never asks for a unique name. */
+  id?: string;
   port: number;
   path?: string;
   context_length?: number;

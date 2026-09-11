@@ -4,6 +4,7 @@ import { useInstances, useNodes } from "../api/instances";
 import { useMetrics } from "../api/metrics";
 import { useModelCatalog } from "../api/models";
 import { InstanceTable } from "../components/InstanceTable";
+import { AddInstanceModal } from "../components/AddInstanceModal";
 import { RegisterModelModal } from "../components/RegisterModelModal";
 import { Sidebar } from "../components/Sidebar";
 import { StatCard } from "../components/StatCard";
@@ -17,7 +18,11 @@ const EMPTY_INSTANCES: InstanceEntry[] = [];
 const EMPTY_NODES: string[] = [];
 const EMPTY_CATALOG: ModelCatalogEntry[] = [];
 
-type ModalState = { mode: "create" } | { mode: "edit"; instance: InstanceEntry } | null;
+type ModalState =
+  | { mode: "create" }
+  | { mode: "edit"; instance: InstanceEntry }
+  | { mode: "add-instance"; instance: InstanceEntry }
+  | null;
 
 export default function Dashboard() {
   const instancesQuery = useInstances();
@@ -83,14 +88,23 @@ export default function Dashboard() {
               instances={instances}
               backendMetrics={metricsQuery.data?.backends}
               onEdit={(instance) => setModal({ mode: "edit", instance })}
+              onAddInstance={(instance) => setModal({ mode: "add-instance", instance })}
             />
           )}
         </div>
       </main>
 
+      <AddInstanceModal
+        key={modal?.mode === "add-instance" ? modal.instance.id : "add"}
+        open={modal?.mode === "add-instance"}
+        source={modal?.mode === "add-instance" ? modal.instance : null}
+        nodes={nodes}
+        onClose={() => setModal(null)}
+      />
+
       <RegisterModelModal
         key={modal?.mode === "edit" ? modal.instance.id : "create"}
-        open={modal !== null}
+        open={modal !== null && modal.mode !== "add-instance"}
         nodes={nodes}
         editing={modal?.mode === "edit" ? modal.instance : null}
         downloadedModels={downloadedModels}

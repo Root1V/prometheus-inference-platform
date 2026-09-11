@@ -67,12 +67,14 @@ export function InstanceTable({
   instances,
   backendMetrics,
   onEdit,
+  onAddInstance,
 }: {
   instances: InstanceEntry[];
   /** RM-46: keyed by instance/backend id, same as InstanceEntry.id — absent
    * (undefined) while GET /metrics's first poll hasn't landed yet. */
   backendMetrics?: Record<string, BackendMetrics>;
   onEdit: (instance: InstanceEntry) => void;
+  onAddInstance: (instance: InstanceEntry) => void;
 }) {
   const [page, setPage] = useState(1);
   const [query, setQuery] = useState("");
@@ -150,6 +152,7 @@ export function InstanceTable({
               instance={instance}
               metrics={backendMetrics?.[instance.id]}
               onEdit={onEdit}
+              onAddInstance={onAddInstance}
             />
           ))}
         </tbody>

@@ -119,6 +119,13 @@ async def register_backend(
 
         model_id = body.get("model_id")
         if model_id:
+            # RM-70: adding a replica shouldn't ask for a name. When the caller
+            # omits `id`, derive the next free one — the whole point is that
+            # going from one instance to two is a port and a node, not an
+            # exercise in inventing globally unique strings.
+            if not instance_id:
+                instance_id = registry.next_instance_id(model_id)
+                span.set_attribute("model_id", instance_id)
             if registry.get_catalog(model_id) is None:
                 span.set_attribute("http.status_code", 404)
                 raise _problem(
