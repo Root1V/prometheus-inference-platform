@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import random
+from collections.abc import Sequence
 from typing import Any
 
 import httpx
@@ -186,6 +187,60 @@ class BackendPool:
             error=str(last_exc),
         )
         raise last_exc  # type: ignore[misc]
+
+    async def forward_with_failover(
+        self,
+        candidates: Sequence[tuple[str, str]],
+        path: str,
+        payload: dict[str, Any],
+        *,
+        extra_headers: dict[str, str] | None = None,
+    ) -> tuple[httpx.Response, str]:
+        """Forward to the first candidate that answers — RM-69 (finding B).
+
+        `forward()` retries the *same* backend, which is right for a transient
+        blip but useless when the instance is simply gone: all three attempts
+        went to the same dead process, and the only thing they achieved was
+        opening its circuit faster. With replicas there is somewhere else to go.
+
+        `candidates` is (backend_id, backend_origin) in preference order.
+        Returns the response together with the backend that produced it, since
+        metrics and the circuit breaker belong to the replica that did the work.
+        """
+        last_exc: Exception | None = None
+        for index, (backend_id, origin) in enumerate(candidates):
+            url = f"{origin.rstrip('/')}{path}"
+            try:
+                response = await self.forward(
+                    backend_id,
+                    self.get(origin),
+                    url,
+                    payload,
+                    extra_headers=extra_headers,
+                )
+                if index > 0:
+                    logger.info(
+                        "backend.failover_succeeded",
+                        backend_id=backend_id,
+                        after_attempts=index,
+                    )
+                return response, backend_id
+            except (
+                httpx.ConnectError,
+                httpx.ConnectTimeout,
+                httpx.RemoteProtocolError,
+                _TransientBackendError,
+            ) as exc:
+                last_exc = exc
+                logger.warning(
+                    "backend.failing_over",
+                    backend_id=backend_id,
+                    remaining=len(candidates) - index - 1,
+                    error=str(exc),
+                )
+
+        assert last_exc is not None  # candidates is never empty at the call site
+        raise last_exc
 
     async def aclose(self) -> None:
         """Close all pooled clients. Called on application shutdown."""

@@ -56,6 +56,13 @@ class Settings(BaseSettings):
     circuit_breaker_recovery_timeout: int = 30  # seconds
     circuit_breaker_success_threshold: int = 2
 
+    # ── Backend health probing — docs/roadmap.md RM-69 ──────────────────────────────
+    # How often to ask each active backend whether it is still there. The circuit
+    # breaker only finds out from a failed client request, and the manager poll is
+    # 30s, so without this a replica that dies is discovered by a paying caller.
+    # 0 disables probing entirely.
+    backend_health_check_interval_s: int = 10
+
     # ── Backend Retry — memory/specs/007-rate-limiting-and-throughput.md ────────────
     # AC-17
     backend_retry_max: int = 2

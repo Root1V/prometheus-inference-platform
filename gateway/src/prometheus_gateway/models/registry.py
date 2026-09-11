@@ -71,6 +71,12 @@ class ModelResolution:
     # validation can happen before a replica is chosen.
     modality: str
     context_length: int
+    # RM-69: the catalog id shared by the group — what pricing, usage and the
+    # spend cap key off. Deliberately NOT `name`: a client addressing a replica
+    # by its own instance id would otherwise miss the price table entirely,
+    # which records the request at NULL cost *and* skips the budget reservation,
+    # so the same model would be free and uncapped under one of its names.
+    model_key: str = ""
     # Set when members disagree on something that makes the group unroutable
     # (see _resolve_group) — the caller turns this into a 400 rather than
     # silently serving from an arbitrary subset.
@@ -172,6 +178,7 @@ class ModelRegistry:
                 members=(),
                 modality=known[0].modality,
                 context_length=known[0].context_length,
+                model_key=known[0].model_id or name,
             )
         # Stable order so "which replica" is deterministic until RM-58 makes
         # it a real decision.
@@ -200,6 +207,7 @@ class ModelRegistry:
             modality=members[0].modality,
             context_length=min(m.context_length for m in members),
             mismatch=mismatch,
+            model_key=members[0].model_id or name,
         )
 
     def list_served_names(self) -> list[ModelResolution]:

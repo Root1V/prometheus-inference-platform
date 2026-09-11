@@ -187,8 +187,21 @@ def create_app(
             )
             await _manager_sync.start()
 
+        # RM-69: probe backends directly so a replica that dies between manager
+        # polls stops receiving traffic in seconds instead of being discovered
+        # by whichever client's request happens to fail first.
+        from .health_monitor import BackendHealthMonitor
+
+        _health_monitor = BackendHealthMonitor(
+            registry=registry,
+            interval_s=settings.backend_health_check_interval_s,
+        )
+        app.state.health_monitor = _health_monitor
+        await _health_monitor.start()
+
         yield
 
+        await _health_monitor.stop()
         if _manager_sync is not None:
             await _manager_sync.stop()
         await pool.aclose()

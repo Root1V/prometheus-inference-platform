@@ -2885,7 +2885,7 @@ diffs the migrated schema against the models, so a model edit without its migrat
 the suite instead of a deployment. The RM-60 `ALTER TABLE` stopgap survives only as the
 "lift a pre-Alembic database to the baseline" step and never grows again.
 
-## RM-69 — Replica failover, active health checks, and group-based pricing (todo)
+## RM-69 — Replica failover, active health checks, and group-based pricing (done)
 
 **Why**: today a second replica adds neither throughput nor fault tolerance. The circuit
 breaker is checked only against the deterministic pick, so one tripped instance 503s the
@@ -2904,6 +2904,26 @@ which also silently bypasses the monthly spend cap. Findings A-D of
   routes to the same model untariffed and uncapped (§7 D).
 - Out of scope: *choosing well* among healthy replicas — that's [[RM-72]]. This item only
   guarantees a healthy one is chosen.
+
+**Verified live**, which is the only way this one is worth believing: with two real replicas
+of the same model running, the replica the selector picks first was killed outright and the
+very next request was served by the other one with a 200 — the logs show `backend.failing_over`
+then `backend.failover_succeeded`. Before this, that request was a 503. A later request paid
+no failover cost at all, because `health_monitor.backend_unreachable` had already taken the
+dead replica out of the candidate list: the two mechanisms cover different windows rather than
+duplicating each other.
+
+Liveness deliberately means *the process answered*, not *answered 200*. sd.cpp serves image
+generation and replies 404 on `/health` (verified against the running sd-server), so a
+status-code check would have taken image generation down entirely.
+
+An open circuit is only taken through `allow_request()` while nothing usable has been found
+yet: that call acquires a distributed probe lock held for the whole recovery timeout, so
+spending it on a replica that won't be used would delay that replica's recovery purely
+because a sibling was healthy.
+
+Streaming gets the healthy-replica pick but not mid-stream failover — once response headers
+are sent there is nowhere to go, which is the existing AC-17c constraint, not a new one.
 
 ## RM-70 — Model/instance identity: immutable slug, opaque ids, per-model label (todo)
 

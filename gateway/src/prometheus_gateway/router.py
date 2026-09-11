@@ -15,7 +15,7 @@ import json
 import time
 from datetime import date as _date
 from datetime import datetime, timezone
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, NamedTuple
 
 import httpx
 import structlog
@@ -29,12 +29,14 @@ from .budget import (
     get_client_billing_settings_cached,
     parse_thresholds,
 )
-from .models.registry import ModelRegistry
+from .models.registry import ModelEntry, ModelRegistry
 from .models.schemas import ChatCompletionRequest, EmbeddingsRequest, ImageGenerationRequest
 from .notifications import send_budget_alert_email
 from .telemetry import get_logger, get_tracer, metrics_store
 
 if TYPE_CHECKING:
+    from collections.abc import Sequence
+
     from .models.backends import BackendPool
 
 logger = get_logger(__name__)
@@ -82,6 +84,120 @@ def _problem(
         },
         media_type="application/problem+json",
         headers=extra_headers or {},
+    )
+
+
+class _GroupHealth(NamedTuple):
+    usable: list["ModelEntry"]
+    #: backend id -> why it can't take a request, for the 503 body.
+    skipped: dict[str, str]
+    #: Earliest moment any skipped replica might come back, for Retry-After.
+    soonest_recovery_at: float | None
+
+
+async def _healthy_members(
+    pool: "BackendPool",
+    request: Request,
+    members: "Sequence[ModelEntry]",
+) -> _GroupHealth:
+    """Members that can take a request right now, in preference order — RM-69.
+
+    The circuit breaker used to be consulted *after* the replica was chosen, so
+    one tripped instance returned 503 for the whole model while its healthy
+    siblings sat idle: adding a replica bought no fault tolerance at all. The
+    check belongs here, across the group, before anything is picked.
+
+    Returns the usable members plus, for the rest, why they were skipped — the
+    503 has to be able to say what is actually wrong with each replica.
+
+    A closed circuit is a cheap read, but taking an *open* one through
+    `allow_request()` acquires a distributed probe lock held for the whole
+    recovery timeout. Spending that on a replica we then don't use would delay
+    its recovery just because a sibling happened to be healthy — so the probing
+    path is only entered while nothing usable has been found yet.
+    """
+    monitor = getattr(getattr(request.app, "state", None), "health_monitor", None)
+
+    usable: list[ModelEntry] = []
+    skipped: dict[str, str] = {}
+    recoveries: list[float] = []
+    for entry in members:
+        if monitor is not None and entry.backend_url and monitor.unreachable(entry.backend_url):
+            skipped[entry.id] = "unreachable"
+            continue
+
+        cb = pool.get_circuit_breaker(entry.id)
+        if cb is None:
+            usable.append(entry)
+            continue
+
+        try:
+            state = await cb.get_state()
+            if state.is_closed:
+                usable.append(entry)
+                continue
+            if usable:
+                # Healthy sibling already found — record it without spending
+                # the probe that would otherwise be wasted.
+                skipped[entry.id] = f"circuit {state.state}"
+            elif await cb.allow_request():
+                usable.append(entry)
+                continue
+            else:
+                skipped[entry.id] = f"circuit {state.state}"
+            if state.recovery_at:
+                recoveries.append(state.recovery_at)
+        except Exception as exc:
+            # A breaker that can't be read must not make a healthy backend
+            # unroutable — Redis being down is not the backend's fault.
+            logger.warning("circuit_breaker.check_error", backend_id=entry.id, error=str(exc))
+            usable.append(entry)
+
+    return _GroupHealth(usable, skipped, min(recoveries) if recoveries else None)
+
+
+def _candidates(members: "Sequence[ModelEntry]") -> list[tuple[str, str]]:
+    """(backend_id, origin) pairs for BackendPool.forward_with_failover."""
+    return [(m.id, m.backend_url) for m in members if m.backend_url]
+
+
+def _served_by(
+    members: "Sequence[ModelEntry]", served_id: str, fallback: "ModelEntry"
+) -> "ModelEntry":
+    """The member that actually answered, so metrics and the circuit breaker
+    below land on it rather than on the replica we merely tried first.
+    """
+    for member in members:
+        if member.id == served_id:
+            return member
+    return fallback
+
+
+def _no_replica_available(
+    request: Request,
+    model_name: str,
+    health: _GroupHealth,
+) -> JSONResponse:
+    """503 for a group where every replica is out — RM-69.
+
+    Names each replica and why, because "backend unavailable" on a model with
+    three replicas tells an operator nothing about which one to go look at.
+    """
+    detail = ", ".join(f"{bid} ({why})" for bid, why in sorted(health.skipped.items()))
+    headers = {}
+    if health.soonest_recovery_at:
+        headers["Retry-After"] = str(max(1, int(health.soonest_recovery_at - time.time())))
+        recovery_iso = datetime.fromtimestamp(
+            health.soonest_recovery_at, tz=timezone.utc
+        ).isoformat()
+        detail += f". Earliest recovery at {recovery_iso}"
+    return _problem(
+        request,
+        503,
+        "backend-unavailable",
+        "Backend Unavailable",
+        f"No replica of model {model_name!r} can take a request: {detail}.",
+        extra_headers=headers,
     )
 
 
@@ -700,43 +816,19 @@ def create_router(registry: ModelRegistry, pool: "BackendPool") -> APIRouter:
                     "Contact the platform operator.",
                 )
 
-            # RM-57: one member for an ordinary model, several for replicas.
-            # Deterministic pick for now — choosing well is RM-58.
-            entry = resolution.members[0]
+            # RM-69: AC-14 (007)'s circuit-breaker check, now across the whole
+            # group rather than on a replica already chosen — a single tripped
+            # instance used to 503 the model while its siblings sat idle.
+            health = await _healthy_members(pool, request, resolution.members)
+            if not health.usable:
+                inf_span.set_attribute("http.status_code", 503)
+                return _no_replica_available(request, body.model, health)
+
+            entry = health.usable[0]
             # resolve() only ever returns members that have a backend_url;
             # binding it states that invariant for the type checker.
             assert entry.backend_url is not None
             backend_url = entry.backend_url
-
-            # AC-14 (007): circuit breaker check — fast-fail if circuit is OPEN
-            cb = pool.get_circuit_breaker(entry.id)
-            if cb is not None:
-                try:
-                    cb_allowed = await cb.allow_request()
-                    if not cb_allowed:
-                        cb_state = await cb.get_state()
-                        retry_after = max(1, int((cb_state.recovery_at or 0) - time.time()))
-                        recovery_iso = (
-                            datetime.fromtimestamp(
-                                cb_state.recovery_at, tz=timezone.utc
-                            ).isoformat()
-                            if cb_state.recovery_at
-                            else None
-                        )
-                        inf_span.set_attribute("http.status_code", 503)
-                        return _problem(
-                            request,
-                            503,
-                            "backend-unavailable",
-                            "Backend Unavailable",
-                            f"Backend '{entry.id}' circuit is {cb_state.state}. "
-                            f"Recovery expected at {recovery_iso}.",
-                            extra_headers={"Retry-After": str(retry_after)},
-                        )
-                except Exception as exc:
-                    logger.warning(
-                        "circuit_breaker.check_error", backend_id=entry.id, error=str(exc)
-                    )
 
             # RM-60: hard spend-cap reserve, before forwarding. Completion-token
             # cost isn't known until generation finishes, so this reserves a
@@ -764,7 +856,7 @@ def create_router(registry: ModelRegistry, pool: "BackendPool") -> APIRouter:
                         else max(0, entry.context_length - estimated_input_tokens)
                     )
                     est_cost = pricing.get_pricing_table().estimate_cost_usd(
-                        resolution.name, estimated_input_tokens, worst_case_completion
+                        resolution.model_key, estimated_input_tokens, worst_case_completion
                     )
                     if est_cost is not None:
                         reservation = await BudgetTracker(budget_redis).reserve(
@@ -823,7 +915,7 @@ def create_router(registry: ModelRegistry, pool: "BackendPool") -> APIRouter:
                         pool,
                         entry.id,
                         trace_id,
-                        served_name=resolution.name,
+                        served_name=resolution.model_key,
                         budget_redis=budget_redis,
                         reservation=reservation,
                         alert_thresholds_percent=alert_thresholds_percent,
@@ -834,13 +926,15 @@ def create_router(registry: ModelRegistry, pool: "BackendPool") -> APIRouter:
                     try:
                         # AC-17: retry logic inside pool.forward()
                         # AC-8 (018): forward X-Trace-ID header to backend
-                        resp = await pool.forward(
-                            entry.id,
-                            client,
-                            target_url,
+                        # RM-69: and failover to the next healthy replica if
+                        # this one is gone rather than merely slow.
+                        resp, served_id = await pool.forward_with_failover(
+                            _candidates(health.usable),
+                            "/v1/chat/completions",
                             payload,
                             extra_headers={"X-Trace-ID": trace_id},
                         )
+                        entry = _served_by(health.usable, served_id, entry)
                         backend_latency_ms = int((time.monotonic() - backend_start) * 1000)
                     finally:
                         await metrics_store.dec_requests_active()
@@ -940,12 +1034,14 @@ def create_router(registry: ModelRegistry, pool: "BackendPool") -> APIRouter:
                     )
 
                     # RM-32: record persisted daily usage
-                    await _record_usage(claims, resolution.name, prompt_tokens, completion_tokens)
+                    await _record_usage(
+                        claims, resolution.model_key, prompt_tokens, completion_tokens
+                    )
 
                     # RM-60: settle the spend-cap reservation with the real cost
                     if reservation is not None and reservation.allowed and budget_redis is not None:
                         actual_cost = pricing.get_pricing_table().estimate_cost_usd(
-                            resolution.name, prompt_tokens, completion_tokens
+                            resolution.model_key, prompt_tokens, completion_tokens
                         )
                         if actual_cost is not None:
                             newly_crossed = await BudgetTracker(budget_redis).settle(
@@ -1109,30 +1205,15 @@ def create_router(registry: ModelRegistry, pool: "BackendPool") -> APIRouter:
                 "Contact the platform operator.",
             )
 
-        # RM-57: one member for an ordinary model, several for replicas.
-        # Deterministic pick for now — choosing well is RM-58.
-        entry = resolution.members[0]
+        # RM-69: circuit-breaker check across the group, before picking.
+        health = await _healthy_members(pool, request, resolution.members)
+        if not health.usable:
+            return _no_replica_available(request, body.model, health)
+
+        entry = health.usable[0]
         # resolve() only ever returns members that have a backend_url;
         # binding it states that invariant for the type checker.
         assert entry.backend_url is not None
-        backend_url = entry.backend_url
-
-        cb = pool.get_circuit_breaker(entry.id)
-        if cb is not None:
-            try:
-                if not await cb.allow_request():
-                    cb_state = await cb.get_state()
-                    retry_after = max(1, int((cb_state.recovery_at or 0) - time.time()))
-                    return _problem(
-                        request,
-                        503,
-                        "backend-unavailable",
-                        "Backend Unavailable",
-                        f"Backend '{entry.id}' circuit is {cb_state.state}.",
-                        extra_headers={"Retry-After": str(retry_after)},
-                    )
-            except Exception as exc:
-                logger.warning("circuit_breaker.check_error", backend_id=entry.id, error=str(exc))
 
         # RM-60: hard spend-cap reserve, before forwarding — mirrors chat
         # completions' hook below. Worst-case estimate priced as prompt-only
@@ -1154,7 +1235,7 @@ def create_router(registry: ModelRegistry, pool: "BackendPool") -> APIRouter:
                 )
                 estimated_tokens = _estimate_text_tokens(body.input)
                 est_cost = pricing.get_pricing_table().estimate_cost_usd(
-                    resolution.name, estimated_tokens, 0
+                    resolution.model_key, estimated_tokens, 0
                 )
                 if est_cost is not None:
                     reservation = await BudgetTracker(budget_redis).reserve(
@@ -1181,7 +1262,6 @@ def create_router(registry: ModelRegistry, pool: "BackendPool") -> APIRouter:
                             "Contact the platform operator to raise the cap.",
                         )
 
-        target_url = f"{entry.backend_url.rstrip('/')}/v1/embeddings"
         trace_id = getattr(getattr(request, "state", None), "trace_id", None)
         if trace_id is None:
             trace_id = structlog.contextvars.get_contextvars().get("trace_id", "none")
@@ -1199,15 +1279,16 @@ def create_router(registry: ModelRegistry, pool: "BackendPool") -> APIRouter:
         # single-shot embedding call anyway — no streaming, no autoregressive
         # token generation).
         backend_start = time.monotonic()
-        client = pool.get(backend_url)
         try:
-            resp = await pool.forward(
-                entry.id,
-                client,
-                target_url,
+            # RM-69: failover to the next healthy replica rather than 503ing
+            # because the one we happened to pick first is gone.
+            resp, served_id = await pool.forward_with_failover(
+                _candidates(health.usable),
+                "/v1/embeddings",
                 body.to_llama_payload(),
                 extra_headers={"X-Trace-ID": trace_id},
             )
+            entry = _served_by(health.usable, served_id, entry)
         except (httpx.ConnectError, httpx.ConnectTimeout, httpx.RemoteProtocolError) as exc:
             logger.error(
                 "embeddings.unreachable",
@@ -1262,11 +1343,11 @@ def create_router(registry: ModelRegistry, pool: "BackendPool") -> APIRouter:
         # RM-60: embeddings never called _record_usage() at all — usage/cost
         # accounting was blind to this entire request type.
         await _record_usage(
-            claims, resolution.name, embeddings_prompt_tokens, 0, request_kind="embedding"
+            claims, resolution.model_key, embeddings_prompt_tokens, 0, request_kind="embedding"
         )
         if budget_redis is not None and reservation is not None and reservation.allowed:
             actual_cost = pricing.get_pricing_table().estimate_cost_usd(
-                resolution.name, embeddings_prompt_tokens, 0
+                resolution.model_key, embeddings_prompt_tokens, 0
             )
             if actual_cost is not None:
                 newly_crossed = await BudgetTracker(budget_redis).settle(
@@ -1375,30 +1456,15 @@ def create_router(registry: ModelRegistry, pool: "BackendPool") -> APIRouter:
                 "Contact the platform operator.",
             )
 
-        # RM-57: one member for an ordinary model, several for replicas.
-        # Deterministic pick for now — choosing well is RM-58.
-        entry = resolution.members[0]
+        # RM-69: circuit-breaker check across the group, before picking.
+        health = await _healthy_members(pool, request, resolution.members)
+        if not health.usable:
+            return _no_replica_available(request, body.model, health)
+
+        entry = health.usable[0]
         # resolve() only ever returns members that have a backend_url;
         # binding it states that invariant for the type checker.
         assert entry.backend_url is not None
-        backend_url = entry.backend_url
-
-        cb = pool.get_circuit_breaker(entry.id)
-        if cb is not None:
-            try:
-                if not await cb.allow_request():
-                    cb_state = await cb.get_state()
-                    retry_after = max(1, int((cb_state.recovery_at or 0) - time.time()))
-                    return _problem(
-                        request,
-                        503,
-                        "backend-unavailable",
-                        "Backend Unavailable",
-                        f"Backend '{entry.id}' circuit is {cb_state.state}.",
-                        extra_headers={"Retry-After": str(retry_after)},
-                    )
-            except Exception as exc:
-                logger.warning("circuit_breaker.check_error", backend_id=entry.id, error=str(exc))
 
         # RM-60: hard spend-cap reserve, before forwarding — worst-case
         # estimate priced per requested image (`n`, default 1).
@@ -1445,7 +1511,6 @@ def create_router(registry: ModelRegistry, pool: "BackendPool") -> APIRouter:
                             "Contact the platform operator to raise the cap.",
                         )
 
-        target_url = f"{entry.backend_url.rstrip('/')}/v1/images/generations"
         trace_id = getattr(getattr(request, "state", None), "trace_id", None)
         if trace_id is None:
             trace_id = structlog.contextvars.get_contextvars().get("trace_id", "none")
@@ -1462,15 +1527,15 @@ def create_router(registry: ModelRegistry, pool: "BackendPool") -> APIRouter:
         # in GET /metrics's backends map. No token count and no streaming for
         # a single blocking image-generation call, so only latency applies.
         backend_start = time.monotonic()
-        client = pool.get(backend_url)
         try:
-            resp = await pool.forward(
-                entry.id,
-                client,
-                target_url,
+            # RM-69: failover across replicas, same as the other two routes.
+            resp, served_id = await pool.forward_with_failover(
+                _candidates(health.usable),
+                "/v1/images/generations",
                 body.to_backend_payload(),
                 extra_headers={"X-Trace-ID": trace_id},
             )
+            entry = _served_by(health.usable, served_id, entry)
         except (httpx.ConnectError, httpx.ConnectTimeout, httpx.RemoteProtocolError) as exc:
             logger.error(
                 "images_generations.unreachable",
@@ -1526,11 +1591,11 @@ def create_router(registry: ModelRegistry, pool: "BackendPool") -> APIRouter:
         # RM-60: images/generations never called _record_usage() at all —
         # usage/cost accounting was blind to this entire request type.
         await _record_usage(
-            claims, resolution.name, 0, 0, request_kind="image", image_count=num_images
+            claims, resolution.model_key, 0, 0, request_kind="image", image_count=num_images
         )
         if budget_redis is not None and reservation is not None and reservation.allowed:
             actual_cost = pricing.get_pricing_table().estimate_image_cost_usd(
-                resolution.name, num_images
+                resolution.model_key, num_images
             )
             if actual_cost is not None:
                 newly_crossed = await BudgetTracker(budget_redis).settle(
