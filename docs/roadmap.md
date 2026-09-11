@@ -2534,7 +2534,12 @@ real instance of a model, watched the gateway group them on its own (`served_by=
 both the logical name and an individual replica, and confirmed per-instance metrics counted 1
 request each. Torn down afterwards; the registry is back to its original state.
 
-## RM-58 — Gateway: intelligent load balancing across instances of the same model (todo)
+## RM-58 — Gateway: intelligent load balancing across instances of the same model (superseded by RM-72)
+
+**Superseded**: absorbed by [[RM-72]]. The audit in `docs/model-identity-proposal.md`
+found that balancing can't be designed independently of the identity model — and that
+the circuit-breaker/failover half of this item is urgent enough to ship on its own as
+[[RM-69]], ahead of the identity work. The original framing is kept below for context.
 
 **Why**: once [[RM-57]] lets several instances share a routable name, naively picking "the
 first one" (or requiring the client to pick a specific instance) wastes the whole point of
@@ -2857,6 +2862,106 @@ In the browser: the form showed the saved values beside the `.env` ones, and Res
 Not verified end-to-end: an actually-open circuit adopting a new timeout — inducing one would
 have meant killing a running model server, so that rests on the read-time `recovery_at`
 derivation above plus the live-object test.
+
+## RM-68 — Alembic migrations for the gateway database (todo)
+
+**Why**: `create_tables()` is a bare `Base.metadata.create_all`, which only ever creates
+*missing tables* and never alters existing ones. [[RM-60]] already needed a hand-rolled,
+schema-inspecting `ALTER TABLE` to add one column, and [[RM-70]] changes several tables that
+hold real usage and billing data — doing that by hand again is how data gets lost.
+
+**Scope**:
+- Adopt Alembic against the gateway's own DB (`gateway/src/prometheus_gateway/db.py`).
+- Stamp the existing schema as the baseline revision so current deployments don't re-create
+  anything, and fold RM-60's manual `ALTER TABLE` stopgap into a real revision.
+- Decide and document how migrations run (explicit command vs. on startup) — they must be
+  idempotent either way, since SQLite and Postgres are both supported.
+- Out of scope: the manager's registry DB, which uses raw SQL and its own schema handling.
+
+## RM-69 — Replica failover, active health checks, and group-based pricing (todo)
+
+**Why**: today a second replica adds neither throughput nor fault tolerance. The circuit
+breaker is checked only against the deterministic pick, so one tripped instance 503s the
+model while a healthy replica idles; retries re-hit the same dead instance; a dead replica
+stays listed for up to 30s; and routing by instance id misses the price table entirely,
+which also silently bypasses the monthly spend cap. Findings A-D of
+`docs/model-identity-proposal.md` §7.
+
+**Scope**:
+- Pick among `resolution.members` skipping circuit-open instances; 503 only when *all* are
+  open (§7 A).
+- Retry/failover to a different replica instead of the same URL (§7 B).
+- Active health checks from the gateway so a dead replica leaves the group in seconds rather
+  than one 30s poll (§7 C, decision #9).
+- Resolve pricing against the group's model rather than the raw client string, so no name
+  routes to the same model untariffed and uncapped (§7 D).
+- Out of scope: *choosing well* among healthy replicas — that's [[RM-72]]. This item only
+  guarantees a healthy one is chosen.
+
+## RM-70 — Model/instance identity: immutable slug, opaque ids, per-model label (todo)
+
+**Why**: one string is simultaneously the catalog id, the serving process's id, the name
+clients send, and the key for pricing, scopes and usage rows. [[RM-57]] separated routing
+from instance identity but reused `models.id` as the group name, so the collision survived —
+which is why instance suffixes leak into the scope picker. Full design and industry
+research: `docs/model-identity-proposal.md`.
+
+**Scope**:
+- Models gain an opaque `id`, an immutable public `slug` (what clients send) and a mutable
+  display `name`; instances gain an opaque `id` and a `label` auto-incremented per model.
+- `modality` moves to the catalog (it's a property of the weights); `context_length` stays
+  per instance, resolution keeps using the group `min()` (decision #5).
+- Old model and instance ids kept as aliases so existing tokens and SDK calls keep working.
+- Existing `model:<id>` grants are **reissued**, not silently remapped (decision #4).
+- Direct instance addressing moves to an `X-Prometheus-Instance` header, out of the `model`
+  field (decision #2).
+- Depends on [[RM-68]]. Out of scope: OpenAI-style dated snapshots — the slug design leaves
+  room, building it now would be speculative.
+
+## RM-71 — Replica UX: "Add instance" flow and a model-level scope picker (todo)
+
+**Why**: creating a replica today means re-entering every field of a full registration form,
+and the scope picker lists individual instances, so granting access exposes the `-1`/`-2`
+suffixes instead of one model.
+
+**Scope**:
+- "Add instance" from a model row asking only what genuinely differs between replicas —
+  node, engine, port — inheriting the rest from the catalog, with the label auto-incremented.
+- The full registration form stays for registering a genuinely new model.
+- Scope picker lists models with a replica-count pill; instances never appear.
+- Show observed capacity (`/slots` across healthy instances) beside the configured rate
+  limit, with a warning when they diverge (decision #8).
+- Depends on [[RM-70]].
+
+## RM-72 — Gateway: intelligent load balancing across replicas (todo)
+
+**Why**: absorbs [[RM-58]]. Once [[RM-69]] guarantees a *healthy* replica is picked, the
+remaining question is picking the *best* one.
+
+**Scope**:
+- Least-in-flight first — counted by the gateway itself, so it works for sd.cpp too, which
+  exposes no metrics endpoint at all (verified live).
+- Then free-slot and queue-aware, from llama.cpp's `llamacpp:requests_deferred` and `/slots`
+  (`is_processing`, `n_ctx` vs `n_prompt_tokens` — real context saturation, verified live).
+- Optional session affinity for multi-turn prefix-cache reuse. It *conflicts* with
+  least-loaded by design, so the strategy is configurable per model rather than global.
+- Depends on [[RM-70]]. Out of scope: cross-node scheduling beyond picking among instances
+  the gateway already aggregates.
+
+## RM-73 — Billing traceability per replica + per-model metrics rollup (todo)
+
+**Why**: usage rows record the name the client sent and nothing about which replica served,
+so a billing dispute can't be traced to a machine. And `MetricsStore` indexes only by
+instance, so with replicas the dashboard shows N loose rows and no way to see a model's
+throughput — the only unit a consumer cares about.
+
+**Scope**:
+- `usage_events` records the opaque model id (survives renames), the slug (what appears on
+  the invoice) and the instance that served.
+- Per-model aggregate in `MetricsStore` alongside the existing per-instance entries.
+- Fix the Overview's "circuits open — of N models" label, which counts backends and so
+  reports "2 models" for two replicas of one.
+- Depends on [[RM-70]].
 
 Append a new row to the table with the next `RM-NN` id and a new `## RM-NN — ...` section
 below, following the same shape (Why / Scope). Re-sort the table if the new item's
