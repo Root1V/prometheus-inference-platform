@@ -44,8 +44,12 @@ class BackendHealthMonitor:
     routable immediately rather than being treated as dead.
     """
 
-    def __init__(self, registry: object, interval_s: int = 10) -> None:
+    def __init__(self, registry: object, interval_s: int = 10, pool: object = None) -> None:
         self._registry = registry
+        # RM-72: where measured capacity goes, so routing can weigh a backend's
+        # load against what it can actually take. Optional — the monitor is
+        # useful on its own, and tests build it without a pool.
+        self._pool = pool
         self._interval_s = interval_s
         self._unreachable: set[str] = set()
         # RM-71: concurrent slots each backend reports, for the capacity figure
@@ -113,7 +117,8 @@ class BackendHealthMonitor:
             return
         # Sorted list, not the set: gather() results come back positionally, so
         # the sequence probed and the sequence zipped must be the same object.
-        urls = sorted({m.backend_url for m in list_active() if m.backend_url})
+        entries = [m for m in list_active() if m.backend_url]
+        urls = sorted({m.backend_url for m in entries})
 
         results = await asyncio.gather(*(self._probe(url) for url in urls), return_exceptions=True)
         now_unreachable = {url for url, alive in zip(urls, results) if alive is not True}
@@ -125,6 +130,13 @@ class BackendHealthMonitor:
         for url in sorted(recovered):
             logger.info("health_monitor.backend_recovered", backend_url=url)
         self._unreachable = now_unreachable
+
+        # RM-72: hand the measured capacity to the pool, keyed by backend id
+        # rather than url — that's what routing and the circuit breaker use.
+        if self._pool is not None:
+            for entry in entries:
+                slots = self._slots.get(str(entry.backend_url).rstrip("/"))
+                self._pool.set_slot_capacity(entry.id, slots or 0)  # type: ignore[attr-defined]
 
     async def _probe(self, backend_url: str) -> bool:
         assert self._client is not None

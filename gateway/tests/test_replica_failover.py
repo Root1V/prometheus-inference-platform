@@ -87,6 +87,9 @@ class _StubPool:
     def in_flight(self, backend_id: str) -> int:
         return self._in_flight.get(backend_id, 0)
 
+    def load_ratio(self, backend_id: str) -> float:
+        return float(self._in_flight.get(backend_id, 0))
+
 
 def _request(monitor: object = None):
     return SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace(health_monitor=monitor)))
@@ -385,3 +388,37 @@ async def test_an_unreachable_backend_stops_counting_toward_capacity():
     await monitor.probe_once()
     assert monitor.capacity() == {"slots": 0, "reporting": 0}
     await monitor.stop()
+
+
+async def test_capacity_is_weighed_against_load():
+    """Raw counts treat every backend as identical, so a laptop serving one
+    request at a time gets the same share as a box serving four. Least loaded
+    has to mean least loaded *relative to what it can take*."""
+    from prometheus_gateway.models.backends import BackendPool
+
+    pool = BackendPool()
+    pool.set_slot_capacity("big", 8)
+    pool.set_slot_capacity("small", 1)
+    for _ in range(4):
+        pool.acquire("big")
+
+    # 4/8 busy vs 0/1 busy — the small one is idle and wins.
+    assert pool.load_ratio("big") == 0.5
+    assert pool.load_ratio("small") == 0.0
+
+    pool.acquire("small")
+    # 4/8 vs 1/1 — the small one is now full, so the big one wins despite
+    # handling four times as many requests.
+    assert pool.load_ratio("big") < pool.load_ratio("small")
+
+
+def test_a_backend_reporting_no_capacity_falls_back_to_raw_counts():
+    """sd.cpp reports no slots at all; it must still be balanced, just without
+    the normalisation."""
+    from prometheus_gateway.models.backends import BackendPool
+
+    pool = BackendPool()
+    pool.acquire("sd")
+    pool.acquire("sd")
+
+    assert pool.load_ratio("sd") == 2.0

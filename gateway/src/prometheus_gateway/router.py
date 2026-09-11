@@ -175,7 +175,7 @@ async def _healthy_members(
     leaves a single-instance model behaving exactly as it did before.
     """
     monitor = getattr(getattr(request.app, "state", None), "health_monitor", None)
-    members = sorted(members, key=lambda m: pool.in_flight(m.id))
+    members = sorted(members, key=lambda m: pool.load_ratio(m.id))
 
     usable: list[ModelEntry] = []
     skipped: dict[str, str] = {}

@@ -195,6 +195,7 @@ def create_app(
         _health_monitor = BackendHealthMonitor(
             registry=registry,
             interval_s=settings.backend_health_check_interval_s,
+            pool=pool,
         )
         app.state.health_monitor = _health_monitor
         await _health_monitor.start()

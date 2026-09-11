@@ -63,6 +63,9 @@ class BackendPool:
         self._clients: dict[str, httpx.AsyncClient] = {}
         # RM-72: per-backend in-flight count, the signal least-loaded routing uses.
         self._in_flight: dict[str, int] = {}
+        # RM-72: how many requests each backend can genuinely work on at once,
+        # pushed in by BackendHealthMonitor. Absent for engines that don't say.
+        self._slot_capacity: dict[str, int] = {}
         self._circuit_breakers: dict[str, CircuitBreaker] = {}
         self._redis = redis_client
         self._failure_threshold = failure_threshold
@@ -74,6 +77,31 @@ class BackendPool:
     def in_flight(self, backend_id: str) -> int:
         """Requests this backend is handling right now — RM-72."""
         return self._in_flight.get(backend_id, 0)
+
+    def set_slot_capacity(self, backend_id: str, slots: int) -> None:
+        """Record how many concurrent requests *backend_id* can handle — RM-72."""
+        if slots > 0:
+            self._slot_capacity[backend_id] = slots
+        else:
+            self._slot_capacity.pop(backend_id, None)
+
+    def load_ratio(self, backend_id: str) -> float:
+        """How full this backend is, 0.0 upward — RM-72.
+
+        Raw in-flight counts treat every backend as identical, so a laptop
+        serving one request at a time and a workstation serving four get the
+        same share. Dividing by the slots the engine reports makes "least
+        loaded" mean least loaded *relative to what it can take*, which is the
+        thing that matters once nodes differ — and differing nodes are the
+        whole point of running more than one.
+
+        A backend that reports no capacity (sd.cpp reports none at all) falls
+        back to its raw count, which is the old behaviour for exactly the
+        backends that can't do better.
+        """
+        active = self._in_flight.get(backend_id, 0)
+        slots = self._slot_capacity.get(backend_id)
+        return active / slots if slots else float(active)
 
     def acquire(self, backend_id: str) -> None:
         """Claim a slot on *backend_id*. Pair with release()."""
@@ -253,7 +281,7 @@ class BackendPool:
         # Confirmed live: six concurrent requests to a two-replica model all
         # landed on the same instance. Sorting and tracking with no await
         # between them is what makes the count mean something.
-        ordered = sorted(candidates, key=lambda c: self.in_flight(c[0]))
+        ordered = sorted(candidates, key=lambda c: self.load_ratio(c[0]))
 
         last_exc: Exception | None = None
         for index, (backend_id, origin) in enumerate(ordered):
