@@ -3087,6 +3087,21 @@ untouched. The stray nested file was empty (a `models` table with 0 rows, no `in
 table) and confirmed via `lsof` not to be open by the running manager, which holds the real
 `runtime/manager/registry.db`; deleted, with the manager left healthy (29 models, 10
 instances, `/health` 200).
+## RM-76 — A manually registered model can't be archived (todo)
+
+**Why**: found while verifying [[RM-74]]. `DELETE /v1/models/{id}/downloaded` returns 400
+`not-downloaded` for anything that didn't come through the download flow, and
+`DELETE /v1/backends/{id}` only ever removed an instance — so a model registered by hand has
+no path to `archive_catalog()` at all. Pre-existing, but it matters more now: archiving is
+the mechanism that keeps a published slug from being handed to a different model.
+
+**Scope**:
+- A way to retire a catalog entry that doesn't depend on there being a file to delete.
+- Decide whether that's a new endpoint or a flag on the existing one — the current endpoint
+  conflates "reclaim the disk" with "retire the model", which is why the gap exists.
+- Out of scope: changing what `DELETE /v1/backends/{id}` does. Removing an instance and
+  retiring a model are different acts and should stay different calls.
+
 Append a new row to the table with the next `RM-NN` id and a new `## RM-NN — ...` section
 below, following the same shape (Why / Scope). Re-sort the table if the new item's
 priority isn't "last."
