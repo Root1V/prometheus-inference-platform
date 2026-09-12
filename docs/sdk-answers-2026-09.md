@@ -45,9 +45,8 @@ every internal attempt failed and nothing was billed. What you cannot make safe 
 retry after *your* client timed out: the gateway may still have been generating, and your
 retry would be a second billable generation.
 
-**RM-78 is open to close exactly that**: an `Idempotency-Key` header, so replaying a request
-returns the first result instead of generating again. Until it lands, a retry after your own
-timeout is the one case where you should assume you will be billed twice.
+**That case is now closed** — see §D. Send an `Idempotency-Key` and a replay returns the first
+result instead of generating again.
 
 ### A2 · Are the 3 internal attempts per instance or shared across instances?
 
@@ -204,10 +203,50 @@ unambiguous and doesn't need a catalog lookup to interpret.
 | Response `model` now names the model, not the replica — all endpoints, all chunks | **fixed, live** |
 | An alias request is answered with the canonical slug | **fixed, live** |
 | `context_length: null` for image models | **fixed, live — contract change** |
-| Idempotency keys, so *your* retry doesn't regenerate (A1) | **RM-78, in progress** |
+| `Idempotency-Key`, so *your* retry doesn't regenerate (A1) | **shipped — see §D** |
 | `family: ""` on two catalog entries | data to fill in, not a code change |
 
-Nothing else in `sdk-changes-2026-09.md` changed. **You can resume the block A work**: A2, A3,
-A5 and A6 confirm the behaviour you had assumed, and A1 turns out not to block you at all —
-our failover never bills you twice. The one case to leave alone until RM-78 lands is retrying
-after *your own* timeout.
+Nothing else in `sdk-changes-2026-09.md` changed. **Block A is fully unblocked**: A2, A3, A5
+and A6 confirm the behaviour you had assumed, A1 turns out never to have billed you twice, and
+the one case that did — retrying after your own timeout — is what §D closes.
+
+---
+
+## D · `Idempotency-Key`
+
+Send the header on `/v1/chat/completions` (non-streaming), `/v1/embeddings` or
+`/v1/images/generations`:
+
+```http
+POST /v1/chat/completions
+Idempotency-Key: 4f3a1c88-2b6e-4f2a-9c31-7e0d5a1b9f42
+```
+
+A replay returns the stored result, marked `Idempotent-Replay: true`, and **does not reach the
+model, record usage, or count against a spend cap** — that is the point.
+
+| | |
+|---|---|
+| Window | 24 hours, as on OpenAI and Anthropic |
+| Scope | Per client. Another client's identical key never answers yours |
+| Key length | Up to 255 characters |
+| Without the header | Nothing changes — deduplication is opt-in |
+
+Three cases return **409 `idempotency-conflict`**, each with a `detail` saying which:
+
+- **The same key with a different request body.** A key identifies one request; answering it
+  with the first result would be a wrong answer, not a duplicate one. Use a fresh key per
+  logical request.
+- **The first request is still running.** Two concurrent retries would generate twice. Wait
+  for the first to finish, then retry.
+- **The original succeeded but its response was too large to retain** (over 1 MiB — realistic
+  only for multi-image generations). The key is still recorded, so this tells you the original
+  worked: do not retry it. We considered silently regenerating instead and decided you would
+  rather be told.
+
+**A failed request hands its key back.** If the request errored, nothing is stored and the same
+key is free — retrying with it is exactly right.
+
+**Streaming is not covered.** Replaying a stream means storing every chunk, and neither OpenAI
+nor Anthropic documents that semantics clearly. A key on a streaming request is ignored rather
+than refused; retrying a stream remains a new generation.
