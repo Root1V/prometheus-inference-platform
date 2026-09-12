@@ -18,12 +18,13 @@ from __future__ import annotations
 import asyncio
 from typing import Annotated, Any
 
-from fastapi import APIRouter, Depends, HTTPException, Request, Response
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from opentelemetry.trace import SpanKind
 from prometheus_manager_core.config import ManagerConfig
 from prometheus_manager_core.lifecycle import (
     LifecycleError,
     deregister_instance,
+    deregister_model,
     restart_instance,
     start_instance,
     stop_instance,
@@ -272,6 +273,59 @@ async def list_archived_models(
     """
     registry: Registry = request.app.state.registry
     return {"archived": [c.to_dict() for c in registry.list_archived()]}
+
+
+@router.delete("/v1/models/{model_id}", tags=["models"], status_code=204)
+async def retire_model(
+    model_id: str,
+    request: Request,
+    _claims: Annotated[Claims, Depends(require_backend_registry_write)],
+    confirm: Annotated[
+        bool,
+        Query(
+            description="Required when any instance of this model is running — "
+            "otherwise a 400 lists them instead of stopping them silently."
+        ),
+    ] = False,
+) -> Response:
+    """Retire a model: stop and remove its instances, keep its name — RM-76.
+
+    Separate from `DELETE /v1/models/{id}/downloaded` because that endpoint
+    conflates two different acts. It means "reclaim the disk", so it refuses
+    anything not downloaded through that flow — which left a hand-registered
+    model with no way to be retired at all. That gap mattered once archiving
+    became what keeps a published slug from being handed to a different model
+    ([[RM-74]]).
+
+    This touches no files. The catalog row is archived rather than deleted, so
+    the model's name stays reserved and its metadata stays answerable for usage
+    already billed under it; `POST /v1/models/{id}/restore` undoes it.
+    """
+    with _tracer.start_as_current_span("model.retire", kind=SpanKind.INTERNAL) as span:
+        span.set_attribute("model_id", model_id)
+        registry: Registry = request.app.state.registry
+        config: ManagerConfig = request.app.state.config
+        pid_dir = request.app.state.pid_dir
+
+        if registry.get_catalog(model_id) is None:
+            span.set_attribute("http.status_code", 404)
+            raise _problem(404, "not-found", "Not Found", f"Model {model_id!r} not registered.")
+
+        instance_ids = {e.id for e in registry.entries if e.model_id == model_id}
+        live = [p for p in await asyncio.to_thread(scan, pid_dir, instance_ids) if p.model_id]
+        if live and not confirm:
+            span.set_attribute("http.status_code", 400)
+            raise _problem(
+                400,
+                "confirmation-required",
+                "Confirmation Required",
+                f"{model_id!r} has running instances {sorted(p.model_id for p in live)} — "
+                "pass confirm=true to stop and remove them along with the model.",
+            )
+
+        await asyncio.to_thread(deregister_model, model_id, config, registry)
+        span.set_attribute("http.status_code", 204)
+        return Response(status_code=204)
 
 
 @router.post("/v1/models/{model_id}/restore", tags=["models"])

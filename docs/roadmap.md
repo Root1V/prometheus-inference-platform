@@ -3087,7 +3087,7 @@ untouched. The stray nested file was empty (a `models` table with 0 rows, no `in
 table) and confirmed via `lsof` not to be open by the running manager, which holds the real
 `runtime/manager/registry.db`; deleted, with the manager left healthy (29 models, 10
 instances, `/health` 200).
-## RM-76 — A manually registered model can't be archived (todo)
+## RM-76 — A manually registered model can't be archived (done)
 
 **Why**: found while verifying [[RM-74]]. `DELETE /v1/models/{id}/downloaded` returns 400
 `not-downloaded` for anything that didn't come through the download flow, and
@@ -3101,6 +3101,15 @@ the mechanism that keeps a published slug from being handed to a different model
   conflates "reclaim the disk" with "retire the model", which is why the gap exists.
 - Out of scope: changing what `DELETE /v1/backends/{id}` does. Removing an instance and
   retiring a model are different acts and should stay different calls.
+
+**Resolved by separating the two acts.** `DELETE /v1/models/{id}` retires a model — stops and
+removes its instances, archives the catalog row, touches no files, and works regardless of how
+the model was registered. `DELETE /v1/models/{id}/downloaded` keeps its old meaning, reclaiming
+the disk, and now says in its own docstring which of the two a caller wants.
+
+It lives beside `restore` in control.py rather than with the download endpoints: archive and
+restore are a pair, and control's router is registered first, so there is no chance of
+discovery's `/v1/models/{model_id}/...` patterns shadowing it.
 
 ## RM-77 — fix: the response body named the replica; `context_length: 0` was ambiguous (done)
 

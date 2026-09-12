@@ -608,11 +608,11 @@ async def delete_downloaded_model(
     """Delete a downloaded model's on-disk file(s) and its whole catalog
     entry — cascading to stop and remove every instance of it first (RM-51).
 
-    Only applies to entries downloaded through this flow (downloaded=True) —
-    a manually-registered local-path entry (path typed by hand, never
-    downloaded here) is untouched by this endpoint; use the regular
-    DELETE /v1/backends/{id} to just deregister a single instance without
-    touching any file or the catalog entry.
+    Only applies to entries downloaded through this flow (downloaded=True),
+    because this endpoint is about reclaiming the disk. To retire a model
+    without deleting files — including a hand-registered one, which this
+    endpoint refuses — use DELETE /v1/models/{id} (RM-76). To remove a single
+    instance and leave the model alone, DELETE /v1/backends/{id}.
 
     RM-51: previously refused (409) outright whenever any instance was live,
     requiring the operator to stop it manually first. Now cascades

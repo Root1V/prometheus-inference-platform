@@ -718,3 +718,75 @@ class TestModelIdentity:
             _clear_override()
         assert resp.status_code == 201
         assert resp.json()["id"] == "my-own-name"
+
+
+class TestRetireModel:
+    """RM-76: retiring a model is not the same act as reclaiming its disk."""
+
+    def test_a_hand_registered_model_can_be_retired(self, tmp_path: Path):
+        """The gap this closes: DELETE /v1/models/{id}/downloaded refuses
+        anything that didn't come through the download flow, so a model
+        registered by hand had no path to being retired at all — and archiving
+        is what keeps its published name from being reused."""
+        client = _authed(_make_client(tmp_path))
+        try:
+            client.post(
+                "/v1/backends",
+                json={"id": "hand-made", "port": 8155, "path": "/m/h.gguf", "slug": "hand-made"},
+                headers={"Authorization": "Bearer dummy"},
+            )
+            refused = client.delete(
+                "/v1/models/hand-made/downloaded", headers={"Authorization": "Bearer dummy"}
+            )
+            retired = client.delete(
+                "/v1/models/hand-made", headers={"Authorization": "Bearer dummy"}
+            )
+            registry = app.state.registry
+            archived = [c.id for c in registry.list_archived()]
+        finally:
+            _clear_override()
+        assert refused.status_code == 400  # not downloaded — nothing on disk
+        assert retired.status_code == 204
+        assert registry.get_catalog("hand-made") is None
+        assert archived == ["hand-made"]
+
+    def test_its_name_stays_reserved(self, tmp_path: Path):
+        client = _authed(_make_client(tmp_path))
+        try:
+            client.post(
+                "/v1/backends",
+                json={"id": "retired-one", "port": 8156, "path": "/m/r.gguf", "slug": "taken"},
+                headers={"Authorization": "Bearer dummy"},
+            )
+            client.delete("/v1/models/retired-one", headers={"Authorization": "Bearer dummy"})
+            resp = client.post(
+                "/v1/backends",
+                json={"id": "another", "port": 8157, "path": "/m/a.gguf", "slug": "taken"},
+                headers={"Authorization": "Bearer dummy"},
+            )
+        finally:
+            _clear_override()
+        assert resp.status_code == 400
+
+    def test_retiring_an_unknown_model_is_404(self, tmp_path: Path):
+        client = _authed(_make_client(tmp_path))
+        try:
+            resp = client.delete("/v1/models/nope", headers={"Authorization": "Bearer dummy"})
+        finally:
+            _clear_override()
+        assert resp.status_code == 404
+
+    def test_restore_undoes_it(self, tmp_path: Path):
+        client = _authed(_make_client(tmp_path))
+        try:
+            client.post(
+                "/v1/backends",
+                json={"id": "oops", "port": 8158, "path": "/m/o.gguf", "slug": "oops"},
+                headers={"Authorization": "Bearer dummy"},
+            )
+            client.delete("/v1/models/oops", headers={"Authorization": "Bearer dummy"})
+            resp = client.post("/v1/models/oops/restore", headers={"Authorization": "Bearer dummy"})
+        finally:
+            _clear_override()
+        assert resp.status_code == 200
+        assert app.state.registry.get_catalog("oops") is not None
