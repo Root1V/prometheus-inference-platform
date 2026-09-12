@@ -22,7 +22,7 @@ import structlog
 from fastapi import APIRouter, Request, Response
 from fastapi.responses import JSONResponse, StreamingResponse
 
-from . import db, pricing
+from . import db, idempotency, pricing
 from .budget import (
     BudgetReservation,
     BudgetTracker,
@@ -213,6 +213,42 @@ async def _healthy_members(
             usable.append(entry)
 
     return _GroupHealth(usable, skipped, min(recoveries) if recoveries else None)
+
+
+async def _begin_idempotent(
+    request: Request, claims: Any, path: str, payload: Any
+) -> JSONResponse | None:
+    """Honour an Idempotency-Key header — RM-78.
+
+    A returned response means stop: either the stored result, replayed, or a
+    409 explaining why the key can't be honoured. None means proceed — the
+    claim is left on `request.state` for the middleware in main.py to settle
+    once the response exists.
+
+    Settled centrally rather than at each return because these handlers have a
+    dozen exit paths between here and a result, and a new one would silently
+    leave the key held for the whole window — blocking exactly the retry it was
+    meant to protect.
+    """
+    key = request.headers.get(idempotency.HEADER)
+    if not key or claims is None:
+        return None
+    outcome = await idempotency.begin(claims.client_id, key, path, payload)
+    if isinstance(outcome, idempotency.Replay):
+        # Deliberately no budget reserve, no usage row, no metrics: replaying
+        # is not a second use of the model, which is the entire point.
+        return JSONResponse(
+            content=outcome.body,
+            status_code=outcome.status_code,
+            media_type="application/json",
+            headers={"Idempotent-Replay": "true"},
+        )
+    if isinstance(outcome, idempotency.Conflict):
+        return _problem(
+            request, 409, "idempotency-conflict", "Idempotency Conflict", outcome.detail
+        )
+    request.state.idempotency_claim = outcome
+    return None
 
 
 def _advertised_context_length(resolution: "ModelResolution") -> int | None:
@@ -886,6 +922,17 @@ def create_router(registry: ModelRegistry, pool: "BackendPool") -> APIRouter:
                     "Contact the platform operator.",
                 )
 
+            # RM-78: before the budget reserve, because replaying must not
+            # reserve, bill or meter. Streaming is excluded — replaying one
+            # means storing every chunk, which neither OpenAI nor Anthropic
+            # documents clearly.
+            if not body.stream:
+                replay = await _begin_idempotent(
+                    request, claims, "/v1/chat/completions", body.model_dump()
+                )
+                if replay is not None:
+                    return replay
+
             # RM-69: AC-14 (007)'s circuit-breaker check, now across the whole
             # group rather than on a replica already chosen — a single tripped
             # instance used to 503 the model while its siblings sat idle.
@@ -1172,6 +1219,11 @@ def create_router(registry: ModelRegistry, pool: "BackendPool") -> APIRouter:
                     if isinstance(resp_body, dict) and resp_body.get("model") is not None:
                         resp_body["model"] = resolution.model_key
 
+                    # RM-78: the middleware settles the key from here — the
+                    # handler has the body, and call_next hands middleware
+                    # Starlette's streaming wrapper instead of this response.
+                    request.state.idempotency_result = (resp.status_code, resp_body)
+
                     inf_span.set_attribute("http.status_code", resp.status_code)
                     return JSONResponse(
                         content=resp_body,
@@ -1306,6 +1358,12 @@ def create_router(registry: ModelRegistry, pool: "BackendPool") -> APIRouter:
                 f"Model {body.model!r} is registered but has no active backend. "
                 "Contact the platform operator.",
             )
+
+        # RM-78: before the budget reserve — replaying must not reserve, bill
+        # or meter, which is the whole point.
+        replay = await _begin_idempotent(request, claims, "/v1/embeddings", body.model_dump())
+        if replay is not None:
+            return replay
 
         # RM-69: circuit-breaker check across the group, before picking.
         health = await _healthy_members(pool, request, resolution.members)
@@ -1507,6 +1565,7 @@ def create_router(registry: ModelRegistry, pool: "BackendPool") -> APIRouter:
         )
         if isinstance(resp_body, dict) and resp_body.get("model") is not None:
             resp_body["model"] = resolution.model_key  # RM-77
+        request.state.idempotency_result = (resp.status_code, resp_body)  # RM-78
         return JSONResponse(
             content=resp_body,
             status_code=resp.status_code,
@@ -1586,6 +1645,14 @@ def create_router(registry: ModelRegistry, pool: "BackendPool") -> APIRouter:
                 f"Model {body.model!r} is registered but has no active backend. "
                 "Contact the platform operator.",
             )
+
+        # RM-78: before the budget reserve — replaying must not reserve, bill
+        # or meter, which is the whole point.
+        replay = await _begin_idempotent(
+            request, claims, "/v1/images/generations", body.model_dump()
+        )
+        if replay is not None:
+            return replay
 
         # RM-69: circuit-breaker check across the group, before picking.
         health = await _healthy_members(pool, request, resolution.members)
@@ -1782,6 +1849,7 @@ def create_router(registry: ModelRegistry, pool: "BackendPool") -> APIRouter:
         )
         if isinstance(resp_body_images, dict) and resp_body_images.get("model") is not None:
             resp_body_images["model"] = resolution.model_key  # RM-77
+        request.state.idempotency_result = (resp.status_code, resp_body_images)  # RM-78
         return JSONResponse(
             content=resp_body_images,
             status_code=resp.status_code,

@@ -5,11 +5,12 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
 
+
 from fastapi import FastAPI, Request, Response
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 
-from . import rate_limits
+from . import idempotency, rate_limits
 from .auth.middleware import JWTAuthMiddleware
 from .config import Settings
 from .models.backends import BackendPool
@@ -246,6 +247,39 @@ def create_app(
     app.add_middleware(RateLimitMiddleware, settings=settings, redis_client=_redis_instance)
     app.add_middleware(JWTAuthMiddleware, settings=settings)
     app.add_middleware(TraceIDMiddleware, service="gateway")  # outermost: runs before auth
+
+    @app.middleware("http")
+    async def idempotency_middleware(request: Request, call_next: Any) -> Response:
+        """Settle an Idempotency-Key claim once the response exists — RM-78.
+
+        Here rather than at each handler's returns: the inference handlers have
+        a dozen exit paths between claiming a key and producing a result, and a
+        new one would silently leave the key held for the whole window —
+        blocking exactly the retry the key was meant to protect. A success is
+        stored for replay; anything else hands the key straight back, because a
+        failed request is precisely what a client should be able to retry.
+        """
+        response: Response = await call_next(request)
+        claim = getattr(request.state, "idempotency_claim", None)
+        if claim is None:
+            return response
+        # The handler leaves the body here rather than the middleware reading
+        # it back: call_next returns Starlette's streaming wrapper, not the
+        # JSONResponse the handler built, so the body is only reachable by
+        # buffering the whole stream. Absent means the request produced no
+        # result worth replaying — which is every error path, and exactly what
+        # a client should be allowed to retry.
+        result = getattr(request.state, "idempotency_result", None)
+        try:
+            if result is not None:
+                await idempotency.complete(claim, result[0], result[1])
+            else:
+                await idempotency.release(claim)
+        except Exception as exc:
+            # Never fail a request that already succeeded because bookkeeping
+            # didn't. The key expires on its own.
+            logger.warning("idempotency.settle_error", error=str(exc))
+        return response
 
     @app.middleware("http")
     async def request_id_middleware(

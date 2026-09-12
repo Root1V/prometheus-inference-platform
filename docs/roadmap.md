@@ -3123,7 +3123,7 @@ doesn't appear in the catalog, split across replica names nobody recognises.
 - Out of scope: `family: ""` on two catalog models. That's a missing value, not a type
   problem — the fix is filling it in.
 
-## RM-78 — Idempotency keys for inference requests (in progress)
+## RM-78 — Idempotency keys for inference requests (done)
 
 **Why**: a client retry is always a new, billable generation, so an SDK can only retry where
 the platform proves nothing ran — which excludes the commonest case, retrying after its own
@@ -3152,6 +3152,20 @@ had stopped.
   the original succeeded — losing the guarantee silently would be worse than either.
 - Out of scope: streaming. Replaying one means storing every chunk, and neither OpenAI nor
   Anthropic documents that semantics clearly.
+
+**Verified live**: the same key twice returned an identical response with `Idempotent-Replay:
+true`, and `usage_events` went 65 → 66 → 66 — the replay neither generated nor billed. Reusing
+the key for a different question returned 409; a request without a key still recorded usage
+normally.
+
+**Settled in middleware, not at each return.** The handlers have a dozen exit paths between
+claiming a key and producing a result, and a new one would silently leave the key held for the
+whole window — blocking exactly the retry it protects. The handler leaves the body on
+`request.state` instead of the middleware reading it back, because `call_next` hands middleware
+Starlette's streaming wrapper rather than the `JSONResponse` the handler built: the first
+attempt checked `isinstance(response, JSONResponse)`, which is never true there, so every key
+was released and nothing deduplicated. Unit tests passed throughout — only the end-to-end path
+showed it.
 
 Append a new row to the table with the next `RM-NN` id and a new `## RM-NN — ...` section
 below, following the same shape (Why / Scope). Re-sort the table if the new item's

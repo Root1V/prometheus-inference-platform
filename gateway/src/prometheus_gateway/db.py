@@ -20,6 +20,7 @@ from sqlalchemy import (
     Index,
     Integer,
     String,
+    Text,
     UniqueConstraint,
     case,
     func,
@@ -111,6 +112,37 @@ class UsageEvent(Base):
     __table_args__ = (
         Index("ix_usage_events_client_day", "client_id", "day"),
         Index("ix_usage_events_day", "day"),
+    )
+
+
+class IdempotencyRecord(Base):
+    """One client-supplied idempotency key — docs/roadmap.md RM-78.
+
+    In the gateway's own database rather than Redis on purpose. Redis here
+    keeps only periodic snapshots, so a restart would drop keys and the retry
+    that followed would regenerate and bill twice — precisely the failure this
+    table exists to prevent. Volume is low because the key is opt-in.
+    """
+
+    __tablename__ = "idempotency_records"
+
+    # Scoped per client: one client's key must never answer another's request.
+    client_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    key: Mapped[str] = mapped_column(String(255), primary_key=True)
+    # Hash of the request, so reusing a key with different parameters is
+    # refused rather than answered with someone else's result.
+    fingerprint: Mapped[str] = mapped_column(String(64), nullable=False)
+    # "in_progress" until the response exists. A duplicate arriving meanwhile
+    # gets 409 — without the state, two concurrent retries generate twice and
+    # defeat the point.
+    state: Mapped[str] = mapped_column(String(16), nullable=False)
+    status_code: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # NULL when the response was too large to retain (see _MAX_STORED_BODY).
+    # The key is still recorded, so a replay can say the original succeeded
+    # instead of silently regenerating.
+    response_body: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc)
     )
 
 
