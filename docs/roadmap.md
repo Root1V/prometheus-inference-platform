@@ -2960,7 +2960,7 @@ suffixes instead of one model.
   limit, with a warning when they diverge (decision #8).
 - Depends on [[RM-70]].
 
-## RM-72 — Gateway: intelligent load balancing across replicas (todo)
+## RM-72 — Gateway: intelligent load balancing across replicas (done)
 
 **Why**: absorbs [[RM-58]]. Once [[RM-69]] guarantees a *healthy* replica is picked, the
 remaining question is picking the *best* one.
@@ -2974,6 +2974,40 @@ remaining question is picking the *best* one.
   least-loaded by design, so the strategy is configurable per model rather than global.
 - Depends on [[RM-70]]. Out of scope: cross-node scheduling beyond picking among instances
   the gateway already aggregates.
+
+**Shipped**: least-in-flight, counted by the gateway (sd.cpp exposes no metrics endpoint at
+all, so anything derived from engine numbers would silently stop balancing image generation),
+normalised by the concurrent slots each engine reports. Ordering happens inside
+`forward_with_failover` with no await between the sort and the count — the first attempt put
+it inside `forward()`, passed its unit tests, and did nothing live: six concurrent requests
+all selected before any had incremented anything and landed on the same replica.
+
+**Session affinity: deliberately not built.** Measured first, on this hardware, with a
+~900-token prefix sent twice:
+
+| | prefill cold | prefill cached |
+|---|---|---|
+| qwen3-0.6b | 133 ms | 11 ms |
+| gpt-oss-20b | 796 ms | 35 ms |
+
+So the prize is real — ~95% of prefill, 0.8s per turn on the 20B — and two replicas mean two
+separate caches, so a multi-turn conversation alternating between them pays it every turn.
+
+What tipped the decision is that affinity conflicts with least-loaded *by design*: a client
+pinned to a busy replica queues while its sibling idles, which is why the industry makes the
+strategy per-model configurable, and that is real configuration surface for a workload that
+doesn't exist here yet. Current concurrency is far below the 8 slots already available.
+
+**Do not expose llama.cpp's `--parallel`.** Verified against llama-server b10101: with no
+`--parallel`, a server comes up with 4 slots, `kv_unified=true`, and the full `--ctx-size`
+available to each. Passing `--parallel 8` gives 8 slots, `kv_unified=false`, and
+`n_ctx_slot=512` — the context is partitioned, so raising the slot count silently cuts every
+request's usable context to an eighth. Replicas, not `--parallel`, are how concurrency grows
+past 4 on one machine; the two caches that come with them are the unavoidable cost.
+
+**Revisit affinity when** either a second node exists (caches then sit on different machines
+with no way to share them) or sustained concurrency exceeds one server's 4 slots often enough
+that requests genuinely queue.
 
 ## RM-73 — Billing traceability per replica + per-model metrics rollup (todo)
 
