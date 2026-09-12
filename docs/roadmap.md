@@ -2925,7 +2925,7 @@ because a sibling was healthy.
 Streaming gets the healthy-replica pick but not mid-stream failover — once response headers
 are sent there is nowhere to go, which is the existing AC-17c constraint, not a new one.
 
-## RM-70 — Model/instance identity: immutable slug, opaque ids, per-model label (todo)
+## RM-70 — Model/instance identity: immutable slug, opaque ids, per-model label (done)
 
 **Why**: one string is simultaneously the catalog id, the serving process's id, the name
 clients send, and the key for pricing, scopes and usage rows. [[RM-57]] separated routing
@@ -2944,6 +2944,40 @@ research: `docs/model-identity-proposal.md`.
   field (decision #2).
 - Depends on [[RM-68]]. Out of scope: OpenAI-style dated snapshots — the slug design leaves
   room, building it now would be speculative.
+
+**Opaque primary keys: deliberately not done.** Three arguments motivated them; two were
+answered another way. Instance ids are no longer routable — targeting one moved to the
+`X-Prometheus-Instance` header and `/v1/models` lists only models — and there is nothing to
+rename, because slugs are immutable by decision. The third, that deleting and recreating a
+model would inherit its history, turned out not to be fixed by opaque ids at all: billing,
+pricing and grants key off the *slug*, not the catalog id. [[RM-74]] closes that instead.
+
+Against that, the swap costs a service window — lifecycle.py names every running process's
+PID and log file after its instance id, so renaming strands the processes the manager is
+supervising — and would make logs unreadable (`ins_01J8XR9K2M4P.log`), which is an operability
+regression. A semi-opaque `qwen3-0.6b-01J8XQ` was considered and rejected too: it prevents
+reuse without bookkeeping, but changes the client-facing name on every re-registration and
+taxes every consumer's ergonomics forever to prevent a rare event.
+
+## RM-74 — Retired model names are never reused (done)
+
+**Why**: deleting a model used to free its slug immediately. Usage rows are keyed by slug and
+`model:<slug>` grants are written against it, so a new model taking a retired name would
+inherit the old one's invoices *and* silently grant every client who could reach the old model
+access to the new one — the exact thing the "reissue grants explicitly" decision exists to
+prevent. Same reason npm, PyPI, S3 and Docker Hub never recycle a public name.
+
+**Scope**:
+- `archive_catalog()` replaces `remove_catalog()`: the row stays with `archived_at` set. An
+  archived model doesn't route, doesn't list, and can't take an instance.
+- Both the slug guard and a new id guard consult archived rows. The id guard matters because
+  the catalog upsert is `INSERT OR REPLACE` — without it a new model reusing an archived id
+  would overwrite that row and inherit its slug and history.
+- `restore_catalog()` is the escape hatch, and the reason archiving can be the default:
+  archiving the wrong model is undoable, losing its name is not.
+- Keeping the row rather than a tombstone table also keeps the metadata, so a billing question
+  about usage recorded under that name stays answerable — which file, which quantization.
+- Out of scope: reserving *instance* ids. They're forensic, not a billing or auth key.
 
 ## RM-71 — Replica UX: "Add instance" flow and a model-level scope picker (todo)
 

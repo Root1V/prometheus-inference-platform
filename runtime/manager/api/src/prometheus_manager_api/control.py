@@ -39,7 +39,7 @@ from prometheus_manager_core.registry import (
 from prometheus_manager_core.scanner import scan
 from prometheus_manager_core.telemetry import get_tracer
 
-from .auth import require_backend_registry_write
+from .auth import require_backend_registry_read, require_backend_registry_write
 from .routes import _merge
 
 # Fields an operator may PATCH — everything except `id` (the registry key —
@@ -257,6 +257,48 @@ async def update_backend(
         updated = registry.get(model_id)
         assert updated is not None  # just updated above
         result: dict[str, Any] = updated.to_dict()
+        return result
+
+
+@router.get("/v1/models/archived", tags=["models"])
+async def list_archived_models(
+    request: Request,
+    _claims: Annotated[Claims, Depends(require_backend_registry_read)],
+) -> dict[str, Any]:
+    """Models retired from service — docs/roadmap.md RM-74.
+
+    They no longer route, list, or accept instances, but their names stay
+    reserved and their metadata stays answerable for usage billed under them.
+    """
+    registry: Registry = request.app.state.registry
+    return {"archived": [c.to_dict() for c in registry.list_archived()]}
+
+
+@router.post("/v1/models/{model_id}/restore", tags=["models"])
+async def restore_archived_model(
+    model_id: str,
+    request: Request,
+    _claims: Annotated[Claims, Depends(require_backend_registry_write)],
+) -> dict[str, Any]:
+    """Bring an archived model back — RM-74.
+
+    The escape hatch that lets archiving be the default: archiving the wrong
+    model is undoable, whereas deleting it and losing its name is not.
+    """
+    with _tracer.start_as_current_span("model.restore", kind=SpanKind.INTERNAL) as span:
+        span.set_attribute("model_id", model_id)
+        registry: Registry = request.app.state.registry
+        try:
+            registry.restore_catalog(model_id)
+        except KeyError as exc:
+            span.set_attribute("http.status_code", 404)
+            raise _problem(
+                404, "not-found", "Not Found", f"No archived model {model_id!r}."
+            ) from exc
+        span.set_attribute("http.status_code", 200)
+        restored = registry.get_catalog(model_id)
+        assert restored is not None  # just restored above
+        result: dict[str, Any] = restored.to_dict()
         return result
 
 

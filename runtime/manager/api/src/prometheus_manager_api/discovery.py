@@ -413,7 +413,13 @@ async def start_download(
         # ids — manual registration (add()) still upserts a catalog row and
         # an instance row under the same id, so a collision with either
         # would silently corrupt an unrelated existing entry.
-        existing_ids = {e.id for e in registry.entries} | {c.id for c in registry.list_catalog()}
+        # RM-74: archived models still own their ids — reusing one would
+        # overwrite the archived row and resurrect it as a different model.
+        existing_ids = (
+            {e.id for e in registry.entries}
+            | {c.id for c in registry.list_catalog()}
+            | {c.id for c in registry.list_archived()}
+        )
         model_id = body.get("model_id") or auto_id(shard_files[0], existing_ids)
         if model_id in existing_ids:
             span.set_attribute("http.status_code", 409)

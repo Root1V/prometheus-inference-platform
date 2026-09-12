@@ -494,7 +494,10 @@ def deregister_model(
     for instance_id in instance_ids:
         deregister_instance(instance_id, config, registry)
     if registry.get_catalog(catalog_id) is not None:
-        registry.remove_catalog(catalog_id)
+        # RM-74: the file is deleted, but the catalog row is archived rather
+        # than removed — its name stays retired and its metadata stays
+        # answerable for usage already billed under it.
+        registry.archive_catalog(catalog_id)
 
 
 # ── helpers ──────────────────────────────────────────────────────────────────

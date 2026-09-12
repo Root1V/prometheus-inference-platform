@@ -589,16 +589,20 @@ class TestCatalogInstanceSplit:
         with pytest.raises(ValueError, match=r"\.gguf"):
             empty_registry.add_instance("bad-instance", "bad-catalog", port=8080)
 
-    def test_remove_catalog_with_live_instance_raises(self, populated_registry: Registry):
+    def test_archive_catalog_with_live_instance_raises(self, populated_registry: Registry):
         from prometheus_manager_core.registry import RegistryIntegrityError
 
         with pytest.raises(RegistryIntegrityError):
-            populated_registry.remove_catalog("test-model")
+            populated_registry.archive_catalog("test-model")
 
-    def test_remove_catalog_succeeds_after_instance_removed(self, populated_registry: Registry):
+    def test_archive_catalog_succeeds_after_instance_removed(self, populated_registry: Registry):
+        """RM-74: archiving takes the model out of every operational path — it
+        stops routing, listing and accepting instances — without deleting the
+        row, so its name stays retired and its metadata stays answerable."""
         populated_registry.remove("test-model")
-        populated_registry.remove_catalog("test-model")
+        populated_registry.archive_catalog("test-model")
         assert populated_registry.get_catalog("test-model") is None
+        assert [c.id for c in populated_registry.list_archived()] == ["test-model"]
 
     def test_update_catalog_owned_field_via_instance_keyed_update(
         self, populated_registry: Registry

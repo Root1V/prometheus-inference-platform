@@ -79,6 +79,14 @@ CREATE TABLE IF NOT EXISTS models (
     vae_path TEXT NOT NULL DEFAULT '',
     clip_l_path TEXT NOT NULL DEFAULT '',
     t5xxl_path TEXT NOT NULL DEFAULT '',
+    -- RM-74: set instead of deleting the row. A published slug can never be
+    -- handed to a different model: usage is billed against it and
+    -- `model:<slug>` grants are written against it, so recycling one would
+    -- merge two models' invoices *and* silently give everyone who could reach
+    -- the old model access to the new. Keeping the row rather than a tombstone
+    -- also keeps the answer to "what was this model?" for a billing question
+    -- about usage recorded under that name.
+    archived_at DATETIME,
     created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
@@ -123,6 +131,7 @@ _MODEL_COLUMNS = (
     "vae_path",
     "clip_l_path",
     "t5xxl_path",
+    "archived_at",
 )
 
 _INSTANCE_COLUMNS = (
@@ -205,11 +214,14 @@ class CatalogEntry:
     vae_path: str = ""
     clip_l_path: str = ""
     t5xxl_path: str = ""
+    # RM-74: when this model was archived, or None while it is live.
+    archived_at: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
             "id": self.id,
             "slug": self.slug,
+            "archived_at": self.archived_at,
             "name": self.name,
             "modality": self.modality,
             "path": self.path,
@@ -370,6 +382,7 @@ class Registry:
         _validate_path(entry.clip_l_path, entry.backend)
         _validate_path(entry.t5xxl_path, entry.backend)
         _validate_port(entry.port)
+        self._assert_id_free(entry.id)
         self._assert_slug_free(slug or entry.id, owner_id=entry.id)
         # RM-70: manual registration creates the catalog row too, so this is
         # always the model's first instance unless the same id is being
@@ -436,6 +449,21 @@ class Registry:
             self._conn.commit()
             self._load()
 
+    def _assert_id_free(self, model_id: str) -> None:
+        """RM-74: an archived model still owns its id.
+
+        Without this the INSERT OR REPLACE that upserts a catalog row would
+        overwrite the archived one, quietly resurrecting it as a different model
+        and taking its slug and history along.
+        """
+        with self._lock:
+            archived = self._archived.get(model_id)
+        if archived is not None:
+            raise RegistryIntegrityError(
+                f"Model id {model_id!r} belongs to a model archived on {archived.archived_at}. "
+                "Restore it if this is the same model, or pick another id."
+            )
+
     def _assert_slug_free(self, slug: str, *, owner_id: str) -> None:
         """A slug is what clients route on, so two models sharing one would make
         routing ambiguous rather than merely untidy.
@@ -445,10 +473,22 @@ class Registry:
                 (c for c in self._catalog.values() if c.slug == slug and c.id != owner_id),
                 None,
             )
+            retired = next(
+                (c for c in self._archived.values() if c.slug == slug and c.id != owner_id),
+                None,
+            )
         if clash is not None:
             raise RegistryIntegrityError(
                 f"Slug {slug!r} is already used by model {clash.id!r}. "
                 "A slug is what clients route on, so it has to be unique."
+            )
+        if retired is not None:
+            raise RegistryIntegrityError(
+                f"Slug {slug!r} belonged to model {retired.id!r}, archived on "
+                f"{retired.archived_at}. Retired names are never reused: usage is billed "
+                "against the slug and `model:<slug>` grants are written against it, so a new "
+                "model taking this name would inherit the old one's invoices and everyone's "
+                "access to it. Pick another name, or restore that model if this is the same one."
             )
 
     def _next_label(self, model_id: str) -> str:
@@ -583,6 +623,7 @@ class Registry:
         # RM-70: the INSERT below is OR REPLACE so that re-registering the same
         # id upserts. On a duplicate *slug* that would silently delete the other
         # model's row and orphan its instances, so refuse explicitly instead.
+        self._assert_id_free(entry.id)
         self._assert_slug_free(entry.slug or entry.id, owner_id=entry.id)
         with self._lock:
             self._conn.execute(
@@ -618,23 +659,48 @@ class Registry:
                 self._conn.commit()
                 self._load()
 
-    def remove_catalog(self, model_id: str) -> None:
-        """Remove a catalog entry. Raises RegistryIntegrityError if any
-        instance still references it — callers must remove those first (see
-        lifecycle.deregister_model for the cascade version used by the
-        Models/Library page's "delete downloaded file" action)."""
+    def archive_catalog(self, model_id: str) -> None:
+        """Retire a catalog entry — RM-74. Raises RegistryIntegrityError if any
+        instance still references it (see lifecycle.deregister_model for the
+        cascade used by the Models/Library page's "delete downloaded file").
+
+        The row is kept, not deleted. A published slug can never be handed to a
+        different model: usage is billed against it and `model:<slug>` grants
+        are written against it, so recycling one would merge two models'
+        invoices *and* silently give everyone who could reach the old model
+        access to the new. Keeping the row rather than a tombstone also means a
+        billing question about usage recorded under that name can still be
+        answered — which file, which quantization, which context.
+        """
         with self._lock:
             if model_id not in self._catalog:
                 raise KeyError(model_id)
             referencing = [e.id for e in self._instances.values() if e.model_id == model_id]
             if referencing:
                 raise RegistryIntegrityError(
-                    f"Cannot remove catalog {model_id!r}: still referenced by "
+                    f"Cannot archive catalog {model_id!r}: still referenced by "
                     f"instances {referencing}"
                 )
-            self._conn.execute("DELETE FROM models WHERE id = ?", (model_id,))
+            self._conn.execute(
+                "UPDATE models SET archived_at = CURRENT_TIMESTAMP WHERE id = ?", (model_id,)
+            )
             self._conn.commit()
             self._load()
+
+    def restore_catalog(self, model_id: str) -> None:
+        """Bring an archived model back — RM-74. The escape hatch for archiving
+        the wrong one, and the reason archiving can stay the default.
+        """
+        with self._lock:
+            if model_id not in self._archived:
+                raise KeyError(model_id)
+            self._conn.execute("UPDATE models SET archived_at = NULL WHERE id = ?", (model_id,))
+            self._conn.commit()
+            self._load()
+
+    def list_archived(self) -> list[CatalogEntry]:
+        with self._lock:
+            return sorted(self._archived.values(), key=lambda c: c.archived_at or "", reverse=True)
 
     # ── persistence ──────────────────────────────────────────────────────────
 
@@ -643,9 +709,11 @@ class Registry:
             f"SELECT {', '.join(_MODEL_COLUMNS)} FROM models ORDER BY rowid"
         )
         self._catalog = {}
+        self._archived = {}
         for row in cat_cursor.fetchall():
             cat_raw = dict(zip(_MODEL_COLUMNS, row, strict=True))
             cat_entry = CatalogEntry(
+                archived_at=cat_raw["archived_at"],
                 id=cat_raw["id"],
                 slug=cat_raw["slug"],
                 name=cat_raw["name"],
@@ -662,7 +730,13 @@ class Registry:
                 clip_l_path=cat_raw["clip_l_path"],
                 t5xxl_path=cat_raw["t5xxl_path"],
             )
-            self._catalog[cat_entry.id] = cat_entry
+            # RM-74: archived models are kept out of every operational path —
+            # they don't route, don't list, and can't take an instance — but
+            # stay reachable to the slug/id guards and the archive listing.
+            if cat_entry.archived_at:
+                self._archived[cat_entry.id] = cat_entry
+            else:
+                self._catalog[cat_entry.id] = cat_entry
 
         inst_cursor = self._conn.execute(
             f"SELECT {', '.join(_INSTANCE_COLUMNS)} FROM instances ORDER BY rowid"
@@ -811,6 +885,7 @@ _IDENTITY_MIGRATION_COLUMNS = (
     ("models", "name", "TEXT NOT NULL DEFAULT ''"),
     ("models", "modality", "TEXT NOT NULL DEFAULT ''"),
     ("instances", "label", "TEXT NOT NULL DEFAULT ''"),
+    ("models", "archived_at", "DATETIME"),
 )
 
 
@@ -935,6 +1010,7 @@ def _model_row_params(entry: CatalogEntry) -> tuple[Any, ...]:
         "slug": entry.slug or entry.id,
         "name": entry.name or entry.id,
         "modality": entry.modality or "text",
+        "archived_at": entry.archived_at,
         "path": entry.path,
         "family": entry.family,
         "quantization": entry.quantization,

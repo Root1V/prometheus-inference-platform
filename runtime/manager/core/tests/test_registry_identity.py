@@ -198,3 +198,101 @@ class TestSlugUniqueness:
 
         with pytest.raises(RegistryIntegrityError):
             registry.add_catalog(CatalogEntry(id="model-b", slug="shared", path="/m/b.gguf"))
+
+
+class TestArchivedModels:
+    """RM-74: a published name is never handed to a different model.
+
+    Usage is billed against the slug and `model:<slug>` grants are written
+    against it, so recycling one would merge two models' invoices *and*
+    silently give everyone who could reach the old model access to the new.
+    Archiving rather than deleting also keeps the answer to "what was this
+    model?" for usage already recorded under that name.
+    """
+
+    def _model(self, registry: Registry, model_id: str, slug: str) -> None:
+        registry.add_catalog(CatalogEntry(id=model_id, slug=slug, path=f"/m/{model_id}.gguf"))
+
+    def test_an_archived_model_leaves_every_operational_path(self, registry_path: Path):
+        registry = Registry(registry_path)
+        self._model(registry, "old-model", "retired-name")
+
+        registry.archive_catalog("old-model")
+
+        assert registry.get_catalog("old-model") is None
+        assert [c.id for c in registry.list_catalog()] == []
+        assert [c.id for c in registry.list_archived()] == ["old-model"]
+
+    def test_its_slug_cannot_be_taken_by_another_model(self, registry_path: Path):
+        registry = Registry(registry_path)
+        self._model(registry, "old-model", "retired-name")
+        registry.archive_catalog("old-model")
+
+        with pytest.raises(RegistryIntegrityError) as exc:
+            self._model(registry, "new-model", "retired-name")
+
+        assert "old-model" in str(exc.value)
+
+    def test_its_id_cannot_be_taken_either(self, registry_path: Path):
+        """The upsert is INSERT OR REPLACE, so without this guard a new model
+        reusing the id would overwrite the archived row and inherit its slug
+        and history."""
+        registry = Registry(registry_path)
+        self._model(registry, "old-model", "retired-name")
+        registry.archive_catalog("old-model")
+
+        with pytest.raises(RegistryIntegrityError):
+            self._model(registry, "old-model", "a-totally-different-name")
+
+        assert [c.slug for c in registry.list_archived()] == ["retired-name"]
+
+    def test_naming_a_live_model_cannot_take_a_retired_name(self, registry_path: Path):
+        """set_slug() goes through the same guard, or the one-time naming path
+        would be a way around the reservation."""
+        registry = Registry(registry_path)
+        self._model(registry, "gone", "retired-name")
+        registry.archive_catalog("gone")
+        registry.add(
+            RegistryEntry(id="live-model", context_length=4096, port=8080, path="/m/l.gguf")
+        )
+
+        with pytest.raises(RegistryIntegrityError):
+            registry.set_slug("live-model", "retired-name")
+
+    def test_restoring_brings_it_back_with_its_name(self, registry_path: Path):
+        """The escape hatch that lets archiving be the default: archiving the
+        wrong model is undoable, losing its name is not."""
+        registry = Registry(registry_path)
+        self._model(registry, "old-model", "retired-name")
+        registry.archive_catalog("old-model")
+
+        registry.restore_catalog("old-model")
+
+        restored = registry.get_catalog("old-model")
+        assert restored is not None
+        assert restored.slug == "retired-name"
+        assert restored.archived_at is None
+        assert registry.list_archived() == []
+
+    def test_restoring_something_that_was_never_archived_raises(self, registry_path: Path):
+        with pytest.raises(KeyError):
+            Registry(registry_path).restore_catalog("never-existed")
+
+    def test_a_different_name_is_unaffected(self, registry_path: Path):
+        registry = Registry(registry_path)
+        self._model(registry, "old-model", "retired-name")
+        registry.archive_catalog("old-model")
+
+        self._model(registry, "new-model", "another-name")
+
+        assert registry.get_catalog("new-model") is not None
+
+    def test_archiving_survives_a_reload(self, registry_path: Path):
+        registry = Registry(registry_path)
+        self._model(registry, "old-model", "retired-name")
+        registry.archive_catalog("old-model")
+
+        reloaded = Registry(registry_path)
+
+        assert reloaded.get_catalog("old-model") is None
+        assert [c.id for c in reloaded.list_archived()] == ["old-model"]
