@@ -46,6 +46,12 @@ export interface MetricsSnapshot {
     latency_p99_ms: number;
   };
   backends: Record<string, BackendMetrics>;
+  /** RM-79: whether the things every request needs are reachable. Redis
+   * being down fails every authenticated request closed, and nothing else
+   * says so — /health stays green because the process is alive. */
+  dependencies?: {
+    redis: { configured: boolean; reachable: boolean | null; impact?: string };
+  };
 }
 
 const METRICS_KEY = ["gateway-metrics"] as const;

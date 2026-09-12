@@ -700,3 +700,51 @@ async def test_multi_model_gateway_AC15_shared_pool(gateway_app, auth_headers): 
     pool = gateway_app.state.backend_pool
     assert len(pool._clients) == 1
     assert "http://127.0.0.1:18080" in pool._clients
+
+
+# ── RM-79: dependency health, because /health can't say this ────────────────
+
+
+def _real_app(settings):
+    from prometheus_gateway.main import create_app
+    from prometheus_gateway.models.registry import ModelRegistry
+
+    registry = ModelRegistry.__new__(ModelRegistry)
+    registry._models = {}
+    return create_app(settings=settings, registry=registry)
+
+
+async def test_metrics_reports_dependency_health(settings):
+    """The dashboard polls /metrics, so that's where a dependency outage has to
+    show. /health stays a liveness probe — the process is alive either way."""
+    from httpx import ASGITransport, AsyncClient
+
+    app = _real_app(settings)
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
+        body = (await c.get("/metrics")).json()
+
+    assert "redis" in body["dependencies"]
+
+
+async def test_metrics_reports_redis_unreachable_and_what_it_breaks(settings):
+    """Redis being gone fails every authenticated request closed with 401
+    invalid-token, which reads like an auth problem rather than a stopped
+    container. The snapshot has to say what actually broke."""
+    from httpx import ASGITransport, AsyncClient
+
+    class _DeadRedis:
+        async def ping(self):
+            raise ConnectionError("refused")
+
+    app = _real_app(settings)
+    app.state.shared_redis = _DeadRedis()
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
+        body = (await c.get("/metrics")).json()
+        health = await c.get("/health")
+
+    redis = body["dependencies"]["redis"]
+    assert redis["configured"] is True
+    assert redis["reachable"] is False
+    assert "401" in redis["impact"]
+    # Liveness is unchanged on purpose: the process is running fine.
+    assert health.status_code == 200

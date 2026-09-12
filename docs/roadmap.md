@@ -3176,6 +3176,29 @@ attempt checked `isinstance(response, JSONResponse)`, which is never true there,
 was released and nothing deduplicated. Unit tests passed throughout — only the end-to-end path
 showed it.
 
+## RM-79 — The bare-metal stack has no Redis of its own (done)
+
+**Why**: `podman-compose.yml` deliberately doesn't publish 6379 — Redis is internal to the
+container network, which is right when the gateway runs in a container beside it. Running the
+stack on the host, nothing owns that dependency, so it had been silently using whichever
+container happened to publish the port. When that unrelated container stopped, every
+authenticated request began failing closed with `401 invalid-token`.
+
+What made it expensive was the diagnosis, not the outage: `/health` kept returning 200,
+because the process *was* alive, and the symptom — 401 on every request — reads like broken
+credentials rather than a stopped container.
+
+**Scope**:
+- A dev Redis that belongs to this project, published on the host.
+- `/metrics` reports whether each dependency is actually reachable, and says what an outage
+  breaks in plain words. The dashboard already polls that endpoint, so the Overview shows a
+  non-dismissible banner rather than leaving the operator to infer it from 401s.
+- `/health` is unchanged on purpose. It is a liveness probe (spec 001 AC-4) and the process
+  really is alive; conflating the two would make a dependency outage look like a reason to
+  restart the gateway, which would not help.
+- Out of scope: readiness gating. Nothing orchestrates this deployment yet, so a `/ready`
+  endpoint would have no consumer.
+
 Append a new row to the table with the next `RM-NN` id and a new `## RM-NN — ...` section
 below, following the same shape (Why / Scope). Re-sort the table if the new item's
 priority isn't "last."

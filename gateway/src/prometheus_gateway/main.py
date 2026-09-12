@@ -341,7 +341,38 @@ def create_app(
         No per-user data — only aggregate counters and named backend states (AC-21).
         """
         pool = getattr(request.app.state, "backend_pool", None)
-        return await metrics_store.snapshot(pool)
+        snapshot = await metrics_store.snapshot(pool)
+        snapshot["dependencies"] = await _dependency_status(request)
+        return snapshot
+
+    async def _dependency_status(request: Request) -> dict[str, Any]:
+        """Whether the things every request needs are actually reachable — RM-79.
+
+        `/health` stays a liveness probe: when Redis is gone the process is
+        perfectly alive, it just can't verify token revocation, so it fails
+        closed and *every authenticated request* answers 401 invalid-token.
+        Nothing said so — /health kept returning 200 and the 401 reads like an
+        auth problem, which is how a stopped Redis container looked like broken
+        credentials for a while. Reported here because the dashboard already
+        polls this endpoint.
+        """
+        redis_client = getattr(request.app.state, "shared_redis", None)
+        if redis_client is None:
+            return {"redis": {"configured": False, "reachable": None}}
+        try:
+            await redis_client.ping()
+            return {"redis": {"configured": True, "reachable": True}}
+        except Exception as exc:
+            logger.warning("dependency.redis_unreachable", error=str(exc))
+            return {
+                "redis": {
+                    "configured": True,
+                    "reachable": False,
+                    # Said plainly, because the symptom points elsewhere.
+                    "impact": "Every authenticated request fails with 401 invalid-token "
+                    "until Redis is reachable — token revocation cannot be verified.",
+                }
+            }
 
     # Implements: memory/specs/001-gateway-core.md — AC-1, AC-2, AC-5, AC-6, AC-7
     # Implements: memory/specs/006-multi-model-gateway.md — AC-1 through AC-15

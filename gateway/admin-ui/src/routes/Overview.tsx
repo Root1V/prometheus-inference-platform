@@ -86,6 +86,19 @@ export default function Overview() {
       <main className="min-w-0 flex-1 px-8 py-8">
         <h1 className="text-2xl font-semibold text-text">Overview</h1>
 
+        {metricsQuery.data?.dependencies?.redis.reachable === false && (
+          <div className="mt-4 flex items-start gap-2 rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-800 dark:border-red-900 dark:bg-red-500/10 dark:text-red-300">
+            <AlertTriangle size={18} className="mt-0.5 shrink-0" />
+            <span>
+              {/* RM-79: not dismissible. The platform is answering 401 to
+                  everything, and /health still reads green — this is the only
+                  place that says so. */}
+              <strong>Redis is unreachable.</strong>{" "}
+              {metricsQuery.data.dependencies.redis.impact}
+            </span>
+          </div>
+        )}
+
         <div className="mt-4">
           <BudgetAlertBanner />
         </div>
