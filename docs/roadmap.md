@@ -3123,21 +3123,35 @@ doesn't appear in the catalog, split across replica names nobody recognises.
 - Out of scope: `family: ""` on two catalog models. That's a missing value, not a type
   problem — the fix is filling it in.
 
-## RM-78 — Idempotency keys for inference requests (todo)
+## RM-78 — Idempotency keys for inference requests (in progress)
 
-**Why**: there is no way to retry safely. A retry is always a new, billable generation, so the
-SDK can only retry where the platform proves nothing ran. [[RM-69]]'s failover narrows that
-further: it triggers on `RemoteProtocolError`, a connection that broke mid-exchange, where the
-first instance may already have started generating — so one `200` can cost two generations,
-invisibly to everyone. Raised by the Axonium SDK team, who stopped work on their retry policy
-rather than guess about billing.
+**Why**: a client retry is always a new, billable generation, so an SDK can only retry where
+the platform proves nothing ran — which excludes the commonest case, retrying after its own
+timeout. Raised by the Axonium SDK team, who halted their retry work rather than guess about
+billing.
 
-**Scope** (not yet designed):
-- A client-supplied key that makes a repeated request return the first result instead of
-  generating again, and the storage and window that implies.
-- Decide whether failover itself consumes the key, so an internal failover is as safe as a
-  client retry.
-- Out of scope for now: streaming, where a replayed response is a different problem.
+Note what this is *not* for. Gateway-internal failover never double-bills: usage is recorded
+once per returned response, never per attempt, so an aborted attempt writes nothing. That
+wastes our compute on the abandoned instance, not the client's money. The answers document
+originally conflated the two; the correction matters because it unblocks work the SDK team
+had stopped.
+
+**Scope**:
+- `Idempotency-Key` request header on the three non-streaming endpoints, following the shape
+  OpenAI and Anthropic already use (24h window, replay the stored result).
+- Stored in the gateway's own database, not Redis. Redis here keeps only periodic snapshots,
+  so a restart would drop keys and the retry that follows would regenerate and bill twice —
+  precisely the failure this exists to prevent. Billing correctness needs the durable store,
+  and the volume is low because the key is opt-in.
+- Two states. A duplicate arriving while the first is still running gets `409`, or two
+  concurrent retries generate twice and defeat the point.
+- A fingerprint of the request, so reusing a key with different parameters is refused rather
+  than answered with someone else's result.
+- Bodies are retained up to 1 MiB, which covers chat, embeddings and a 512×512 image with
+  room. Above it the key is still recorded but the body isn't, and a replay gets `409` saying
+  the original succeeded — losing the guarantee silently would be worse than either.
+- Out of scope: streaming. Replaying one means storing every chunk, and neither OpenAI nor
+  Anthropic documents that semantics clearly.
 
 Append a new row to the table with the next `RM-NN` id and a new `## RM-NN — ...` section
 below, following the same shape (Why / Scope). Re-sort the table if the new item's

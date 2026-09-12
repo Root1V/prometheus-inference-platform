@@ -14,10 +14,18 @@ you won't like.
 
 ### A1 · Can generation have started on the first instance before failover?
 
-**Yes, on one specific failure. You were right to stop and ask.**
+**Yes — but it cannot double-bill you, and that distinction is the answer to your question.**
 
-Failover and the gateway's internal retries trigger on four conditions, and they are not
-equivalent:
+Usage is recorded once per *returned response*, never per attempt: an aborted attempt raises,
+failover moves on, and nothing is written. So however many instances a request touches
+internally, **your invoice shows one generation**. What a mid-exchange failure wastes is our
+compute on the abandoned instance, not your money.
+
+The retry that *can* double-bill is **yours**, and that is what idempotency keys are for —
+see the end of this section.
+
+With that settled, here is when work may already have started before failover, because it
+still bounds what a retry of yours means:
 
 | Condition | Did the backend start work? |
 |---|---|
@@ -26,15 +34,20 @@ equivalent:
 | Backend returned `502` / `503` / `504` | It answered. On llama.cpp this is usually "no free slot" or "still loading", but that is a convention, not a guarantee. |
 | **Read timeout** | **Not retried and not failed over.** |
 
-So the dangerous window is `RemoteProtocolError`. Note the last row: the case where generation
-almost certainly *did* start — the backend accepted the work and then took too long — is
-deliberately the one we never retry.
+So the window where a first instance may already have been generating is
+`RemoteProtocolError`. Note the last row: the case where generation almost certainly *did*
+start — the backend accepted the work and then took too long — is deliberately the one we
+never retry.
 
-This cannot be closed properly without idempotency keys, which do not exist today. We have
-opened **RM-78** to build them, and it is scoped to cover gateway-internal failover as well as
-your retries, so an internal failover becomes as safe as a client one. Until then your rule —
-retry only where the platform proves nothing ran — remains the correct one, and
-`RemoteProtocolError` is the gap you cannot see from outside.
+**What this means for your retry policy.** Your rule (retry only where the platform proves
+nothing ran) stays correct, and our internal failover doesn't widen it — a `502` still means
+every internal attempt failed and nothing was billed. What you cannot make safe today is a
+retry after *your* client timed out: the gateway may still have been generating, and your
+retry would be a second billable generation.
+
+**RM-78 is open to close exactly that**: an `Idempotency-Key` header, so replaying a request
+returns the first result instead of generating again. Until it lands, a retry after your own
+timeout is the one case where you should assume you will be billed twice.
 
 ### A2 · Are the 3 internal attempts per instance or shared across instances?
 
@@ -191,9 +204,10 @@ unambiguous and doesn't need a catalog lookup to interpret.
 | Response `model` now names the model, not the replica — all endpoints, all chunks | **fixed, live** |
 | An alias request is answered with the canonical slug | **fixed, live** |
 | `context_length: null` for image models | **fixed, live — contract change** |
-| Idempotency keys (A1) | **RM-78, open** |
+| Idempotency keys, so *your* retry doesn't regenerate (A1) | **RM-78, in progress** |
 | `family: ""` on two catalog entries | data to fill in, not a code change |
 
-Nothing else in `sdk-changes-2026-09.md` changed. You can resume the block A work: A2, A3, A5
-and A6 confirm the behaviour you had assumed, and A1 is the one place where your caution was
-justified — treat `RemoteProtocolError` as the case you cannot make safe until RM-78 lands.
+Nothing else in `sdk-changes-2026-09.md` changed. **You can resume the block A work**: A2, A3,
+A5 and A6 confirm the behaviour you had assumed, and A1 turns out not to block you at all —
+our failover never bills you twice. The one case to leave alone until RM-78 lands is retrying
+after *your own* timeout.
