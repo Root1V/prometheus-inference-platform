@@ -232,17 +232,20 @@ model, record usage, or count against a spend cap** — that is the point.
 | Key length | Up to 255 characters |
 | Without the header | Nothing changes — deduplication is opt-in |
 
-Three cases return **409 `idempotency-conflict`**, each with a `detail` saying which:
+Four refusals, each with **its own `type`** — they need opposite handling, and only one of
+them is ever worth retrying:
 
-- **The same key with a different request body.** A key identifies one request; answering it
-  with the first result would be a wrong answer, not a duplicate one. Use a fresh key per
-  logical request.
-- **The first request is still running.** Two concurrent retries would generate twice. Wait
-  for the first to finish, then retry.
-- **The original succeeded but its response was too large to retain** (over 1 MiB — realistic
-  only for multi-image generations). The key is still recorded, so this tells you the original
-  worked: do not retry it. We considered silently regenerating instead and decided you would
-  rather be told.
+| `type` | Status | Cause | Retry? |
+|---|---|---|---|
+| `invalid-idempotency-key` | 400 | The key is malformed — today, longer than 255 characters | **Never.** Fix the key |
+| `idempotency-key-reuse` | 409 | The same key was already used for a different request. The fingerprint covers path *and* body, so a different endpoint counts too | **Never.** Use a fresh key per logical request |
+| `idempotency-in-progress` | 409 | The first request with this key is still running | **Yes**, after waiting |
+| `idempotency-response-not-retained` | 409 | The original succeeded, but its response exceeded 1 MiB and wasn't kept | **Never.** This tells you the original worked |
+
+A malformed key is a `400`, not a conflict: it never conflicted with anything, and calling it
+one would tell you that you had repeated a request when your key simply didn't fit.
+
+Branch on `type`. The `detail` is written for a human and may be reworded.
 
 **A failed request hands its key back.** If the request errored, nothing is stored and the same
 key is free — retrying with it is exactly right.

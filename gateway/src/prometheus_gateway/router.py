@@ -243,10 +243,20 @@ async def _begin_idempotent(
             media_type="application/json",
             headers={"Idempotent-Replay": "true"},
         )
-    if isinstance(outcome, idempotency.Conflict):
-        return _problem(
-            request, 409, "idempotency-conflict", "Idempotency Conflict", outcome.detail
+    if isinstance(outcome, idempotency.Refusal):
+        # RM-80: one type per reason. The four need opposite handling — only
+        # "still running" resolves by waiting — and a client told to branch on
+        # the type can't be asked to match on prose instead, since rewording a
+        # message would then break it in silence. A malformed key is a 400: it
+        # never conflicted with anything, and calling it a conflict would tell
+        # a client it had repeated a request when its key simply didn't fit.
+        status = 400 if outcome.kind == idempotency.INVALID_KEY else 409
+        title = (
+            "Invalid Idempotency Key"
+            if outcome.kind == idempotency.INVALID_KEY
+            else "Idempotency Conflict"
         )
+        return _problem(request, status, outcome.kind, title, outcome.detail)
     request.state.idempotency_claim = outcome
     return None
 

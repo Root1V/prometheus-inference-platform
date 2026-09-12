@@ -3199,6 +3199,26 @@ credentials rather than a stopped container.
 - Out of scope: readiness gating. Nothing orchestrates this deployment yet, so a `/ready`
   endpoint would have no consumer.
 
+## RM-80 — fix: idempotency refusals shared one error type (done)
+
+**Why**: found by the Axonium SDK team probing RM-78 against the deployment. All four reasons
+a key can be refused answered `409 idempotency-conflict`, separated only by `detail` — so a
+client had to match on prose, which is exactly what we removed from the 422 envelope in
+[[RM-65]]: a reworded message then breaks a client in silence. And the four need opposite
+handling. Only "still running" resolves by retrying; the other three never do.
+
+A malformed key was the worst of it. It never conflicted with anything, so a client branching
+on "conflict" concluded it had repeated a request when its key simply didn't fit.
+
+**Scope**:
+- One `type` per reason: `invalid-idempotency-key` (400), `idempotency-key-reuse`,
+  `idempotency-in-progress`, `idempotency-response-not-retained` (409 each).
+- `Conflict` became `Refusal` carrying a `kind`, so the reason is decided where it's known
+  rather than reconstructed from the message at the edge.
+- Out of scope: a `Retry-After` on the in-progress case. The only bound available is the
+  backend timeout, 600s, which is an upper bound rather than an estimate — a number that
+  pessimistic is worse than none.
+
 Append a new row to the table with the next `RM-NN` id and a new `## RM-NN — ...` section
 below, following the same shape (Why / Scope). Re-sort the table if the new item's
 priority isn't "last."

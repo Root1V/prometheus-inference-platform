@@ -147,7 +147,7 @@ async def test_reusing_a_key_for_a_different_request_is_refused(gw, rsa_keys):
     )
 
     assert resp.status_code == 409
-    assert resp.json()["type"].endswith("idempotency-conflict")
+    assert resp.json()["type"].endswith(idempotency.KEY_REUSE)
 
 
 @respx.mock
@@ -209,16 +209,17 @@ async def test_streaming_is_not_deduplicated(gw, rsa_keys):
 # ── the store itself ────────────────────────────────────────────────────────
 
 
-async def test_a_request_still_running_gets_a_conflict(gw):
-    """Two concurrent retries would otherwise generate twice, which defeats
-    the point of the key."""
+async def test_a_request_still_running_is_the_one_worth_waiting_for(gw):
+    """Two concurrent retries would otherwise generate twice. This is also the
+    only refusal a client should ever retry, which is why it needs its own
+    type rather than sharing one with the reuse cases."""
     claim = await idempotency.begin("c", "k", "/v1/chat/completions", {"a": 1})
     assert isinstance(claim, idempotency.Claim)
 
     second = await idempotency.begin("c", "k", "/v1/chat/completions", {"a": 1})
 
-    assert isinstance(second, idempotency.Conflict)
-    assert "still running" in second.detail
+    assert isinstance(second, idempotency.Refusal)
+    assert second.kind == idempotency.IN_PROGRESS
 
 
 async def test_an_oversized_response_is_recorded_but_not_replayable(gw):
@@ -230,8 +231,8 @@ async def test_an_oversized_response_is_recorded_but_not_replayable(gw):
 
     outcome = await idempotency.begin("c", "big", "/v1/images/generations", {"a": 1})
 
-    assert isinstance(outcome, idempotency.Conflict)
-    assert "too large to retain" in outcome.detail
+    assert isinstance(outcome, idempotency.Refusal)
+    assert outcome.kind == idempotency.NOT_RETAINED
 
 
 async def test_a_key_past_the_window_can_be_claimed_again(gw):
@@ -268,7 +269,8 @@ async def test_an_overlong_key_is_refused_rather_than_truncated(gw):
         "c", "x" * (idempotency.MAX_KEY_LENGTH + 1), "/v1/chat/completions", {"a": 1}
     )
 
-    assert isinstance(outcome, idempotency.Conflict)
+    assert isinstance(outcome, idempotency.Refusal)
+    assert outcome.kind == idempotency.INVALID_KEY
 
 
 def test_the_fingerprint_ignores_key_order():
@@ -279,3 +281,44 @@ def test_the_fingerprint_ignores_key_order():
 
     assert a == b
     assert a != idempotency.fingerprint("/p", {"x": 1, "y": 3})
+
+
+@respx.mock
+async def test_an_overlong_key_is_a_bad_request_not_a_conflict(gw, rsa_keys):
+    """RM-80: a client branching on "conflict" would conclude it had repeated
+    a request, when its key simply didn't fit."""
+    respx.post(f"{BACKEND_URL}/v1/chat/completions").mock(
+        return_value=Response(200, json=CHAT_RESPONSE)
+    )
+
+    resp = await gw.post(
+        "/v1/chat/completions",
+        json=_chat(),
+        headers=_headers(rsa_keys, "x" * (idempotency.MAX_KEY_LENGTH + 1)),
+    )
+
+    assert resp.status_code == 400
+    assert resp.json()["type"].endswith(idempotency.INVALID_KEY)
+
+
+@respx.mock
+async def test_the_four_refusals_are_told_apart_by_type(gw, rsa_keys):
+    """Each needs opposite handling, so each needs its own type — matching on
+    the prose would break silently the first time a message is reworded."""
+    respx.post(f"{BACKEND_URL}/v1/chat/completions").mock(
+        return_value=Response(200, json=CHAT_RESPONSE)
+    )
+    await gw.post("/v1/chat/completions", json=_chat(), headers=_headers(rsa_keys, "k9"))
+
+    reuse = await gw.post(
+        "/v1/chat/completions",
+        json=_chat(messages=[{"role": "user", "content": "different"}]),
+        headers=_headers(rsa_keys, "k9"),
+    )
+    bad_key = await gw.post(
+        "/v1/chat/completions", json=_chat(), headers=_headers(rsa_keys, "y" * 300)
+    )
+
+    assert reuse.status_code == 409
+    assert bad_key.status_code == 400
+    assert reuse.json()["type"] != bad_key.json()["type"]

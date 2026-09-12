@@ -91,5 +91,7 @@ Status: `done` · `todo`
 
 | RM-79 | The bare-metal stack has no Redis of its own | done | `podman-compose.yml` deliberately doesn't publish 6379 — Redis is internal to the container network — so a host-run gateway silently used whichever container happened to publish the port. When that unrelated container stopped, every authenticated request started failing closed with `401 invalid-token`. Needs a dev Redis that belongs to this project, and something that notices when it's gone |
 
+| RM-80 | fix: idempotency refusals shared one error type | done | All four reasons answered `409 idempotency-conflict`, so telling them apart meant matching on prose — and they need opposite handling: only "still running" resolves by retrying. Each now has its own `type`, and a malformed key is a 400 rather than a conflict it never had |
+
 Adding an item: append the next `RM-NN` row here with a one-liner, then add the full
 Why/Scope writeup to `docs/roadmap.md`.

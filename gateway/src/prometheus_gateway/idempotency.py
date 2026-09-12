@@ -60,11 +60,32 @@ class Replay:
 
 
 @dataclass(frozen=True)
-class Conflict:
+class Refusal:
     """The key can't be honoured, and the caller must be told why rather than
-    have the request quietly treated as new."""
+    have the request quietly treated as new.
 
+    `kind` carries the reason as a stable machine value, because the four
+    reasons need opposite handling — one resolves by waiting, the rest never
+    resolve by retrying — and telling them apart by matching on prose means a
+    reworded message breaks a client in silence. The router maps it to the
+    problem `type` and status.
+    """
+
+    kind: str
     detail: str
+
+
+# A malformed key was never a conflict with anything — it's a bad request, and
+# a client branching on "conflict" would conclude it had repeated a call.
+INVALID_KEY = "invalid-idempotency-key"
+# Same key, different request. The caller reused it; retrying never helps.
+# Covers a different endpoint too: the fingerprint spans path and payload.
+KEY_REUSE = "idempotency-key-reuse"
+# The first call is still running. This one *does* resolve by waiting.
+IN_PROGRESS = "idempotency-in-progress"
+# It succeeded, but the response was too large to keep, so there is nothing to
+# replay. Retrying would generate and bill again.
+NOT_RETAINED = "idempotency-response-not-retained"
 
 
 @dataclass(frozen=True)
@@ -87,10 +108,10 @@ def fingerprint(path: str, payload: Any) -> str:
     return hashlib.sha256(material.encode()).hexdigest()
 
 
-async def begin(client_id: str, key: str, path: str, payload: Any) -> Replay | Conflict | Claim:
+async def begin(client_id: str, key: str, path: str, payload: Any) -> Replay | Refusal | Claim:
     """Claim *key* for this request, or report what already holds it."""
     if len(key) > MAX_KEY_LENGTH:
-        return Conflict(f"{HEADER} must be at most {MAX_KEY_LENGTH} characters.")
+        return Refusal(INVALID_KEY, f"{HEADER} must be at most {MAX_KEY_LENGTH} characters.")
 
     want = fingerprint(path, payload)
     cutoff = datetime.now(timezone.utc) - _WINDOW
@@ -107,19 +128,22 @@ async def begin(client_id: str, key: str, path: str, payload: Any) -> Replay | C
 
         if row is not None:
             if row.fingerprint != want:
-                return Conflict(
+                return Refusal(
+                    KEY_REUSE,
                     f"{HEADER} {key!r} was already used for a different request. "
-                    "A key identifies one request; reuse it only to retry that same one."
+                    "A key identifies one request; reuse it only to retry that same one.",
                 )
             if row.state == _IN_PROGRESS:
-                return Conflict(
+                return Refusal(
+                    IN_PROGRESS,
                     f"A request with {HEADER} {key!r} is still running. Retrying while the "
-                    "first is in flight would generate twice — wait for it to finish."
+                    "first is in flight would generate twice — wait for it to finish.",
                 )
             if row.response_body is None:
-                return Conflict(
+                return Refusal(
+                    NOT_RETAINED,
                     f"The request with {HEADER} {key!r} already succeeded, but its response "
-                    "was too large to retain, so it can't be replayed. Do not retry it."
+                    "was too large to retain, so it can't be replayed. Do not retry it.",
                 )
             return Replay(status_code=row.status_code or 200, body=json.loads(row.response_body))
 
@@ -132,9 +156,10 @@ async def begin(client_id: str, key: str, path: str, payload: Any) -> Replay | C
             # Another request inserted the same key between the read and the
             # write. That one owns it; this is the concurrent-duplicate case.
             await session.rollback()
-            return Conflict(
+            return Refusal(
+                IN_PROGRESS,
                 f"A request with {HEADER} {key!r} is still running. Retrying while the "
-                "first is in flight would generate twice — wait for it to finish."
+                "first is in flight would generate twice — wait for it to finish.",
             )
     return Claim(client_id=client_id, key=key)
 
