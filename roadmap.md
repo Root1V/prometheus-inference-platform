@@ -86,5 +86,10 @@ Status: `done` · `todo`
 
 | RM-76 | A manually registered model can't be archived | todo | `DELETE /v1/models/{id}/downloaded` refuses anything not downloaded through that flow and `DELETE /v1/backends/{id}` only removes an instance, so a hand-registered model's catalog row can never be retired — which now matters, since archiving is what keeps a published name from being reused (RM-74) |
 
+| RM-77 | fix: the response body named the replica, and `context_length: 0` was ambiguous | done | llama.cpp echoes its own `--alias` as `model`, so the body reported an instance id that isn't in the catalog — anyone attributing cost by `response.model` split one model's spend across replica names; the body now names the model on every endpoint and every streamed chunk. Image models advertise `context_length: null` instead of `0` |
+| RM-78 | Idempotency keys for inference requests | todo | Without them a retry is always a new, billable generation, so the SDK can only retry where the platform proves nothing ran — and failover on a mid-exchange connection break can already bill twice invisibly. Raised by the Axonium SDK team |
+
+| RM-79 | The bare-metal stack has no Redis of its own | todo | `podman-compose.yml` deliberately doesn't publish 6379 — Redis is internal to the container network — so a host-run gateway silently used whichever container happened to publish the port. When that unrelated container stopped, every authenticated request started failing closed with `401 invalid-token`. Needs a dev Redis that belongs to this project, and something that notices when it's gone |
+
 Adding an item: append the next `RM-NN` row here with a one-liner, then add the full
 Why/Scope writeup to `docs/roadmap.md`.

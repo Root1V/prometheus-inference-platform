@@ -597,3 +597,87 @@ async def test_usage_records_which_replica_served(gw, rsa_keys):
 
     events = await db.query_usage_events_range(date.today(), date.today())
     assert [(e.model_id, e.instance_id) for e in events] == [("llama", "llama-b")]
+
+
+# ── RM-77: the body names the model, never the replica ──────────────────────
+
+
+@respx.mock
+async def test_the_response_body_names_the_model_not_the_replica(gw, rsa_keys):
+    """llama.cpp echoes its own --alias, which is the instance id. A client
+    attributing cost by `response.model` would bill an identifier that isn't in
+    the catalog, split across replica names nobody recognises."""
+    respx.post(f"{REPLICA_A_URL}/v1/chat/completions").mock(
+        return_value=Response(200, json={**CHAT_RESPONSE, "model": "llama-a"})
+    )
+
+    resp = await gw.post(
+        "/v1/chat/completions",
+        json={"model": "llama", "messages": [{"role": "user", "content": "hi"}], "max_tokens": 5},
+        headers=_headers(rsa_keys, "inference:read model:llama"),
+    )
+
+    assert resp.json()["model"] == "llama"
+    # …and the replica is still knowable, from the header where it belongs.
+    assert resp.headers["X-Prometheus-Instance-Id"] == "llama-a"
+
+
+@respx.mock
+async def test_an_alias_request_is_answered_with_the_canonical_name(gw, rsa_keys):
+    """Like OpenAI answering a `gpt-4o` request with the snapshot it resolved
+    to: the body reports the identity that was actually used."""
+    respx.post(f"{REPLICA_B_URL}/v1/chat/completions").mock(
+        return_value=Response(200, json={**CHAT_RESPONSE, "model": "llama-b"})
+    )
+
+    resp = await gw.post(
+        "/v1/chat/completions",
+        json={"model": "llama-b", "messages": [{"role": "user", "content": "hi"}], "max_tokens": 5},
+        headers=_headers(rsa_keys, "inference:read model:llama"),
+    )
+
+    assert resp.json()["model"] == "llama"
+
+
+@respx.mock
+async def test_every_streamed_chunk_names_the_model(gw, rsa_keys):
+    chunks = (
+        'data: {"model":"llama-a","choices":[{"delta":{"content":"hi"}}]}\n\n'
+        'data: {"model":"llama-a","choices":[{"delta":{}}],"timings":{"prompt_n":3,"predicted_n":1}}\n\n'
+        "data: [DONE]\n\n"
+    )
+    respx.post(f"{REPLICA_A_URL}/v1/chat/completions").mock(
+        return_value=Response(200, text=chunks, headers={"Content-Type": "text/event-stream"})
+    )
+
+    resp = await gw.post(
+        "/v1/chat/completions",
+        json={
+            "model": "llama",
+            "messages": [{"role": "user", "content": "hi"}],
+            "max_tokens": 5,
+            "stream": True,
+        },
+        headers=_headers(rsa_keys, "inference:stream model:llama"),
+    )
+
+    body = resp.text
+    assert '"model":"llama"' in body
+    assert "llama-a" not in body
+    assert "[DONE]" in body
+
+
+async def test_an_image_model_advertises_no_context_window(gw, rsa_keys, settings):
+    """RM-77: 0 reads as "a window of zero"; a client checking
+    prompt_tokens < context_length would reject every image request."""
+    from prometheus_gateway.main import create_app
+
+    registry = ModelRegistry.__new__(ModelRegistry)
+    registry._models = {
+        "sd": _entry("sd", model_id="sd", modality="image", context_length=0),
+    }
+    app = create_app(settings=settings, registry=registry)
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        resp = await client.get("/v1/models")
+
+    assert resp.json()["data"][0]["context_length"] is None

@@ -3102,6 +3102,43 @@ the mechanism that keeps a published slug from being handed to a different model
 - Out of scope: changing what `DELETE /v1/backends/{id}` does. Removing an instance and
   retiring a model are different acts and should stay different calls.
 
+## RM-77 — fix: the response body named the replica; `context_length: 0` was ambiguous (done)
+
+**Why**: found by the Axonium SDK team reading the contract back to us. `sdk-changes-2026-09.md`
+§3 says `model` is for models — a grant covers a model, billing attributes to a model,
+`/v1/models` lists models — and the response body was the one surface where that wasn't true:
+llama.cpp echoes its own `--alias`, which is the instance id, and the gateway passed the body
+through untouched. Anyone attributing cost by `response.model` was billing an identifier that
+doesn't appear in the catalog, split across replica names nobody recognises.
+
+**Scope**:
+- The body names the model on all three endpoints and on every streamed chunk. The replica
+  stays knowable through the `X-Prometheus-Instance` headers, where it belongs.
+- An alias request is answered with the canonical slug — the same thing OpenAI does when a
+  `gpt-4o` request reports the snapshot it resolved to.
+- Image models advertise `context_length: null` rather than `0`. Zero reads as "a window of
+  zero", so a client checking `prompt_tokens < context_length` would reject every image
+  request; null says "no such concept". **Contract change** for typed SDKs, where the field
+  has to become optional.
+- Out of scope: `family: ""` on two catalog models. That's a missing value, not a type
+  problem — the fix is filling it in.
+
+## RM-78 — Idempotency keys for inference requests (todo)
+
+**Why**: there is no way to retry safely. A retry is always a new, billable generation, so the
+SDK can only retry where the platform proves nothing ran. [[RM-69]]'s failover narrows that
+further: it triggers on `RemoteProtocolError`, a connection that broke mid-exchange, where the
+first instance may already have started generating — so one `200` can cost two generations,
+invisibly to everyone. Raised by the Axonium SDK team, who stopped work on their retry policy
+rather than guess about billing.
+
+**Scope** (not yet designed):
+- A client-supplied key that makes a repeated request return the first result instead of
+  generating again, and the storage and window that implies.
+- Decide whether failover itself consumes the key, so an internal failover is as safe as a
+  client retry.
+- Out of scope for now: streaming, where a replayed response is a different problem.
+
 Append a new row to the table with the next `RM-NN` id and a new `## RM-NN — ...` section
 below, following the same shape (Why / Scope). Re-sort the table if the new item's
 priority isn't "last."

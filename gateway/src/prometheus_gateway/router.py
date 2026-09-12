@@ -215,6 +215,17 @@ async def _healthy_members(
     return _GroupHealth(usable, skipped, min(recoveries) if recoveries else None)
 
 
+def _advertised_context_length(resolution: "ModelResolution") -> int | None:
+    """RM-77: null where a context window doesn't apply.
+
+    Image generation has no token context, and the registry stores 0 for it —
+    which reads as "a window of zero" rather than "no such concept". A client
+    checking `prompt_tokens < context_length` before sending would reject every
+    image request. null says which of the two it is; 0 needs prior knowledge.
+    """
+    return None if resolution.modality == "image" else resolution.context_length
+
+
 def _candidates(members: "Sequence[ModelEntry]") -> list[tuple[str, str]]:
     """(backend_id, origin) pairs for BackendPool.forward_with_failover."""
     return [(m.id, m.backend_url) for m in members if m.backend_url]
@@ -312,7 +323,7 @@ def create_router(registry: ModelRegistry, pool: "BackendPool") -> APIRouter:
                         "id": r.name,
                         "object": "model",
                         "owned_by": "prometheus",
-                        "context_length": r.context_length,
+                        "context_length": _advertised_context_length(r),
                         "family": r.members[0].family,
                         "quantization": r.members[0].quantization,
                         "modality": r.modality,
@@ -364,7 +375,7 @@ def create_router(registry: ModelRegistry, pool: "BackendPool") -> APIRouter:
                         "id": r.name,
                         "object": "model",
                         "owned_by": "prometheus",
-                        "context_length": r.context_length,
+                        "context_length": _advertised_context_length(r),
                         "family": r.members[0].family,
                         "quantization": r.members[0].quantization,
                         "modality": r.modality,
@@ -1156,6 +1167,11 @@ def create_router(registry: ModelRegistry, pool: "BackendPool") -> APIRouter:
                         except Exception as exc:
                             logger.warning("tpm.increment_error", error=str(exc))
 
+                    # RM-77: see the streaming path — the body names the
+                    # model, never the replica that served it.
+                    if isinstance(resp_body, dict) and resp_body.get("model") is not None:
+                        resp_body["model"] = resolution.model_key
+
                     inf_span.set_attribute("http.status_code", resp.status_code)
                     return JSONResponse(
                         content=resp_body,
@@ -1489,6 +1505,8 @@ def create_router(registry: ModelRegistry, pool: "BackendPool") -> APIRouter:
                 else None
             ),
         )
+        if isinstance(resp_body, dict) and resp_body.get("model") is not None:
+            resp_body["model"] = resolution.model_key  # RM-77
         return JSONResponse(
             content=resp_body,
             status_code=resp.status_code,
@@ -1762,6 +1780,8 @@ def create_router(registry: ModelRegistry, pool: "BackendPool") -> APIRouter:
                 round(num_images / (images_latency_ms / 1000), 3) if images_latency_ms > 0 else None
             ),
         )
+        if isinstance(resp_body_images, dict) and resp_body_images.get("model") is not None:
+            resp_body_images["model"] = resolution.model_key  # RM-77
         return JSONResponse(
             content=resp_body_images,
             status_code=resp.status_code,
@@ -1956,7 +1976,21 @@ async def _stream_response(
                                     ).get("content")
                                     if delta_content:
                                         ttft_ms = int((time.monotonic() - backend_start) * 1000)
+                                # RM-77: the backend names itself here —
+                                # llama.cpp echoes its own --alias, which is
+                                # the instance id. The body has to name the
+                                # model, like every other surface: a client
+                                # attributing cost by `response.model` would
+                                # otherwise bill an identifier that isn't in
+                                # the catalog, split across replica names
+                                # nobody recognises. The replica is already in
+                                # the X-Prometheus-Instance headers.
+                                if billed_name and chunk.get("model") is not None:
+                                    chunk["model"] = billed_name
+                                    line = "data: " + json.dumps(chunk, separators=(",", ":"))
                             except Exception:
+                                # Unparseable chunk — pass it through untouched
+                                # rather than dropping a token the client needs.
                                 pass
                         yield f"{line}\n\n"
             if cb:
