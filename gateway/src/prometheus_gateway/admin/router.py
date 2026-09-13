@@ -55,7 +55,6 @@ GET    /admin/api/sessions                                  — clients active i
 Implements: docs/roadmap.md — RM-10 (gateway admin dashboard, phase 1)
 Implements: docs/roadmap.md — RM-11 (Users section, dual login modes)
 Implements: docs/roadmap.md — RM-20 (Nodes section, replaces static MANAGER_NODES)
-Implements: docs/roadmap.md — RM-31 (Overview: link out to Grafana/Tempo)
 Implements: docs/roadmap.md — RM-13 (admin dashboard: live log viewer)
 Implements: docs/roadmap.md — RM-16 (routing & rate-limit visibility)
 Implements: docs/roadmap.md — RM-23 (active sessions / connected users)
@@ -677,8 +676,8 @@ def create_admin_router(manager_client: ManagerApiClient) -> APIRouter:
 
     @router.get("/admin/api/config")
     async def get_dashboard_config(request: Request) -> Any:
-        """Dashboard-facing settings — Grafana link (RM-31), rate-limit/circuit-breaker
-        config (RM-16). The rate-limit values here reflect whatever is live right
+        """Dashboard-facing settings — rate-limit and circuit-breaker config
+        (RM-16). The rate-limit values here reflect whatever is live right
         now, including an admin override applied via PUT /admin/api/limits (RM-56);
         circuit-breaker settings remain .env-only.
         """
