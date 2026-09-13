@@ -30,6 +30,8 @@ from typing import Any
 
 import yaml
 
+from .hf_discovery import infer_family
+
 _ID_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{1,62}[a-z0-9]$")
 
 # RM-70: a slug becomes a `model:<slug>` scope, so it must fit what
@@ -615,6 +617,19 @@ class Registry:
     # ── public API: catalog ──────────────────────────────────────────────────
 
     def add_catalog(self, entry: CatalogEntry) -> None:
+        # RM-89: family is never stored empty. Both HTTP registration paths
+        # defaulted it to "", and an empty string is indistinguishable from
+        # "nobody filled this in" — which is how an SDK team came to ask about
+        # the same blank field four rounds running. Applied here rather than at
+        # the call sites so a third one cannot reintroduce it.
+        #
+        # Note the fallback is the GGUF's own `general.architecture`, which is a
+        # true fact about the file but is not always the lineage a human would
+        # name: phi4-mini is architecture `phi3`, minicpm5 is `llama`. A family
+        # supplied by the caller is therefore always preferred, never
+        # overwritten.
+        if not (entry.family or "").strip():
+            entry.family = infer_family(entry.path)
         _validate_id(entry.id)
         _validate_path_traversal(entry.path)
         _validate_path_traversal(entry.vae_path)

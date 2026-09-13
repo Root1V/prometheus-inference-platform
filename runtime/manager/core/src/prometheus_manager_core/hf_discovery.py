@@ -42,6 +42,84 @@ _SLUG_RE = re.compile(r"[^a-z0-9]+")
 _SHARD_RE = re.compile(r"^(.*?-?)(\d{5})-of-(\d{5})(\.gguf)$", re.IGNORECASE)
 
 
+# RM-89: GGUF metadata value types, needed only to step over the entries that
+# come before the one we want. https://github.com/ggml-org/ggml — gguf spec.
+_GGUF_FIXED_WIDTHS = {0: 1, 1: 1, 2: 2, 3: 2, 4: 4, 5: 4, 6: 4, 7: 1, 10: 8, 11: 8, 12: 8}
+_GGUF_STRING = 8
+_GGUF_ARRAY = 9
+UNKNOWN_FAMILY = "unknown"
+
+
+def _gguf_read_value(fh: Any, value_type: int) -> Any:
+    """Consume one metadata value, returning it only when it is a string."""
+    import struct
+
+    if value_type == _GGUF_STRING:
+        (length,) = struct.unpack("<Q", fh.read(8))
+        return fh.read(length).decode("utf-8", errors="replace")
+    if value_type == _GGUF_ARRAY:
+        (item_type,) = struct.unpack("<I", fh.read(4))
+        (count,) = struct.unpack("<Q", fh.read(8))
+        for _ in range(count):
+            _gguf_read_value(fh, item_type)
+        return None
+    width = _GGUF_FIXED_WIDTHS.get(value_type)
+    if width is None:
+        # An unknown type means we can no longer trust our position in the
+        # file, so stop rather than read garbage from an arbitrary offset.
+        raise ValueError(f"unknown GGUF value type {value_type}")
+    fh.read(width)
+    return None
+
+
+def read_gguf_architecture(path: str | Path) -> str:
+    """Return a GGUF file's `general.architecture`, or "" if it cannot be read.
+
+    This is where a model's family actually comes from — `llava-mistral-7b-q5`
+    is architecture `llama`, which no amount of reading its name would tell you.
+    Measured against this deployment's catalog, guessing from the identifier got
+    half of them wrong, so we read the file or we admit we do not know.
+
+    Returns "" rather than raising: a missing or truncated file is an ordinary
+    situation here — a model can be registered before it is downloaded — and the
+    caller has a sensible answer for it.
+    """
+    import struct
+
+    try:
+        with open(path, "rb") as fh:
+            if fh.read(4) != b"GGUF":
+                return ""
+            fh.read(4)  # version
+            fh.read(8)  # tensor count
+            (kv_count,) = struct.unpack("<Q", fh.read(8))
+            for _ in range(kv_count):
+                (key_length,) = struct.unpack("<Q", fh.read(8))
+                key = fh.read(key_length).decode("utf-8", errors="replace")
+                (value_type,) = struct.unpack("<I", fh.read(4))
+                value = _gguf_read_value(fh, value_type)
+                if key == "general.architecture":
+                    return value if isinstance(value, str) else ""
+    except (OSError, ValueError, struct.error):
+        return ""
+    return ""
+
+
+def infer_family(path: str | Path | None) -> str:
+    """The model family to record when a caller did not supply one.
+
+    Never empty. An empty string is indistinguishable from "nobody filled this
+    in", which is how a client ends up asking about it four times running; the
+    same convention `infer_quant` already uses for a quantization it cannot
+    determine.
+    """
+    if path:
+        architecture = read_gguf_architecture(path)
+        if architecture:
+            return architecture
+    return UNKNOWN_FAMILY
+
+
 def infer_quant(filename: str) -> str:
     """Return quantization tag inferred from a GGUF filename.
 

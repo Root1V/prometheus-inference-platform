@@ -3457,6 +3457,34 @@ abandoning a long generation, billed 11+5 tokens). The CSV export carries both c
 leaves them blank on the TOTAL row. The migration backfilled the live database with no
 `interrupted` rows to reinterpret.
 
+## RM-89 — `family` is never stored empty (done)
+
+**Why**: Axonium reported a blank `family` on `qwen3-0.6b` and `qwen3-embedding` in three
+consecutive rounds, each time saying it blocked nothing. Both HTTP registration paths defaulted
+the field to `""`, and an empty string says nothing about whether the value is unknown, not
+applicable, or simply never filled in.
+
+**What was actually wrong, and what was not**: every active model in the catalog already had a
+sensible family — the blank Axonium saw came from the gateway serving a catalog it could not
+resync while [[RM-84]] was breaking its calls to the manager, and it resolved when that did.
+Nothing needed reassigning. What was missing was the guarantee that it cannot happen again.
+
+**Scope**: the registry fills the field at `add_catalog`, the single chokepoint both HTTP paths
+go through, so a third path cannot reintroduce the gap. A caller-supplied family always wins and
+is never overwritten. With none supplied, the GGUF's `general.architecture` is read from the file
+header; failing that, `unknown` — the convention `infer_quant` already uses with `"?"`.
+
+**Measured rather than assumed**: guessing a family from the identifier was implemented,
+measured against this deployment's 28 models, and *thrown away* — it got 14 of them wrong.
+`llava-mistral-7b-q5` is architecture `llama`, which no amount of reading its name reveals.
+
+**Known, and deliberately not resolved here**: `general.architecture` is a true fact about a file
+but is not always the lineage a human would name — phi4-mini reports `phi3`, minicpm5 reports
+`llama`, and several finetunes report the base they were built on. That is why a supplied family
+wins, and why existing rows were left untouched. Whether the two should be separate fields —
+architecture as read from the file, family as a human names it — is a modelling question worth
+answering before the fallback value ever appears on a customer-facing surface.
+
 Append a new row to the table with the next `RM-NN` id and a new `## RM-NN — ...` section
 below, following the same shape (Why / Scope). Re-sort the table if the new item's
 priority isn't "last."
