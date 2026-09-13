@@ -3508,7 +3508,7 @@ with the variable set, `service.namespace`, `argus.component.role` and
 This is the first step of [[RM-91]] — integrating with Argus rather than running our own
 observability stack.
 
-## RM-91 — retire the self-hosted observability stack (in-progress)
+## RM-91 — retire the self-hosted observability stack (done)
 
 **Why**: a separate team, Argus, is centralising monitoring and alerting across all of the
 owner's applications. Running our own Loki, Promtail, Tempo and Grafana beside that duplicates
@@ -3546,6 +3546,38 @@ observability", this item would break the integration it exists to enable.
 **Next**: agree the endpoint question above, then the `traceparent` conversation Argus flagged —
 `TraceIDMiddleware` starts a fresh root span and ignores an incoming one by deliberate design,
 which stops a trace crossing service boundaries. They said it does not block their pilot.
+
+## RM-92 — remove what the retired stack left behind (done)
+
+**Why**: [[RM-91]] deliberately stopped at the infrastructure and left four things standing,
+each for a stated reason. With monitoring moving to Argus wholesale, the owner's call was to
+leave no residue behind rather than carry it into the migration.
+
+**Removed**:
+- `_DEFAULT_ENDPOINT = "http://tempo:4318"`. There is no default collector now; unset means
+  export nowhere. This is the change RM-91 wrote and reverted, because it flips `_TRACING_ACTIVE`
+  and so changes what `TraceIDMiddleware` puts in a log line — deliberate here: that flag means
+  "spans leave this process", and with no collector they do not, so advertising ids nobody can
+  look up would be worse than not. It also ends the retry storm that cost ~45% of the pre-push
+  hook's runtime, measured.
+- `grafana_url` — the setting, the `/admin/api/config` field, its TypeScript type, and the
+  Overview link. The endpoint and its hook stay; `Limits.tsx` still uses them.
+- The `ops:dashboard` scope, from the auth service, the scope picker, and the SDK guide.
+  Confirmed against the live auth database first: no principal held it.
+- `podman-compose-ubuntu-dgx.yml`, orphaned — even the DGX installer and validator drive
+  `podman-compose.yml`.
+
+**A flaky test this surfaced, and fixed**: `test_reasoning_tokens_are_counted_when_a_stream_breaks`
+failed roughly two runs in three. [[RM-87]] made a streamed request's accounting a detached task
+precisely so a disconnect cannot cancel it, and that same independence let a task from one test
+still be writing while the next counted rows. The fixture now drains them. The flakiness was
+real and pre-existing since RM-87; it happened to show up here.
+
+**Open question raised by the owner**, deliberately not answered by changing anything: Argus
+label our services `service.namespace=edge-ai-inference`, which is this repository's directory
+name rather than the platform's name, Prometheus. See the note in [[RM-90]] — the value is set by
+Argus's deployment configuration, not by our code, and "prometheus" as a namespace inside an
+observability platform is ambiguous enough to be worth agreeing deliberately.
 
 Append a new row to the table with the next `RM-NN` id and a new `## RM-NN — ...` section
 below, following the same shape (Why / Scope). Re-sort the table if the new item's

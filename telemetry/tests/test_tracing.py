@@ -72,7 +72,7 @@ def test_configure_tracing_registers_processor() -> None:
     """AC-1: BatchSpanProcessor is registered; no exception raised."""
     from opentelemetry.sdk.trace.export import BatchSpanProcessor
 
-    configure_tracing(service="test-svc")
+    configure_tracing(service="test-svc", endpoint="http://collector.invalid:4318")
 
     provider = trace.get_tracer_provider()
     assert isinstance(provider, TracerProvider)
@@ -119,7 +119,7 @@ def test_configure_tracing_disabled_arg() -> None:
 
 def test_configure_tracing_idempotent() -> None:
     """AC-4: second call does not add a second BatchSpanProcessor."""
-    configure_tracing(service="test-svc")
+    configure_tracing(service="test-svc", endpoint="http://collector.invalid:4318")
     configure_tracing(service="other-svc")  # should be a no-op
 
     provider = trace.get_tracer_provider()
@@ -136,7 +136,7 @@ def test_configure_tracing_idempotent() -> None:
 
 async def test_middleware_otel_trace_id() -> None:
     """AC-5: with OTEL active, TraceIDMiddleware binds a 32-char hex trace_id."""
-    configure_tracing(service="test-svc", disabled=False)
+    configure_tracing(service="test-svc", disabled=False, endpoint="http://collector.invalid:4318")
 
     captured: list[dict[str, Any]] = []
 
@@ -167,7 +167,7 @@ async def test_middleware_otel_trace_id() -> None:
 
 async def test_middleware_otel_trace_id_matches_context() -> None:
     """AC-5: bound trace_id equals trace_id_from_context() inside the span."""
-    configure_tracing(service="test-svc", disabled=False)
+    configure_tracing(service="test-svc", disabled=False, endpoint="http://collector.invalid:4318")
 
     from_ctx_inside: list[str] = []
 
@@ -220,7 +220,7 @@ def test_get_tracer_distinct_instances() -> None:
 
 async def test_middleware_otel_ignores_inbound_trace_id() -> None:
     """AC-11: spoofed X-Trace-ID ignored; fresh W3C trace ID generated."""
-    configure_tracing(service="test-svc", disabled=False)
+    configure_tracing(service="test-svc", disabled=False, endpoint="http://collector.invalid:4318")
 
     app = Starlette(routes=[Route("/", lambda r: PlainTextResponse("ok"))])
     app.add_middleware(TraceIDMiddleware, service="test-svc")
@@ -323,3 +323,28 @@ def test_configure_tracing_explicit_attributes_win_over_env(
     provider = trace.get_tracer_provider()
     assert isinstance(provider, TracerProvider)
     assert provider.resource.attributes.get("service.namespace") == "explicit"
+
+
+# ── RM-92: no collector configured means export nowhere ──────────────────────
+
+
+def test_no_endpoint_configured_exports_nowhere(monkeypatch: pytest.MonkeyPatch) -> None:
+    """There is no default collector any more.
+
+    The default used to be `http://tempo:4318`, a hostname that only resolved
+    inside the compose network of a stack this project no longer runs — so every
+    process outside it retried against a name that did not exist, and said so in
+    the logs. Unset now means export nowhere.
+    """
+    monkeypatch.delenv("OTEL_EXPORTER_OTLP_ENDPOINT", raising=False)
+
+    _tracing._CONFIGURED = False
+    _tracing._TRACING_ACTIVE = False
+    configure_tracing(service="test-svc")
+
+    provider = trace.get_tracer_provider()
+    # The provider is still installed — spans are created, so anything reading a
+    # trace id keeps working — but nothing is shipped.
+    assert isinstance(provider, TracerProvider)
+    assert provider.resource.attributes.get("service.name") == "test-svc"
+    assert _tracing._TRACING_ACTIVE is False

@@ -22,7 +22,6 @@ VALID_SCOPES: frozenset[str] = frozenset(
         "backend-registry:read",  # Manager API — memory/specs/008-llama-server-manager.md — AC-13
         "backend-registry:write",  # RM-10 — Manager API register/deregister/start/stop/restart
         "ui:chat",  # Web Chat UI access — memory/specs/013-web-chat-ui-proxy.md — AC-6
-        "ops:dashboard",  # Grafana ops dashboard — memory/specs/021-ops-observability-stack.md — AC-6
     }
 )
 
