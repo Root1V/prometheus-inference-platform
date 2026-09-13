@@ -549,3 +549,65 @@ async def test_an_interrupted_charge_is_recorded_as_such(gw):
     events = await db.query_usage_events_range(utc_today, utc_today)
 
     assert sorted(e.interrupted for e in events) == [False, True]
+
+
+# ── RM-87: what the client does with the body must not change what we record ─
+
+
+@respx.mock
+async def test_the_terminal_frame_is_sent_once(gw, rsa_keys):
+    """The backend ends its own stream with `[DONE]`, and we used to forward it
+    and then add ours. A client is right to stop reading at the first terminal
+    frame — and that one arrived before anything had been accounted for, which
+    is how streamed requests went unbilled."""
+    respx.post(f"{BACKEND_URL}/v1/chat/completions").mock(
+        return_value=Response(
+            200,
+            text=(
+                'data: {"choices":[{"delta":{"content":"hi"}}],"timings":{"prompt_n":3,"predicted_n":1}}\n\n'
+                "data: [DONE]\n\n"
+            ),
+            headers={"Content-Type": "text/event-stream"},
+        )
+    )
+    headers = {
+        "Authorization": f"Bearer {make_token(rsa_keys['private'], scope='inference:stream model:solo')}",
+    }
+
+    resp = await gw.post("/v1/chat/completions", json=_chat(stream=True), headers=headers)
+
+    assert resp.text.count("[DONE]") == 1
+
+
+@respx.mock
+async def test_reasoning_tokens_are_counted_when_a_stream_breaks(gw, rsa_keys):
+    """A reasoning model streams its thinking as `reasoning_content`, not
+    `content`. RM-83's fallback counted only the latter, so a stream that broke
+    while the model was still reasoning tallied zero generated tokens and was
+    billed nothing — with the GPU having run the whole time."""
+    from datetime import datetime, timezone
+
+    async def reasoning_then_break(request):
+        async def body():
+            for word in ("Okay", ", ", "let"):
+                yield (
+                    b'data: {"choices":[{"delta":{"reasoning_content":"'
+                    + word.encode()
+                    + b'"}}]}\n\n'
+                )
+            raise httpx.ReadError("died while still thinking")
+
+        return Response(200, stream=body(), headers={"Content-Type": "text/event-stream"})
+
+    respx.post(f"{BACKEND_URL}/v1/chat/completions").mock(side_effect=reasoning_then_break)
+    headers = {
+        "Authorization": f"Bearer {make_token(rsa_keys['private'], scope='inference:stream model:solo')}",
+    }
+
+    await gw.post("/v1/chat/completions", json=_chat(stream=True), headers=headers)
+
+    utc_today = datetime.now(timezone.utc).date()
+    events = await db.query_usage_events_range(utc_today, utc_today)
+    assert len(events) == 1
+    assert events[0].completion_tokens == 3
+    assert events[0].interrupted is True

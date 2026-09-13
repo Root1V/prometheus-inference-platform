@@ -3378,6 +3378,48 @@ before pulling**, then copy it back. A running manager can also be read through 
 (`/v1/models`, `/v1/models/archived`, `/v1/backends`) while the process is still alive, which is
 what made recovery verifiable here.
 
+## RM-87 — a streamed request was only accounted for if the client drained the body (done)
+
+**Why**: Axonium reported that streaming replay ([[RM-82]]) was unreliable — 0 replays in 6
+tries, against 6 of 6 non-streaming — and asked for nothing. Reproducing it found a much larger
+defect underneath, and their report is the only reason it was found at all.
+
+Three things compounded:
+
+- We forwarded the backend's own `data: [DONE]` **and** appended our own, so every streamed
+  response carried two terminal frames.
+- A client that stops reading at the first terminal frame — which is what every OpenAI-shaped
+  SDK does — leaves the generator suspended. Everything the gateway does after that point ran
+  only when the generator was eventually torn down, inside a request task the server had already
+  cancelled, so it did not run at all.
+- Everything that records what happened lived after that point: usage, metering, the
+  idempotency settle, the spend-cap settle.
+
+**Measured before the fix**: three streamed generations from an SDK-shaped client produced
+**zero** usage rows, and still zero fifteen seconds later, while three identical ones from curl
+(which drains to EOF) produced three. A client abandoning a long generation mid-way was also
+billed nothing — the cheapest way to use the platform was to disconnect.
+
+**Fix**: emit the terminal frame once, ourselves, and only after the request is fully accounted
+for. Accounting is dispatched as a detached task rather than awaited, because creating a task is
+synchronous and survives the cancellation that a disconnect triggers — a client that walks away
+mid-generation is the case [[RM-83]] says we must still charge, not one to let through. The
+idempotency settle stays awaited on the normal path so a retry arriving immediately finds a
+stored result rather than a claim still being written, with the detached path as its fallback.
+
+**Also fixed**: [[RM-83]]'s token fallback counted only `delta.content`. A reasoning model
+streams its thinking as `reasoning_content`, so a stream abandoned while the model was still
+reasoning tallied zero tokens and was billed nothing. TTFT deliberately still keys off visible
+content — it is a latency metric with history behind it.
+
+**Verified live**, all against the running stack: SDK-style 3/3 billed (was 0/3), draining 3/3,
+abandoned mid-generation 1/1 (was 0), Axonium's exact measurement 6/6 replay (was 0/6), and a
+retry with no delay at all 3/3 replay. One terminal frame per response, down from two.
+
+**Known**: a stream the *client* abandoned is billed but not flagged `interrupted`, since
+nothing broke on our side. Whether a client walking away should be visible on the usage row the
+same way a broken stream is, is a policy question rather than a defect.
+
 Append a new row to the table with the next `RM-NN` id and a new `## RM-NN — ...` section
 below, following the same shape (Why / Scope). Re-sort the table if the new item's
 priority isn't "last."
