@@ -74,6 +74,15 @@ services:
     # Override TLS env vars so the entrypoint finds the certs at the container-internal paths.
     # gateway/.env keeps the host paths (used by start.sh for bare-metal).
     environment:
+      # RM-93: how this process identifies itself to whoever collects telemetry
+      # (Argus). OTEL_SERVICE_NAME names the component; the namespace groups the
+      # components under one platform, which is what makes "how is Prometheus
+      # doing?" answerable rather than only "how is gateway doing?".
+      # Unset endpoint = export nowhere, so a deployment opts in by configuring
+      # one rather than by us guessing a hostname.
+      - OTEL_SERVICE_NAME=gateway
+      - OTEL_RESOURCE_ATTRIBUTES=service.namespace=prometheus-inference-platform,argus.component.role=api,deployment.environment.name=${DEPLOYMENT_ENVIRONMENT:-podman}
+      - OTEL_EXPORTER_OTLP_ENDPOINT=${OTEL_EXPORTER_OTLP_ENDPOINT:-}
       - TZ=America/Lima
       - GATEWAY_TLS_CERT_FILE=/run/secrets/gateway.crt
       - GATEWAY_TLS_KEY_FILE=/run/secrets/gateway.key
@@ -135,6 +144,15 @@ services:
       - ./auth-service/.env
 
     environment:
+      # RM-93: how this process identifies itself to whoever collects telemetry
+      # (Argus). OTEL_SERVICE_NAME names the component; the namespace groups the
+      # components under one platform, which is what makes "how is Prometheus
+      # doing?" answerable rather than only "how is auth-service doing?".
+      # Unset endpoint = export nowhere, so a deployment opts in by configuring
+      # one rather than by us guessing a hostname.
+      - OTEL_SERVICE_NAME=auth-service
+      - OTEL_RESOURCE_ATTRIBUTES=service.namespace=prometheus-inference-platform,argus.component.role=api,deployment.environment.name=${DEPLOYMENT_ENVIRONMENT:-podman}
+      - OTEL_EXPORTER_OTLP_ENDPOINT=${OTEL_EXPORTER_OTLP_ENDPOINT:-}
       - TZ=America/Lima
       # AC-14: container-internal paths for TLS cert/key
       - AUTH_TLS_CERT_FILE=/run/secrets/auth_tls.crt
@@ -216,6 +234,15 @@ services:
       - "8090:8090"
 
     environment:
+      # RM-93: how this process identifies itself to whoever collects telemetry
+      # (Argus). OTEL_SERVICE_NAME names the component; the namespace groups the
+      # components under one platform, which is what makes "how is Prometheus
+      # doing?" answerable rather than only "how is manager-api doing?".
+      # Unset endpoint = export nowhere, so a deployment opts in by configuring
+      # one rather than by us guessing a hostname.
+      - OTEL_SERVICE_NAME=manager-api
+      - OTEL_RESOURCE_ATTRIBUTES=service.namespace=prometheus-inference-platform,argus.component.role=api,deployment.environment.name=${DEPLOYMENT_ENVIRONMENT:-podman}
+      - OTEL_EXPORTER_OTLP_ENDPOINT=${OTEL_EXPORTER_OTLP_ENDPOINT:-}
       - TZ=America/Lima
       # Container mode: use HTTP health probing instead of psutil.
       # Source of truth: root .env (PMGR_PROXY_HOST). Default: host.containers.internal.
@@ -225,11 +252,6 @@ services:
       - PMGR_JWKS_TLS_VERIFY=false
       # registry.yaml is mounted at /data/registry.yaml
       - PMGR_REGISTRY_PATH=/data/registry.yaml
-      # Distributed tracing — OTLP/HTTP to whatever collector the deployment
-      # points at (Argus run ours since RM-91).
-      # (Argus runs ours). Unset here on purpose — an endpoint naming a
-      # container we no longer ship is worse than none.
-      - OTEL_EXPORTER_OTLP_ENDPOINT=${OTEL_EXPORTER_OTLP_ENDPOINT:-}
 
     volumes:
       # Bind-mount the host registry.yaml as read-only.

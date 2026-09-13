@@ -394,7 +394,7 @@ class ManagerApp(App[None]):
         # Bind a session-scoped trace_id for all log events outside of _poll()
         # (on_mount, lifecycle actions triggered by buttons, etc.).
         structlog.contextvars.bind_contextvars(
-            service="manager",
+            service="manager-tui",
             component="tui",
             trace_id=f"tui-session-{str(uuid.uuid4())[:8]}",
         )
@@ -526,7 +526,7 @@ class ManagerApp(App[None]):
         meaningful trace_id instead of 'none'.
         """
         structlog.contextvars.bind_contextvars(
-            service="manager",
+            service="manager-tui",
             component="tui",
             trace_id=f"tui-{action}-{str(uuid.uuid4())[:8]}",
         )

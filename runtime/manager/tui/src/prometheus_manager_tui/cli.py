@@ -19,7 +19,7 @@ if TYPE_CHECKING:
     from prometheus_manager_core.registry import Registry
 
 # Configure structlog before any other manager imports (idempotent — AC-24)
-configure_logging(service="manager")
+configure_logging(service="manager-tui")
 
 # Inject OS native trust store (macOS Keychain, Windows CAPI, Linux system certs)
 # so that requests/huggingface_hub work without a manual ca_bundle on corp machines
@@ -595,7 +595,7 @@ def cmd_tui(ctx: click.Context) -> None:
     from .logging_setup import redirect_logging_for_tui
 
     configure_tracing(
-        service="manager",
+        service="manager-tui",
         endpoint=cfg.tracing.otlp_endpoint or None,
         disabled=cfg.tracing.disabled,
         resource_attributes={"tui.session_id": str(_uuid.uuid4())},

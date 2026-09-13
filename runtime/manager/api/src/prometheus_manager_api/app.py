@@ -20,8 +20,8 @@ from .discovery import router as discovery_router
 from .routes import router
 
 # Configure structlog when the API module is first loaded (idempotent — AC-24)
-configure_logging(service="manager", component="api")
-configure_tracing(service="manager")
+configure_logging(service="manager-api", component="api")
+configure_tracing(service="manager-api")
 
 app = FastAPI(
     title="Prometheus Manager API",
@@ -31,7 +31,7 @@ app = FastAPI(
 )
 
 # AC-28 (018): trace_id middleware propagates X-Trace-ID from gateway
-app.add_middleware(TraceIDMiddleware, service="manager")
+app.add_middleware(TraceIDMiddleware, service="manager-api")
 
 app.include_router(router)
 # RM-10: register/deregister/start/stop/restart — backend-registry:write
