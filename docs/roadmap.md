@@ -3293,6 +3293,32 @@ A stream that broke *before* the model emitted anything still writes no row: not
 generated, so there is nothing to bill or to mark. Only a partially delivered answer reaches
 this flag.
 
+## RM-84 — fix: the manager's JWKS URL pointed at a path that does not exist (done)
+
+**Why**: found by restarting the stack. `manager-api` answered `401 Invalid or expired token`
+to freshly minted, perfectly valid tokens, which sends the investigation to the credentials —
+the one place the problem was not. The real cause was its JWKS URL, in two independent ways:
+
+- `ApiConfig.jwks_url` defaulted to `/v1/jwks`, which the auth service does not serve and never
+  did; it returns 404. Any manager started without a `manager.toml` could therefore never
+  authenticate anyone. The embedded TOML defaults had the correct path, so which one applied
+  depended on whether a config file happened to be found.
+- The configured host was `localhost:9000`. `localhost` also resolves to `::1`, and anything
+  bound to `0.0.0.0:9000` on the machine answers before a service bound to `127.0.0.1`. On this
+  machine another project's object store did exactly that, and the manager was parsing an XML
+  error page as a key set.
+
+**Scope**: correct both defaults, in `manager.toml`, its example, the embedded defaults, and the
+image's own `PMGR_JWKS_URL` — which had the 404 path too and was only ever right because the
+compose files override it. Three tests anchor it, since a wrong default that nothing asserts is
+how this survived.
+
+**Not fixed here**: the manager still reports a dependency it cannot reach as `401 Invalid or
+expired token`, which is what made this expensive to find. [[RM-79]] fixed exactly that in the
+gateway — a failure to reach the auth service should be a `503` naming the dependency, not a
+`401` blaming the caller. The manager needs the same treatment; it is a behaviour change rather
+than a config fix, so it is not bundled in.
+
 Append a new row to the table with the next `RM-NN` id and a new `## RM-NN — ...` section
 below, following the same shape (Why / Scope). Re-sort the table if the new item's
 priority isn't "last."

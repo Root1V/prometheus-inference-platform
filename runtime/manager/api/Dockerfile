@@ -15,7 +15,7 @@
 #   podman run --rm -p 8090:8090 \
 #     -v ./runtime/manager/registry.yaml:/data/registry.yaml:ro \
 #     -e PMGR_PROXY_HOST=host.containers.internal \
-#     -e PMGR_JWKS_URL=http://host.containers.internal:9000/v1/jwks \
+#     -e PMGR_JWKS_URL=http://host.containers.internal:9000/.well-known/jwks.json \
 #     prometheus-manager-api
 
 # ── Stage 1: builder ──────────────────────────────────────────────────────────
@@ -80,7 +80,7 @@ ENV PATH="/app/.venv/bin:$PATH" \
 # PMGR_JWKS_URL      : auth-service JWKS endpoint (internal network)
 ENV PMGR_REGISTRY_PATH=/data/registry.yaml \
     PMGR_PROXY_HOST=host.containers.internal \
-    PMGR_JWKS_URL=http://auth-service:9000/v1/jwks
+    PMGR_JWKS_URL=http://auth-service:9000/.well-known/jwks.json
 
 # Manager REST API port
 EXPOSE 8090

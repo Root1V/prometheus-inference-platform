@@ -19,7 +19,7 @@ _DEFAULT_CONFIG = """
 [api]
 host = "0.0.0.0"
 port = 8090
-jwks_url = "http://localhost:9000/.well-known/jwks.json"
+jwks_url = "http://127.0.0.1:9000/.well-known/jwks.json"
 # Leave empty for bare-metal; set to host.containers.internal inside Podman.
 proxy_host = ""
 
@@ -80,7 +80,10 @@ disabled = false
 class ApiConfig:
     host: str = "0.0.0.0"
     port: int = 8090
-    jwks_url: str = "http://localhost:9000/v1/jwks"
+    # /v1/jwks does not exist — the auth service serves /.well-known/jwks.json.
+    # A manager started without a manager.toml fell back to this and rejected
+    # every token, with no hint that the URL was the problem.
+    jwks_url: str = "http://127.0.0.1:9000/.well-known/jwks.json"
     # Disable TLS verification for internal calls when using self-signed certs (dev/Podman).
     jwks_tls_verify: bool = True
     # When set, the API uses HTTP health probing instead of psutil scanning.
