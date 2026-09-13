@@ -3234,7 +3234,7 @@ model has no observations yet, since those counters reset with the process. The 
 refusals deliberately carry none — a hint on a refusal that never resolves would invite the
 retry we are telling the client not to make.
 
-## RM-82 — Idempotency for streaming responses (todo)
+## RM-82 — Idempotency for streaming responses (done)
 
 **Why**: a streaming retry still regenerates and bills twice — the same exposure [[RM-78]]
 closed for non-streaming, left open in what is probably the busier path for a chat SDK. The
@@ -3249,8 +3249,24 @@ that the billing hole is identical, which makes it a backlog item rather than a 
   covered: there is nothing complete to replay.
 - Covering that needs resumption rather than replay — SSE's `Last-Event-ID`, plus a cursor for
   non-EventSource clients. Different work, and nobody comparable has built it.
-- Until then the SDK's own behaviour — rejecting a key on `stream()` — is correct, and for the
-  better reason that partial protection is worse than none.
+- The SDK's own behaviour — rejecting a key on `stream()` — should now be relaxed for the
+  cases above, and kept for a retry after the model's own stream broke.
+
+**How it works**: the generator buffers what it emits and stores the assembled SSE body on a
+clean finish, subject to the same 1 MiB cap as any other response; a replay re-emits it in one
+chunk, since the client parses frames rather than timing them.
+
+The claim cannot be settled by the middleware that handles every other endpoint: `call_next`
+returns for a `StreamingResponse` *before* the generator has produced anything, so the
+middleware would hand the key back while the response was still being made. The handler takes
+the claim off the request and gives it to the generator, which settles it in its `finally`.
+
+A stream that ended in an in-band error frame is released rather than stored. Storing it would
+replay the failure to every retry, and the caller could never get past it.
+
+**Verified live**: the same key twice on a real streamed completion — 127ms then 4ms, the same
+27 frames byte for byte, `Idempotent-Replay: true`, and `usage_events` unchanged on the
+replay.
 
 Append a new row to the table with the next `RM-NN` id and a new `## RM-NN — ...` section
 below, following the same shape (Why / Scope). Re-sort the table if the new item's

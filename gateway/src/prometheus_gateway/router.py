@@ -35,7 +35,7 @@ from .notifications import send_budget_alert_email
 from .telemetry import get_logger, get_tracer, metrics_store
 
 if TYPE_CHECKING:
-    from collections.abc import Sequence
+    from collections.abc import AsyncIterator, Sequence
 
     from .models.backends import BackendPool
 
@@ -215,9 +215,34 @@ async def _healthy_members(
     return _GroupHealth(usable, skipped, min(recoveries) if recoveries else None)
 
 
+async def _settle_stream(claim: "idempotency.Claim", emitted: list[str], *, clean: bool) -> None:
+    """Store a finished stream, or hand its key back — RM-82.
+
+    `stream_error` inside the generator is already surfaced to the client as an
+    in-band error frame, so "clean" here means the generator itself wasn't torn
+    down. A stream that ended in an error frame is still not a result worth
+    replaying: the caller would receive the failure again and could never get
+    past it.
+    """
+    body = "".join(emitted)
+    if not clean or not body or '"error"' in body:
+        await idempotency.release(claim)
+        return
+    await idempotency.complete(claim, 200, idempotency.wrap_stream(body))
+
+
+async def _replay_stream(body: str) -> "AsyncIterator[str]":
+    """Re-emit a stored SSE body — RM-82.
+
+    One chunk: the client is parsing SSE frames, not timing them, and the
+    original pacing carried no information worth reproducing.
+    """
+    yield body
+
+
 async def _begin_idempotent(
     request: Request, claims: Any, path: str, payload: Any, model_key: str | None = None
-) -> JSONResponse | None:
+) -> Response | None:
     """Honour an Idempotency-Key header — RM-78.
 
     A returned response means stop: either the stored result, replayed, or a
@@ -237,6 +262,17 @@ async def _begin_idempotent(
     if isinstance(outcome, idempotency.Replay):
         # Deliberately no budget reserve, no usage row, no metrics: replaying
         # is not a second use of the model, which is the entire point.
+        sse = idempotency.unwrap_stream(outcome.body)
+        if sse is not None:
+            return StreamingResponse(
+                _replay_stream(sse),
+                media_type="text/event-stream",
+                headers={
+                    "Cache-Control": "no-cache",
+                    "X-Accel-Buffering": "no",
+                    "Idempotent-Replay": "true",
+                },
+            )
         return JSONResponse(
             content=outcome.body,
             status_code=outcome.status_code,
@@ -937,16 +973,13 @@ def create_router(registry: ModelRegistry, pool: "BackendPool") -> APIRouter:
                     "Contact the platform operator.",
                 )
 
-            # RM-78: before the budget reserve, because replaying must not
-            # reserve, bill or meter. Streaming is excluded — replaying one
-            # means storing every chunk, which neither OpenAI nor Anthropic
-            # documents clearly.
-            if not body.stream:
-                replay = await _begin_idempotent(
-                    request, claims, "/v1/chat/completions", body.model_dump(), resolution.model_key
-                )
-                if replay is not None:
-                    return replay
+            # RM-78/RM-82: before the budget reserve, because replaying must
+            # not reserve, bill or meter.
+            replay = await _begin_idempotent(
+                request, claims, "/v1/chat/completions", body.model_dump(), resolution.model_key
+            )
+            if replay is not None:
+                return replay
 
             # RM-69: AC-14 (007)'s circuit-breaker check, now across the whole
             # group rather than on a replica already chosen — a single tripped
@@ -1056,6 +1089,15 @@ def create_router(registry: ModelRegistry, pool: "BackendPool") -> APIRouter:
 
             try:
                 if body.stream:
+                    # RM-82: the middleware settles a claim when call_next
+                    # returns, which for a stream is before the generator has
+                    # emitted anything — it would hand the key back while the
+                    # response was still being produced. Take it off the
+                    # request so the generator settles it instead, once there
+                    # is actually something to store.
+                    stream_claim = getattr(request.state, "idempotency_claim", None)
+                    request.state.idempotency_claim = None
+
                     # AC-7 (006): SSE streaming — retry NOT applied (AC-17c)
                     return await _stream_response(
                         request,
@@ -1070,6 +1112,7 @@ def create_router(registry: ModelRegistry, pool: "BackendPool") -> APIRouter:
                         budget_redis=budget_redis,
                         reservation=reservation,
                         alert_thresholds_percent=alert_thresholds_percent,
+                        idempotency_claim=stream_claim,
                     )
                 else:
                     await metrics_store.inc_requests_active()
@@ -1965,6 +2008,7 @@ async def _stream_response(
     reservation: "BudgetReservation | None" = None,
     alert_thresholds_percent: list[int] | None = None,
     served_by_headers: dict[str, str] | None = None,
+    idempotency_claim: "idempotency.Claim | None" = None,
 ) -> StreamingResponse:
     """Forward a streaming request using a pooled client.
 
@@ -1994,11 +2038,23 @@ async def _stream_response(
     pool.acquire(backend_id)
 
     async def event_generator() -> Any:
+        # RM-82: buffered so a completed stream can be replayed to a retry
+        # carrying the same key. Only a clean finish is stored — a stream that
+        # broke has nothing complete to replay, and its key is handed back so
+        # the retry proceeds, which is what a client wants after a break.
+        emitted: list[str] = []
+        clean = True
         try:
             async for chunk in _stream_events():
+                emitted.append(chunk)
                 yield chunk
+        except BaseException:
+            clean = False
+            raise
         finally:
             pool.release(backend_id)
+            if idempotency_claim is not None:
+                await _settle_stream(idempotency_claim, emitted, clean=clean)
 
     async def _stream_events() -> Any:
         prompt_tokens = 0

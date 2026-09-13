@@ -94,7 +94,7 @@ Status: `done` · `todo`
 | RM-80 | fix: idempotency refusals shared one error type | done | All four reasons answered `409 idempotency-conflict`, so telling them apart meant matching on prose — and they need opposite handling: only "still running" resolves by retrying. Each now has its own `type`, and a malformed key is a 400 rather than a conflict it never had |
 
 | RM-81 | Idempotency: distinguish refusals by type, and estimate the wait | done | Follow-on to RM-80: `idempotency-in-progress` now carries a `Retry-After` derived from the model's observed p95 latency minus elapsed time. The earlier refusal to provide one claimed the only bound available was the 600s backend timeout, which was wrong — the measurement already existed |
-| RM-82 | Idempotency for streaming responses | todo | A streaming retry still regenerates and bills twice — the same exposure RM-78 closed for non-streaming, left open in what is likely the busier path. A stored key can cover a dropped client connection but not a stream the model itself broke; covering that needs resumption (SSE `Last-Event-ID`), which no comparable platform has built |
+| RM-82 | Idempotency for streaming responses | done | A streaming retry still regenerates and bills twice — the same exposure RM-78 closed for non-streaming, left open in what is likely the busier path. A stored key can cover a dropped client connection but not a stream the model itself broke; covering that needs resumption (SSE `Last-Event-ID`), which no comparable platform has built |
 
 Adding an item: append the next `RM-NN` row here with a one-liner, then add the full
 Why/Scope writeup to `docs/roadmap.md`.

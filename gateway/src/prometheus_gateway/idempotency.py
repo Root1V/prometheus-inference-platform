@@ -57,6 +57,26 @@ _COMPLETED = "completed"
 MAX_KEY_LENGTH = 255
 
 
+# RM-82: a stored stream is kept as its raw SSE text under this key. The store
+# is JSON and an SSE body is not, so wrapping it keeps one storage path rather
+# than a second column plus a discriminator.
+_STREAM_FIELD = "__sse_stream__"
+
+
+def wrap_stream(raw: str) -> dict[str, str]:
+    """Package an SSE body for storage."""
+    return {_STREAM_FIELD: raw}
+
+
+def unwrap_stream(body: Any) -> str | None:
+    """The SSE body a Replay carries, or None if it was an ordinary response."""
+    if isinstance(body, dict):
+        raw = body.get(_STREAM_FIELD)
+        if isinstance(raw, str):
+            return raw
+    return None
+
+
 @dataclass(frozen=True)
 class Replay:
     """A stored result to return instead of generating again."""
