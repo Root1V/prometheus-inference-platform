@@ -102,7 +102,8 @@ services:
     # AC-7: non-root user enforced in the Dockerfile (USER prometheus)
     # No need to set user here — Dockerfile already handles it
 
-    # Push container stdout/stderr to Promtail via UDP syslog (memory/specs/021 — AC-3)
+    # Container stdout/stderr, read with `podman logs`. RM-91 removed the
+    # shipper that used to forward these; Argus collect them now.
     logging:
       driver: k8s-file
       options:
@@ -164,7 +165,8 @@ services:
         source: ${AUTH_DB_HOST_PATH:-./data/auth-service}
         target: /data
 
-    # Push container stdout/stderr to Promtail via UDP syslog (memory/specs/021 — AC-3)
+    # Container stdout/stderr, read with `podman logs`. RM-91 removed the
+    # shipper that used to forward these; Argus collect them now.
     logging:
       driver: k8s-file
       options:
@@ -223,8 +225,8 @@ services:
       - PMGR_JWKS_TLS_VERIFY=false
       # registry.yaml is mounted at /data/registry.yaml
       - PMGR_REGISTRY_PATH=/data/registry.yaml
-      # Distributed tracing — OTLP/HTTP to Tempo on the internal Podman network
-      # RM-91: telemetry goes to whatever collector the deployment points at
+      # Distributed tracing — OTLP/HTTP to whatever collector the deployment
+      # points at (Argus run ours since RM-91).
       # (Argus runs ours). Unset here on purpose — an endpoint naming a
       # container we no longer ship is worse than none.
       - OTEL_EXPORTER_OTLP_ENDPOINT=${OTEL_EXPORTER_OTLP_ENDPOINT:-}
@@ -237,7 +239,8 @@ services:
         target: /data/registry.yaml
         read_only: true
 
-    # Push container stdout/stderr to Promtail via UDP syslog (memory/specs/021 — AC-3)
+    # Container stdout/stderr, read with `podman logs`. RM-91 removed the
+    # shipper that used to forward these; Argus collect them now.
     logging:
       driver: k8s-file
       options:
