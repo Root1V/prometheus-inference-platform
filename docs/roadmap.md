@@ -3420,6 +3420,43 @@ retry with no delay at all 3/3 replay. One terminal frame per response, down fro
 nothing broke on our side. Whether a client walking away should be visible on the usage row the
 same way a broken stream is, is a policy question rather than a defect.
 
+## RM-88 — usage rows say why a request stopped, not just that it did (done)
+
+**Why**: [[RM-87]] left a gap it created. Before it, a caller hanging up mid-answer wrote no
+usage row at all, so `interrupted` only ever had one cause and a boolean was enough. Once those
+requests started being billed, the same column had to carry two events that are nothing alike:
+*we* cut the answer short, or *they* did. Those are opposite conversations to have when a charge
+is questioned, and a chat UI's stop button produces the second one all day long.
+
+Leaving it also broke a promise already in a client's hands: the answers document sent to
+Axonium says "if you are charged for an answer you never fully received, that row says so." A
+stream the caller abandoned is exactly that, and it was not being marked.
+
+Industry practice points the same way twice — usage data is financial data and a dispute is
+resolved by tracing a line back to the event that produced it, *with its reason*; and a state
+with three values is an enum, not a boolean with a comment.
+
+**Scope**: `termination_reason` on `usage_events` — `complete`, `upstream_error`,
+`client_disconnected` — derived from what the code already knew and was discarding. `interrupted`
+stays as a derived column rather than being dropped: SDK clients parse it and it now means
+precisely what they were told. It is never set independently, so the two can never disagree on a
+row. The CSV gains the reason as a trailing column, leaving every existing position untouched.
+
+The migration reads existing rows honestly rather than guessing: `interrupted = 1` can only have
+meant `upstream_error`, because the other cause wrote no row before RM-87.
+
+**Also settled here**: we bill the tokens actually *sent* to the caller, not everything the GPU
+produced. That is what the implementation already did and it is the narrower, more defensible of
+the two measures — but RM-83's notes and the Axonium document both described it as billing what
+was generated, which overstates it in our own disfavour. Worth correcting the next time we write
+to them.
+
+**Verified live**: three streamed requests against the running stack produced `complete` (an SDK
+stopping at `[DONE]`), `complete` (a client draining to EOF) and `client_disconnected` (a client
+abandoning a long generation, billed 11+5 tokens). The CSV export carries both columns and
+leaves them blank on the TOTAL row. The migration backfilled the live database with no
+`interrupted` rows to reinterpret.
+
 Append a new row to the table with the next `RM-NN` id and a new `## RM-NN — ...` section
 below, following the same shape (Why / Scope). Re-sort the table if the new item's
 priority isn't "last."

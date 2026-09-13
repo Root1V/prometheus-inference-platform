@@ -500,6 +500,7 @@ async def test_a_clean_stream_is_not_marked_interrupted(gw, rsa_keys):
     utc_today = datetime.now(timezone.utc).date()
     events = await db.query_usage_events_range(utc_today, utc_today)
     assert [e.interrupted for e in events] == [False]
+    assert [e.termination_reason for e in events] == [db.TERMINATION_COMPLETE]
 
 
 @respx.mock
@@ -533,22 +534,53 @@ async def test_a_stream_that_broke_after_producing_tokens_is_billed_and_marked(g
     assert len(events) == 1
     assert events[0].completion_tokens == 3
     assert events[0].interrupted is True
+    assert events[0].termination_reason == db.TERMINATION_UPSTREAM_ERROR
 
 
 async def test_an_interrupted_charge_is_recorded_as_such(gw):
-    """We charge for tokens generated, as every comparable platform does — the
-    compute was spent. What was missing is the record: a client disputing a
-    charge for a half-delivered answer had nothing to point at, and neither did
-    we."""
+    """We charge for the tokens actually sent to the caller. What was missing is
+    the record: a client disputing a charge for a half-delivered answer had
+    nothing to point at, and neither did we."""
     from datetime import datetime, timezone
 
-    await db.record_usage("c", "m", 100, 40, instance_id="i1", interrupted=True)
+    await db.record_usage(
+        "c", "m", 100, 40, instance_id="i1", termination_reason=db.TERMINATION_UPSTREAM_ERROR
+    )
     await db.record_usage("c", "m", 100, 90, instance_id="i1")
 
     utc_today = datetime.now(timezone.utc).date()
     events = await db.query_usage_events_range(utc_today, utc_today)
 
     assert sorted(e.interrupted for e in events) == [False, True]
+
+
+async def test_the_three_ways_a_request_ends_stay_distinguishable(gw):
+    """RM-88: the boolean could not tell an answer we broke from one the caller
+    walked away from, and those are opposite conversations to have when a charge
+    is questioned. A chat UI's stop button produces the second all day."""
+    from datetime import datetime, timezone
+
+    for reason in (
+        db.TERMINATION_COMPLETE,
+        db.TERMINATION_UPSTREAM_ERROR,
+        db.TERMINATION_CLIENT_DISCONNECTED,
+    ):
+        await db.record_usage("c", "m", 10, 10, instance_id="i1", termination_reason=reason)
+
+    utc_today = datetime.now(timezone.utc).date()
+    events = await db.query_usage_events_range(utc_today, utc_today)
+
+    assert sorted(e.termination_reason for e in events) == [
+        "client_disconnected",
+        "complete",
+        "upstream_error",
+    ]
+    # The published boolean keeps meaning what we told SDK clients it means:
+    # "you were charged for an answer you did not receive whole."
+    by_reason = {e.termination_reason: e.interrupted for e in events}
+    assert by_reason["complete"] is False
+    assert by_reason["upstream_error"] is True
+    assert by_reason["client_disconnected"] is True
 
 
 # ── RM-87: what the client does with the body must not change what we record ─
@@ -611,3 +643,4 @@ async def test_reasoning_tokens_are_counted_when_a_stream_breaks(gw, rsa_keys):
     assert len(events) == 1
     assert events[0].completion_tokens == 3
     assert events[0].interrupted is True
+    assert events[0].termination_reason == db.TERMINATION_UPSTREAM_ERROR
