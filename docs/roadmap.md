@@ -3582,6 +3582,37 @@ set by Argus's deployment configuration rather than our code, so the change is t
 the value is updated in the tests they gave us and the request is in
 `docs/argus-answers-2026-09-13.md`.
 
+## RM-93 — services identify themselves to Argus (done)
+
+**Why**: Argus reported, factually and without knowing what it implied, that `gateway`,
+`manager-api` and `manager-core` had never emitted anything. Checking why found two defects of
+ours and one non-defect.
+
+**The one that matters**: `manager-api` and the terminal UI both called
+`configure_tracing(service="manager")`. Two processes, one identity. Argus had just built a
+silence probe that pages when a service stops emitting for 15 minutes — and with both named
+`manager`, **a developer leaving the TUI open keeps the API looking alive after it dies**. Their
+probe was defeated by our naming before it ever ran. Now `manager-api` and `manager-tui`.
+
+**The second**: nothing in our deployment set `OTEL_SERVICE_NAME` or `OTEL_RESOURCE_ATTRIBUTES` —
+not compose, not the env examples, nowhere. So no service ever carried a namespace, and the
+`edge-ai-inference` Argus saw came from their own manual test run rather than from us. Both
+variables are now set per service in `podman-compose.yml` and in the env examples, with
+`service.namespace=prometheus-inference-platform`.
+
+**The non-defect**: `manager-core` has no entrypoint. It is a library imported by the API and the
+TUI and can never emit as a service of its own, so Argus are holding a catalogue entry that will
+never connect. Told them to remove it rather than wait for it.
+
+**Why nothing had emitted**: not instrumentation — all four services call `configure_tracing`,
+and all four route through the same `prometheus_telemetry` via thin re-export shims, so
+[[RM-90]]'s fix reaches every one of them. They had simply never been pointed at a collector.
+
+**Verified live against Argus's own collector**, which turned out to be already running on
+`localhost:4318`: the three services restarted with their identity, and the collector's
+`otelcol_receiver_accepted_spans_total` went 297 → 337 with zero export errors. That is the first
+telemetry `gateway` and `manager-api` have ever produced.
+
 Append a new row to the table with the next `RM-NN` id and a new `## RM-NN — ...` section
 below, following the same shape (Why / Scope). Re-sort the table if the new item's
 priority isn't "last."
