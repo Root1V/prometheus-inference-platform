@@ -3641,6 +3641,38 @@ already correct, since its `environment:` entries are real process environment.
 **Verified live** against Argus's collector: the gateway restarted carrying all of it, and their
 `otelcol_receiver_accepted_spans_total` kept climbing with zero export errors.
 
+## RM-95 — health probes ask where the engine answers, and stop tracing themselves (done)
+
+Three things, all prompted by Argus reporting our gateway hammering a backend with 404s.
+
+**The 404 was a workaround for a problem that did not exist.** The monitor treated *any* answer
+as proof of life, justified by sd.cpp having no `/health`. It does answer `GET /` with 200 and the
+body "Stable Diffusion Server is running" — measured, once someone looked. The rule it replaced
+was wrong in a way worth naming: a 404 proves only that something speaks HTTP on that port, and
+cannot tell a healthy backend from a broken one or from **an unrelated process that took the
+port** — which is exactly what [[RM-84]] was, a container from another project bound to a port we
+expected and its XML error page parsed as a key set. Every orchestrator treats 200-399 as success
+and everything else as failure; so do we now, probing the path each engine actually serves.
+
+The engine was available all along: the manager has always sent `backend` per instance and the
+gateway dropped it building its `ModelEntry`. Caught live — the first run marked sd-turbo
+unhealthy because the field was wired into one of the two construction sites and the sync used
+the other. It would have taken image generation offline.
+
+**Probe spans were 57% of this gateway's telemetry**, measured by the team receiving them. Six
+backends on a ten-second interval produce ~72 spans a minute answering no question anyone asks —
+whether a backend is up is a metric, which is what `capacity()` and the unreachable set already
+are. Suppressed at the source via `_SUPPRESS_INSTRUMENTATION_KEY` rather than filtered at the
+collector, so nothing is built, serialised or shipped to be discarded at the far end.
+
+**GenAI semantic conventions, emitted by hand.** Argus asked for them and offered a package that
+produces them. They are a handful of constants on a span we already create, against a dependency
+that currently ships as a loose pre-release wheel with no index — their own position was that the
+attribute table is the contract and hand emission is equally fine. The streamed path gets its own
+span, parented to the request's captured context, because the handler's span has ended long
+before a stream's outcome is known; that is the path carrying `client_disconnected`, which Argus
+called the most valuable attribute we have.
+
 Append a new row to the table with the next `RM-NN` id and a new `## RM-NN — ...` section
 below, following the same shape (Why / Scope). Re-sort the table if the new item's
 priority isn't "last."

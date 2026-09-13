@@ -13,10 +13,22 @@ to stop a client paying for the discovery:
 This closes the gap by asking each active backend, on a short interval,
 whether it is still there.
 
-Liveness here means *the process answered*, not *the answer was 200*: sd.cpp
-serves image generation but has no `/health` route and replies 404 (verified
-against a running sd-server), so treating a non-200 as dead would take image
-generation down entirely. Only a connection error or a timeout counts.
+Liveness means a **success status from an endpoint the engine actually serves**
+— RM-95. It used to mean "the process answered anything at all", including a
+404, on the grounds that sd.cpp has no `/health`. That was a workaround for a
+problem that did not exist: sd-server answers `GET /` with 200 and the body
+"Stable Diffusion Server is running". Nobody had looked.
+
+The old rule was wrong in a way worth naming, because it cost us elsewhere on
+the same day it was written. A 404 proves only that *something* speaks HTTP on
+that port. It cannot tell a healthy backend from a broken one, nor from an
+entirely different process that took the port — and that last case is real: a
+container from another project bound 0.0.0.0:9000 here and the manager spent
+hours parsing its XML error page as a JSON key set. A probe that accepts any
+answer is built to miss exactly that.
+
+Every load balancer and orchestrator treats 200-399 as success and everything
+else as failure. So do we now.
 """
 
 from __future__ import annotations
@@ -24,10 +36,19 @@ from __future__ import annotations
 import asyncio
 
 import httpx
+from opentelemetry.context import _SUPPRESS_INSTRUMENTATION_KEY, attach, detach, set_value
 
 from .telemetry import get_logger
 
 logger = get_logger(__name__)
+
+# RM-95: which path each engine actually serves as a health signal, and whether
+# it reports concurrency. sd.cpp has neither `/health` nor `/slots`; it has `/`.
+_ENGINE_PROBES: dict[str, tuple[str, str | None]] = {
+    "llama_cpp": ("/health", "/slots"),
+    "sd_cpp": ("/", None),
+}
+_DEFAULT_PROBE = _ENGINE_PROBES["llama_cpp"]
 
 # Short enough that a hung backend is noticed quickly, long enough that a
 # backend busy generating tokens still answers. Probes hit `/health`, which
@@ -118,9 +139,27 @@ class BackendHealthMonitor:
         # Sorted list, not the set: gather() results come back positionally, so
         # the sequence probed and the sequence zipped must be the same object.
         entries = [m for m in list_active() if m.backend_url]
-        urls = sorted({m.backend_url for m in entries})
+        # RM-95: one engine per URL. Two models served by the same process share
+        # a URL and an engine, so the first entry answers for the address.
+        engines: dict[str, str] = {}
+        for m in entries:
+            engines.setdefault(str(m.backend_url), getattr(m, "backend", "") or "llama_cpp")
+        urls = sorted(engines)
 
-        results = await asyncio.gather(*(self._probe(url) for url in urls), return_exceptions=True)
+        # RM-95: a span per probe answers no question anyone asks, and there are
+        # a lot of them — six backends on a ten-second interval was 57% of every
+        # span this gateway produced, measured by the team receiving them.
+        # Suppressed at the source rather than filtered downstream, so nothing
+        # is built, serialised or shipped to be discarded at the far end.
+        # Whether a backend is up is a metric; `capacity()` and the unreachable
+        # set are where that lives.
+        token = attach(set_value(_SUPPRESS_INSTRUMENTATION_KEY, True))
+        try:
+            results = await asyncio.gather(
+                *(self._probe(url, engines[url]) for url in urls), return_exceptions=True
+            )
+        finally:
+            detach(token)
         now_unreachable = {url for url, alive in zip(urls, results) if alive is not True}
 
         recovered = self._unreachable - now_unreachable
@@ -138,19 +177,31 @@ class BackendHealthMonitor:
                 slots = self._slots.get(str(entry.backend_url).rstrip("/"))
                 self._pool.set_slot_capacity(entry.id, slots or 0)  # type: ignore[attr-defined]
 
-    async def _probe(self, backend_url: str) -> bool:
+    async def _probe(self, backend_url: str, engine: str = "llama_cpp") -> bool:
         assert self._client is not None
         base = backend_url.rstrip("/")
+        health_path, slots_path = _ENGINE_PROBES.get(engine, _DEFAULT_PROBE)
         try:
-            await self._client.get(f"{base}/health")
+            resp = await self._client.get(f"{base}{health_path}")
         except Exception:
-            # Any answer at all — 200, 404, even 500 — means the process is
-            # alive and accepting connections, which is all this asks.
             return False
-        await self._read_slots(base)
+        if not resp.is_success and not resp.is_redirect:
+            # 200-399 is success, anything else is failure — the same rule every
+            # orchestrator and load balancer applies. A 404 here now means the
+            # thing on that port is not the backend we think it is.
+            logger.warning(
+                "health_monitor.backend_unhealthy",
+                backend_url=base,
+                engine=engine,
+                path=health_path,
+                status_code=resp.status_code,
+            )
+            return False
+        if slots_path:
+            await self._read_slots(base, slots_path)
         return True
 
-    async def _read_slots(self, base: str) -> None:
+    async def _read_slots(self, base: str, slots_path: str = "/slots") -> None:
         """Record how many concurrent slots this backend has, if it says.
 
         Failure is not an error: sd.cpp has no /slots route, and a backend that
@@ -158,7 +209,7 @@ class BackendHealthMonitor:
         counted as having none.
         """
         try:
-            resp = await self._client.get(f"{base}/slots")  # type: ignore[union-attr]
+            resp = await self._client.get(f"{base}{slots_path}")  # type: ignore[union-attr]
             slots = resp.json()
             if isinstance(slots, list) and slots:
                 self._slots[base] = len(slots)

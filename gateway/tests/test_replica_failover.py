@@ -37,8 +37,11 @@ CHAT_RESPONSE = {
 }
 
 
-def _entry(id: str, url: str | None, *, model_id: str = "llama") -> ModelEntry:
+def _entry(
+    id: str, url: str | None, *, model_id: str = "llama", backend: str = "llama_cpp"
+) -> ModelEntry:
     return ModelEntry(
+        backend=backend,
         id=id,
         path=f"/m/{id}.gguf",
         context_length=4096,
@@ -172,19 +175,39 @@ async def test_a_backend_the_monitor_reports_unreachable_is_skipped():
 
 
 @respx.mock
-async def test_a_backend_without_a_health_route_counts_as_alive():
-    """sd.cpp serves image generation but has no /health and replies 404
-    (verified against a running sd-server). Treating that as dead would take
-    image generation down entirely.
+async def test_an_image_backend_is_probed_where_it_actually_answers():
+    """RM-95: sd.cpp has no `/health`, which we used to work around by accepting
+    a 404 as proof of life. It does answer `GET /` with 200 — nobody had looked.
     """
-    respx.get(f"{REPLICA_A_URL}/health").mock(return_value=Response(404))
+    root = respx.get(f"{REPLICA_A_URL}/").mock(return_value=Response(200, text="running"))
+    health = respx.get(f"{REPLICA_A_URL}/health").mock(return_value=Response(404))
     registry = ModelRegistry.__new__(ModelRegistry)
-    registry._models = {"sd": _entry("sd", REPLICA_A_URL)}
+    registry._models = {"sd": _entry("sd", REPLICA_A_URL, backend="sd_cpp")}
 
     monitor = BackendHealthMonitor(registry=registry)
     await monitor.probe_once()
 
     assert monitor.unreachable(REPLICA_A_URL) is False
+    assert root.called
+    assert not health.called, "an engine should be asked where it actually answers"
+    await monitor.stop()
+
+
+@respx.mock
+async def test_a_404_on_the_declared_health_path_counts_as_dead():
+    """A 404 proves only that *something* speaks HTTP on that port — not that it
+    is our backend, and not that it is well. On this very machine a container
+    from another project took a port and served its own error page, which the
+    old rule would have read as health. 200-399 is success, as everywhere else.
+    """
+    respx.get(f"{REPLICA_A_URL}/health").mock(return_value=Response(404))
+    registry = ModelRegistry.__new__(ModelRegistry)
+    registry._models = {"llama-a": _entry("llama-a", REPLICA_A_URL)}
+
+    monitor = BackendHealthMonitor(registry=registry)
+    await monitor.probe_once()
+
+    assert monitor.unreachable(REPLICA_A_URL) is True
     await monitor.stop()
 
 
@@ -422,3 +445,40 @@ def test_a_backend_reporting_no_capacity_falls_back_to_raw_counts():
     pool.acquire("sd")
 
     assert pool.load_ratio("sd") == 2.0
+
+
+@respx.mock
+async def test_probes_do_not_produce_spans():
+    """RM-95: six backends on a ten-second interval was 57% of every span this
+    gateway produced, measured by the team receiving them. A span per probe
+    answers no question anyone asks — whether a backend is up is a metric.
+    Suppressed at the source, so nothing is built to be dropped downstream.
+    """
+    from opentelemetry import trace
+    from opentelemetry.sdk.trace import TracerProvider
+    from opentelemetry.sdk.trace.export import SimpleSpanProcessor
+    from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
+
+    exporter = InMemorySpanExporter()
+    provider = TracerProvider()
+    provider.add_span_processor(SimpleSpanProcessor(exporter))
+    previous = trace.get_tracer_provider()
+    trace._TRACER_PROVIDER = provider  # type: ignore[attr-defined]
+    try:
+        from opentelemetry.instrumentation.httpx import HTTPXClientInstrumentor
+
+        HTTPXClientInstrumentor().instrument()
+        respx.get(f"{REPLICA_A_URL}/health").mock(return_value=Response(200))
+        respx.get(f"{REPLICA_A_URL}/slots").mock(return_value=Response(200, json=[{}]))
+        registry = ModelRegistry.__new__(ModelRegistry)
+        registry._models = {"llama-a": _entry("llama-a", REPLICA_A_URL)}
+
+        monitor = BackendHealthMonitor(registry=registry)
+        await monitor.probe_once()
+        await monitor.stop()
+
+        probe_spans = [s for s in exporter.get_finished_spans() if "health" in str(s.attributes)]
+        assert probe_spans == []
+    finally:
+        HTTPXClientInstrumentor().uninstrument()
+        trace._TRACER_PROVIDER = previous  # type: ignore[attr-defined]

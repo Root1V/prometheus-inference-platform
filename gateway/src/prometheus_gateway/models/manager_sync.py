@@ -277,6 +277,10 @@ class ManagerRegistrySync:
             discovery=True,  # manager already filtered by discovery=true
             node=node_name,
             modality=b.get("modality", "text"),
+            # RM-95: which engine serves this instance, so health probing can ask
+            # where the engine actually answers. The default is the fallback for
+            # a node predating this field, not a guess about this one.
+            backend=b.get("backend") or "llama_cpp",
             # RM-51: falls back to this instance's own id for a not-yet-
             # upgraded manager node during a rolling deploy (pre-RM-51
             # /v1/backends responses don't send model_id at all).

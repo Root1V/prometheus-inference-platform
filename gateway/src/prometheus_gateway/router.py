@@ -19,6 +19,7 @@ from typing import TYPE_CHECKING, Any, Literal, NamedTuple
 
 import httpx
 import structlog
+from opentelemetry import context as otel_context
 from fastapi import APIRouter, Request, Response
 from fastapi.responses import JSONResponse, StreamingResponse
 
@@ -241,6 +242,60 @@ def _detach(coro: "Any", *, what: str) -> None:
             logger.error("stream.finalisation_failed", what=what, error=str(exc))
 
     task.add_done_callback(_done)
+
+
+# RM-95: OpenTelemetry's GenAI semantic conventions, emitted by hand.
+#
+# Argus asked for these by name and offered a package that produces them. We
+# emit them ourselves for now: it is a handful of constants on a span we already
+# create, against a dependency that currently ships as a loose pre-release wheel
+# with no index. Their own words were that the table is the contract and hand
+# emission is equally fine. When there is an index, the package is the better
+# home — the conventions are still experimental and will move.
+_ENGINE_PROVIDERS = {"llama_cpp": "llama.cpp", "sd_cpp": "stable-diffusion.cpp"}
+
+
+def _genai_request_attrs(operation: str, model: str, engine: str) -> dict[str, Any]:
+    return {
+        "gen_ai.operation.name": operation,
+        "gen_ai.request.model": model,
+        "gen_ai.provider.name": _ENGINE_PROVIDERS.get(engine, engine or "unknown"),
+    }
+
+
+def _genai_response_attrs(
+    *,
+    response_model: str | None = None,
+    input_tokens: int | None = None,
+    output_tokens: int | None = None,
+    finish_reason: str | None = None,
+    backend_id: str | None = None,
+    ttft_ms: int | None = None,
+) -> dict[str, Any]:
+    """What the answer turned out to be.
+
+    `gen_ai.response.model` is not redundant with the request's: when a caller
+    asks for one name and another is served, that difference is the first thing
+    worth seeing. `finish_reason` carries our own termination reason, including
+    `client_disconnected` — the distinction between failing and being abandoned,
+    which are different problems with different fixes.
+    """
+    attrs: dict[str, Any] = {}
+    if response_model is not None:
+        attrs["gen_ai.response.model"] = response_model
+    if input_tokens is not None:
+        attrs["gen_ai.usage.input_tokens"] = input_tokens
+    if output_tokens is not None:
+        attrs["gen_ai.usage.output_tokens"] = output_tokens
+    if finish_reason is not None:
+        attrs["gen_ai.response.finish_reasons"] = [finish_reason]
+    # Ours, not OpenTelemetry's: which replica answered, and how long the caller
+    # waited to see anything. No standard attribute covers either.
+    if backend_id is not None:
+        attrs["argus.inference.backend_id"] = backend_id
+    if ttft_ms is not None:
+        attrs["argus.inference.ttft_ms"] = ttft_ms
+    return attrs
 
 
 async def _settle_stream(claim: "idempotency.Claim", emitted: list[str], *, clean: bool) -> None:
@@ -1049,6 +1104,13 @@ def create_router(registry: ModelRegistry, pool: "BackendPool") -> APIRouter:
                 health = health._replace(usable=[target])
 
             entry = health.usable[0]
+            # RM-95: the request half of the GenAI convention, set as soon as the
+            # engine is known. The response half is set where it becomes known —
+            # below for a non-streaming answer, and in the generator's own span
+            # for a streamed one, because this span has ended by then.
+            inf_span.set_attributes(
+                _genai_request_attrs("chat", resolution.model_key, entry.backend)
+            )
             # resolve() only ever returns members that have a backend_url;
             # binding it states that invariant for the type checker.
             assert entry.backend_url is not None
@@ -1154,6 +1216,9 @@ def create_router(registry: ModelRegistry, pool: "BackendPool") -> APIRouter:
                         reservation=reservation,
                         alert_thresholds_percent=alert_thresholds_percent,
                         idempotency_claim=stream_claim,
+                        genai_request_attrs=_genai_request_attrs(
+                            "chat", resolution.model_key, entry.backend
+                        ),
                     )
                 else:
                     await metrics_store.inc_requests_active()
@@ -1267,6 +1332,16 @@ def create_router(registry: ModelRegistry, pool: "BackendPool") -> APIRouter:
                         prompt_tokens_per_second=(
                             round(prompt_tps, 2) if prompt_tps is not None else None
                         ),
+                    )
+
+                    inf_span.set_attributes(
+                        _genai_response_attrs(
+                            response_model=resolution.model_key,
+                            input_tokens=prompt_tokens,
+                            output_tokens=completion_tokens,
+                            finish_reason=db.TERMINATION_COMPLETE,
+                            backend_id=entry.id,
+                        )
                     )
 
                     # RM-32: record persisted daily usage
@@ -2052,6 +2127,7 @@ async def _stream_response(
     alert_thresholds_percent: list[int] | None = None,
     served_by_headers: dict[str, str] | None = None,
     idempotency_claim: "idempotency.Claim | None" = None,
+    genai_request_attrs: dict[str, Any] | None = None,
 ) -> StreamingResponse:
     """Forward a streaming request using a pooled client.
 
@@ -2066,6 +2142,8 @@ async def _stream_response(
     """
     request_id = getattr(getattr(request, "state", None), "request_id", "unknown")
     claims = getattr(getattr(request, "state", None), "claims", None)
+    # RM-95: taken now, while the request's span is still current.
+    _request_context = otel_context.get_current()
     backend_start = time.monotonic()
     cb = pool.get_circuit_breaker(backend_id)
     # Falls back to the backend id when called without a served name, so this
@@ -2363,6 +2441,33 @@ async def _stream_response(
                             reservation.total_spend_usd,
                             newly_crossed,
                         )
+
+            # RM-95: the handler's span ended when the response object was
+            # returned, long before any of this was known, so the streamed
+            # answer gets its own — parented to the request's context, which is
+            # captured here rather than read inside the detached task where the
+            # ambient context is gone.
+            if genai_request_attrs is not None:
+                from opentelemetry.trace import SpanKind
+
+                genai_span = _tracer.start_span(
+                    f"{genai_request_attrs['gen_ai.operation.name']} "
+                    f"{genai_request_attrs['gen_ai.request.model']}",
+                    context=_request_context,
+                    kind=SpanKind.CLIENT,
+                )
+                genai_span.set_attributes(genai_request_attrs)
+                genai_span.set_attributes(
+                    _genai_response_attrs(
+                        response_model=billed_name,
+                        input_tokens=prompt_tokens,
+                        output_tokens=completion_tokens,
+                        finish_reason=termination_reason,
+                        backend_id=backend_id,
+                        ttft_ms=ttft_ms,
+                    )
+                )
+                genai_span.end()
 
             _detach(_account_for_it(), what="stream-usage")
 
