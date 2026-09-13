@@ -135,7 +135,7 @@ async def test_export_csv_shape_and_total_row(app, admin_headers):
     rows = list(csv.reader(io.StringIO(r.text)))
     header, *data_rows = rows
     assert header[0] == "generated_at"
-    assert header[-1] == "cost_usd"
+    assert header[-1] == "interrupted"
 
     total_row = data_rows[-1]
     assert total_row[5] == "TOTAL"
@@ -144,7 +144,12 @@ async def test_export_csv_shape_and_total_row(app, admin_headers):
     # completion_tokens column (index 8): 50 + 5 = 55
     assert total_row[8] == "55"
     # No pricing.yaml configured — total cost stays blank, never a false "0".
+    assert total_row[header.index("cost_usd")] == ""
+    # RM-83: "interrupted" describes one request, so the total row leaves it
+    # blank rather than summing something that has no total.
     assert total_row[-1] == ""
+    # Ordinary recorded usage isn't interrupted.
+    assert data_rows[0][header.index("interrupted")] == "false"
 
     # 2 data rows (one per event) + 1 total row
     assert len(data_rows) == 3
