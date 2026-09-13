@@ -291,7 +291,7 @@ def test_configure_tracing_honours_otel_resource_attributes(
     """
     monkeypatch.setenv(
         "OTEL_RESOURCE_ATTRIBUTES",
-        "service.namespace=edge-ai-inference,deployment.environment.name=ci",
+        "service.namespace=prometheus-inference-platform,deployment.environment.name=ci",
     )
 
     _tracing._CONFIGURED = False
@@ -302,7 +302,7 @@ def test_configure_tracing_honours_otel_resource_attributes(
     assert isinstance(provider, TracerProvider)
     attrs = provider.resource.attributes
 
-    assert attrs.get("service.namespace") == "edge-ai-inference"
+    assert attrs.get("service.namespace") == "prometheus-inference-platform"
     assert attrs.get("deployment.environment.name") == "ci"
     assert attrs.get("service.name") == "auth-service"
 

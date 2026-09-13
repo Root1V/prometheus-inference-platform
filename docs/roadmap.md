@@ -3573,11 +3573,14 @@ precisely so a disconnect cannot cancel it, and that same independence let a tas
 still be writing while the next counted rows. The fixture now drains them. The flakiness was
 real and pre-existing since RM-87; it happened to show up here.
 
-**Open question raised by the owner**, deliberately not answered by changing anything: Argus
-label our services `service.namespace=edge-ai-inference`, which is this repository's directory
-name rather than the platform's name, Prometheus. See the note in [[RM-90]] — the value is set by
-Argus's deployment configuration, not by our code, and "prometheus" as a namespace inside an
-observability platform is ambiguous enough to be worth agreeing deliberately.
+**Namespace, raised by the owner and settled**: Argus were labelling our services
+`service.namespace=edge-ai-inference`, which is this repository's directory name rather than the
+product's. Agreed value is `prometheus-inference-platform` — not bare `prometheus`, because
+Prometheus is also the ubiquitous metrics system and that name inside an observability platform
+would be read wrong in queries, in alert routing, and at three in the morning. The variable is
+set by Argus's deployment configuration rather than our code, so the change is theirs to make;
+the value is updated in the tests they gave us and the request is in
+`docs/argus-answers-2026-09-13.md`.
 
 Append a new row to the table with the next `RM-NN` id and a new `## RM-NN — ...` section
 below, following the same shape (Why / Scope). Re-sort the table if the new item's

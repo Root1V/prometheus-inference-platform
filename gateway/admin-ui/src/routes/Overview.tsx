@@ -1,4 +1,15 @@
-import { Activity, AlertOctagon, AlertTriangle, Boxes, Coins, Gauge, HardDrive, Timer, Trophy, Users as UsersIcon } from "lucide-react";
+import {
+  Activity,
+  AlertOctagon,
+  AlertTriangle,
+  Boxes,
+  Coins,
+  Gauge,
+  HardDrive,
+  Timer,
+  Trophy,
+  Users as UsersIcon,
+} from "lucide-react";
 import { Link } from "react-router-dom";
 import { useMetrics } from "../api/metrics";
 import { useInstances } from "../api/instances";
