@@ -11,8 +11,15 @@ from fastapi.testclient import TestClient
 from prometheus_manager_core.registry import Registry, RegistryEntry
 from prometheus_manager_core.scanner import ProcessState
 
+from prometheus_manager_api import auth
 from prometheus_manager_api.app import app
 from prometheus_manager_api.auth import require_backend_registry_read
+
+
+async def _fake_key_set(*args, **kwargs):
+    """A structurally valid key set, so token validation is what gets tested."""
+    return {"keys": [{"kty": "RSA", "kid": "test", "use": "sig", "alg": "RS256", "e": "AQAB"}]}
+
 
 # ── Setup ──────────────────────────────────────────────────────────────────────
 
@@ -67,11 +74,69 @@ class TestJWTValidation:
         resp = client.get("/v1/backends")
         assert resp.status_code == 401
 
-    def test_AC12_invalid_token_returns_401(self, tmp_path: Path):
-        """AC-12: malformed token → 401."""
+    def test_AC12_invalid_token_returns_401(self, tmp_path: Path, monkeypatch):
+        """AC-12: malformed token → 401.
+
+        RM-85: the key set is stubbed because otherwise this never reached token
+        parsing at all — it failed fetching JWKS from a URL that serves none, and
+        the 401 it asserted came from the outage path. It passed for years
+        without once exercising the thing it is named after.
+        """
+        monkeypatch.setattr(auth, "_get_jwks", _fake_key_set)
         client = _make_client(tmp_path)
         resp = client.get("/v1/backends", headers={"Authorization": "Bearer not.a.jwt"})
         assert resp.status_code == 401
+
+    def test_RM85_an_unreachable_auth_service_is_503_not_401(self, tmp_path: Path, monkeypatch):
+        """A 401 tells the caller their credentials are bad. When we simply could
+        not reach the auth service, that is a false accusation — and it sends
+        whoever is debugging to the one place the problem is not. It cost hours
+        exactly once, which was enough."""
+
+        async def _down(*args, **kwargs):
+            raise auth.JwksUnavailableError("connection refused")
+
+        monkeypatch.setattr(auth, "_get_jwks", _down)
+        client = _make_client(tmp_path)
+        resp = client.get("/v1/backends", headers={"Authorization": "Bearer not.a.jwt"})
+
+        assert resp.status_code == 503
+        assert resp.headers["Retry-After"] == "5"
+        assert resp.json()["detail"]["type"].endswith("auth-service-unavailable")
+
+    def test_RM85_a_url_that_answers_but_is_not_a_key_set_is_503(self, tmp_path: Path, monkeypatch):
+        """How RM-84 hid: another service bound to the same port answered 200
+        with JSON that was not a key set. Treating that as a bad token is what
+        made it look like a credentials problem."""
+
+        class _NotAKeySet:
+            status_code = 200
+
+            def raise_for_status(self):
+                return None
+
+            def json(self):
+                return {"Error": "InvalidBucketName"}
+
+        class _Client:
+            def __init__(self, *a, **k):
+                pass
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *a):
+                return False
+
+            async def get(self, url):
+                return _NotAKeySet()
+
+        monkeypatch.setattr(auth.httpx, "AsyncClient", _Client)
+        client = _make_client(tmp_path)
+        resp = client.get("/v1/backends", headers={"Authorization": "Bearer not.a.jwt"})
+
+        assert resp.status_code == 503
+        assert resp.json()["detail"]["type"].endswith("auth-service-unavailable")
 
     def test_AC12_problem_details_format(self, tmp_path: Path):
         """AC-12: 401 response uses RFC 9457 Problem Details format."""

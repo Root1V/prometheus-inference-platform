@@ -28,13 +28,38 @@ class JwtAuthError(HTTPException):
     pass
 
 
+class JwksUnavailableError(Exception):
+    """The key set could not be fetched, so no token can be verified either way.
+
+    RM-85: distinct from an invalid token on purpose. Both used to end in the
+    same 401, which says the caller's credential is bad — and when the real
+    cause was our own dependency, that sent the investigation to the one place
+    the problem was not.
+    """
+
+
 async def _get_jwks(jwks_url: str, tls_verify: bool = True) -> dict[str, Any]:
-    """Fetch JWKS from the Auth Service (cached in app state)."""
-    async with httpx.AsyncClient(timeout=5.0, verify=tls_verify) as client:
-        resp = await client.get(jwks_url)
-        resp.raise_for_status()
-        result: dict[str, Any] = resp.json()
-        return result
+    """Fetch JWKS from the Auth Service.
+
+    Anything that stops us getting a usable key set — unreachable host, an
+    error status, a body that is not a JWKS — raises JwksUnavailableError. The
+    last case matters as much as the first: a URL pointing at some other
+    service returns 200 and JSON that simply is not a key set, which is exactly
+    how RM-84 hid.
+    """
+    try:
+        async with httpx.AsyncClient(timeout=5.0, verify=tls_verify) as client:
+            resp = await client.get(jwks_url)
+            resp.raise_for_status()
+            result: dict[str, Any] = resp.json()
+    except Exception as exc:
+        raise JwksUnavailableError(str(exc)) from exc
+
+    if not isinstance(result, dict) or not result.get("keys"):
+        raise JwksUnavailableError(
+            f"{jwks_url} did not return a key set — check that it points at the auth service."
+        )
+    return result
 
 
 async def _validate_token(
@@ -60,11 +85,32 @@ async def _validate_token(
     jwks_url: str = request.app.state.jwks_url  # set during startup
     jwks_tls_verify: bool = getattr(request.app.state, "jwks_tls_verify", True)
 
-    try:
-        from jose import jwt
-        from jose.backends import RSAKey  # noqa: F401
+    from jose import jwt
+    from jose.backends import RSAKey  # noqa: F401
 
+    try:
         jwks = await _get_jwks(jwks_url, tls_verify=jwks_tls_verify)
+    except JwksUnavailableError as exc:
+        # RM-85: we cannot verify this token, which is not the same as having
+        # verified it and found it bad. Saying 401 here blames the caller for
+        # our own outage and, worse, tells them to go fix their credentials.
+        logger.error("auth.jwks_unavailable", extra={"jwks_url": jwks_url, "error": str(exc)})
+        raise HTTPException(
+            status_code=503,
+            headers={"Retry-After": "5"},
+            detail={
+                "type": "https://prometheus.local/errors/auth-service-unavailable",
+                "title": "Service Unavailable",
+                "status": 503,
+                "detail": (
+                    "The manager could not reach the auth service to verify this token, "
+                    "so it cannot tell whether the token is valid. Your credentials are "
+                    "not implicated. Retry shortly."
+                ),
+            },
+        ) from exc
+
+    try:
         claims: dict[str, Any] = jwt.decode(
             token,
             jwks,
