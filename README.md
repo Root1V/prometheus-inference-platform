@@ -446,6 +446,8 @@ edge-ai-inference/
 │   │   ├── api/src/prometheus_manager_api/     # FastAPI — containerized, pmgr-api
 │   │   ├── tui/src/prometheus_manager_tui/     # Textual TUI + pmgr CLI — bare-metal only
 │   │   ├── registry.db          # Model registry — SQLite, source of truth (spec 008, RM-49)
+│   │   │                        # Runtime state, not in git; created on first start (RM-86)
+│   │   ├── registry.db.example  # Committed seed catalog — copy to registry.db to start from it
 │   │   └── manager.toml         # Manager configuration
 │   ├── models/
 │   │   └── registry.yaml        # Legacy model registry (gateway fallback)

@@ -31,7 +31,8 @@ runtime/manager/
 │       ├── logging_setup.py           # redirect_logging_for_tui (stdout → file)
 │       ├── views/                     # One file per view (dashboard, registry, instances, downloads, discovery)
 │       └── widgets/                   # Reusable widgets (resource_bar, model_detail)
-├── registry.db                        # Active model registry (SQLite, runtime state)
+├── registry.db                        # Active model registry (SQLite, runtime state — not in git)
+├── registry.db.example                # Committed seed catalog (RM-86)
 └── manager.toml                       # Manager configuration
 ```
 

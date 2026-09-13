@@ -707,3 +707,39 @@ class TestDiscoveryField:
         d2 = entry2.to_dict()
         assert "discovery" in d2
         assert d2["discovery"] is False
+
+
+class TestSeedCatalogRM86:
+    """RM-86: registry.db is runtime state and no longer tracked; the committed
+    seed is registry.db.example. These guard the two ways that arrangement
+    silently rots — the seed going missing, and it filling up with one
+    machine's absolute paths, which is what happened to the file it replaced."""
+
+    @staticmethod
+    def _example_path() -> Path:
+        # tests/ -> core/ -> manager/
+        return Path(__file__).resolve().parents[2] / "registry.db.example"
+
+    def test_the_seed_catalog_is_committed_and_loadable(self):
+        example = self._example_path()
+        assert example.exists(), "registry.db.example is the committed seed — it must be there"
+
+        reg = Registry(example)
+        assert reg.list_catalog(), "the seed is meant to contain a starting catalog"
+
+    def test_the_seed_carries_no_paths_from_anyone_s_machine(self):
+        """The tracked registry.db ended up holding 26 absolute paths under one
+        developer's home directory, in a public repo. Relative paths only."""
+        reg = Registry(self._example_path())
+
+        absolute = [c.path for c in reg.list_catalog() if c.path.startswith("/")]
+        assert absolute == []
+
+    def test_a_missing_registry_is_created_rather_than_fatal(self, tmp_path: Path):
+        """Nothing has to be copied for a fresh checkout to work — the seed is
+        an offer, not a prerequisite."""
+        fresh = tmp_path / "does-not-exist-yet" / "registry.db"
+        reg = Registry(fresh)
+
+        assert fresh.exists()
+        assert reg.entries == []

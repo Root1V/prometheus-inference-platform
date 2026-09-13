@@ -3343,6 +3343,32 @@ now stubs the key set so the malformed token is what gets rejected.
 and `Retry-After: 5` where it used to return 401; healthy tokens still get 200, and bad or
 missing ones still get 401.
 
+## RM-86 — registry.db is runtime state, not seed data (done)
+
+**Why**: it was the single exception in `.gitignore`, and the exception was reasoned:
+[[RM-49]] replaced a small hand-edited `registry.yaml` with SQLite, and the new file inherited
+the old one's "committed seed data" status. That justification quietly expired. The file became
+the live operational catalog — mutated by every registration, retirement and instance change —
+and accumulated 26 model paths under one developer's home directory, in a public repo. Four
+commits across its whole history, so it was not being maintained as seed data either: it
+drifted silently and got committed occasionally, which is the worst of both arrangements.
+
+Industry practice is consistent here: track schema and migrations, not the binary database.
+A `.db` cannot be diffed or merged, and two machines registering models produce a conflict
+with no resolution. It is also what this repo already does everywhere else — `pricing.yaml` is
+ignored and `pricing.yaml.example` committed, the same for `.env`. The fix is to apply the
+project's own existing convention to the one file that was exempt from it.
+
+**Scope**: untrack `registry.db` (the working file stays put), drop the negation rule, and
+commit `registry.db.example` — generated through `Registry` itself rather than hand-written SQL,
+so its schema cannot drift from the code. Two illustrative models, repo-relative paths, no
+instances (those are port- and machine-specific). Three tests guard the arrangement: the seed
+exists and loads, it carries no absolute paths, and a missing registry is created rather than
+fatal — the seed is an offer, not a prerequisite.
+
+**Not done**: the absolute paths remain in git history. Removing them means rewriting history,
+which is not worth it for a developer username and would break every existing clone.
+
 Append a new row to the table with the next `RM-NN` id and a new `## RM-NN — ...` section
 below, following the same shape (Why / Scope). Re-sort the table if the new item's
 priority isn't "last."

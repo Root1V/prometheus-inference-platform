@@ -78,10 +78,13 @@ runtime/container-logs/
 *.db-journal
 *.db-wal
 *.db-shm
-# RM-49: runtime/manager/registry.db is the one exception — it's this repo's
-# committed demo/seed data (previously registry.yaml), not untracked local
-# runtime state like the others above.
-!runtime/manager/registry.db
+# RM-86: registry.db used to be the one exception here, on the grounds that it
+# was committed seed data. It stopped being that — it became the live catalog,
+# mutated by every registration, retirement and instance change, and filled with
+# absolute paths from one developer's machine. It is runtime state like the two
+# above, so it is ignored like them. registry.db.example is the committed seed,
+# same convention as .env/.env.example and pricing.yaml/pricing.yaml.example
+# below; it needs no negation rule because it does not end in .db.
 # RM-49: one-time backup left behind when a legacy registry.yaml is migrated
 # to registry.db — never committed.
 registry.yaml.bak
