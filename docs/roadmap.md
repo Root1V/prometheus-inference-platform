@@ -3314,10 +3314,34 @@ compose files override it. Three tests anchor it, since a wrong default that not
 how this survived.
 
 **Not fixed here**: the manager still reports a dependency it cannot reach as `401 Invalid or
-expired token`, which is what made this expensive to find. [[RM-79]] fixed exactly that in the
-gateway — a failure to reach the auth service should be a `503` naming the dependency, not a
-`401` blaming the caller. The manager needs the same treatment; it is a behaviour change rather
-than a config fix, so it is not bundled in.
+expired token`, which is what made this expensive to find. Fixed separately in [[RM-85]].
+
+## RM-85 — fix: the manager blamed the caller for its own outage (done)
+
+**Why**: [[RM-84]] took hours to find because of this. When the manager could not fetch the key
+set, it answered `401 Invalid or expired token` — which does not mean "something went wrong",
+it means "your credential is bad". So the investigation went to the credentials, rotated a
+secret, re-minted tokens, and checked scopes, none of which could ever have helped. The log
+held the real cause the whole time; the HTTP response contradicted it.
+
+Note this is *not* what [[RM-79]] did for the gateway. That one surfaced dependency health in
+`/metrics` so an outage is visible on the dashboard, and left the per-request status alone.
+This is the per-request half, and the two are complementary.
+
+**Scope**: failing to obtain a usable key set now raises its own error and becomes `503` with
+`Retry-After` and a distinct problem type, saying explicitly that the caller's credentials are
+not implicated. A token that was actually checked and found bad is still `401`. "Usable" covers
+a URL that answers `200` with something that is not a key set — the RM-84 case exactly, where
+another service on the port replied and its error page was parsed as keys.
+
+**What it exposed**: `test_AC12_invalid_token_returns_401` had never once tested token
+validation. It pointed at a URL serving no key set, so every request died fetching JWKS and the
+401 it asserted came from the outage path. Separating the two statuses is what made it fail. It
+now stubs the key set so the malformed token is what gets rejected.
+
+**Verified live**: the manager pointed back at the hijacked URL with a valid token returns 503
+and `Retry-After: 5` where it used to return 401; healthy tokens still get 200, and bad or
+missing ones still get 401.
 
 Append a new row to the table with the next `RM-NN` id and a new `## RM-NN — ...` section
 below, following the same shape (Why / Scope). Re-sort the table if the new item's
