@@ -3369,6 +3369,15 @@ fatal — the seed is an offer, not a prerequisite.
 **Not done**: the absolute paths remain in git history. Removing them means rewriting history,
 which is not worth it for a developer username and would break every existing clone.
 
+**Warning when you pull this**: untracking a file deletes it from the working tree of everyone
+who pulls the change — git does not know the local copy is precious. Anyone with a running
+manager loses their live catalog on `git pull`, silently, while the process keeps serving from
+the unlinked inode so nothing looks wrong until the next restart. This was learned the direct
+way, on the machine that made the change. **Copy `registry.db` somewhere outside the repo
+before pulling**, then copy it back. A running manager can also be read through its API
+(`/v1/models`, `/v1/models/archived`, `/v1/backends`) while the process is still alive, which is
+what made recovery verifiable here.
+
 Append a new row to the table with the next `RM-NN` id and a new `## RM-NN — ...` section
 below, following the same shape (Why / Scope). Re-sort the table if the new item's
 priority isn't "last."
