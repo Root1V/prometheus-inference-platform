@@ -261,9 +261,20 @@ exactly the retry we are telling you not to make.
 **A failed request hands its key back.** If the request errored, nothing is stored and the same
 key is free — retrying with it is exactly right.
 
-**Streaming is not covered.** Replaying a stream means storing every chunk, and neither OpenAI
-nor Anthropic documents that semantics clearly. A key on a streaming request is ignored rather
-than refused; retrying a stream remains a new generation.
+**Streaming is now covered — partially, and the boundary matters.** Send the key on a streaming
+request too. If our stream from the model **completed** and it was your connection that
+dropped, the key replays the stored SSE body: the same frames, byte for byte, with
+`Idempotent-Replay: true`, no second generation and no second charge. The replay arrives as a
+single flush rather than paced out over time, since you parse frames rather than time them.
+
+If the model's own stream **broke mid-generation**, there is nothing complete to replay and the
+key hands itself back — your retry is a genuine new generation, which is the honest answer:
+a partial answer is not a result we can give you twice.
+
+So the rule for your SDKs inverts: **stop rejecting a key on `stream()`**. It now buys you the
+same protection as anywhere else for the case a key can cover, and costs nothing for the case
+it cannot. The 1 MiB retention cap applies to a stored stream like any other response; past it
+you get `idempotency-response-not-retained` rather than a silent regeneration.
 
 
 ---
@@ -278,7 +289,30 @@ rather than a `409` — so a client that keys off the status alone will also see
 told us you validate key length at 255 client-side in the meantime; once you stop, that `400`
 is what you get.
 
-This is the only thing here that can break you. Everything else in this round is additive.
+This is the only thing here that can break your *code*. One thing below can change your
+*invoice*.
+
+### One billing change you would otherwise find on an invoice
+
+**A stream that breaks mid-answer is now billed for what it generated.** Until now it was
+billed as zero — not by policy, by defect: our backends report token counts only on a final
+frame that a broken stream never sends, so the usage row was dropped entirely and the
+generation left no record at all.
+
+We fixed it in the direction that costs you money, so here is the reasoning in full. The tokens
+were generated and the GPU time was spent; charging for them is what OpenAI and Anthropic both
+do when a client disconnects, and the alternative — writing off any partially delivered
+answer — would have made disconnecting mid-stream the cheapest way to use the platform. We
+checked that this is the industry position before deciding, rather than assuming it.
+
+What we owed you alongside it is evidence, which did not exist either: every usage row now
+carries an **`interrupted`** flag, and it is a column in the CSV export. If you are charged for
+an answer you never fully received, that row says so, and you have something concrete to
+dispute rather than our word against yours. Where a stream broke *before* producing anything,
+there is still no charge and no row — nothing was generated.
+
+Expect a small increase in billed volume, concentrated wherever your clients' connections are
+unreliable.
 
 ### On §D not reaching you
 
@@ -301,38 +335,40 @@ Things we have committed to, and will not change without telling you first:
 - **Usage is recorded once per returned response**, never per attempt. Internal failover and
   retries are ours to pay for.
 - **A replay never reaches the model**, never records usage, never counts against a spend cap.
+- **Every charge has a usage row, and a row for an incomplete answer says so.** `interrupted` is
+  part of the export, not a debugging field we might drop.
 
 ### Two corrections to what we told you
 
-We said we would do neither of these. We were wrong about one and overstated the other, and
-you should have the real position.
+We said we would do neither of these. Both are now built, and the reasoning we gave you for
+refusing them is worth correcting explicitly rather than quietly overwriting.
 
 **The `Retry-After` is now there.** We claimed the only bound available was the 600s backend
 timeout. That was simply not true: we keep observed p95 latency per model, and the record
 knows when the first request started, so the estimate above is a measurement rather than a
 guess. The refusal was reasoning from what we assumed we had instead of checking.
 
-**Idempotency on streaming is not refused — it is not built yet.** The reason we gave was real
-as far as it went: neither OpenAI nor Anthropic supports replaying or resuming an LLM stream,
-so there is no precedent to follow. But it left out the part that matters, which is that **the
-billing exposure is identical to the one we just closed** — a streaming retry regenerates and
-bills twice, exactly as a non-streaming one did before `Idempotency-Key` existed. For a chat
-SDK, streaming is likely the busier path. We closed the hole in the quieter one first.
+**Idempotency on streaming is now built.** We had told you it was not going to happen, and
+justified that by there being no precedent: neither OpenAI nor Anthropic replays or resumes an
+LLM stream. True, and irrelevant — it omitted that **the billing exposure is identical to the
+one we had just closed**. A streaming retry regenerated and billed twice, exactly as a
+non-streaming one did before `Idempotency-Key` existed, and for a chat SDK streaming is
+probably the busier path. We closed the hole in the quieter one first and called the louder one
+a decision.
 
-What makes it genuinely harder, rather than merely unbuilt:
+§D above has the shape. What it covers and what it does not:
 
-| What broke | Can a key help? |
+| What broke | Does a key help? |
 |---|---|
-| Your connection dropped, but our stream from the model completed | **Yes** — the full response was received and can be stored |
+| Your connection dropped, but our stream from the model completed | **Yes** — stored and replayed, byte for byte |
 | The model's own stream broke mid-generation | **No** — there is nothing complete to replay |
 
-The second is the case you most want covered, and a key cannot cover it. Resuming rather than
-replaying — SSE's `Last-Event-ID`, which nobody in this space has implemented — is the shape
-that would, and it is a different piece of work.
+The second is the case you most want covered, and no key can cover it: it needs resuming rather
+than replaying — SSE's `Last-Event-ID` — which nobody in this space has built and we have not
+either. We are not going to claim otherwise.
 
-So: keep rejecting a key on `stream()`. That remains right today, and it is right for the
-better reason that the protection would be partial rather than absent. It is tracked on our
-side, and if it lands you will be told rather than left to discover it.
+**Change your SDKs to stop rejecting a key on `stream()`.** This is the one action item in this
+round.
 
 ### Two rounds, three real defects
 
