@@ -67,9 +67,9 @@ theme = "catppuccin-latte"
 log_file_path = "runtime/logs/manager.log"
 
 [tracing]
-# OTLP/HTTP endpoint for distributed traces.
-# When running bare-metal, Tempo is reachable via Podman port-forward on localhost.
-# Leave empty to fall back to OTEL_EXPORTER_OTLP_ENDPOINT env var or http://tempo:4318.
+# OTLP/HTTP endpoint for distributed traces. RM-91: this project no longer
+# runs a collector of its own — point it at the one Argus exposes.
+# Leave empty to fall back to the OTEL_EXPORTER_OTLP_ENDPOINT env var.
 otlp_endpoint = "http://localhost:4318"
 # Set to true to disable tracing without removing the endpoint.
 disabled = false
@@ -163,9 +163,8 @@ class TuiConfig:
 
 @dataclass
 class TracingConfig:
-    # OTLP/HTTP endpoint for distributed traces.
-    # When running bare-metal, Tempo is reachable via Podman port-forward on localhost.
-    # Falls back to OTEL_EXPORTER_OTLP_ENDPOINT env var if empty.
+    # OTLP/HTTP endpoint for distributed traces — a collector run elsewhere
+    # (Argus) since RM-91. Falls back to OTEL_EXPORTER_OTLP_ENDPOINT if empty.
     otlp_endpoint: str = "http://localhost:4318"
     # Set to true to disable tracing without removing the endpoint (e.g. in CI).
     disabled: bool = False

@@ -67,11 +67,23 @@ def configure_tracing(
         return
 
     # Build Resource (service.name + optional extras)
+    #
+    # Resource.create() — NOT Resource(attributes=...).
+    #
+    # The direct constructor silently skips both the SDK's resource detectors
+    # and the standard OTEL_RESOURCE_ATTRIBUTES environment variable. That
+    # variable is how deployment injects service.namespace, service.version and
+    # deployment.environment.name without touching code — so with the direct
+    # constructor those attributes just never appear, and nothing errors.
+    #
+    # Symptom when this is wrong: traces arrive, but every service shows up
+    # without its application grouping, so you cannot tell which app a
+    # component belongs to.
     service_name = os.environ.get("OTEL_SERVICE_NAME", service)
     attrs: dict[str, Any] = {"service.name": service_name}
     if resource_attributes:
         attrs.update(resource_attributes)
-    resource = Resource(attributes=attrs)
+    resource = Resource.create(attrs)
 
     # Build OTLP/HTTP exporter
     _endpoint = endpoint or os.environ.get("OTEL_EXPORTER_OTLP_ENDPOINT") or _DEFAULT_ENDPOINT

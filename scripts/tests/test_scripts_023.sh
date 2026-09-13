@@ -447,9 +447,9 @@ fi
 echo ""
 echo "=== AC-9: Secret injection ==="
 
-# _inject_secret generates the four required secrets
-for secret in "AUTH_ADMIN_API_KEY" "SHARE_TOKEN_ENCRYPTION_KEY" \
-              "GRAFANA_SECRET_KEY" "GRAFANA_ADMIN_PASSWORD"; do
+# _inject_secret generates the required secrets. RM-91 removed the two Grafana
+# ones along with the observability stack they belonged to.
+for secret in "AUTH_ADMIN_API_KEY" "SHARE_TOKEN_ENCRYPTION_KEY"; do
     if grep -q "_inject_secret.*\"${secret}\"" "${INSTALL_SCRIPT}"; then
         pass "AC-9: install-rhel.sh injects ${secret}"
     else
@@ -868,8 +868,8 @@ for f in "private.pem" "public.pem" "gateway.crt" "auth.crt"; do
     fi
 done
 
-# step-9 checks for the four required secrets
-for secret in "AUTH_ADMIN_API_KEY" "SHARE_TOKEN_ENCRYPTION_KEY" "GRAFANA_SECRET_KEY" "GRAFANA_ADMIN_PASSWORD"; do
+# step-9 checks for the required secrets (RM-91 dropped the Grafana pair)
+for secret in "AUTH_ADMIN_API_KEY" "SHARE_TOKEN_ENCRYPTION_KEY"; do
     if grep -q "${secret}" "${VALIDATE_SCRIPT}"; then
         pass "AC-13: validate.sh checks secret '${secret}' in step-9"
     else

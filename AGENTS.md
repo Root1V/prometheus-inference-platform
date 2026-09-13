@@ -86,10 +86,7 @@ The Gateway is the single authorised caller. All client traffic goes through the
 │       ├── core/src/prometheus_manager_core/  # shared domain layer
 │       ├── api/src/prometheus_manager_api/    # FastAPI REST API — containerized
 │       └── tui/src/prometheus_manager_tui/    # Textual TUI (5 views) + pmgr CLI
-├── observability/            # Loki + Tempo + Grafana + Promtail
-│   ├── AGENTS.md             # Observability-local navigation rules
-│   └── ...                   # loki/, tempo/, grafana/, promtail/ configs
-└── podman-compose.yml        # Gateway + Auth Service + Redis + Observability
+└── podman-compose.yml        # Gateway + Auth Service + Manager + Redis
 ```
 
 ## Mandatory Workflow (SDD)
@@ -234,8 +231,6 @@ AUTH_TLS_KEY_HOST_PATH=/absolute/path/to/auth-service/certs/dev.key
 CONTAINER_LOG_HOST_PATH=/absolute/path/to/runtime/container-logs
 MANAGER_LOG_HOST_PATH=/absolute/path/to/runtime/logs
 AUTH_JWT_ISSUER=https://auth.example.com
-GRAFANA_SECRET_KEY=replace-with-a-long-random-string
-GRAFANA_ADMIN_PASSWORD=replace-with-strong-password
 ```
 
 **Rule**: every new bind-mount source added to `podman-compose.yml` must have a corresponding entry here.

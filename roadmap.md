@@ -18,7 +18,7 @@ Status: `done` · `todo`
 | RM-09 | VLM + embeddings support | done | Vision content parts + `/v1/embeddings` |
 | RM-10 | Gateway admin dashboard (phase 1) | done | React SPA — register/edit/start/stop/restart instances |
 | RM-11 | Auth & Users dashboard | done | Users section with roles; login via OAuth2 client_id/secret or email+password (default) |
-| RM-12 | E2E LLM tracing with Langfuse | todo | Prompt/completion/token-level tracing, alongside existing OTel/Tempo |
+| RM-12 | ~~E2E LLM tracing with Langfuse~~ | superseded | Superseded by RM-91: monitoring is being centralised in Argus rather than adding a second self-hosted tool. Prompt/completion-level tracing is still wanted — it becomes a question of what we send Argus, not what we run |
 | RM-13 | Live log viewer per instance | done | Expand a dashboard row to tail that instance's log |
 | RM-14 | Model playground | done | Send test prompts to a running instance from the dashboard |
 | RM-15 | Usage: wire up today's per-client totals | done | New Usage page — connects the existing `GET /v1/usage`, no new backend work |
@@ -102,6 +102,8 @@ Status: `done` · `todo`
 | RM-87 | fix: a streamed request was only accounted for if the client drained the body | done | Found from an Axonium report about unreliable streaming replay. The cause was larger: we sent two `[DONE]` frames, a client correctly stopped at the first, and everything after it — billing, metering, idempotency, budget settle — ran inside a task the server then cancelled. Streamed generations to any normal SDK were free |
 | RM-88 | Usage rows say *why* a request stopped, not just that it did | done | `interrupted` could not tell an answer we broke from one the caller walked away from, which are opposite conversations when a charge is questioned — and a chat UI's stop button produces the second all day. `termination_reason` names all three; the published boolean stays, derived, meaning exactly what we told SDK clients it means |
 | RM-89 | `family` is never stored empty | done | Both registration paths defaulted it to `""`, which is indistinguishable from nobody filling it in — an SDK team asked about the same blank field four rounds running. The registry now fills it at the single chokepoint, reading the GGUF's `general.architecture` when a caller supplies nothing, and `unknown` when even that is unreadable |
+| RM-90 | Honour `OTEL_RESOURCE_ATTRIBUTES` | done | Requested by the Argus team, who supplied the patch and the tests. `Resource(attributes=...)` silently drops the standard variable, so telemetry arrived without the application grouping and no service could be placed under its platform. `Resource.create()` merges it; explicit attributes still win |
+| RM-91 | Retire the self-hosted observability stack | in-progress | Monitoring moves to Argus, who centralise it across all the owner's applications. Stage 1 done: Loki, Promtail, Tempo and our own Grafana removed from both compose files, `observability/` deleted, and the Grafana secrets dropped from the installers and validators. Instrumentation stays — Argus asked us to keep it |
 
 Adding an item: append the next `RM-NN` row here with a one-liner, then add the full
 Why/Scope writeup to `docs/roadmap.md`.
