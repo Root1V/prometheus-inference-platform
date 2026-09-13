@@ -191,24 +191,82 @@ async def test_one_client_s_key_cannot_answer_another_s(gw, rsa_keys):
 
 
 @respx.mock
-async def test_streaming_is_not_deduplicated(gw, rsa_keys):
-    """Out of scope: replaying a stream means storing every chunk."""
+async def test_a_completed_stream_is_replayed_not_regenerated(gw, rsa_keys):
+    """RM-82: a streaming retry used to regenerate and bill twice — the same
+    exposure RM-78 closed for non-streaming, in the busier path."""
+    chunks = (
+        'data: {"model":"solo","choices":[{"delta":{"content":"hi"}}]}\n\n'
+        'data: {"model":"solo","choices":[{"delta":{}}],"timings":{"prompt_n":3,"predicted_n":1}}\n\n'
+        "data: [DONE]\n\n"
+    )
     route = respx.post(f"{BACKEND_URL}/v1/chat/completions").mock(
+        return_value=Response(200, text=chunks, headers={"Content-Type": "text/event-stream"})
+    )
+    headers = {
+        "Authorization": f"Bearer {make_token(rsa_keys['private'], scope='inference:stream model:solo')}",
+        idempotency.HEADER: "s1",
+    }
+
+    first = await gw.post("/v1/chat/completions", json=_chat(stream=True), headers=headers)
+    second = await gw.post("/v1/chat/completions", json=_chat(stream=True), headers=headers)
+
+    assert route.call_count == 1
+    assert first.text == second.text
+    assert second.headers["Idempotent-Replay"] == "true"
+    assert second.headers["content-type"].startswith("text/event-stream")
+    assert "[DONE]" in second.text
+
+
+@respx.mock
+async def test_a_broken_stream_hands_its_key_back(gw, rsa_keys):
+    """Nothing complete was produced, so there is nothing to replay — and a
+    retry after a break is exactly what a client should be able to make."""
+    route = respx.post(f"{BACKEND_URL}/v1/chat/completions").mock(
+        side_effect=httpx.ConnectError("refused")
+    )
+    headers = {
+        "Authorization": f"Bearer {make_token(rsa_keys['private'], scope='inference:stream model:solo')}",
+        idempotency.HEADER: "s2",
+    }
+
+    broken = await gw.post("/v1/chat/completions", json=_chat(stream=True), headers=headers)
+    assert "error" in broken.text
+
+    route.mock(
         return_value=Response(
             200,
-            text='data: {"choices":[{"delta":{"content":"hi"}}]}\n\ndata: [DONE]\n\n',
+            text='data: {"choices":[{"delta":{"content":"ok"}}]}\n\ndata: [DONE]\n\n',
+            headers={"Content-Type": "text/event-stream"},
+        )
+    )
+    retried = await gw.post("/v1/chat/completions", json=_chat(stream=True), headers=headers)
+
+    assert route.call_count == 2
+    assert "Idempotent-Replay" not in retried.headers
+
+
+@respx.mock
+async def test_a_streaming_replay_is_not_billed_again(gw, rsa_keys):
+    from datetime import datetime, timezone
+
+    respx.post(f"{BACKEND_URL}/v1/chat/completions").mock(
+        return_value=Response(
+            200,
+            text='data: {"choices":[{"delta":{"content":"hi"}}],"timings":{"prompt_n":3,"predicted_n":1}}\n\ndata: [DONE]\n\n',
             headers={"Content-Type": "text/event-stream"},
         )
     )
     headers = {
         "Authorization": f"Bearer {make_token(rsa_keys['private'], scope='inference:stream model:solo')}",
-        idempotency.HEADER: "k5",
+        idempotency.HEADER: "s3",
     }
 
     await gw.post("/v1/chat/completions", json=_chat(stream=True), headers=headers)
     await gw.post("/v1/chat/completions", json=_chat(stream=True), headers=headers)
 
-    assert route.call_count == 2
+    utc_today = datetime.now(timezone.utc).date()
+    events = await db.query_usage_events_range(utc_today, utc_today)
+    assert len(events) == 1
 
 
 # ── the store itself ────────────────────────────────────────────────────────
