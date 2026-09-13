@@ -740,6 +740,7 @@ def create_router(registry: ModelRegistry, pool: "BackendPool") -> APIRouter:
                 "completion_price_per_1m",
                 "image_price_each",
                 "cost_usd",
+                "interrupted",
             ]
         )
         total_prompt = total_completion = total_images = 0
@@ -762,6 +763,7 @@ def create_router(registry: ModelRegistry, pool: "BackendPool") -> APIRouter:
                     ev.completion_price_per_1m,
                     ev.image_price_each,
                     f"{ev.cost_usd:.6f}" if ev.cost_usd is not None else "",
+                    "true" if ev.interrupted else "false",
                 ]
             )
             total_prompt += ev.prompt_tokens
@@ -786,6 +788,9 @@ def create_router(registry: ModelRegistry, pool: "BackendPool") -> APIRouter:
                 "",
                 "",
                 f"{total_cost:.6f}" if any_cost else "",
+                # RM-83: blank on the total row — "interrupted" is a property of
+                # one request, and summing it would invent a meaning it lacks.
+                "",
             ]
         )
         filename = f"usage-{start_day.isoformat()}-to-{end_day.isoformat()}.csv"
@@ -1929,6 +1934,7 @@ async def _record_usage(
     request_kind: str = "chat",
     image_count: int = 0,
     instance_id: str | None = None,
+    interrupted: bool = False,
 ) -> None:
     """Write an immutable usage_events row + persisted per-day rollup counters.
 
@@ -1952,6 +1958,7 @@ async def _record_usage(
             request_kind=request_kind,
             image_count=image_count,
             instance_id=instance_id,
+            interrupted=interrupted,
         )
     except Exception as exc:
         logger.warning("usage.db_write_error", error=str(exc))
@@ -2059,6 +2066,9 @@ async def _stream_response(
     async def _stream_events() -> Any:
         prompt_tokens = 0
         completion_tokens = 0
+        # RM-83: counted as the stream runs, and used only if it breaks before
+        # the frame carrying the real numbers.
+        streamed_tokens = 0
         stream_error: Exception | None = None
         # RM-46: time-to-first-token — set the first time a chunk carries real
         # delta.content, i.e. the token a streaming client actually sees first
@@ -2111,11 +2121,20 @@ async def _stream_response(
                                         prompt_n = timings.get("prompt_n")
                                         if prompt_ms and prompt_n:
                                             prompt_tps = prompt_n / (prompt_ms / 1000)
-                                if ttft_ms is None:
-                                    delta_content = (
-                                        (chunk.get("choices") or [{}])[0].get("delta") or {}
-                                    ).get("content")
-                                    if delta_content:
+                                delta_content = (
+                                    (chunk.get("choices") or [{}])[0].get("delta") or {}
+                                ).get("content")
+                                if delta_content:
+                                    # RM-83: llama.cpp reports token counts only
+                                    # on the final `timings` frame, which a
+                                    # broken stream never reaches — so a
+                                    # half-delivered answer was billed as zero
+                                    # and left no usage row at all. One content
+                                    # chunk is one token here, which is the best
+                                    # count available when nothing better
+                                    # arrives.
+                                    streamed_tokens += 1
+                                    if ttft_ms is None:
                                         ttft_ms = int((time.monotonic() - backend_start) * 1000)
                                 # RM-77: the backend names itself here —
                                 # llama.cpp echoes its own --alias, which is
@@ -2149,6 +2168,15 @@ async def _stream_response(
             yield 'data: {"error": "stream interrupted"}\n\n'
         finally:
             yield "data: [DONE]\n\n"
+            if completion_tokens == 0 and streamed_tokens > 0:
+                # RM-83: the stream broke before the frame that carries the
+                # counts. Bill what was observed instead of nothing — the
+                # tokens were generated and the compute was spent — and let the
+                # usage row say it was interrupted. The prompt was prefilled
+                # too, so it is estimated the same way the context check
+                # already estimates it rather than recorded as zero.
+                completion_tokens = streamed_tokens
+                prompt_tokens = _estimate_tokens(payload.get("messages") or [])
             backend_latency_ms = int((time.monotonic() - backend_start) * 1000)
             tps = (
                 (completion_tokens / (backend_latency_ms / 1000))
@@ -2187,6 +2215,10 @@ async def _stream_response(
                 prompt_tokens,
                 completion_tokens,
                 instance_id=backend_id,
+                # RM-83: charged like any other generated tokens, but marked,
+                # so a client disputing a half-delivered answer has something
+                # to point at and we have something to show.
+                interrupted=stream_error is not None,
             )
 
             # RM-60: settle the spend-cap reservation with the real cost

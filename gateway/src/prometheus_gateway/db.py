@@ -14,6 +14,7 @@ from typing import Any
 
 from sqlalchemy import (
     BigInteger,
+    Boolean,
     Date,
     DateTime,
     Float,
@@ -98,6 +99,14 @@ class UsageEvent(Base):
     # machine — "why was this one slow", "which node produced this output".
     # Nullable: rows written before RM-73 have no answer to give.
     instance_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    # RM-83: the stream this row bills for ended without completing. We charge
+    # for tokens generated, as every comparable platform does — the compute was
+    # spent — but a charge for a half-delivered answer has to be visible on the
+    # record, or a client disputing it has nothing to look at and we have
+    # nothing to show. Always false for non-streaming requests.
+    interrupted: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default=text("0")
+    )
     request_kind: Mapped[str] = mapped_column(
         String(16), nullable=False
     )  # "chat" | "embedding" | "image"
@@ -435,6 +444,7 @@ async def record_usage(
     request_kind: str = "chat",
     image_count: int = 0,
     instance_id: str | None = None,
+    interrupted: bool = False,
     day: date | None = None,
 ) -> None:
     """Record one request's usage: an immutable `usage_events` row (the audit
@@ -475,6 +485,7 @@ async def record_usage(
                 client_id=client_id,
                 model_id=model_id,
                 instance_id=instance_id,
+                interrupted=interrupted,
                 request_kind=request_kind,
                 prompt_tokens=prompt_tokens,
                 completion_tokens=completion_tokens,

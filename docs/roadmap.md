@@ -3268,6 +3268,31 @@ replay the failure to every retry, and the caller could never get past it.
 27 frames byte for byte, `Idempotent-Replay: true`, and `usage_events` unchanged on the
 replay.
 
+## RM-83 — Mark an interrupted stream on the usage row (done)
+
+**Why**: a stream that breaks halfway still bills for the tokens it produced, which is what
+Anthropic and OpenAI both do — the compute was spent whether or not the client read the
+result. Researched before deciding, because the alternative (refunding a partial generation)
+under-bills real work and invites a client to disconnect on purpose. The gap was never the
+policy, it was the evidence: a client disputing the charge for a half-delivered answer had
+nothing to point at, and neither did we.
+
+**Scope**: one boolean on `usage_events`, set when the stream ended on an error rather than
+cleanly, surfaced in the CSV export. Not a refund path, not a separate price — the row says
+what happened, a human decides whether to credit it.
+
+**What the flag exposed**: it was unreachable as first written. llama.cpp reports token counts
+only on its final `timings` frame, and a stream that dies mid-answer never sends one — so
+`completion_tokens` stayed 0, the usage guard dropped the row, and every interrupted stream was
+billed as zero and left no trace. The generator now tallies content chunks as they go (one
+chunk is one token for llama.cpp) and falls back to that tally, with the prompt estimated the
+same way the context check already estimates it. A clean stream is untouched: the real
+`timings` numbers still win.
+
+A stream that broke *before* the model emitted anything still writes no row: nothing was
+generated, so there is nothing to bill or to mark. Only a partially delivered answer reaches
+this flag.
+
 Append a new row to the table with the next `RM-NN` id and a new `## RM-NN — ...` section
 below, following the same shape (Why / Scope). Re-sort the table if the new item's
 priority isn't "last."

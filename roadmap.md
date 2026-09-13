@@ -95,6 +95,7 @@ Status: `done` · `todo`
 
 | RM-81 | Idempotency: distinguish refusals by type, and estimate the wait | done | Follow-on to RM-80: `idempotency-in-progress` now carries a `Retry-After` derived from the model's observed p95 latency minus elapsed time. The earlier refusal to provide one claimed the only bound available was the 600s backend timeout, which was wrong — the measurement already existed |
 | RM-82 | Idempotency for streaming responses | done | A streaming retry still regenerates and bills twice — the same exposure RM-78 closed for non-streaming, left open in what is likely the busier path. A stored key can cover a dropped client connection but not a stream the model itself broke; covering that needs resumption (SSE `Last-Event-ID`), which no comparable platform has built |
+| RM-83 | Mark an interrupted stream on the usage row | done | A stream that broke after producing tokens is still billed for what it generated — as every comparable platform does, since the compute was spent. What was missing is the record: a client disputing the charge had nothing to point at, and neither did we. Building it surfaced that interrupted streams were billed as zero and left no row at all, because llama.cpp only reports token counts on the final frame — fixed here too |
 
 Adding an item: append the next `RM-NN` row here with a one-liner, then add the full
 Why/Scope writeup to `docs/roadmap.md`.

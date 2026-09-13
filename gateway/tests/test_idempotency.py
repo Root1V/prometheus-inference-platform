@@ -457,3 +457,95 @@ async def test_the_http_refusal_sets_the_retry_after_header(gw, rsa_keys):
     assert resp.status_code == 409
     assert resp.json()["type"].endswith(idempotency.IN_PROGRESS)
     assert int(resp.headers["Retry-After"]) >= 1
+
+
+# ── RM-83: a charge for a half-delivered answer has to be visible ───────────
+
+
+@respx.mock
+async def test_a_stream_that_produced_nothing_is_not_billed(gw, rsa_keys):
+    """Before the marking question even arises: a stream that broke before the
+    model emitted anything generated no tokens, so there is nothing to charge."""
+    from datetime import datetime, timezone
+
+    respx.post(f"{BACKEND_URL}/v1/chat/completions").mock(side_effect=httpx.ConnectError("refused"))
+    headers = {
+        "Authorization": f"Bearer {make_token(rsa_keys['private'], scope='inference:stream model:solo')}",
+    }
+
+    resp = await gw.post("/v1/chat/completions", json=_chat(stream=True), headers=headers)
+
+    assert "error" in resp.text
+    utc_today = datetime.now(timezone.utc).date()
+    assert await db.query_usage_events_range(utc_today, utc_today) == []
+
+
+@respx.mock
+async def test_a_clean_stream_is_not_marked_interrupted(gw, rsa_keys):
+    from datetime import datetime, timezone
+
+    respx.post(f"{BACKEND_URL}/v1/chat/completions").mock(
+        return_value=Response(
+            200,
+            text='data: {"choices":[{"delta":{"content":"hi"}}],"timings":{"prompt_n":3,"predicted_n":1}}\n\ndata: [DONE]\n\n',
+            headers={"Content-Type": "text/event-stream"},
+        )
+    )
+    headers = {
+        "Authorization": f"Bearer {make_token(rsa_keys['private'], scope='inference:stream model:solo')}",
+    }
+
+    await gw.post("/v1/chat/completions", json=_chat(stream=True), headers=headers)
+
+    utc_today = datetime.now(timezone.utc).date()
+    events = await db.query_usage_events_range(utc_today, utc_today)
+    assert [e.interrupted for e in events] == [False]
+
+
+@respx.mock
+async def test_a_stream_that_broke_after_producing_tokens_is_billed_and_marked(gw, rsa_keys):
+    """The case the flag exists for. llama.cpp reports token counts only on its
+    final `timings` frame, so a stream that dies mid-answer used to be billed as
+    zero and leave no row — the tokens were generated, the GPU ran, and nothing
+    recorded it."""
+    from datetime import datetime, timezone
+
+    async def half_a_stream(request):
+        async def body():
+            yield b'data: {"choices":[{"delta":{"content":"the"}}]}\n\n'
+            yield b'data: {"choices":[{"delta":{"content":" quick"}}]}\n\n'
+            yield b'data: {"choices":[{"delta":{"content":" brown"}}]}\n\n'
+            raise httpx.ReadError("connection died mid-answer")
+
+        return Response(200, stream=body(), headers={"Content-Type": "text/event-stream"})
+
+    respx.post(f"{BACKEND_URL}/v1/chat/completions").mock(side_effect=half_a_stream)
+    headers = {
+        "Authorization": f"Bearer {make_token(rsa_keys['private'], scope='inference:stream model:solo')}",
+    }
+
+    resp = await gw.post("/v1/chat/completions", json=_chat(stream=True), headers=headers)
+
+    assert "stream interrupted" in resp.text
+
+    utc_today = datetime.now(timezone.utc).date()
+    events = await db.query_usage_events_range(utc_today, utc_today)
+    assert len(events) == 1
+    assert events[0].completion_tokens == 3
+    assert events[0].interrupted is True
+
+
+async def test_an_interrupted_charge_is_recorded_as_such(gw):
+    """We charge for tokens generated, as every comparable platform does — the
+    compute was spent. What was missing is the record: a client disputing a
+    charge for a half-delivered answer had nothing to point at, and neither did
+    we."""
+    from datetime import datetime, timezone
+
+    await db.record_usage("c", "m", 100, 40, instance_id="i1", interrupted=True)
+    await db.record_usage("c", "m", 100, 90, instance_id="i1")
+
+    utc_today = datetime.now(timezone.utc).date()
+    events = await db.query_usage_events_range(utc_today, utc_today)
+
+    assert sorted(e.interrupted for e in events) == [False, True]
