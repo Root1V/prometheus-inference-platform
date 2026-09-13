@@ -12,14 +12,13 @@ const FIXED_SCOPES = [
   "backend-registry:read",
   "backend-registry:write",
   "ui:chat",
-  "ops:dashboard",
 ];
 
 const MODEL_SCOPE_PREFIX = "model:";
 
 // Only these scopes mean the principal actually calls a model (API inference or
-// the chat UI) — admin/internal-tooling users (admin:*, backend-registry:*,
-// ops:dashboard) never need per-model access, so the picker stays hidden for them.
+// the chat UI) — admin/internal-tooling users (admin:*, backend-registry:*)
+// never need per-model access, so the picker stays hidden for them.
 const MODEL_CONSUMER_SCOPES = ["inference:read", "inference:stream", "ui:chat"];
 
 type ModelOption = {

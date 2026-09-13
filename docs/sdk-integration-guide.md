@@ -163,8 +163,7 @@ refresh-ahead pattern:
 ### 2.5 Scopes
 
 Fixed scope strings: `inference:read`, `inference:stream`, `admin:read`, `admin:write`,
-`admin:models`, `admin:usage`, `backend-registry:read`, `backend-registry:write`, `ui:chat`,
-`ops:dashboard`.
+`admin:models`, `admin:usage`, `backend-registry:read`, `backend-registry:write`, `ui:chat`.
 
 Per-model scope: `model:<model-id>` — e.g. `model:llama3-8b-q4`. Case-sensitive, must match
 the model ID exactly.

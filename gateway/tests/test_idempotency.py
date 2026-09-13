@@ -10,6 +10,7 @@ the model, must not record usage, and must never answer a different request.
 
 from __future__ import annotations
 
+import asyncio
 from datetime import datetime, timedelta, timezone
 
 import httpx
@@ -65,6 +66,19 @@ async def gw(app):
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         await db.create_tables(db.get_engine())
         yield client
+        # RM-87 made a streamed request's accounting a detached task, precisely
+        # so a client hanging up cannot cancel it. The same independence means a
+        # task from one test can still be writing while the next one counts
+        # rows. Drain them here rather than letting the order of the file decide
+        # whether a test passes.
+        await _drain_detached()
+
+
+async def _drain_detached() -> None:
+    from prometheus_gateway import router
+
+    while router._detached:
+        await asyncio.gather(*list(router._detached), return_exceptions=True)
 
 
 def _headers(rsa_keys, key: str | None = None) -> dict[str, str]:

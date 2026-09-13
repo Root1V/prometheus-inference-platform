@@ -686,7 +686,6 @@ def create_admin_router(manager_client: ManagerApiClient) -> APIRouter:
             return forbidden
         settings: Settings = request.app.state.settings
         return {
-            "grafana_url": settings.grafana_url,
             "rate_limit_rpm": settings.rate_limit_rpm,
             "rate_limit_tpm": settings.rate_limit_tpm,
             "rate_limit_rpm_chat_completions": settings.rate_limit_rpm_chat_completions,

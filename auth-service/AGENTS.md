@@ -79,7 +79,6 @@ Any change here requires updating `VALID_SCOPES` in `schemas.py`.
 | `admin:usage` | Usage report endpoints | memory/specs/005 |
 | `backend-registry:read` | Manager API — `GET /v1/backends` | memory/specs/008 |
 | `ui:chat` | Web Chat UI access | memory/specs/013 |
-| `ops:dashboard` | Grafana ops dashboard | memory/specs/021 |
 
 **Rule**: `VALID_SCOPES` is the single source of truth — never hardcode scope strings outside `schemas.py`. When adding a new scope, add it here first and update this table.
 

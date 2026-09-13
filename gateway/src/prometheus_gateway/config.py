@@ -169,13 +169,6 @@ class Settings(BaseSettings):
     # AUTH_DB_URL — swap for a Postgres URL in production if desired.
     gateway_db_url: str = "sqlite+aiosqlite:///./gateway.db"
 
-    # ── Observability links — docs/roadmap.md RM-31 ─────────────────────────────
-    # A link to whatever dashboard the deployment uses — since RM-91 that is
-    # Argus's, not one we run. Kept because it is just a URL on the Overview
-    # page and nothing here depends on what serves it. Unset means "none" — the Overview
-    # page's links row is omitted entirely rather than guessing a fragile URL.
-    grafana_url: str | None = None
-
     # ── Pricing — docs/roadmap.md RM-33 ─────────────────────────────────────────
     # Optional per-model USD pricing (see gateway/pricing.yaml.example). Path is
     # relative to repo root or absolute; unset means "no pricing configured" —
@@ -207,7 +200,7 @@ class Settings(BaseSettings):
 
     # SMTP — optional email delivery for budget alerts. Unset = alerts
     # silently skip (the in-app banner still fires) — same convention as
-    # pricing_file/grafana_url.
+    # pricing_file.
     smtp_host: str | None = None
     smtp_port: int = 587
     smtp_username: str | None = None

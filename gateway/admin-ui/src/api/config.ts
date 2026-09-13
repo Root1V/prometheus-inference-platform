@@ -4,7 +4,6 @@ import { apiClient } from "./client";
 /** GET /admin/api/config — dashboard-facing settings (docs/roadmap.md RM-31, RM-16). */
 export interface DashboardConfig {
   /** null when Grafana isn't deployed — the Overview page omits the link entirely. */
-  grafana_url: string | null;
   rate_limit_rpm: number;
   rate_limit_tpm: number;
   /** null when no per-endpoint override is configured for /v1/chat/completions. */

@@ -25,7 +25,14 @@ _CONFIGURED = False
 # Public flag — TraceIDMiddleware checks this to decide whether to create OTEL spans.
 _TRACING_ACTIVE = False
 
-_DEFAULT_ENDPOINT = "http://tempo:4318"
+# RM-92: there is no default collector. This used to be "http://tempo:4318", a
+# hostname that resolved only inside the compose network of an observability
+# stack this project no longer runs — so every process outside it spent its time
+# retrying against a name that does not exist. Collectors belong to whoever runs
+# them (Argus runs ours) and arrive by configuration, which makes "nothing
+# configured" mean "export nowhere", the convention the rest of this codebase
+# already uses for an unset optional dependency.
+_DEFAULT_ENDPOINT = ""
 
 
 def configure_tracing(
@@ -87,6 +94,15 @@ def configure_tracing(
 
     # Build OTLP/HTTP exporter
     _endpoint = endpoint or os.environ.get("OTEL_EXPORTER_OTLP_ENDPOINT") or _DEFAULT_ENDPOINT
+    if not _endpoint:
+        # No collector configured. The provider is still installed so spans are
+        # created and anything reading a trace id keeps working, but nothing
+        # ships anywhere. _TRACING_ACTIVE stays False deliberately: it means
+        # "spans leave this process", and they do not — so TraceIDMiddleware
+        # keeps using its own ids rather than advertising ones nobody can look
+        # up. This is not OTEL_SDK_DISABLED, which replaces the provider itself.
+        trace.set_tracer_provider(TracerProvider(resource=resource))
+        return
     otlp_url = f"{_endpoint.rstrip('/')}/v1/traces"
     exporter = OTLPSpanExporter(endpoint=otlp_url)
 

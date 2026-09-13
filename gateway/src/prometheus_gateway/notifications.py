@@ -3,8 +3,7 @@
 Plain stdlib smtplib: no email-sending infrastructure exists anywhere else in
 this codebase, so this avoids a new dependency/vendor lock-in for a single
 notification type. Unset SMTP config = silently skip (the in-app banner still
-fires) — same "optional, off unless configured" convention as pricing_file/
-grafana_url.
+fires) — same "optional, off unless configured" convention as pricing_file.
 
 Implements: docs/roadmap.md — RM-60 (#7).
 """
