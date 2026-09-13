@@ -349,12 +349,6 @@ if [[ -f "${AUTH_ENV_FILE}" ]]; then
 else
     _fail "step-9/secrets" "auth-service/.env missing — run install-rhel.sh STEP 8 first"
 fi
-if [[ -f "${ROOT_ENV_FILE}" ]]; then
-    _check_secret "${ROOT_ENV_FILE}" "GRAFANA_SECRET_KEY"
-    _check_secret "${ROOT_ENV_FILE}" "GRAFANA_ADMIN_PASSWORD"
-else
-    _fail "step-9/secrets" ".env missing — run install-rhel.sh STEP 8 first"
-fi
 
 # ── STEP 10: proxy — proxy configuration (optional)
 # Implements: AC-12

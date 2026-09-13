@@ -170,9 +170,9 @@ class Settings(BaseSettings):
     gateway_db_url: str = "sqlite+aiosqlite:///./gateway.db"
 
     # ── Observability links — docs/roadmap.md RM-31 ─────────────────────────────
-    # Grafana's URL (e.g. http://localhost:3000) — Tempo has no separately exposed
-    # UI in podman-compose.yml, trace search lives inside Grafana's Explore view
-    # against the Tempo datasource. Unset means "not deployed" — the Overview
+    # A link to whatever dashboard the deployment uses — since RM-91 that is
+    # Argus's, not one we run. Kept because it is just a URL on the Overview
+    # page and nothing here depends on what serves it. Unset means "none" — the Overview
     # page's links row is omitted entirely rather than guessing a fragile URL.
     grafana_url: str | None = None
 

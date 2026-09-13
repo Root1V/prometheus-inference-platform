@@ -3508,6 +3508,45 @@ with the variable set, `service.namespace`, `argus.component.role` and
 This is the first step of [[RM-91]] — integrating with Argus rather than running our own
 observability stack.
 
+## RM-91 — retire the self-hosted observability stack (in-progress)
+
+**Why**: a separate team, Argus, is centralising monitoring and alerting across all of the
+owner's applications. Running our own Loki, Promtail, Tempo and Grafana beside that duplicates
+the work and splits the picture in two. The move is deliberately gradual, starting with what we
+have already stopped using.
+
+**The distinction that governs this work**: what goes is the *backends* — the things that store
+and display telemetry. What stays is the *instrumentation*: the `telemetry` package, the spans,
+the trace ids. Argus asked for it explicitly ("no hace falta adoptar el SDK de Argus"), and
+removing it would leave nothing to send them. Read as "remove everything to do with
+observability", this item would break the integration it exists to enable.
+
+**Stage 1 (done)**:
+- `observability/` deleted — Grafana provisioning and dashboards, Loki, Promtail and Tempo
+  configs, and the stack's own test script.
+- The four services removed from `podman-compose.yml` and `podman-compose-ubuntu-dgx.yml`,
+  along with their named volumes and a `depends_on: tempo` left behind on the manager.
+- `GRAFANA_SECRET_KEY` and `GRAFANA_ADMIN_PASSWORD` dropped from both installers, both
+  validators, the env examples and the hook's own assertions — generating secrets for a service
+  we no longer ship is worse than not having them.
+- `OTEL_EXPORTER_OTLP_ENDPOINT` no longer hardcodes `http://tempo:4318` in compose; it comes
+  from configuration, which is where Argus supplies it.
+
+**Deliberately not done in stage 1**, each for its own reason:
+- `_DEFAULT_ENDPOINT = "http://tempo:4318"` in `telemetry/tracing.py` still names the deleted
+  container. Changing it to "unset means do not export" was written and reverted: it flips
+  `_TRACING_ACTIVE`, which changes what `TraceIDMiddleware` puts in every log line. That is a
+  behaviour decision, not a deletion, and it deserves its own item. It also costs ~45% of the
+  pre-push hook's runtime today, measured.
+- `grafana_url` stays. It is a link on the Overview page and nothing depends on what serves it,
+  so it repoints at Argus rather than being removed.
+- The `ops:dashboard` scope stays. Clients may hold it; withdrawing a granted scope is a
+  breaking change and needs its own decision.
+
+**Next**: agree the endpoint question above, then the `traceparent` conversation Argus flagged —
+`TraceIDMiddleware` starts a fresh root span and ignores an incoming one by deliberate design,
+which stops a trace crossing service boundaries. They said it does not block their pilot.
+
 Append a new row to the table with the next `RM-NN` id and a new `## RM-NN — ...` section
 below, following the same shape (Why / Scope). Re-sort the table if the new item's
 priority isn't "last."

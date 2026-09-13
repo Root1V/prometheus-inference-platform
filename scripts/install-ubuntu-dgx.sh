@@ -684,8 +684,6 @@ ROOT_ENV="${PROJECT_DIR}/.env"
 
 _inject_secret "${AUTH_ENV}" "AUTH_ADMIN_API_KEY"          32 hex
 _inject_secret "${AUTH_ENV}" "SHARE_TOKEN_ENCRYPTION_KEY"  32 hex
-_inject_secret "${ROOT_ENV}" "GRAFANA_SECRET_KEY"          32 hex
-_inject_secret "${ROOT_ENV}" "GRAFANA_ADMIN_PASSWORD"      16 base64
 
 _ok "Secrets injected"
 
