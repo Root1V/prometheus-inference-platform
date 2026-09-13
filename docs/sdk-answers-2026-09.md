@@ -239,13 +239,24 @@ them is ever worth retrying:
 |---|---|---|---|
 | `invalid-idempotency-key` | 400 | The key is malformed — today, longer than 255 characters | **Never.** Fix the key |
 | `idempotency-key-reuse` | 409 | The same key was already used for a different request. The fingerprint covers path *and* body, so a different endpoint counts too | **Never.** Use a fresh key per logical request |
-| `idempotency-in-progress` | 409 | The first request with this key is still running | **Yes**, after waiting |
+| `idempotency-in-progress` | 409 | The first request with this key is still running | **Yes**, after `Retry-After` |
 | `idempotency-response-not-retained` | 409 | The original succeeded, but its response exceeded 1 MiB and wasn't kept | **Never.** This tells you the original worked |
 
 A malformed key is a `400`, not a conflict: it never conflicted with anything, and calling it
 one would tell you that you had repeated a request when your key simply didn't fit.
 
 Branch on `type`. The `detail` is written for a human and may be reworded.
+
+`idempotency-in-progress` — and only that one — carries a **`Retry-After`**. It is derived
+from what the model actually does: its observed p95 latency minus how long the first request
+has already been running. Not the backend timeout, which is an upper bound rather than an
+estimate and would have you wait ten minutes for something that usually takes two seconds.
+When a model has no observations yet — the counters live in process memory and reset with the
+gateway — you get a short default rather than nothing. It is a hint, in the HTTP sense: it
+will sometimes be early.
+
+The other three never carry one. A `Retry-After` on a refusal that never resolves would invite
+exactly the retry we are telling you not to make.
 
 **A failed request hands its key back.** If the request errored, nothing is stored and the same
 key is free — retrying with it is exactly right.
@@ -291,17 +302,37 @@ Things we have committed to, and will not change without telling you first:
   retries are ours to pay for.
 - **A replay never reaches the model**, never records usage, never counts against a spend cap.
 
-### What we are not going to do
+### Two corrections to what we told you
 
-**Idempotency on streaming.** Replaying a stream means storing every chunk, and the semantics
-aren't settled anywhere we could follow. Your SDKs rejecting a key on `stream()` is the right
-call — better than letting someone believe they are protected. If that ever changes it will be
-announced, not discovered.
+We said we would do neither of these. We were wrong about one and overstated the other, and
+you should have the real position.
 
-**A `Retry-After` on `idempotency-in-progress`.** You offered it as one option. The only bound
-we can compute is the 600s backend timeout, which is an upper bound rather than an estimate;
-a number that pessimistic is worse than none. The type tells you it is the one refusal worth
-waiting on — you know your own request better than we do.
+**The `Retry-After` is now there.** We claimed the only bound available was the 600s backend
+timeout. That was simply not true: we keep observed p95 latency per model, and the record
+knows when the first request started, so the estimate above is a measurement rather than a
+guess. The refusal was reasoning from what we assumed we had instead of checking.
+
+**Idempotency on streaming is not refused — it is not built yet.** The reason we gave was real
+as far as it went: neither OpenAI nor Anthropic supports replaying or resuming an LLM stream,
+so there is no precedent to follow. But it left out the part that matters, which is that **the
+billing exposure is identical to the one we just closed** — a streaming retry regenerates and
+bills twice, exactly as a non-streaming one did before `Idempotency-Key` existed. For a chat
+SDK, streaming is likely the busier path. We closed the hole in the quieter one first.
+
+What makes it genuinely harder, rather than merely unbuilt:
+
+| What broke | Can a key help? |
+|---|---|
+| Your connection dropped, but our stream from the model completed | **Yes** — the full response was received and can be stored |
+| The model's own stream broke mid-generation | **No** — there is nothing complete to replay |
+
+The second is the case you most want covered, and a key cannot cover it. Resuming rather than
+replaying — SSE's `Last-Event-ID`, which nobody in this space has implemented — is the shape
+that would, and it is a different piece of work.
+
+So: keep rejecting a key on `stream()`. That remains right today, and it is right for the
+better reason that the protection would be partial rather than absent. It is tracked on our
+side, and if it lands you will be told rather than left to discover it.
 
 ### Two rounds, three real defects
 

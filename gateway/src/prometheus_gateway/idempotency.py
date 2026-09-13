@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from math import ceil
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any
@@ -36,6 +37,11 @@ HEADER = "Idempotency-Key"
 # How long a key answers for. 24h matches OpenAI and Anthropic, so an SDK's
 # own key-retention guidance carries over unchanged.
 _WINDOW = timedelta(hours=24)
+
+# What to suggest waiting when nothing has been observed for this model yet —
+# the latency counters live in process memory and reset with the gateway. Short
+# on purpose: re-asking costs a 409, not a generation.
+_DEFAULT_RETRY_AFTER_S = 2
 
 # Bodies above this aren't retained: chat and embeddings are kilobytes, but an
 # image response is megabytes of base64 and `n` multiplies it. The key is still
@@ -73,6 +79,9 @@ class Refusal:
 
     kind: str
     detail: str
+    #: Seconds to wait before retrying — only ever set for IN_PROGRESS, the one
+    #: refusal that resolves by waiting.
+    retry_after_seconds: int | None = None
 
 
 # A malformed key was never a conflict with anything — it's a bad request, and
@@ -108,8 +117,14 @@ def fingerprint(path: str, payload: Any) -> str:
     return hashlib.sha256(material.encode()).hexdigest()
 
 
-async def begin(client_id: str, key: str, path: str, payload: Any) -> Replay | Refusal | Claim:
-    """Claim *key* for this request, or report what already holds it."""
+async def begin(
+    client_id: str, key: str, path: str, payload: Any, model_key: str | None = None
+) -> Replay | Refusal | Claim:
+    """Claim *key* for this request, or report what already holds it.
+
+    `model_key` is the resolved model, used only to estimate how much longer an
+    in-flight request has left. Optional, because the answer is a hint.
+    """
     if len(key) > MAX_KEY_LENGTH:
         return Refusal(INVALID_KEY, f"{HEADER} must be at most {MAX_KEY_LENGTH} characters.")
 
@@ -134,10 +149,12 @@ async def begin(client_id: str, key: str, path: str, payload: Any) -> Replay | R
                     "A key identifies one request; reuse it only to retry that same one.",
                 )
             if row.state == _IN_PROGRESS:
+                wait = await _estimated_wait(row, model_key)
                 return Refusal(
                     IN_PROGRESS,
                     f"A request with {HEADER} {key!r} is still running. Retrying while the "
                     "first is in flight would generate twice — wait for it to finish.",
+                    retry_after_seconds=wait,
                 )
             if row.response_body is None:
                 return Refusal(
@@ -214,6 +231,26 @@ async def purge_expired() -> int:
         if stale:
             await session.commit()
     return len(stale)
+
+
+async def _estimated_wait(row: db.IdempotencyRecord, model_key: str | None) -> int:
+    """How much longer the in-flight request probably has — RM-81.
+
+    Derived from what this model actually does: its observed p95 latency minus
+    how long this request has already been running. Deliberately not the
+    backend timeout, which is an upper bound rather than an estimate and would
+    have a client wait ten minutes for something that usually takes two seconds.
+    """
+    from .telemetry import metrics_store
+
+    p95_ms = await metrics_store.model_latency_p95_ms(model_key) if model_key else None
+    if not p95_ms:
+        return _DEFAULT_RETRY_AFTER_S
+    started = row.created_at
+    if started.tzinfo is None:
+        started = started.replace(tzinfo=timezone.utc)
+    elapsed = (datetime.now(timezone.utc) - started).total_seconds()
+    return max(1, ceil(p95_ms / 1000 - elapsed))
 
 
 def _expired(row: db.IdempotencyRecord, cutoff: datetime) -> bool:

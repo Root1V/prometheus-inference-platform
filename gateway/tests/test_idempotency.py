@@ -327,3 +327,75 @@ async def test_the_four_refusals_are_told_apart_by_type(gw, rsa_keys):
     assert reuse.status_code == 409
     assert bad_key.status_code == 400
     assert reuse.json()["type"] != bad_key.json()["type"]
+
+
+# ── RM-81: the in-flight refusal says how long to wait ──────────────────────
+
+
+async def test_in_progress_carries_a_wait_estimated_from_the_model(gw):
+    """Not the backend timeout — that's an upper bound, and would have a client
+    wait ten minutes for something that usually takes two seconds."""
+    from prometheus_gateway.telemetry import metrics_store
+
+    await metrics_store.record_inference(
+        prompt_tokens=1, completion_tokens=1, latency_ms=9000, backend_id="b", model_id="slow"
+    )
+    claim = await idempotency.begin("c", "w1", "/v1/chat/completions", {"a": 1}, "slow")
+    assert isinstance(claim, idempotency.Claim)
+
+    second = await idempotency.begin("c", "w1", "/v1/chat/completions", {"a": 1}, "slow")
+
+    assert isinstance(second, idempotency.Refusal)
+    assert second.kind == idempotency.IN_PROGRESS
+    # ~9s observed, barely any elapsed, so the hint lands near the observation.
+    assert 5 <= (second.retry_after_seconds or 0) <= 9
+
+
+async def test_a_model_with_no_observations_still_gets_a_hint(gw):
+    """The counters are in process memory and reset with the gateway, so "no
+    samples" is a normal state, not an error."""
+    second_claim = await idempotency.begin("c", "w2", "/v1/chat/completions", {"a": 1}, "unseen")
+    assert isinstance(second_claim, idempotency.Claim)
+
+    refusal = await idempotency.begin("c", "w2", "/v1/chat/completions", {"a": 1}, "unseen")
+
+    assert isinstance(refusal, idempotency.Refusal)
+    assert refusal.retry_after_seconds == idempotency._DEFAULT_RETRY_AFTER_S
+
+
+async def test_only_the_waitable_refusal_carries_a_hint(gw):
+    """A Retry-After on a refusal that never resolves would invite exactly the
+    retry we're telling the client not to make."""
+    reuse = await idempotency.begin("c", "w3", "/v1/chat/completions", {"a": 1})
+    assert isinstance(reuse, idempotency.Claim)
+    await idempotency.complete(reuse, 200, {"ok": True})
+
+    outcome = await idempotency.begin("c", "w3", "/v1/chat/completions", {"different": True})
+
+    assert isinstance(outcome, idempotency.Refusal)
+    assert outcome.kind == idempotency.KEY_REUSE
+    assert outcome.retry_after_seconds is None
+
+
+@respx.mock
+async def test_the_http_refusal_sets_the_retry_after_header(gw, rsa_keys):
+    # Same payload shape the handler fingerprints: Pydantic's dump, defaults
+    # included — not the raw dict a caller writes.
+    from prometheus_gateway.models.schemas import ChatCompletionRequest
+
+    claim = await idempotency.begin(
+        "client-abc",
+        "http-wait",
+        "/v1/chat/completions",
+        ChatCompletionRequest(**_chat()).model_dump(),
+        "solo",
+    )
+    assert isinstance(claim, idempotency.Claim)
+
+    resp = await gw.post(
+        "/v1/chat/completions", json=_chat(), headers=_headers(rsa_keys, "http-wait")
+    )
+
+    assert resp.status_code == 409
+    assert resp.json()["type"].endswith(idempotency.IN_PROGRESS)
+    assert int(resp.headers["Retry-After"]) >= 1

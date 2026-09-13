@@ -3219,6 +3219,39 @@ on "conflict" concluded it had repeated a request when its key simply didn't fit
   backend timeout, 600s, which is an upper bound rather than an estimate — a number that
   pessimistic is worse than none.
 
+## RM-81 — Idempotency: estimate the wait on an in-flight refusal (done)
+
+**Why**: RM-80 gave each refusal its own type; the SDK team had also offered a `Retry-After` on
+the in-flight one as an alternative. That was declined on the grounds that the only bound
+available was the 600s backend timeout — an upper bound, not an estimate. The grounds were
+false: [[RM-73]] already pools observed latency per model, and the record knows when the first
+request started, so `p95 − elapsed` is a measurement. The refusal reasoned from an assumption
+about the codebase instead of checking it.
+
+**Scope**: `MetricsStore.model_latency_p95_ms()` pools the same samples the /metrics rollup
+uses; `idempotency-in-progress` carries the derived `Retry-After`, with a short default when a
+model has no observations yet, since those counters reset with the process. The other three
+refusals deliberately carry none — a hint on a refusal that never resolves would invite the
+retry we are telling the client not to make.
+
+## RM-82 — Idempotency for streaming responses (todo)
+
+**Why**: a streaming retry still regenerates and bills twice — the same exposure [[RM-78]]
+closed for non-streaming, left open in what is probably the busier path for a chat SDK. The
+original decision framed this as "not going to do it", justified by there being no precedent:
+neither OpenAI nor Anthropic supports replaying or resuming an LLM stream. True, but it omitted
+that the billing hole is identical, which makes it a backlog item rather than a refusal.
+
+**Scope** (not designed):
+- A stored key can cover a *client* connection that dropped after our stream from the model
+  completed — the full response was received and can be replayed.
+- It cannot cover a stream the model itself broke, which is the case a client most wants
+  covered: there is nothing complete to replay.
+- Covering that needs resumption rather than replay — SSE's `Last-Event-ID`, plus a cursor for
+  non-EventSource clients. Different work, and nobody comparable has built it.
+- Until then the SDK's own behaviour — rejecting a key on `stream()` — is correct, and for the
+  better reason that partial protection is worse than none.
+
 Append a new row to the table with the next `RM-NN` id and a new `## RM-NN — ...` section
 below, following the same shape (Why / Scope). Re-sort the table if the new item's
 priority isn't "last."

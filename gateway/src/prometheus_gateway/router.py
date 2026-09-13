@@ -216,7 +216,7 @@ async def _healthy_members(
 
 
 async def _begin_idempotent(
-    request: Request, claims: Any, path: str, payload: Any
+    request: Request, claims: Any, path: str, payload: Any, model_key: str | None = None
 ) -> JSONResponse | None:
     """Honour an Idempotency-Key header — RM-78.
 
@@ -233,7 +233,7 @@ async def _begin_idempotent(
     key = request.headers.get(idempotency.HEADER)
     if not key or claims is None:
         return None
-    outcome = await idempotency.begin(claims.client_id, key, path, payload)
+    outcome = await idempotency.begin(claims.client_id, key, path, payload, model_key=model_key)
     if isinstance(outcome, idempotency.Replay):
         # Deliberately no budget reserve, no usage row, no metrics: replaying
         # is not a second use of the model, which is the entire point.
@@ -256,7 +256,12 @@ async def _begin_idempotent(
             if outcome.kind == idempotency.INVALID_KEY
             else "Idempotency Conflict"
         )
-        return _problem(request, status, outcome.kind, title, outcome.detail)
+        headers = (
+            {"Retry-After": str(outcome.retry_after_seconds)}
+            if outcome.retry_after_seconds is not None
+            else None
+        )
+        return _problem(request, status, outcome.kind, title, outcome.detail, extra_headers=headers)
     request.state.idempotency_claim = outcome
     return None
 
@@ -938,7 +943,7 @@ def create_router(registry: ModelRegistry, pool: "BackendPool") -> APIRouter:
             # documents clearly.
             if not body.stream:
                 replay = await _begin_idempotent(
-                    request, claims, "/v1/chat/completions", body.model_dump()
+                    request, claims, "/v1/chat/completions", body.model_dump(), resolution.model_key
                 )
                 if replay is not None:
                     return replay
@@ -1371,7 +1376,9 @@ def create_router(registry: ModelRegistry, pool: "BackendPool") -> APIRouter:
 
         # RM-78: before the budget reserve — replaying must not reserve, bill
         # or meter, which is the whole point.
-        replay = await _begin_idempotent(request, claims, "/v1/embeddings", body.model_dump())
+        replay = await _begin_idempotent(
+            request, claims, "/v1/embeddings", body.model_dump(), resolution.model_key
+        )
         if replay is not None:
             return replay
 
@@ -1659,7 +1666,7 @@ def create_router(registry: ModelRegistry, pool: "BackendPool") -> APIRouter:
         # RM-78: before the budget reserve — replaying must not reserve, bill
         # or meter, which is the whole point.
         replay = await _begin_idempotent(
-            request, claims, "/v1/images/generations", body.model_dump()
+            request, claims, "/v1/images/generations", body.model_dump(), resolution.model_key
         )
         if replay is not None:
             return replay

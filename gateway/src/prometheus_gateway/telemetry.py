@@ -163,6 +163,20 @@ class MetricsStore:
         async with self._lock:
             self._jwt_failed += 1
 
+    async def model_latency_p95_ms(self, model_id: str) -> float | None:
+        """This model's p95 latency across its replicas — RM-81.
+
+        Pooled from the same samples the /metrics rollup uses, so a request
+        already in flight can be given a real estimate of how long it has left
+        instead of a guess. None when nothing has been observed yet: these
+        counters live in process memory and reset with the gateway, so the
+        caller needs a fallback.
+        """
+        async with self._lock:
+            members = [b for b, m in self._backend_model.items() if m == model_id]
+            samples = [s for b in members for s in self._backend_latencies.get(b, [])]
+        return self._percentile(samples, 95) if samples else None
+
     def _percentile(self, samples: Sequence[float], pct: float) -> float:
         if not samples:
             return 0
