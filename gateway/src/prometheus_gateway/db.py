@@ -77,6 +77,29 @@ class UsageDaily(Base):
     )
 
 
+# RM-88: the three ways a request stops producing output. Strings rather than a
+# Python enum because they are written to a column, read back by SQL and exported
+# to CSV — a plain value crosses all three without a translation layer.
+TERMINATION_COMPLETE = "complete"
+TERMINATION_UPSTREAM_ERROR = "upstream_error"
+TERMINATION_CLIENT_DISCONNECTED = "client_disconnected"
+
+TERMINATION_REASONS = (
+    TERMINATION_COMPLETE,
+    TERMINATION_UPSTREAM_ERROR,
+    TERMINATION_CLIENT_DISCONNECTED,
+)
+
+
+def _interrupted_from(reason: str) -> bool:
+    """`interrupted` is whatever is not a whole answer.
+
+    Derived rather than passed in, so the boolean and the reason can never
+    disagree on a row — which is the failure mode of keeping both.
+    """
+    return reason != TERMINATION_COMPLETE
+
+
 class UsageEvent(Base):
     """Append-only audit trail — one row per request, never mutated.
 
@@ -99,11 +122,26 @@ class UsageEvent(Base):
     # machine — "why was this one slow", "which node produced this output".
     # Nullable: rows written before RM-73 have no answer to give.
     instance_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
-    # RM-83: the stream this row bills for ended without completing. We charge
-    # for tokens generated, as every comparable platform does — the compute was
-    # spent — but a charge for a half-delivered answer has to be visible on the
-    # record, or a client disputing it has nothing to look at and we have
-    # nothing to show. Always false for non-streaming requests.
+    # RM-88: why this request stopped producing output. Three reasons, because
+    # there are three — collapsing them into a boolean threw away the one
+    # distinction that matters when a charge is questioned: whether the answer
+    # was cut short by us or by the caller.
+    #
+    #   "complete"           — the model finished; the answer is whole.
+    #   "upstream_error"     — our stream broke mid-answer. Our problem.
+    #   "client_disconnected"— the caller hung up mid-answer. A chat UI's stop
+    #                          button lands here, so it is ordinary, not rare.
+    #
+    # We bill the tokens actually sent to the caller in every case. That is the
+    # narrower of the two defensible measures — the other being everything the
+    # GPU produced — and the one we can evidence line by line.
+    termination_reason: Mapped[str] = mapped_column(
+        String(24), nullable=False, default="complete", server_default=text("'complete'")
+    )
+    # RM-83, kept as a derived column rather than dropped: it is in the contract
+    # we published to SDK clients, and it means what we told them it means —
+    # "you were charged for an answer you did not receive whole". Never set
+    # independently; see _interrupted_from().
     interrupted: Mapped[bool] = mapped_column(
         Boolean, nullable=False, default=False, server_default=text("0")
     )
@@ -444,7 +482,7 @@ async def record_usage(
     request_kind: str = "chat",
     image_count: int = 0,
     instance_id: str | None = None,
-    interrupted: bool = False,
+    termination_reason: str = TERMINATION_COMPLETE,
     day: date | None = None,
 ) -> None:
     """Record one request's usage: an immutable `usage_events` row (the audit
@@ -485,7 +523,8 @@ async def record_usage(
                 client_id=client_id,
                 model_id=model_id,
                 instance_id=instance_id,
-                interrupted=interrupted,
+                termination_reason=termination_reason,
+                interrupted=_interrupted_from(termination_reason),
                 request_kind=request_kind,
                 prompt_tokens=prompt_tokens,
                 completion_tokens=completion_tokens,

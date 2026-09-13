@@ -769,6 +769,11 @@ def create_router(registry: ModelRegistry, pool: "BackendPool") -> APIRouter:
                 "image_price_each",
                 "cost_usd",
                 "interrupted",
+                # RM-88: `interrupted` stays where it is, in the position SDK
+                # clients already parse. The reason is appended, so a consumer
+                # reading by index is unaffected and one reading by name gains
+                # the answer to "interrupted how?".
+                "termination_reason",
             ]
         )
         total_prompt = total_completion = total_images = 0
@@ -792,6 +797,7 @@ def create_router(registry: ModelRegistry, pool: "BackendPool") -> APIRouter:
                     ev.image_price_each,
                     f"{ev.cost_usd:.6f}" if ev.cost_usd is not None else "",
                     "true" if ev.interrupted else "false",
+                    ev.termination_reason,
                 ]
             )
             total_prompt += ev.prompt_tokens
@@ -816,8 +822,10 @@ def create_router(registry: ModelRegistry, pool: "BackendPool") -> APIRouter:
                 "",
                 "",
                 f"{total_cost:.6f}" if any_cost else "",
-                # RM-83: blank on the total row — "interrupted" is a property of
-                # one request, and summing it would invent a meaning it lacks.
+                # RM-83/RM-88: blank on the total row — how one request ended is
+                # a property of that request, and summing it would invent a
+                # meaning it does not have.
+                "",
                 "",
             ]
         )
@@ -1962,7 +1970,7 @@ async def _record_usage(
     request_kind: str = "chat",
     image_count: int = 0,
     instance_id: str | None = None,
-    interrupted: bool = False,
+    termination_reason: str = db.TERMINATION_COMPLETE,
 ) -> None:
     """Write an immutable usage_events row + persisted per-day rollup counters.
 
@@ -1986,7 +1994,7 @@ async def _record_usage(
             request_kind=request_kind,
             image_count=image_count,
             instance_id=instance_id,
-            interrupted=interrupted,
+            termination_reason=termination_reason,
         )
     except Exception as exc:
         logger.warning("usage.db_write_error", error=str(exc))
@@ -2127,6 +2135,8 @@ async def _stream_response(
         # RM-83: counted as the stream runs, and used only if it breaks before
         # the frame carrying the real numbers.
         streamed_tokens = 0
+        # RM-88: did the model finish, or were we cut off? Set below, once.
+        upstream_complete = False
         stream_error: Exception | None = None
         # RM-46: time-to-first-token — set the first time a chunk carries real
         # delta.content, i.e. the token a streaming client actually sees first
@@ -2229,6 +2239,11 @@ async def _stream_response(
                                 # rather than dropping a token the client needs.
                                 pass
                         yield f"{line}\n\n"
+            # RM-88: reached only if the backend's stream ran to its end. If the
+            # caller hangs up mid-answer this generator is closed at a `yield`
+            # above and we never get here — which is precisely how the two are
+            # told apart, with no need to catch GeneratorExit to notice.
+            upstream_complete = True
             if cb:
                 await cb.record_success()
         except Exception as exc:
@@ -2251,13 +2266,21 @@ async def _stream_response(
             # raised at that yield, which abandons the rest of this block. That
             # is how streamed generations were metered, billed and settled only
             # for clients that happened to drain the body to EOF.
+            # RM-88: three outcomes, named rather than flattened to a boolean.
+            # An answer the caller walked away from is not the same event as one
+            # we broke, and the usage row is where that distinction has to
+            # survive — it is the only artefact left when a charge is queried.
+            if stream_error is not None:
+                termination_reason = db.TERMINATION_UPSTREAM_ERROR
+            elif upstream_complete:
+                termination_reason = db.TERMINATION_COMPLETE
+            else:
+                termination_reason = db.TERMINATION_CLIENT_DISCONNECTED
             if completion_tokens == 0 and streamed_tokens > 0:
-                # RM-83: the stream broke before the frame that carries the
-                # counts. Bill what was observed instead of nothing — the
-                # tokens were generated and the compute was spent — and let the
-                # usage row say it was interrupted. The prompt was prefilled
-                # too, so it is estimated the same way the context check
-                # already estimates it rather than recorded as zero.
+                # RM-83: the stream stopped before the frame that carries the
+                # counts. Bill what was actually sent to the caller rather than
+                # nothing — those tokens left the building — with the prompt
+                # estimated the way the context check already estimates it.
                 completion_tokens = streamed_tokens
                 prompt_tokens = _estimate_tokens(payload.get("messages") or [])
             backend_latency_ms = int((time.monotonic() - backend_start) * 1000)
@@ -2312,10 +2335,7 @@ async def _stream_response(
                     prompt_tokens,
                     completion_tokens,
                     instance_id=backend_id,
-                    # RM-83: charged like any other generated tokens, but marked,
-                    # so a client disputing a half-delivered answer has something
-                    # to point at and we have something to show.
-                    interrupted=stream_error is not None,
+                    termination_reason=termination_reason,
                 )
 
                 # RM-60: settle the spend-cap reservation with the real cost
