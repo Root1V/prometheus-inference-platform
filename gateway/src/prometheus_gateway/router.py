@@ -215,6 +215,34 @@ async def _healthy_members(
     return _GroupHealth(usable, skipped, min(recoveries) if recoveries else None)
 
 
+# RM-87: work that must finish even though the client walked away.
+#
+# A streamed response is accounted for while the generator unwinds, and that
+# unwinding happens inside the request task — which the server cancels the
+# moment the connection drops. Every `await` in that path is therefore a place
+# where billing, metering and idempotency silently stop happening, and a client
+# that disconnects mid-generation is the case most worth billing, not least.
+#
+# Creating a task is synchronous, so it works even while a generator is being
+# closed, and the task is not a child of the cancelled one. The set keeps a
+# strong reference, because the loop only holds a weak one and an unreferenced
+# task can be collected before it runs.
+_detached: set["asyncio.Task[None]"] = set()
+
+
+def _detach(coro: "Any", *, what: str) -> None:
+    task = asyncio.ensure_future(coro)
+    _detached.add(task)
+
+    def _done(t: "asyncio.Task[None]") -> None:
+        _detached.discard(t)
+        exc = t.exception() if not t.cancelled() else None
+        if exc is not None:
+            logger.error("stream.finalisation_failed", what=what, error=str(exc))
+
+    task.add_done_callback(_done)
+
+
 async def _settle_stream(claim: "idempotency.Claim", emitted: list[str], *, clean: bool) -> None:
     """Store a finished stream, or hand its key back — RM-82.
 
@@ -2051,17 +2079,47 @@ async def _stream_response(
         # the retry proceeds, which is what a client wants after a break.
         emitted: list[str] = []
         clean = True
+        settled = False
+        released = False
         try:
             async for chunk in _stream_events():
                 emitted.append(chunk)
+                if chunk.startswith("data: [DONE]"):
+                    # RM-87: the answer is complete the moment its terminal
+                    # frame exists — not when the client gets round to reading
+                    # it, and not when this generator is eventually torn down.
+                    # Settling here is what makes a streamed replay work for a
+                    # client that stops at `[DONE]`, which is every SDK.
+                    if idempotency_claim is not None:
+                        # Awaited, not detached: the client is still here — it
+                        # has not been handed the terminal frame yet — and a
+                        # retry arriving straight after must find a stored
+                        # result rather than a claim still being written. If
+                        # this await is cancelled anyway, `settled` stays False
+                        # and the detached path in `finally` picks it up.
+                        await _settle_stream(idempotency_claim, emitted, clean=True)
+                        settled = True
+                    # The backend finished generating and its connection is
+                    # already closed; holding its slot until the client walks
+                    # away made it look busier than it was to least-loaded
+                    # routing.
+                    pool.release(backend_id)
+                    released = True
                 yield chunk
         except BaseException:
             clean = False
             raise
         finally:
-            pool.release(backend_id)
-            if idempotency_claim is not None:
-                await _settle_stream(idempotency_claim, emitted, clean=clean)
+            if not released:
+                pool.release(backend_id)
+            if idempotency_claim is not None and not settled:
+                # Detached for the same reason: this branch is reached when the
+                # client dropped, which is exactly when the request task is
+                # already being cancelled.
+                _detach(
+                    _settle_stream(idempotency_claim, list(emitted), clean=clean),
+                    what="stream-idempotency-abandoned",
+                )
 
     async def _stream_events() -> Any:
         prompt_tokens = 0
@@ -2091,7 +2149,15 @@ async def _stream_response(
             ) as resp:
                 async for line in resp.aiter_lines():
                     if line:
-                        if line.startswith("data:") and "[DONE]" not in line:
+                        if line.startswith("data:") and "[DONE]" in line:
+                            # RM-87: the backend ends its stream with its own
+                            # `[DONE]`, and forwarding it sent two terminal
+                            # frames — ours plus theirs. A client is right to
+                            # stop at the first, which arrived before anything
+                            # had been accounted for. We emit the terminal frame
+                            # ourselves, once, at the end.
+                            continue
+                        if line.startswith("data:"):
                             try:
                                 chunk = json.loads(line[5:].strip())
                                 usage = chunk.get("usage") or {}
@@ -2121,10 +2187,9 @@ async def _stream_response(
                                         prompt_n = timings.get("prompt_n")
                                         if prompt_ms and prompt_n:
                                             prompt_tps = prompt_n / (prompt_ms / 1000)
-                                delta_content = (
-                                    (chunk.get("choices") or [{}])[0].get("delta") or {}
-                                ).get("content")
-                                if delta_content:
+                                delta = (chunk.get("choices") or [{}])[0].get("delta") or {}
+                                delta_content = delta.get("content")
+                                if delta_content or delta.get("reasoning_content"):
                                     # RM-83: llama.cpp reports token counts only
                                     # on the final `timings` frame, which a
                                     # broken stream never reaches — so a
@@ -2133,8 +2198,19 @@ async def _stream_response(
                                     # chunk is one token here, which is the best
                                     # count available when nothing better
                                     # arrives.
+                                    # RM-87: a reasoning model streams its
+                                    # thinking as `reasoning_content`, not
+                                    # `content`. Counting only the latter meant
+                                    # a stream abandoned while the model was
+                                    # still reasoning tallied zero generated
+                                    # tokens and was billed nothing — though
+                                    # the GPU had been running the whole time.
                                     streamed_tokens += 1
-                                    if ttft_ms is None:
+                                    # TTFT stays on visible content on purpose:
+                                    # it is a latency metric with history behind
+                                    # it, and redefining it would silently move
+                                    # every chart that uses it.
+                                    if ttft_ms is None and delta_content:
                                         ttft_ms = int((time.monotonic() - backend_start) * 1000)
                                 # RM-77: the backend names itself here —
                                 # llama.cpp echoes its own --alias, which is
@@ -2167,7 +2243,14 @@ async def _stream_response(
                 await cb.record_failure()
             yield 'data: {"error": "stream interrupted"}\n\n'
         finally:
-            yield "data: [DONE]\n\n"
+            # RM-87: everything that records what happened runs BEFORE the
+            # terminal frame is handed over, never after. A `yield` inside this
+            # block suspends the generator, and a client that stops reading at
+            # `[DONE]` — which is what every OpenAI-shaped SDK does — never
+            # resumes it. The generator is then closed later with GeneratorExit
+            # raised at that yield, which abandons the rest of this block. That
+            # is how streamed generations were metered, billed and settled only
+            # for clients that happened to drain the body to EOF.
             if completion_tokens == 0 and streamed_tokens > 0:
                 # RM-83: the stream broke before the frame that carries the
                 # counts. Bill what was observed instead of nothing — the
@@ -2183,69 +2266,90 @@ async def _stream_response(
                 if backend_latency_ms > 0 and completion_tokens > 0
                 else 0.0
             )
-            # AC-8b, AC-10 (018): metering after stream completes with spec field names
-            logger.info(
-                "inference.complete" if not stream_error else "inference.stream_error",
-                backend_id=backend_id,
-                tokens_prompt=prompt_tokens,
-                tokens_completion=completion_tokens,
-                tokens_total=prompt_tokens + completion_tokens,
-                latency_ms=backend_latency_ms,
-                tokens_per_second=round(tps, 2),
-                client_id=claims.client_id if claims else "unknown",
-                user_id=claims.user_id if claims else "unknown",
-                span_id=None,
-            )
-            await metrics_store.record_inference(
-                prompt_tokens=prompt_tokens,
-                completion_tokens=completion_tokens,
-                latency_ms=backend_latency_ms,
-                backend_id=backend_id,
-                model_id=billed_name,
-                error=stream_error is not None,
-                ttft_ms=ttft_ms,
-                inter_token_ms=inter_token_ms,
-                tokens_per_second=round(tps, 2) if completion_tokens > 0 else None,
-                prompt_tokens_per_second=round(prompt_tps, 2) if prompt_tps is not None else None,
-            )
-            # RM-32: persisted daily usage for streaming
-            await _record_usage(
-                claims,
-                billed_name,
-                prompt_tokens,
-                completion_tokens,
-                instance_id=backend_id,
-                # RM-83: charged like any other generated tokens, but marked,
-                # so a client disputing a half-delivered answer has something
-                # to point at and we have something to show.
-                interrupted=stream_error is not None,
-            )
 
-            # RM-60: settle the spend-cap reservation with the real cost
-            if (
-                claims is not None
-                and reservation is not None
-                and reservation.allowed
-                and budget_redis is not None
-            ):
-                actual_cost = pricing.get_pricing_table().estimate_cost_usd(
-                    billed_name, prompt_tokens, completion_tokens
+            async def _account_for_it() -> None:
+                """Everything that records what this request did.
+
+                RM-87: detached rather than awaited here. This runs while the
+                generator unwinds, which for a disconnected client happens
+                inside a task the server has already cancelled — so awaiting it
+                meant the work stopped at the first `await` and the request was
+                never billed, metered or settled. A client that walks away
+                mid-generation is precisely the one RM-83 says we must still
+                charge.
+                """
+                # AC-8b, AC-10 (018): metering after stream completes with spec field names
+                logger.info(
+                    "inference.complete" if not stream_error else "inference.stream_error",
+                    backend_id=backend_id,
+                    tokens_prompt=prompt_tokens,
+                    tokens_completion=completion_tokens,
+                    tokens_total=prompt_tokens + completion_tokens,
+                    latency_ms=backend_latency_ms,
+                    tokens_per_second=round(tps, 2),
+                    client_id=claims.client_id if claims else "unknown",
+                    user_id=claims.user_id if claims else "unknown",
+                    span_id=None,
                 )
-                if actual_cost is not None:
-                    newly_crossed = await BudgetTracker(budget_redis).settle(
-                        claims.client_id,
-                        reservation.reserved_usd,
-                        actual_cost,
-                        cap_usd=reservation.cap_usd,
-                        alert_thresholds_percent=alert_thresholds_percent or [],
+                await metrics_store.record_inference(
+                    prompt_tokens=prompt_tokens,
+                    completion_tokens=completion_tokens,
+                    latency_ms=backend_latency_ms,
+                    backend_id=backend_id,
+                    model_id=billed_name,
+                    error=stream_error is not None,
+                    ttft_ms=ttft_ms,
+                    inter_token_ms=inter_token_ms,
+                    tokens_per_second=round(tps, 2) if completion_tokens > 0 else None,
+                    prompt_tokens_per_second=round(prompt_tps, 2)
+                    if prompt_tps is not None
+                    else None,
+                )
+                # RM-32: persisted daily usage for streaming
+                await _record_usage(
+                    claims,
+                    billed_name,
+                    prompt_tokens,
+                    completion_tokens,
+                    instance_id=backend_id,
+                    # RM-83: charged like any other generated tokens, but marked,
+                    # so a client disputing a half-delivered answer has something
+                    # to point at and we have something to show.
+                    interrupted=stream_error is not None,
+                )
+
+                # RM-60: settle the spend-cap reservation with the real cost
+                if (
+                    claims is not None
+                    and reservation is not None
+                    and reservation.allowed
+                    and budget_redis is not None
+                ):
+                    actual_cost = pricing.get_pricing_table().estimate_cost_usd(
+                        billed_name, prompt_tokens, completion_tokens
                     )
-                    await _dispatch_threshold_alerts(
-                        request,
-                        claims.client_id,
-                        reservation.cap_usd,
-                        reservation.total_spend_usd,
-                        newly_crossed,
-                    )
+                    if actual_cost is not None:
+                        newly_crossed = await BudgetTracker(budget_redis).settle(
+                            claims.client_id,
+                            reservation.reserved_usd,
+                            actual_cost,
+                            cap_usd=reservation.cap_usd,
+                            alert_thresholds_percent=alert_thresholds_percent or [],
+                        )
+                        await _dispatch_threshold_alerts(
+                            request,
+                            claims.client_id,
+                            reservation.cap_usd,
+                            reservation.total_spend_usd,
+                            newly_crossed,
+                        )
+
+            _detach(_account_for_it(), what="stream-usage")
+
+            # RM-87: last, once the request is fully accounted for. Whether the
+            # client reads this frame or has already walked away no longer
+            # changes what we recorded.
+            yield "data: [DONE]\n\n"
 
     logger.info("llama.forwarding_stream", backend_id=backend_id, request_id=request_id)
     return StreamingResponse(
