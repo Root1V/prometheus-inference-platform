@@ -270,3 +270,56 @@ def test_configure_tracing_resource_attributes() -> None:
     resource_attrs = provider.resource.attributes
     assert resource_attrs.get("tui.session_id") == "abc123"
     assert resource_attrs.get("service.name") == "manager"
+
+
+# ── OTEL_RESOURCE_ATTRIBUTES is honoured ─────────────────────────────────────
+
+
+def test_configure_tracing_honours_otel_resource_attributes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The standard OTEL_RESOURCE_ATTRIBUTES variable reaches the Resource.
+
+    This is how deployment injects service.namespace, service.version and
+    deployment.environment.name without touching application code.
+
+    Regression guard: building the Resource with the direct constructor
+    (``Resource(attributes=...)``) instead of ``Resource.create(...)`` silently
+    drops this variable — and drops the SDK's detectors with it. Nothing raises;
+    the attributes simply never appear, and every service shows up without its
+    application grouping.
+    """
+    monkeypatch.setenv(
+        "OTEL_RESOURCE_ATTRIBUTES",
+        "service.namespace=edge-ai-inference,deployment.environment.name=ci",
+    )
+
+    _tracing._CONFIGURED = False
+    _tracing._TRACING_ACTIVE = False
+    configure_tracing(service="auth-service")
+
+    provider = trace.get_tracer_provider()
+    assert isinstance(provider, TracerProvider)
+    attrs = provider.resource.attributes
+
+    assert attrs.get("service.namespace") == "edge-ai-inference"
+    assert attrs.get("deployment.environment.name") == "ci"
+    assert attrs.get("service.name") == "auth-service"
+
+
+def test_configure_tracing_explicit_attributes_win_over_env(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Explicit resource_attributes override the environment variable."""
+    monkeypatch.setenv("OTEL_RESOURCE_ATTRIBUTES", "service.namespace=from-env")
+
+    _tracing._CONFIGURED = False
+    _tracing._TRACING_ACTIVE = False
+    configure_tracing(
+        service="auth-service",
+        resource_attributes={"service.namespace": "explicit"},
+    )
+
+    provider = trace.get_tracer_provider()
+    assert isinstance(provider, TracerProvider)
+    assert provider.resource.attributes.get("service.namespace") == "explicit"

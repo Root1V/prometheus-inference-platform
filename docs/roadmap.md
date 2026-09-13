@@ -3485,6 +3485,29 @@ wins, and why existing rows were left untouched. Whether the two should be separ
 architecture as read from the file, family as a human names it — is a modelling question worth
 answering before the fallback value ever appears on a customer-facing surface.
 
+## RM-90 — honour `OTEL_RESOURCE_ATTRIBUTES` (done)
+
+**Why**: the Argus team — who are centralising monitoring across the owner's applications —
+found that `configure_tracing()` built its `Resource` with the direct constructor, which
+silently discards both the SDK's resource detectors and the standard
+`OTEL_RESOURCE_ATTRIBUTES` variable. Nothing errors; the attributes simply never appear. That
+variable is how a deployment injects `service.namespace`, `service.version` and
+`deployment.environment.name` without touching code, so without it every service of ours showed
+up unattached to its platform: you could ask how `auth-service` was doing, but not how
+Prometheus was doing.
+
+**Scope**: one line, `Resource.create(attrs)` instead of `Resource(attributes=attrs)`, plus the
+two tests Argus supplied. Existing behaviour is preserved — attributes passed to
+`configure_tracing(resource_attributes=...)` still take precedence over the environment.
+
+**Provenance**: patch and tests came from Argus. Both were read before applying rather than
+applied on trust, and the first test was confirmed to fail without the change. Verified live:
+with the variable set, `service.namespace`, `argus.component.role` and
+`deployment.environment.name` all reach the Resource.
+
+This is the first step of [[RM-91]] — integrating with Argus rather than running our own
+observability stack.
+
 Append a new row to the table with the next `RM-NN` id and a new `## RM-NN — ...` section
 below, following the same shape (Why / Scope). Re-sort the table if the new item's
 priority isn't "last."
