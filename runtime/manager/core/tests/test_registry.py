@@ -9,6 +9,7 @@ import pytest
 from prometheus_manager_core.registry import (
     BACKENDS,
     MODALITIES,
+    CatalogEntry,
     Registry,
     RegistryEntry,
     _validate_backend,
@@ -743,3 +744,61 @@ class TestSeedCatalogRM86:
 
         assert fresh.exists()
         assert reg.entries == []
+
+
+class TestFamilyIsNeverEmptyRM89:
+    """RM-89: an SDK team asked about the same blank `family` four rounds
+    running. Both registration paths defaulted it to "", and "" is
+    indistinguishable from nobody having filled it in."""
+
+    def test_a_registration_without_a_family_does_not_store_an_empty_one(self, tmp_path: Path):
+        reg = Registry(tmp_path / "registry.db")
+        reg.add_catalog(CatalogEntry(id="nameless", path=str(tmp_path / "absent.gguf")))
+
+        assert reg.get_catalog("nameless").family == "unknown"
+
+    def test_a_family_the_caller_supplied_is_never_overwritten(self, tmp_path: Path):
+        """The GGUF's architecture is a true fact about the file but not always
+        the lineage a human would name — phi4-mini is architecture `phi3`. A
+        human's answer wins."""
+        reg = Registry(tmp_path / "registry.db")
+        reg.add_catalog(CatalogEntry(id="named", family="phi4", path="whatever.gguf"))
+
+        assert reg.get_catalog("named").family == "phi4"
+
+    def test_the_family_is_read_out_of_the_gguf_when_one_is_there(self, tmp_path: Path):
+        """Guessing from the identifier got half this deployment's catalog
+        wrong — `llava-mistral-7b-q5` is architecture `llama` — so the file is
+        read rather than the name parsed."""
+        import struct
+
+        gguf = tmp_path / "tiny.gguf"
+        key = b"general.architecture"
+        value = b"mysteryarch"
+        gguf.write_bytes(
+            b"GGUF"
+            + struct.pack("<I", 3)
+            + struct.pack("<Q", 0)
+            + struct.pack("<Q", 1)
+            + struct.pack("<Q", len(key))
+            + key
+            + struct.pack("<I", 8)
+            + struct.pack("<Q", len(value))
+            + value
+        )
+
+        reg = Registry(tmp_path / "registry.db")
+        reg.add_catalog(CatalogEntry(id="from-file", path=str(gguf)))
+
+        assert reg.get_catalog("from-file").family == "mysteryarch"
+
+    def test_a_file_that_is_not_a_gguf_is_not_fatal(self, tmp_path: Path):
+        """A model can be registered before it is downloaded, so an unreadable
+        path is ordinary rather than an error."""
+        junk = tmp_path / "notagguf.gguf"
+        junk.write_bytes(b"this is not a gguf at all")
+
+        reg = Registry(tmp_path / "registry.db")
+        reg.add_catalog(CatalogEntry(id="junk", path=str(junk)))
+
+        assert reg.get_catalog("junk").family == "unknown"
