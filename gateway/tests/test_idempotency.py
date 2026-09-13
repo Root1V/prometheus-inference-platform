@@ -10,7 +10,7 @@ the model, must not record usage, and must never answer a different request.
 
 from __future__ import annotations
 
-from datetime import date, datetime, timedelta, timezone
+from datetime import datetime, timedelta, timezone
 
 import httpx
 import pytest
@@ -114,7 +114,12 @@ async def test_a_replay_is_not_billed_again(gw, rsa_keys):
     await gw.post("/v1/chat/completions", json=_chat(), headers=_headers(rsa_keys, "k2"))
     await gw.post("/v1/chat/completions", json=_chat(), headers=_headers(rsa_keys, "k2"))
 
-    events = await db.query_usage_events_range(date.today(), date.today())
+    # UTC, not date.today(): record_usage stamps the day in UTC because billing
+    # periods are UTC calendar months (RM-60). Querying the local date makes
+    # this test fail for the five hours a day the two disagree — which is
+    # exactly how it was found.
+    utc_today = datetime.now(timezone.utc).date()
+    events = await db.query_usage_events_range(utc_today, utc_today)
     assert len(events) == 1
 
 

@@ -253,3 +253,61 @@ key is free — retrying with it is exactly right.
 **Streaming is not covered.** Replaying a stream means storing every chunk, and neither OpenAI
 nor Anthropic documents that semantics clearly. A key on a streaming request is ignored rather
 than refused; retrying a stream remains a new generation.
+
+
+---
+
+## Closing this round
+
+### One breaking change, before you ship
+
+**`idempotency-conflict` no longer exists.** If you branched on it while waiting for this
+answer, that branch is now dead. The four types in §D replace it, and one of them is a `400`
+rather than a `409` — so a client that keys off the status alone will also see a change. You
+told us you validate key length at 255 client-side in the meantime; once you stop, that `400`
+is what you get.
+
+This is the only thing here that can break you. Everything else in this round is additive.
+
+### On §D not reaching you
+
+You implemented idempotency by probing the deployment because the copy you were sent predated
+the correction and §D. That is a delivery failure on our side, not a documentation gap — the
+section existed, it just never left our repository. That you got every detail right anyway is
+to your credit, not evidence the process worked. The attached file is current.
+
+### What you can build on
+
+Things we have committed to, and will not change without telling you first:
+
+- **A slug never changes**, and **a slug is never reused.** Retiring a model retires its name
+  with it, so a name you hold can never start pointing at a different model. This is enforced
+  in the registry, not by convention.
+- **Old model names keep resolving.** There is no removal date, and there will be notice.
+- **The error `type` is the contract; `detail` is prose.** Branch on `type`. We will add new
+  types rather than reword one into meaning something else — and when we split a type, as we
+  just did, we will say so.
+- **Usage is recorded once per returned response**, never per attempt. Internal failover and
+  retries are ours to pay for.
+- **A replay never reaches the model**, never records usage, never counts against a spend cap.
+
+### What we are not going to do
+
+**Idempotency on streaming.** Replaying a stream means storing every chunk, and the semantics
+aren't settled anywhere we could follow. Your SDKs rejecting a key on `stream()` is the right
+call — better than letting someone believe they are protected. If that ever changes it will be
+announced, not discovered.
+
+**A `Retry-After` on `idempotency-in-progress`.** You offered it as one option. The only bound
+we can compute is the 600s backend timeout, which is an upper bound rather than an estimate;
+a number that pessimistic is worse than none. The type tells you it is the one refusal worth
+waiting on — you know your own request better than we do.
+
+### Two rounds, three real defects
+
+The response body naming the replica, `context_length: 0`, and one error type covering four
+different situations. None of those would have been found by us: each needed someone
+implementing against the contract and noticing where it didn't hold.
+
+Two of them we had written down as deliberate decisions and got wrong anyway, which is the
+useful kind of finding. Keep sending them.

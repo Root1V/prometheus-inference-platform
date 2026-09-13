@@ -7,7 +7,7 @@ tests cover turning that into routing.
 
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, datetime, timezone
 
 import pytest
 import respx
@@ -595,7 +595,12 @@ async def test_usage_records_which_replica_served(gw, rsa_keys):
         },
     )
 
-    events = await db.query_usage_events_range(date.today(), date.today())
+    # UTC, not date.today(): record_usage stamps the day in UTC because billing
+    # periods are UTC calendar months (RM-60). Querying the local date makes
+    # this test fail for the five hours a day the two disagree — which is
+    # exactly how it was found.
+    utc_today = datetime.now(timezone.utc).date()
+    events = await db.query_usage_events_range(utc_today, utc_today)
     assert [(e.model_id, e.instance_id) for e in events] == [("llama", "llama-b")]
 
 
