@@ -16,6 +16,36 @@ from prometheus_manager_core.config import (
 )
 
 
+class TestJwksUrlRM84:
+    """RM-84: the manager rejected every token when its JWKS URL was wrong, and
+    said "invalid or expired token" while doing it — which sends you looking at
+    credentials instead of at the URL. Two defaults were wrong."""
+
+    def test_the_default_jwks_url_points_at_a_path_the_auth_service_serves(self):
+        """The ApiConfig default was /v1/jwks, which is a 404. A manager started
+        without a manager.toml could therefore never authenticate anyone."""
+        from prometheus_manager_core.config import ApiConfig
+
+        assert ApiConfig().jwks_url.endswith("/.well-known/jwks.json")
+
+    def test_the_embedded_defaults_agree_with_the_dataclass_default(self):
+        """The TOML defaults and the dataclass default had drifted apart — one
+        had the right path, the other did not — so which one applied depended on
+        whether a config file happened to be found."""
+        from prometheus_manager_core.config import ApiConfig
+
+        assert load_config(path=None).api.jwks_url == ApiConfig().jwks_url
+
+    def test_the_default_jwks_host_is_not_localhost(self):
+        """localhost also resolves to ::1, and anything else bound to
+        0.0.0.0:9000 on the machine answers there first — which is exactly how
+        this broke, with another project's object store replying instead of the
+        auth service."""
+        cfg = load_config(path=None)
+        assert "localhost" not in cfg.api.jwks_url
+        assert "127.0.0.1" in cfg.api.jwks_url
+
+
 class TestConfigAC19:
     """AC-19: llama-server must always bind to 127.0.0.1."""
 

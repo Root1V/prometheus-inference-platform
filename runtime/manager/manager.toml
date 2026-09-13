@@ -8,8 +8,13 @@
 # JWT authentication on every endpoint is the security boundary for the REST API.
 host = "0.0.0.0"
 port = 8090
-# JWKS URL for validating JWTs issued by the Auth Service
-jwks_url = "http://localhost:9000/.well-known/jwks.json"
+# JWKS URL for validating JWTs issued by the Auth Service.
+# 127.0.0.1 rather than localhost on purpose: localhost also resolves to ::1, and
+# any other service on the machine bound to 0.0.0.0:9000 answers there first. When
+# that happens the manager fetches something that isn't a JWKS and rejects every
+# token as "invalid or expired", which points the investigation at credentials
+# instead of at the port. Overridden by PMGR_JWKS_URL in container deployments.
+jwks_url = "http://127.0.0.1:9000/.well-known/jwks.json"
 # Host alias used to reach llama-server processes from this Manager instance.
 # Leave empty when running bare-metal (Manager and llama-server on the same host).
 # Set to "host.containers.internal" when Manager runs inside Podman/Docker so it
