@@ -69,9 +69,14 @@ even a simple "what's the status of X?" Splitting it keeps most lookups cheap (r
 index) and only pays the cost of full detail when actually working on that one item.
 
 - **`roadmap.md`** (repo root) — the index. One table, one line per item: `#`, Feature,
-  Status, one-sentence description. ID prefix `RM-NN`, also used in branch names and
-  commit messages. Status: `done` / `todo` (add `in-progress`/`blocked` only if actually
-  needed). This file never grows beyond a table — no exceptions.
+  Status, one-sentence description. ID prefix `PRM-NN` — **P** for Prometheus — also used in
+  branch names and commit messages. Status: `done` / `todo` (add `in-progress`/`blocked` only
+  if actually needed). This file never grows beyond a table — no exceptions.
+  - Items closed before 2026-09-14 are `RM-NN` and stay that way: the number is the identity,
+    so `RM-83` and `PRM-83` are the same item, and renaming them would still leave 181 commit
+    messages and every branch name unqualified. The prefix exists because three neighbouring
+    teams also numbered theirs `RM-NN` and the codes collided in shared documents; it was
+    applied to everything still open and to everything new.
 - **`docs/roadmap.md`** — the detail. One section per item, capped at **Why** (1-3
   sentences) and **Scope** (what's in/out, a few bullets). Not a changelog — history of
   *what happened* lives in commits/PRs; this file holds *what was decided and why*.

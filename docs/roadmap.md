@@ -39,7 +39,7 @@ Sequencing rationale that isn't captured there:
   should stay split by backend service (gateway vs auth-service) or become one consolidated
   platform dashboard — researching comparable products (LiteLLM Proxy, Portkey, Helicone,
   OpenRouter) surfaced the sections they all converge on. RM-14 to RM-16 are real gaps for
-  this project; RM-17 was speculative and still is. **RM-18 is no longer speculative** — see
+  this project; PRM-17 was speculative and still is. **RM-18 is no longer speculative** — see
   below, it was merged into RM-11 once a concrete requirement showed up.
 - **RM-19 to RM-23** came out of a 2026-08-26 requirements pass and are grouped by concern:
   - **Auth & Users** (RM-11, expanded): dashboard user/role management with two login modes.
@@ -52,8 +52,8 @@ Sequencing rationale that isn't captured there:
 - **"Dashboard / UX" block** (2026-08-27, after the RM-15/32/33/34 usage series shipped):
   the remaining `todo` items that are pure admin-ui work — RM-13, RM-14, RM-16, RM-23,
   RM-26, RM-27, RM-31 — grouped together and worked one branch at a time, same rhythm as
-  the usage series. Excludes RM-12 (Langfuse — backend tracing integration), RM-17
-  (guardrails — speculative policy feature, not UX), and RM-25 (node SSH credentials —
+  the usage series. Excludes RM-12 (Langfuse — backend tracing integration), PRM-17
+  (guardrails — speculative policy feature, not UX), and PRM-25 (node SSH credentials —
   infra/security, not UX). Started with **RM-26** (simplest, no backend dependency).
 
 ---
@@ -674,7 +674,7 @@ rendered the exact configured defaults (60 RPM, 40,000 TPM, no per-endpoint over
 "Allow (fail-open)" matching `RATE_LIMIT_STRICT=false`, 5/30s/2 circuit-breaker thresholds)
 and the correct empty state for backend circuit traffic on a freshly started process.
 
-## RM-17 — Guardrails / content filtering (added, speculative)
+## PRM-17 — Guardrails / content filtering (added, speculative)
 
 **Why**: PII redaction and content filtering are common in comparable platforms (Portkey),
 but nothing about Prometheus's actual use case has asked for this yet. Recorded because it
@@ -712,7 +712,7 @@ metadata beyond a URL (nothing recording whether a node is a Mac or an Nvidia bo
 **Update (2026-08-26)**: split from the original scope. This item is now just the node
 **inventory** — name, manager-api URL, hardware type (Mac / Nvidia), free-form tag/label.
 This is what RM-21's node picker actually depends on. The SSH/remote-maintenance
-credential piece (originally bundled here) is split out to RM-25 — it's a materially
+credential piece (originally bundled here) is split out to PRM-25 — it's a materially
 different, higher-risk concern (storing login credentials to a machine, not talking to its
 manager-api) with no concrete consuming feature yet.
 
@@ -775,7 +775,7 @@ button at all. `/activate` and `/check` end up running the identical probe-then-
 kept as separate routes because "bring this node back into service" and "just tell me its
 current status" are different operator intents worth distinct frontend messaging.
 
-## RM-25 — Node SSH/remote-maintenance credentials (added, speculative)
+## PRM-25 — Node SSH/remote-maintenance credentials (added, speculative)
 
 **Why**: came up while scoping RM-20 — being able to record how to reach a node's
 underlying machine (not just its manager-api) for maintenance. Split out because there's no
@@ -1390,7 +1390,7 @@ already used by `RegisterModelModal.tsx` and friends. Verified live: generated a
 image, opened the lightbox, closed it with Escape, triggered the download with no console
 errors.
 
-## RM-39 — Video generation model support (added, speculative)
+## PRM-39 — Video generation model support (added, speculative)
 
 **Why**: same origin as RM-38 — flagged, not scoped. Self-hosted video generation is far
 less mature/proven than image generation; even lower priority.
@@ -1810,7 +1810,7 @@ real embeddings request and a real image-generation request — `GET /metrics` r
 Instances page shows both new/updated columns correctly populated, "—" for the other
 metric each doesn't apply to.
 
-## RM-47 — Evaluate whether `GET /v1/models` should stay unauthenticated (added)
+## PRM-47 — Evaluate whether `GET /v1/models` should stay unauthenticated (added)
 
 **Why**: raised while building [[RM-45]] — `GET /v1/models` is intentionally public today
 (`gateway/AGENTS.md`: "it only lists active model IDs, no user data or inference
@@ -2243,7 +2243,7 @@ downloaded-but-not-yet-instantiated model has zero instances and no longer shows
 semantics, and the minimal "create one instance from a catalog entry" flow — not a
 dedicated multi-simultaneous-instance management UI (per-model instance picker, port-aware
 multi-instance dashboard). The schema/API already support running several instances of one
-catalog entry; the richer UI for that is [[RM-55]].
+catalog entry; the richer UI for that is [[PRM-55]].
 
 **Two real bugs found while implementing, fixed in passing**: `control.py`'s
 `_control_action` passed `entry.__dict__` (not `.to_dict()`) into `_merge()` — silently
@@ -2413,7 +2413,7 @@ attach-image button appeared, then switched back to plain text and confirmed it
 disappeared; Clear emptied the entire mixed timeline (chat + embedding + image) in one
 action.
 
-## RM-54 — Audio/music generation support (todo)
+## PRM-54 — Audio/music generation support (todo)
 
 **Why**: RM-38 (image) established the modality-per-backend pattern (new backend, gateway
 endpoint, Playground UI); audio/music generation is a natural next modality, and covers two
@@ -2429,7 +2429,7 @@ real, requested use cases — not just prompt-to-music.
 - Backend/model choice is **not yet decided** — needs its own research pass first, same as
   RM-38 did for image generation, before any implementation starts.
 
-## RM-55 — Richer multi-instance-per-model management UX (todo)
+## PRM-55 — Richer multi-instance-per-model management UX (todo)
 
 **Why**: [[RM-51]]'s schema/API split (a `models` catalog + an `instances` table, 1-to-many)
 makes running several instances of one catalog model — on different nodes/ports/backends —
@@ -2599,7 +2599,7 @@ row) + a date-range/export control on `Usage.tsx`. Multi-currency (PEN/USD/EUR) 
 display-only — cost stays stored in USD, converted via an admin-configurable static rate
 table (`admin/api/billing/currency-rates`), never a live FX API. A per-client tax rate
 (`ClientBillingSettings.tax_rate_percent`) renders as a separate line item — plain and
-configurable, explicitly **not** a SUNAT-compliant tax receipt (see [[RM-61]], still
+configurable, explicitly **not** a SUNAT-compliant tax receipt (see [[PRM-61]], still
 unbuilt/blocked). A hard monthly spend cap + soft alert thresholds (50/80/100% default) are
 enforced via a new Redis-backed `BudgetTracker` (`budget.py`, atomic pipelined `INCRBY`,
 mirroring `rate_limiter.py`'s `check_and_increment_rpm` — not `check_tpm_budget`'s known
@@ -2626,7 +2626,7 @@ regression test); confirmed in the browser that the new Billing nav item, page, 
 CSV export (real 200 response), and Overview's budget-alert banner all render correctly
 against live data.
 
-## RM-61 — Peru/SUNAT e-invoicing compliance for individual (B2C) clients (todo, blocked on a business decision)
+## PRM-61 — Peru/SUNAT e-invoicing compliance for individual (B2C) clients (todo, blocked on a business decision)
 
 **Why**: split out of [[RM-60]] — Peru's Legislative Decree 1623 (effective Dec 2024)
 requires a foreign digital-service provider billing Peru-based **individual consumers** to
@@ -2686,14 +2686,14 @@ output matches the formula by hand across two separate live requests (different 
 samples each time), and confirmed the currency-rates form loads and round-trips real PEN/EUR
 values through the existing PUT endpoint.
 
-## RM-63 — Prepaid credits/quotas (todo)
+## PRM-63 — Prepaid credits/quotas (todo)
 
 **Why**: [[RM-60]] built post-paid, informational billing only — a client accrues cost
 through the month and sees what they owe, with a hard spend cap as the only real-time gate;
 real payment collection was explicitly out of scope ("solo mostrar cuánto deben pagar"). The
 user wants an actual prepaid commercial model on top of that: a client buys a credit balance
 in advance and draws it down as they use models, instead of (or alongside) a monthly invoice.
-(Tiered model access — originally requested alongside this — was split out into [[RM-64]]
+(Tiered model access — originally requested alongside this — was split out into [[PRM-64]]
 once it turned out to be a separable concern with its own design direction.)
 
 **Decided so far**:
@@ -2712,7 +2712,7 @@ once it turned out to be a separable concern with its own design direction.)
 **Deferred idea, not needed now**: a real time-boxed access window (credits that expire, or a
 subscription-style period distinct from a simple top-up) was raised while scoping the "extend
 usage" question above. The user confirmed the immediate need is fully satisfied by plain
-top-ups, so this isn't part of RM-63's build — but it's kept here as a distinct idea for
+top-ups, so this isn't part of PRM-63's build — but it's kept here as a distinct idea for
 later, in case expiring credits or a subscription-style window becomes an actual requirement.
 If it's ever picked up, its interaction with [[RM-60]]'s calendar-month billing period
 (`month_bounds()`) is the open design question to start from.
@@ -2722,18 +2722,18 @@ If it's ever picked up, its interaction with [[RM-60]]'s calendar-month billing 
   for transfers) is required to sell credits at all — this can't ship without picking payment
   processor(s) and building that integration, which [[RM-60]] deliberately deferred and this
   item inherits.
-- **SUNAT reporting placement — recommendation**: put it in [[RM-61]], not here. SUNAT cares
+- **SUNAT reporting placement — recommendation**: put it in [[PRM-61]], not here. SUNAT cares
   about revenue from a Peru-based individual regardless of whether it came from a post-paid
-  invoice or a prepaid credit purchase — a second, RM-63-owned reporting path would duplicate
-  the actual compliance logic and risk drifting out of sync with it. RM-63's job is just to
-  make sure every credit purchase/payment event is captured with the fields RM-61's eventual
+  invoice or a prepaid credit purchase — a second, PRM-63-owned reporting path would duplicate
+  the actual compliance logic and risk drifting out of sync with it. PRM-63's job is just to
+  make sure every credit purchase/payment event is captured with the fields PRM-61's eventual
   reporting will need (amount, currency, client, date, payment method) — not to build its own
-  summary. [[RM-61]] itself is still blocked on the underlying legal/business decision, so
+  summary. [[PRM-61]] itself is still blocked on the underlying legal/business decision, so
   this is a placement recommendation, not something ready to build either way.
 
-## RM-64 — Tiered model access by plan (todo)
+## PRM-64 — Tiered model access by plan (todo)
 
-**Why**: split out of [[RM-63]] — originally requested together with prepaid credits, but
+**Why**: split out of [[PRM-63]] — originally requested together with prepaid credits, but
 "which models a client can call" and "how they pay for usage" are separable concerns, and
 this one already has enough industry research behind it to stand on its own.
 
@@ -2756,9 +2756,9 @@ Why this direction over the alternatives found in research:
   bottleneck for routine plan assignments.
 
 **Still open**:
-- How a plan is assigned/changed in relation to [[RM-63]]'s prepaid credits — does buying a
+- How a plan is assigned/changed in relation to [[PRM-63]]'s prepaid credits — does buying a
   particular credit package imply a plan, or are plan and credit balance orthogonal
-  purchases? Depends on RM-63's own design landing first.
+  purchases? Depends on PRM-63's own design landing first.
 - Data model for a "plan" (name, ordered tier rank if any, its default `model:<id>` bundle)
   and where plan assignment is surfaced in the admin dashboard (likely alongside the existing
   per-client scope management).
@@ -3673,7 +3673,7 @@ span, parented to the request's captured context, because the handler's span has
 before a stream's outcome is known; that is the path carrying `client_disconnected`, which Argus
 called the most valuable attribute we have.
 
-## RM-96 — the SDK must reach only the gateway, never auth-service (todo)
+## PRM-96 — the SDK must reach only the gateway, never auth-service (todo)
 
 **Why**: `docs/sdk-integration-guide.md` tells clients to obtain a token with
 `POST /oauth2/token` against **auth-service**, and then to call the **gateway** with it. So an
@@ -3830,7 +3830,7 @@ four. Draining detached tasks after each test left a window open — the engine 
 so a straggler still awaiting a session writes into whichever database is current when it wakes,
 which is the *next* test's. It drains before as well now; six consecutive clean runs.
 
-## RM-100 — a client can read the usage row for its own request (todo)
+## PRM-100 — a client can read the usage row for its own request (todo)
 
 **Why**: [[RM-88]] added `termination_reason` so that a charge for a half-delivered answer could
 be explained, and the answers document sent to Axonium says in as many words that it gives a
@@ -3876,11 +3876,19 @@ behaviour. Verified against the deployment: two ids, one row.
 Answer, going one step past their proposal:
 - **`X-Idempotent-Replay-Of` on the replay response**, so the link exists at the moment it is
   known and needs no storage or lookup. Cheap and can ship ahead of the rest.
-- **A replay writes its own usage row** — zero tokens, zero cost, `termination_reason: "replay"`,
-  `replay_of` pointing at the original. Preferred over a side table because it keeps one place to
-  look and turns "no row" into an explicit statement rather than an absence to interpret, which
-  is precisely their objection. Note `_record_usage` currently returns early on zero tokens, so
-  this needs a deliberate exception, and zero-token rows will appear in the CSV export.
+- **A replay writes its own usage row** — zero tokens, zero cost, `replay_of` pointing at the
+  original. Preferred over a side table because it keeps one place to look and turns "no row" into
+  an explicit statement rather than an absence to interpret, which is precisely their objection.
+  Note `_record_usage` currently returns early on zero tokens, so this needs a deliberate
+  exception, and zero-token rows will appear in the CSV export.
+- **No fourth `termination_reason`.** The first draft used `"replay"`, and Axonium asked what
+  `interrupted` would then be — `true`, under the existing derivation, which is false: nothing was
+  interrupted because nothing was generated. Answering showed the value was in the wrong column
+  entirely. `termination_reason` says *how a generation ended*; a replay is a different **billing
+  relationship** to a generation that already ended. So the replay row carries
+  `termination_reason: "complete"` — accurate, because only complete responses are ever stored for
+  replay: an error hands its key back, and a stream that ended in an error frame is released rather
+  than stored. Three values, and the `interrupted` derivation is untouched.
 
 They asked whether this changes the cost enough to reconsider. It does raise it, and the answer
 is still yes: an endpoint that returns `404` for the ordinary case is not cheaper, it is unusable.

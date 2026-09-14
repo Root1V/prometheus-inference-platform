@@ -68,7 +68,7 @@ Lo que implica, en orden:
 2. El endpoint, filtrando por el `client_id` del token y devolviendo 404 para todo lo demás.
 3. Documentarlo en la guía de integración.
 
-Queda anotado en nuestro backlog como **RM-100**. No os damos fecha porque no la tenemos, pero sí
+Queda anotado en nuestro backlog como **PRM-100**. No os damos fecha porque no la tenemos, pero sí
 un compromiso: **no lo vamos a cerrar como "no lo haremos"**. La alternativa que planteabais
 —documentar que `termination_reason` es un dato de operación y no algo consultable— nos parece
 peor: dejaría por escrito que facturamos con un motivo que el pagador no puede ver.
@@ -102,5 +102,5 @@ hacemos poco.
 |---|---|
 | `family` | Cerrado. No era dato faltante sino un catálogo desincronizado; ya no puede quedar vacío |
 | Ejemplos de la spec | **Arreglado**: slug real y ejecutable, más `GET /v1/models` declarado fuente de verdad |
-| Uso por `request_id` | **Aceptado** con vuestro diseño. Falta guardar el `request_id` en la fila; anotado como RM-100 |
+| Uso por `request_id` | **Aceptado** con vuestro diseño. Falta guardar el `request_id` en la fila; anotado como PRM-100 |
 | Lo que os pedimos | Nada. Solo que confirméis el alcance de la fila si necesitáis más campos |
