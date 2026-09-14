@@ -843,9 +843,16 @@ def create_router(registry: ModelRegistry, pool: "BackendPool") -> APIRouter:
                 # reading by index is unaffected and one reading by name gains
                 # the answer to "interrupted how?".
                 "termination_reason",
+                # PRM-100: appended, like every column before them. New columns
+                # go at the end so a consumer reading by position is never
+                # shifted — a rule we committed to in writing and had documented
+                # nowhere until Axonium noticed. It is in the integration guide
+                # now, with the column list.
+                "request_id",
+                "cached_prompt_tokens",
             ]
         )
-        total_prompt = total_completion = total_images = 0
+        total_prompt = total_completion = total_images = total_cached = 0
         total_cost = 0.0
         any_cost = False
         for ev in events:
@@ -867,11 +874,14 @@ def create_router(registry: ModelRegistry, pool: "BackendPool") -> APIRouter:
                     f"{ev.cost_usd:.6f}" if ev.cost_usd is not None else "",
                     "true" if ev.interrupted else "false",
                     ev.termination_reason,
+                    ev.request_id or "",
+                    ev.cached_prompt_tokens,
                 ]
             )
             total_prompt += ev.prompt_tokens
             total_completion += ev.completion_tokens
             total_images += ev.image_count
+            total_cached += ev.cached_prompt_tokens
             if ev.cost_usd is not None:
                 total_cost += ev.cost_usd
                 any_cost = True
@@ -893,9 +903,12 @@ def create_router(registry: ModelRegistry, pool: "BackendPool") -> APIRouter:
                 f"{total_cost:.6f}" if any_cost else "",
                 # RM-83/RM-88: blank on the total row — how one request ended is
                 # a property of that request, and summing it would invent a
-                # meaning it does not have.
+                # meaning it does not have. Same for a request id.
                 "",
                 "",
+                "",
+                # PRM-100: cached tokens do total, being a count.
+                total_cached,
             ]
         )
         filename = f"usage-{start_day.isoformat()}-to-{end_day.isoformat()}.csv"

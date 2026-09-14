@@ -3919,6 +3919,15 @@ on the streaming one, which are the same quantity, so a row means the same thing
 replay whose `X-Idempotent-Replay-Of` resolves to the billed row; and a second client getting
 `404` for the first client's request, indistinguishable from `404` for one that never existed.
 
+**Then A-13, from the same round**: the export's shape was a commitment made in correspondence —
+new columns appended, existing ones never moved — and documented nowhere. Axonium noticed while
+accepting P-09, and the timing mattered: PRM-100 was about to add columns to a file whose format
+was unwritten. The guide now carries the column list and the rule, `request_id` and
+`cached_prompt_tokens` are appended to the export where the row already stored them, and a test
+compares the documented list against the code so the two cannot drift. That test earned itself
+immediately — an assertion reading `header[-2]` broke when two columns were appended, which is
+precisely the failure the rule exists to prevent, in our own suite.
+
 **Still waiting on Aeon**: the replay *rows* — zero tokens, `replay_of` — and with them
 `replay_of` in the CSV export and the counting caveat in the guide. Axonium confirmed the export
 change does not affect them but explicitly declined to answer for Aeon, who do impute cost from
