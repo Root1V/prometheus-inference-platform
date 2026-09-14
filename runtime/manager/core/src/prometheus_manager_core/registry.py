@@ -18,6 +18,7 @@ changes at all.
 from __future__ import annotations
 
 import contextlib
+import hashlib
 import json
 import os
 import re
@@ -613,6 +614,36 @@ class Registry:
         """Re-read every entry from the database."""
         with self._lock:
             self._load()
+
+    def index(self) -> str:
+        """A fingerprint of the *declared* registry — RM-97.
+
+        This is what a blocking query waits on: callers hand back the index they
+        already hold, and a request only returns when it stops matching.
+
+        Deliberately covers the catalog and the instances as stored, and not
+        live process state. Two reasons. Process metrics — cpu, rss, uptime —
+        change on every read, so a fingerprint including them would never hold
+        still and the blocking query would degrade into a busy loop. And
+        liveness is not this registry's to report: a process that dies without
+        deregistering is caught by the gateway's own health probing, which is
+        the right tool because a dead process cannot announce itself. Declared
+        state is watched; liveness is probed.
+        """
+        with self._lock:
+            material = json.dumps(
+                {
+                    "models": [
+                        c.to_dict() for c in sorted(self._catalog.values(), key=lambda c: c.id)
+                    ],
+                    "instances": [
+                        e.to_dict() for e in sorted(self._instances.values(), key=lambda e: e.id)
+                    ],
+                },
+                sort_keys=True,
+                default=str,
+            )
+        return hashlib.sha256(material.encode()).hexdigest()[:16]
 
     # ── public API: catalog ──────────────────────────────────────────────────
 

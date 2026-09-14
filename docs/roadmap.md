@@ -3699,6 +3699,78 @@ it.
 **Not urgent, and deliberately not bundled**: nothing is broken. It is an exposure that should
 not exist, found while answering Argus about which of our paths cross service boundaries.
 
+## RM-97 — blocking query instead of a 30s poll for the catalog (done)
+
+**Why**: the gateway asked the manager for the whole catalog every 30 seconds. The cost was never
+the bandwidth — one node, 7 KB a cycle, 2880 cycles a day for a catalog that changes a few times
+a week. The cost was the **staleness window**: up to half a minute routing to a backend that had
+gone, or not routing to one that had arrived. There is direct evidence it hurt — [[RM-69]] added
+active health probing precisely because "the manager registry poll runs every 30s, so an instance
+that dies between polls keeps being offered". We had built a second mechanism to cover for the
+first one's latency.
+
+**Shape**: Consul's blocking query. `GET /v1/backends?index=<held>&wait=<seconds>` is held until
+the registry stops matching that index, or the wait expires; the current index comes back in
+`X-Registry-Index`. The gateway hands back what it holds and goes straight round again when
+something changed.
+
+**Why anchored on an index rather than streaming events** (SSE or WebSocket), which is the
+obvious alternative and is what Envoy's xDS does: a dropped connection cannot lose anything here.
+The caller asks again with the index it still holds, so reconnection is self-healing instead of
+needing `Last-Event-ID` and replay. Kubernetes' watch is streaming and still anchors on
+`resourceVersion`, returning `410 Gone` and forcing a re-list when a client falls behind —
+evidence that streaming needs a state fallback anyway. WebSockets were rejected outright:
+bidirectional machinery, proxy configuration and heartbeats for a one-directional feed, plus a
+connection that outlives the token that authorised it. With one gateway and one node, none of
+that pays.
+
+**What the index deliberately excludes**: live process state. Process metrics change on every
+read, so a fingerprint including them would never hold still and the blocking query would become
+a busy loop. Liveness is not the registry's to report either — a process that dies without
+deregistering is the gateway's health probing to catch, because a dead process cannot announce
+itself. Declared state is watched; liveness is probed.
+
+**Degrades rather than breaks**: a manager predating this answers immediately and without the
+header, and the gateway notices, stops asking for a block, and goes back to sleeping the poll
+interval.
+
+**Measured end to end**, against the running stack: a registry change reached the gateway in
+**1.2 seconds**, against up to 30 before. The held request itself releases about a second after
+the change, and returns immediately when the index already differs.
+
+**A regression this introduced, found by asking what happens when the manager is down**: the
+loop skipped its sleep unless the previous cycle had *returned early*, and a failed request never
+updated that flag — so an unreachable manager became a busy loop, measured at **1455 sync cycles
+in ten seconds and 85% of a core**. An outage is exactly when a gateway must not spin. The test
+is now the other way round: sleep unless the manager actually held the request, which a failure
+by definition did not. Verified with the manager stopped — 0 cycles in 15 seconds, 0.0% CPU —
+and recovery within one poll interval once it came back.
+
+**Separately, and not caused by this**: a gateway that cannot reach the manager replaces its
+catalog with nothing and serves zero models, rather than continuing on what it last knew. See
+[[RM-98]].
+
+## RM-98 — a manager outage empties the gateway's routing table (todo)
+
+**Why**: found by asking a simple question — what happens if the manager is not there? Measured:
+the gateway goes to **zero models** and serves nothing until the manager returns.
+
+The cause is one line of intent that reads reasonably and is wrong at this scale.
+`_fetch_node_backends` returns `[]` on failure, commented "one down node must not block the
+others — partial availability, not all-or-nothing". With several nodes that is right. With one,
+`[]` *is* all-or-nothing, and the whole catalog disappears.
+
+This matters more than it looks. The gateway keeps a copy of the manager's registry precisely so
+the control plane is not in the data plane's critical path: the manager is where humans register
+models, and inference should not stop because it is being restarted. Today the copy is discarded
+the moment it cannot be refreshed, so that benefit is not actually delivered.
+
+**Scope** (not designed): a failed fetch should leave the previous entries in place rather than
+replace them, with the staleness visible — a backend that has really gone is caught by health
+probing within ten seconds anyway, which is the mechanism for exactly that. Worth deciding how
+long a stale catalog may be served before admitting ignorance is better, and whether a node that
+returns successfully with an empty list is distinguishable from one that failed.
+
 Append a new row to the table with the next `RM-NN` id and a new `## RM-NN — ...` section
 below, following the same shape (Why / Scope). Re-sort the table if the new item's
 priority isn't "last."

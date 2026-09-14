@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from collections.abc import Collection
 
+import httpx
 import respx
 from httpx import Response
 
@@ -242,3 +243,29 @@ async def test_sync_model_id_falls_back_to_instance_id_when_absent():
         await sync._sync()
 
     assert registry._models["legacy-model"].model_id == "legacy-model"
+
+
+@respx.mock
+async def test_an_unreachable_manager_does_not_spin(monkeypatch):
+    """RM-97: the first version of the blocking-query loop skipped its sleep on
+    a *failed* request, so an unreachable manager became a busy loop — measured
+    at 1455 sync cycles in ten seconds and 85% of a core. An outage is precisely
+    when a gateway must not spin.
+    """
+    from prometheus_gateway.models import manager_sync as ms
+
+    sync = ms.ManagerRegistrySync.__new__(ms.ManagerRegistrySync)
+    sync._blocking_supported = True
+    sync._held_last_request = True  # as if the previous cycle had been held
+    sync._node_index = {"local": "abc"}
+
+    respx.get("http://manager.test/v1/backends").mock(side_effect=httpx.ConnectError("refused"))
+
+    async def _headers():
+        return {}
+
+    sync._get_auth_headers = _headers  # type: ignore[method-assign]
+    result = await ms.ManagerRegistrySync._fetch_node_backends(sync, "local", "http://manager.test")
+
+    assert result == []
+    assert sync._held_last_request is False, "a failed request must fall back to sleeping"
