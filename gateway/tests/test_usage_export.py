@@ -135,8 +135,12 @@ async def test_export_csv_shape_and_total_row(app, admin_headers):
     rows = list(csv.reader(io.StringIO(r.text)))
     header, *data_rows = rows
     assert header[0] == "generated_at"
-    assert header[-2] == "interrupted"
-    assert header[-1] == "termination_reason"
+    # By name, not by position. New columns are appended, so anything indexing
+    # from the end breaks the moment one is added — which is what happened to
+    # this assertion when PRM-100 appended two. Reading by name is what we tell
+    # consumers to do, and the test should not do something we advise against.
+    for column in ("interrupted", "termination_reason", "request_id", "cached_prompt_tokens"):
+        assert column in header
 
     total_row = data_rows[-1]
     assert total_row[5] == "TOTAL"
@@ -146,9 +150,13 @@ async def test_export_csv_shape_and_total_row(app, admin_headers):
     assert total_row[8] == "55"
     # No pricing.yaml configured — total cost stays blank, never a false "0".
     assert total_row[header.index("cost_usd")] == ""
-    # RM-83/RM-88: how one request ended has no total, so both columns are
-    # blank on the total row rather than summing something meaningless.
-    assert total_row[-2:] == ["", ""]
+    # RM-83/RM-88: how one request ended has no total, so those columns are
+    # blank on the total row rather than summing something meaningless. A
+    # request id has no total either; cached tokens do, being a count.
+    assert total_row[header.index("interrupted")] == ""
+    assert total_row[header.index("termination_reason")] == ""
+    assert total_row[header.index("request_id")] == ""
+    assert total_row[header.index("cached_prompt_tokens")] == "0"
     # Ordinary recorded usage finished, and the two columns agree on that.
     assert data_rows[0][header.index("interrupted")] == "false"
     assert data_rows[0][header.index("termination_reason")] == "complete"
@@ -240,3 +248,25 @@ async def test_an_unknown_request_is_also_404(app, client_headers):
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
         resp = await c.get("/v1/usage/req-never", headers=client_headers)
     assert resp.status_code == 404
+
+
+def test_the_documented_column_list_matches_the_file():
+    """PRM-100 / A-13: the export's shape was a commitment that lived only in
+    correspondence — new columns appended, existing ones never moved — while the
+    guide documented neither the columns nor the rule. Writing it down is worth
+    little if it can drift from the code, so this compares the two.
+    """
+    import re
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[2]
+    src = (root / "gateway/src/prometheus_gateway/router.py").read_text()
+    start = src.index('"generated_at",')
+    in_code = re.findall(r'"([a-z0-9_]+)"', src[start : src.index("]", start)])
+
+    guide = (root / "docs/sdk-integration-guide.md").read_text()
+    start = guide.index("generated_at, period_start")
+    block = guide[start : guide.index("```", start)]
+    documented = [c.strip() for c in block.replace("\n", " ").split(",") if c.strip()]
+
+    assert in_code == documented, "the guide's column list has drifted from the export"

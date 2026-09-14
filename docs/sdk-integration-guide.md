@@ -1,6 +1,6 @@
 # Prometheus Gateway — SDK Integration Guide
 
-**Revision**: 2026-09-14b · `f36026b`
+**Revision**: 2026-09-14c · `pending`
 <!-- Consumers vendor this file and diff it. The date and commit above are what to quote
      when asking whether a copy is current; they change whenever this document does. -->
 
@@ -511,6 +511,37 @@ billed for a half-delivered answer says so here.
 not billed. Looking up a replay's `x-request-id` therefore returns `404`, correctly. The replay
 response carries `X-Idempotent-Replay-Of` naming the generation that *was* billed — use that id
 here.
+
+---
+
+### 3.7 `GET /v1/usage/export` — the CSV, and how its columns change
+
+Requires `admin:read`. Not something an SDK calls; documented because consumers parse the file
+and had no written contract for its shape.
+
+Columns, in order:
+
+```
+generated_at, period_start, period_end, client_id, recorded_at, model_id, request_kind,
+prompt_tokens, completion_tokens, image_count, prompt_price_per_1m, completion_price_per_1m,
+image_price_each, cost_usd, interrupted, termination_reason, request_id, cached_prompt_tokens
+```
+
+**New columns are appended at the end. Existing columns never move and never change meaning.**
+That is a commitment, not a description of the current file: a consumer reading by position keeps
+working when the file grows, and one reading by name gains whatever was added. It is the rule we
+have followed each time — `interrupted`, then `termination_reason`, then `request_id` and
+`cached_prompt_tokens` — and it lived only in correspondence until it was written here.
+
+One row per `usage_events` row, not pre-aggregated, so a rate change mid-period is visible per
+request. The last row is a `TOTAL` reconciliation line: columns that genuinely sum do
+(`prompt_tokens`, `completion_tokens`, `image_count`, `cached_prompt_tokens`, `cost_usd`), and
+columns that describe a single request are left blank rather than given an invented total
+(`interrupted`, `termination_reason`, `request_id`).
+
+`cached_prompt_tokens` is a **subset** of `prompt_tokens`, matching
+`prompt_tokens_details.cached_tokens` in the inference response — adding the two would double
+count.
 
 ---
 
