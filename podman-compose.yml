@@ -81,7 +81,11 @@ services:
       # Unset endpoint = export nowhere, so a deployment opts in by configuring
       # one rather than by us guessing a hostname.
       - OTEL_SERVICE_NAME=gateway
-      - OTEL_RESOURCE_ATTRIBUTES=service.namespace=prometheus-inference-platform,argus.component.role=api,deployment.environment.name=${DEPLOYMENT_ENVIRONMENT:-podman}
+      - OTEL_RESOURCE_ATTRIBUTES=service.namespace=prometheus-inference-platform,argus.component.role=api,deployment.environment.name=${DEPLOYMENT_ENVIRONMENT:-podman},service.version=${SERVICE_VERSION:-2.0.0},service.instance.id=gateway-1
+      # A-11: both the old and the stable HTTP attribute names while the
+      # transition lasts — ours carried only the pre-2023 spelling, so our
+      # traffic was invisible to aggregations built on the stable one.
+      - OTEL_SEMCONV_STABILITY_OPT_IN=http/dup
       - OTEL_EXPORTER_OTLP_ENDPOINT=${OTEL_EXPORTER_OTLP_ENDPOINT:-}
       - TZ=America/Lima
       - GATEWAY_TLS_CERT_FILE=/run/secrets/gateway.crt
@@ -151,7 +155,11 @@ services:
       # Unset endpoint = export nowhere, so a deployment opts in by configuring
       # one rather than by us guessing a hostname.
       - OTEL_SERVICE_NAME=auth-service
-      - OTEL_RESOURCE_ATTRIBUTES=service.namespace=prometheus-inference-platform,argus.component.role=api,deployment.environment.name=${DEPLOYMENT_ENVIRONMENT:-podman}
+      - OTEL_RESOURCE_ATTRIBUTES=service.namespace=prometheus-inference-platform,argus.component.role=api,deployment.environment.name=${DEPLOYMENT_ENVIRONMENT:-podman},service.version=${SERVICE_VERSION:-2.0.0},service.instance.id=auth-service-1
+      # A-11: both the old and the stable HTTP attribute names while the
+      # transition lasts — ours carried only the pre-2023 spelling, so our
+      # traffic was invisible to aggregations built on the stable one.
+      - OTEL_SEMCONV_STABILITY_OPT_IN=http/dup
       - OTEL_EXPORTER_OTLP_ENDPOINT=${OTEL_EXPORTER_OTLP_ENDPOINT:-}
       - TZ=America/Lima
       # AC-14: container-internal paths for TLS cert/key
@@ -241,7 +249,11 @@ services:
       # Unset endpoint = export nowhere, so a deployment opts in by configuring
       # one rather than by us guessing a hostname.
       - OTEL_SERVICE_NAME=manager-api
-      - OTEL_RESOURCE_ATTRIBUTES=service.namespace=prometheus-inference-platform,argus.component.role=api,deployment.environment.name=${DEPLOYMENT_ENVIRONMENT:-podman}
+      - OTEL_RESOURCE_ATTRIBUTES=service.namespace=prometheus-inference-platform,argus.component.role=api,deployment.environment.name=${DEPLOYMENT_ENVIRONMENT:-podman},service.version=${SERVICE_VERSION:-2.0.0},service.instance.id=manager-api-1
+      # A-11: both the old and the stable HTTP attribute names while the
+      # transition lasts — ours carried only the pre-2023 spelling, so our
+      # traffic was invisible to aggregations built on the stable one.
+      - OTEL_SEMCONV_STABILITY_OPT_IN=http/dup
       - OTEL_EXPORTER_OTLP_ENDPOINT=${OTEL_EXPORTER_OTLP_ENDPOINT:-}
       - TZ=America/Lima
       # Container mode: use HTTP health probing instead of psutil.

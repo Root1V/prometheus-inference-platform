@@ -3613,6 +3613,34 @@ and all four route through the same `prometheus_telemetry` via thin re-export sh
 `otelcol_receiver_accepted_spans_total` went 297 → 337 with zero export errors. That is the first
 telemetry `gateway` and `manager-api` have ever produced.
 
+## RM-94 — telemetry env vars go where they are actually read (done)
+
+**Why**: [[RM-93]] added `OTEL_SERVICE_NAME` and `OTEL_RESOURCE_ATTRIBUTES` to each service's
+`.env.example`. That does nothing. Those files are parsed by pydantic-settings into a Settings
+object and never reach `os.environ`, which is where the OpenTelemetry SDK reads them — confirmed
+by test, not reasoning: a `.env` containing `OTEL_SERVICE_NAME` leaves `os.environ.get(...)`
+returning `None`. The instruction looked right and was inert, which is the worst kind of
+documentation. It also explains why the stale `OTEL_EXPORTER_OTLP_ENDPOINT=http://tempo:4318`
+sitting in the live `gateway/.env` had never actually done anything.
+
+**Scope**: the `.env.example` files now say plainly that these are process environment variables
+and do not belong there, with the export lines shown. `runtime/telemetry.env.example` is the
+bare-metal mechanism — `source` it, or point systemd's `EnvironmentFile` at a copy. Compose was
+already correct, since its `environment:` entries are real process environment.
+
+**Also, from Argus's review of our first real telemetry**:
+- `OTEL_SEMCONV_STABILITY_OPT_IN=http/dup`. Our spans carried only the pre-2023 HTTP attribute
+  names, so our traffic was invisible to every aggregation built on the stable ones — their
+  aggregation by `server.address` over 230 of our spans came back empty. `http/dup` emits both
+  spellings during the transition.
+- `service.version` and `service.instance.id`. Without the first, an incident cannot be
+  correlated with the deploy that caused it. Without the second, replicas share one identity and
+  one dead instance of three is invisible — which is [[RM-93]]'s defect at another scale, worth
+  fixing before it happens rather than after.
+
+**Verified live** against Argus's collector: the gateway restarted carrying all of it, and their
+`otelcol_receiver_accepted_spans_total` kept climbing with zero export errors.
+
 Append a new row to the table with the next `RM-NN` id and a new `## RM-NN — ...` section
 below, following the same shape (Why / Scope). Re-sort the table if the new item's
 priority isn't "last."
