@@ -1,5 +1,9 @@
 # Prometheus Gateway — SDK Integration Guide
 
+**Revision**: 2026-09-14 · `55c2174`
+<!-- Consumers vendor this file and diff it. The date and commit above are what to quote
+     when asking whether a copy is current; they change whenever this document does. -->
+
 Technical reference for the team building client SDKs (Python, Go, Rust) that wrap this
 platform's inference API. It covers everything an SDK needs to encapsulate: authentication
 and token refresh, TLS, the request/response contract for every client-facing endpoint, the
