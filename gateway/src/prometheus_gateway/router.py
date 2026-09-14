@@ -298,7 +298,13 @@ def _genai_response_attrs(
     return attrs
 
 
-async def _settle_stream(claim: "idempotency.Claim", emitted: list[str], *, clean: bool) -> None:
+async def _settle_stream(
+    claim: "idempotency.Claim",
+    emitted: list[str],
+    *,
+    clean: bool,
+    request_id: str | None = None,
+) -> None:
     """Store a finished stream, or hand its key back — RM-82.
 
     `stream_error` inside the generator is already surfaced to the client as an
@@ -311,7 +317,7 @@ async def _settle_stream(claim: "idempotency.Claim", emitted: list[str], *, clea
     if not clean or not body or '"error"' in body:
         await idempotency.release(claim)
         return
-    await idempotency.complete(claim, 200, idempotency.wrap_stream(body))
+    await idempotency.complete(claim, 200, idempotency.wrap_stream(body), request_id)
 
 
 async def _replay_stream(body: str) -> "AsyncIterator[str]":
@@ -345,6 +351,14 @@ async def _begin_idempotent(
     if isinstance(outcome, idempotency.Replay):
         # Deliberately no budget reserve, no usage row, no metrics: replaying
         # is not a second use of the model, which is the entire point.
+        # PRM-100: name the generation that was actually billed. This response
+        # carries its own request id, and looking that up finds nothing —
+        # correctly, since a replay records no usage. Without this the caller
+        # holds the only id it has and no way to reach the row explaining what
+        # it paid for.
+        replay_headers = {"Idempotent-Replay": "true"}
+        if outcome.original_request_id:
+            replay_headers["X-Idempotent-Replay-Of"] = outcome.original_request_id
         sse = idempotency.unwrap_stream(outcome.body)
         if sse is not None:
             return StreamingResponse(
@@ -353,14 +367,14 @@ async def _begin_idempotent(
                 headers={
                     "Cache-Control": "no-cache",
                     "X-Accel-Buffering": "no",
-                    "Idempotent-Replay": "true",
+                    **replay_headers,
                 },
             )
         return JSONResponse(
             content=outcome.body,
             status_code=outcome.status_code,
             media_type="application/json",
-            headers={"Idempotent-Replay": "true"},
+            headers=replay_headers,
         )
     if isinstance(outcome, idempotency.Refusal):
         # RM-80: one type per reason. The four need opposite handling — only
@@ -891,6 +905,63 @@ def create_router(registry: ModelRegistry, pool: "BackendPool") -> APIRouter:
             headers={"Content-Disposition": f'attachment; filename="{filename}"'},
         )
 
+    # Declared after /v1/usage/export on purpose: FastAPI matches in
+    # declaration order, so registering this parameterised path first makes
+    # it swallow "export" as a request id. Caught by that endpoint's own
+    # tests, which is the only reason the order is written down here.
+    @router.get("/v1/usage/{request_id}")
+    async def get_own_usage(request: Request, request_id: str) -> Any:
+        """One caller's usage row for one of its own requests — PRM-100.
+
+        Requested by the SDK team, whose argument was ours to have made: we added
+        `termination_reason` so a charge for a half-delivered answer could be
+        explained, and then put both usage endpoints behind `admin:read`. The
+        only party able to look was the one that does not need to. Granting a
+        client `admin:read` so it can see its own row would let it see
+        everyone's, so this reads exactly one row and only its owner's.
+
+        **404 rather than 403** for a request belonging to someone else, on
+        their suggestion: a 403 would confirm that the id exists.
+
+        The token counts mirror the inference response field for field,
+        including `prompt_tokens_details.cached_tokens`. An aggregate cannot be
+        reconciled against what the caller received once caching is involved,
+        and reconciling is the only thing this endpoint is for.
+        """
+        claims = getattr(getattr(request, "state", None), "claims", None)
+        if claims is None:
+            return _problem(
+                request, 401, "unauthorized", "Unauthorized", "Authentication required."
+            )
+
+        event = await db.get_usage_event_for_client(claims.client_id, request_id)
+        if event is None:
+            return _problem(
+                request,
+                404,
+                "not-found",
+                "Not Found",
+                f"No usage record for request {request_id!r}.",
+            )
+
+        return {
+            "request_id": event.request_id,
+            "model": event.model_id,
+            "request_kind": event.request_kind,
+            "usage": {
+                "prompt_tokens": event.prompt_tokens,
+                "completion_tokens": event.completion_tokens,
+                "total_tokens": event.prompt_tokens + event.completion_tokens,
+                "prompt_tokens_details": {"cached_tokens": event.cached_prompt_tokens},
+            },
+            "image_count": event.image_count,
+            "interrupted": event.interrupted,
+            "termination_reason": event.termination_reason,
+            "cost_usd": event.cost_usd,
+            "instance_id": event.instance_id,
+            "created_at": event.recorded_at.isoformat(),
+        }
+
     # ── POST /v1/chat/completions ────────────────────────────────────────────
     @router.post("/v1/chat/completions")
     async def chat_completions(
@@ -1270,6 +1341,11 @@ def create_router(registry: ModelRegistry, pool: "BackendPool") -> APIRouter:
 
                     prompt_tokens: int = usage_obj.get("prompt_tokens", 0)
                     completion_tokens: int = usage_obj.get("completion_tokens", 0)
+                    # PRM-100: a subset of prompt_tokens, reported to the caller
+                    # already and never stored until now.
+                    cached_prompt_tokens: int = (usage_obj.get("prompt_tokens_details") or {}).get(
+                        "cached_tokens", 0
+                    )
                     total_tokens = prompt_tokens + completion_tokens
                     tps = (
                         (completion_tokens / (backend_latency_ms / 1000))
@@ -1351,6 +1427,8 @@ def create_router(registry: ModelRegistry, pool: "BackendPool") -> APIRouter:
                         prompt_tokens,
                         completion_tokens,
                         instance_id=entry.id,
+                        request_id=request_id,
+                        cached_prompt_tokens=cached_prompt_tokens,
                     )
 
                     # RM-60: settle the spend-cap reservation with the real cost
@@ -1703,6 +1781,7 @@ def create_router(registry: ModelRegistry, pool: "BackendPool") -> APIRouter:
             0,
             request_kind="embedding",
             instance_id=entry.id,
+            request_id=getattr(getattr(request, "state", None), "request_id", None),
         )
         if budget_redis is not None and reservation is not None and reservation.allowed:
             actual_cost = pricing.get_pricing_table().estimate_cost_usd(
@@ -1990,6 +2069,7 @@ def create_router(registry: ModelRegistry, pool: "BackendPool") -> APIRouter:
             request_kind="image",
             image_count=num_images,
             instance_id=entry.id,
+            request_id=getattr(getattr(request, "state", None), "request_id", None),
         )
         if budget_redis is not None and reservation is not None and reservation.allowed:
             actual_cost = pricing.get_pricing_table().estimate_image_cost_usd(
@@ -2046,6 +2126,8 @@ async def _record_usage(
     image_count: int = 0,
     instance_id: str | None = None,
     termination_reason: str = db.TERMINATION_COMPLETE,
+    request_id: str | None = None,
+    cached_prompt_tokens: int = 0,
 ) -> None:
     """Write an immutable usage_events row + persisted per-day rollup counters.
 
@@ -2070,6 +2152,8 @@ async def _record_usage(
             image_count=image_count,
             instance_id=instance_id,
             termination_reason=termination_reason,
+            request_id=request_id,
+            cached_prompt_tokens=cached_prompt_tokens,
         )
     except Exception as exc:
         logger.warning("usage.db_write_error", error=str(exc))
@@ -2183,7 +2267,9 @@ async def _stream_response(
                         # result rather than a claim still being written. If
                         # this await is cancelled anyway, `settled` stays False
                         # and the detached path in `finally` picks it up.
-                        await _settle_stream(idempotency_claim, emitted, clean=True)
+                        await _settle_stream(
+                            idempotency_claim, emitted, clean=True, request_id=request_id
+                        )
                         settled = True
                     # The backend finished generating and its connection is
                     # already closed; holding its slot until the client walks
@@ -2203,7 +2289,9 @@ async def _stream_response(
                 # client dropped, which is exactly when the request task is
                 # already being cancelled.
                 _detach(
-                    _settle_stream(idempotency_claim, list(emitted), clean=clean),
+                    _settle_stream(
+                        idempotency_claim, list(emitted), clean=clean, request_id=request_id
+                    ),
                     what="stream-idempotency-abandoned",
                 )
 
@@ -2215,6 +2303,8 @@ async def _stream_response(
         streamed_tokens = 0
         # RM-88: did the model finish, or were we cut off? Set below, once.
         upstream_complete = False
+        # PRM-100: the cached half of the prompt, when the backend reports it.
+        cached_prompt_tokens = 0
         stream_error: Exception | None = None
         # RM-46: time-to-first-token — set the first time a chunk carries real
         # delta.content, i.e. the token a streaming client actually sees first
@@ -2265,9 +2355,15 @@ async def _stream_response(
                                     # already verified client-side for RM-36's
                                     # Playground token counts.
                                     if "predicted_n" in timings and "prompt_n" in timings:
-                                        prompt_tokens = (
-                                            timings.get("cache_n", 0) + timings["prompt_n"]
-                                        )
+                                        # PRM-100: `cache_n` is the cached half
+                                        # of the prompt, which is exactly what
+                                        # the non-streaming path reports as
+                                        # prompt_tokens_details.cached_tokens.
+                                        # Same figure, same subset relationship,
+                                        # so the row means the same thing on
+                                        # both paths.
+                                        cached_prompt_tokens = timings.get("cache_n", 0)
+                                        prompt_tokens = cached_prompt_tokens + timings["prompt_n"]
                                         completion_tokens = timings["predicted_n"]
                                     prompt_tps = timings.get("prompt_per_second")
                                     if prompt_tps is None:
@@ -2414,6 +2510,8 @@ async def _stream_response(
                     completion_tokens,
                     instance_id=backend_id,
                     termination_reason=termination_reason,
+                    request_id=request_id,
+                    cached_prompt_tokens=cached_prompt_tokens,
                 )
 
                 # RM-60: settle the spend-cap reservation with the real cost

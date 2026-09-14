@@ -146,6 +146,19 @@ class UsageEvent(Base):
     # machine — "why was this one slow", "which node produced this output".
     # Nullable: rows written before RM-73 have no answer to give.
     instance_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    # PRM-100: the id handed back to the caller in `x-request-id`. It was the
+    # one thing linking a caller to its own row and we were not storing it, so
+    # not even an administrator could go from a request identifier to what it
+    # was charged. Nullable for rows written before this existed.
+    request_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    # PRM-100: a subset of prompt_tokens, not a separate bucket — the OpenAI
+    # convention, and what the response already reports as
+    # prompt_tokens_details.cached_tokens. The row reported none of it, so a
+    # caller reconciling its own figure against ours could not have matched
+    # whenever the cache was involved.
+    cached_prompt_tokens: Mapped[int] = mapped_column(
+        BigInteger, nullable=False, default=0, server_default=text("0")
+    )
     # RM-88: why this request stopped producing output. Three reasons, because
     # there are three — collapsing them into a boolean threw away the one
     # distinction that matters when a charge is questioned: whether the answer
@@ -212,6 +225,11 @@ class IdempotencyRecord(Base):
     # The key is still recorded, so a replay can say the original succeeded
     # instead of silently regenerating.
     response_body: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # PRM-100: which request produced the stored result. A replay gets its own
+    # request id and records no usage, so without this the id its caller holds
+    # leads nowhere; with it, the replay response can name the generation that
+    # was actually billed.
+    request_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc)
     )
@@ -507,6 +525,8 @@ async def record_usage(
     image_count: int = 0,
     instance_id: str | None = None,
     termination_reason: str = TERMINATION_COMPLETE,
+    request_id: str | None = None,
+    cached_prompt_tokens: int = 0,
     day: date | None = None,
 ) -> None:
     """Record one request's usage: an immutable `usage_events` row (the audit
@@ -549,6 +569,8 @@ async def record_usage(
                 instance_id=instance_id,
                 termination_reason=termination_reason,
                 interrupted=_interrupted_from(termination_reason),
+                request_id=request_id,
+                cached_prompt_tokens=cached_prompt_tokens,
                 request_kind=request_kind,
                 prompt_tokens=prompt_tokens,
                 completion_tokens=completion_tokens,
@@ -914,3 +936,23 @@ async def load_catalog_snapshot() -> tuple[dict[str, Any], datetime] | None:
             return json.loads(row.payload), written
         except (TypeError, ValueError):
             return None
+
+
+async def get_usage_event_for_client(client_id: str, request_id: str) -> UsageEvent | None:
+    """One caller's own usage row — PRM-100.
+
+    Filtered by `client_id` inside the query rather than checked afterwards, so
+    there is no path where a row belonging to somebody else is read and then
+    discarded. The caller sees `None` both for a request that was never made and
+    for one that belongs to another client: the endpoint answers 404 either way,
+    on Axonium's suggestion, so a probe cannot confirm that an id exists.
+    """
+    async with get_session_factory()() as session:
+        result = await session.execute(
+            select(UsageEvent).where(
+                UsageEvent.client_id == client_id,
+                UsageEvent.request_id == request_id,
+            )
+        )
+        row: UsageEvent | None = result.scalars().first()
+        return row

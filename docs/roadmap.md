@@ -3830,7 +3830,7 @@ four. Draining detached tasks after each test left a window open — the engine 
 so a straggler still awaiting a session writes into whichever database is current when it wakes,
 which is the *next* test's. It drains before as well now; six consecutive clean runs.
 
-## PRM-100 — a client can read the usage row for its own request (todo)
+## PRM-100 — a client can read the usage row for its own request (in-progress)
 
 **Why**: [[RM-88]] added `termination_reason` so that a charge for a half-delivered answer could
 be explained, and the answers document sent to Axonium says in as many words that it gives a
@@ -3900,6 +3900,30 @@ Answer, going one step past their proposal:
 
 They asked whether this changes the cost enough to reconsider. It does raise it, and the answer
 is still yes: an endpoint that returns `404` for the ordinary case is not cheaper, it is unusable.
+
+### PRM-100 — what shipped, and what is still waiting
+
+**Shipped**: `request_id` and `cached_prompt_tokens` on `usage_events`, threaded through all four
+paths that record usage; `request_id` on the idempotency record;
+`GET /v1/usage/{request_id}` reading exactly one row filtered by the token's client id, with
+`404` for anything else; `X-Idempotent-Replay-Of` on replay responses; the endpoint documented in
+the integration guide.
+
+Two details worth keeping: the route had to be declared **after** `/v1/usage/export`, because
+FastAPI matches in declaration order and a parameterised path registered first swallows `export`
+as a request id — caught by that endpoint's own tests. And the cached figure comes from
+`prompt_tokens_details.cached_tokens` on the non-streaming path and llama.cpp's `timings.cache_n`
+on the streaming one, which are the same quantity, so a row means the same thing either way.
+
+**Verified live**: an inference, then its own row read back with the cached tokens present; a
+replay whose `X-Idempotent-Replay-Of` resolves to the billed row; and a second client getting
+`404` for the first client's request, indistinguishable from `404` for one that never existed.
+
+**Still waiting on Aeon**: the replay *rows* — zero tokens, `replay_of` — and with them
+`replay_of` in the CSV export and the counting caveat in the guide. Axonium confirmed the export
+change does not affect them but explicitly declined to answer for Aeon, who do impute cost from
+row counts. Not built until they answer; the header above already covers the case a caller hits
+today.
 
 Append a new row to the table with the next `RM-NN` id and a new `## RM-NN — ...` section
 below, following the same shape (Why / Scope). Re-sort the table if the new item's
