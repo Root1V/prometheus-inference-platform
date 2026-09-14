@@ -1,5 +1,9 @@
 # Prometheus Gateway — SDK Integration Guide
 
+**Revision**: 2026-09-14 · `55c2174`
+<!-- Consumers vendor this file and diff it. The date and commit above are what to quote
+     when asking whether a copy is current; they change whenever this document does. -->
+
 Technical reference for the team building client SDKs (Python, Go, Rust) that wrap this
 platform's inference API. It covers everything an SDK needs to encapsulate: authentication
 and token refresh, TLS, the request/response contract for every client-facing endpoint, the
@@ -8,7 +12,14 @@ gateway already implements server-side — so the SDK complements it instead of 
 
 Every fact below is sourced directly from the gateway/auth-service source and test suite, not
 from documentation that could have drifted. File:line references point at the current
-codebase for verification. Two things need confirming with the platform operator before
+codebase for verification.
+
+**Model names in the examples are real but not guaranteed.** They are taken from a live
+deployment so the examples can be run as written, rather than failing with `unknown-model` the
+first time somebody pastes one — which is what happened with the placeholder that used to be
+here. A catalog still differs between deployments and changes over time: **`GET /v1/models` is
+the source of truth**, and an SDK should never hardcode a model name it did not read from
+there. Two things need confirming with the platform operator before
 publishing an SDK against a specific deployment — flagged in §9.
 
 ---
@@ -46,7 +57,7 @@ JSON — the endpoint is declared with FastAPI `Form(...)` params.
 POST /oauth2/token
 Content-Type: application/x-www-form-urlencoded
 
-grant_type=client_credentials&client_id=<id>&client_secret=<secret>&scope=inference:read model:llama3-8b-q4
+grant_type=client_credentials&client_id=<id>&client_secret=<secret>&scope=inference:read model:qwen3-0.6b
 ```
 
 - `grant_type` — required, must be exactly `client_credentials`.
@@ -66,7 +77,7 @@ grant_type=client_credentials&client_id=<id>&client_secret=<secret>&scope=infere
   "access_token": "<RS256 JWT>",
   "token_type": "bearer",
   "expires_in": 600,
-  "scope": "inference:read model:llama3-8b-q4"
+  "scope": "inference:read model:qwen3-0.6b"
 }
 ```
 
@@ -110,7 +121,7 @@ RS256, these claims are minted:
   "iat": 1700000000,
   "exp": 1700000600,
   "jti": "<uuid4>",
-  "scope": "inference:read model:llama3-8b-q4",
+  "scope": "inference:read model:qwen3-0.6b",
   "role": "app",
   "client_name": "my-integration"
 }
@@ -165,7 +176,7 @@ refresh-ahead pattern:
 Fixed scope strings: `inference:read`, `inference:stream`, `admin:read`, `admin:write`,
 `admin:models`, `admin:usage`, `backend-registry:read`, `backend-registry:write`, `ui:chat`.
 
-Per-model scope: `model:<model-id>` — e.g. `model:llama3-8b-q4`. Case-sensitive, must match
+Per-model scope: `model:<model-id>` — e.g. `model:qwen3-0.6b`. Case-sensitive, must match
 the model ID exactly.
 
 **Deny-by-default, and this is the part SDK authors most often get wrong**: holding
@@ -231,12 +242,12 @@ No authentication required. Returns every currently-deployed model:
   "object": "list",
   "data": [
     {
-      "id": "llama3-8b-q4",
+      "id": "qwen3-0.6b",
       "object": "model",
       "owned_by": "prometheus",
-      "context_length": 8192,
-      "family": "llama3",
-      "quantization": "Q4_0",
+      "context_length": 4096,
+      "family": "qwen3",
+      "quantization": "IQ4_NL",
       "modality": "text"
     }
   ]
@@ -264,7 +275,7 @@ instead of always waiting for a `403` from the actual inference call.
 
 ```json
 {
-  "model": "llama3-8b-q4",
+  "model": "qwen3-0.6b",
   "messages": [
     { "role": "user", "content": "Hello" }
   ],
@@ -318,7 +329,7 @@ image content part to a model whose `modality` isn't `vision` returns `400 modal
 {
   "id": "chatcmpl-...",
   "object": "chat.completion",
-  "model": "llama3-8b-q4",
+  "model": "qwen3-0.6b",
   "choices": [
     {
       "index": 0,
@@ -488,7 +499,7 @@ from §2.1) is RFC 9457 "Problem Details", `Content-Type: application/problem+js
   "type": "https://prometheus.internal/errors/forbidden",
   "title": "Forbidden",
   "status": 403,
-  "detail": "This client is not authorized to use model 'llama3-8b-q4'.",
+  "detail": "This client is not authorized to use model 'qwen3-0.6b'.",
   "instance": "/v1/chat/completions",
   "request_id": "5c1e2b3a-...",
   "trace_id": "b04044d6-..."

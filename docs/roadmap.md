@@ -3830,6 +3830,61 @@ four. Draining detached tasks after each test left a window open — the engine 
 so a straggler still awaiting a session writes into whichever database is current when it wakes,
 which is the *next* test's. It drains before as well now; six consecutive clean runs.
 
+## RM-100 — a client can read the usage row for its own request (todo)
+
+**Why**: [[RM-88]] added `termination_reason` so that a charge for a half-delivered answer could
+be explained, and the answers document sent to Axonium says in as many words that it gives a
+client disputing a charge something to point at. Both usage endpoints require `admin:read`. The
+only party who can look is the one who does not need to — the promise is half kept, and Axonium
+put that in writing before we noticed it ourselves.
+
+**What actually blocks it, which is not the endpoint**: `usage_events` has no `request_id`
+column. The gateway returns `x-request-id` on every response and never writes it to the billing
+record, so today not even an administrator can go from a request identifier to its row. The link
+the request needs does not exist on our side.
+
+**Scope**, taking Axonium's design, which is better than the obvious one:
+- `GET /v1/usage/{request_id}` returning that row only — tokens, model, `interrupted`,
+  `termination_reason`, cost, timestamp. Not the request, not its content or parameters.
+- Filtered by the `client_id` in the token; **404 rather than 403** for a request belonging to
+  someone else, so the response does not confirm that it exists.
+- No admin scope, no aggregates. Granting `admin:read` to a client so it can see its own row
+  would let it see everyone's.
+- Needs the `request_id` stored first, with a migration, and threaded through `_record_usage`
+  from the four call sites that record usage.
+
+**Explicitly not closing this as "won't do"**: the alternative Axonium offered — documenting that
+`termination_reason` is an operational field rather than something a caller can query — is worse.
+It would put in writing that we bill with a reason the payer cannot see.
+
+**Two corrections from Axonium's next round, both raising the cost and both right.**
+
+*Tokens have to come back broken down, not aggregated.* An aggregate cannot be reconciled against
+the response once caching is involved, and reconciling is the only thing the endpoint is for.
+Which surfaced something they could not have known: the usage row **does not store cached prompt
+tokens at all**. The gateway reports `prompt_tokens_details.cached_tokens` and writes none of it,
+so reconciliation would not fail occasionally — it would be impossible whenever the cache was
+used. Another column in the same migration. (`instance_id` they also asked for is already stored,
+and free.)
+
+*The `404` breaks the case the endpoint exists for*, which they caught in their own design before
+we built it. A replay carries its **own** request id, and by our own rule a replay records no
+usage — so `GET /v1/usage/{replay_id}` would return `404`, and that id is the only one its caller
+holds. A bare `404` then means three different things, one of which is ordinary correct
+behaviour. Verified against the deployment: two ids, one row.
+
+Answer, going one step past their proposal:
+- **`X-Idempotent-Replay-Of` on the replay response**, so the link exists at the moment it is
+  known and needs no storage or lookup. Cheap and can ship ahead of the rest.
+- **A replay writes its own usage row** — zero tokens, zero cost, `termination_reason: "replay"`,
+  `replay_of` pointing at the original. Preferred over a side table because it keeps one place to
+  look and turns "no row" into an explicit statement rather than an absence to interpret, which
+  is precisely their objection. Note `_record_usage` currently returns early on zero tokens, so
+  this needs a deliberate exception, and zero-token rows will appear in the CSV export.
+
+They asked whether this changes the cost enough to reconsider. It does raise it, and the answer
+is still yes: an endpoint that returns `404` for the ordinary case is not cheaper, it is unusable.
+
 Append a new row to the table with the next `RM-NN` id and a new `## RM-NN — ...` section
 below, following the same shape (Why / Scope). Re-sort the table if the new item's
 priority isn't "last."
