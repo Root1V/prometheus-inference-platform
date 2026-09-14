@@ -3793,6 +3793,43 @@ model on a node has to work.
 a real inference — HTTP 200, 10/12 tokens — where it previously returned 404 on everything. The
 stale warning appeared while it lasted and cleared when the manager returned.
 
+## RM-99 — the last catalog survives a gateway restart (done)
+
+**Why**: [[RM-98]] made a running gateway survive a manager outage by keeping its copy in memory,
+and that left the worst case untouched. Measured: with the manager down, restarting the gateway
+put it back to **zero models**. A deploy is precisely when someone is already touching the
+infrastructure, so "the manager is down *and* the gateway restarts" is not the unlikely
+coincidence it sounds like. Envoy has the same property — last known good lives in memory and a
+restart falls back to bootstrap — but our gateway restarts on every deploy, so it bites harder.
+
+**Scope, and the constraint that shaped it**: the snapshot is read in exactly one situation, a
+start whose first sync produced nothing, and never again. The manager is the source of truth;
+this is only what to do when it cannot be asked. A successful sync rebuilds the catalog from
+scratch rather than merging, so anything the manager no longer serves disappears — verified by
+hiding a model while the manager was down and watching the gateway drop it on reconnect.
+
+Stored as what the manager *said*, not as what the gateway made of it, so a restore runs through
+the same parsing as a live sync instead of a second path that can drift. Written only when the
+content changed: with a blocking query a sync also runs each time the wait expires, and rewriting
+an identical snapshot every minute would be churn for nothing. An outage never overwrites a good
+snapshot with the emptiness it caused, because only nodes that answered are written.
+
+**No expiry, and the age is logged instead.** `restored_from_snapshot` carries how old the copy
+is, loudly, because the gateway is announcing that it is routing on something nobody has
+confirmed. A three-week-old snapshot is a different judgement from an hour-old one, and the
+operator can only make it with the number in front of them — while what the snapshot claims is
+alive is verified independently within seconds by health probing either way.
+
+**Verified live**, end to end: with the manager stopped and the gateway restarted, it came up with
+its 7 models and served a real inference (HTTP 200, 82 ms) where it previously answered 404 on
+everything; then, with a model hidden in the registry during the outage, the manager returning
+took the catalog from 7 to 6 and dropped it.
+
+**Also fixed here**: the flaky streaming test from [[RM-87]] was still failing about one run in
+four. Draining detached tasks after each test left a window open — the engine is a module global,
+so a straggler still awaiting a session writes into whichever database is current when it wakes,
+which is the *next* test's. It drains before as well now; six consecutive clean runs.
+
 Append a new row to the table with the next `RM-NN` id and a new `## RM-NN — ...` section
 below, following the same shape (Why / Scope). Re-sort the table if the new item's
 priority isn't "last."

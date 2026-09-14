@@ -64,6 +64,12 @@ def app(settings):
 @pytest.fixture
 async def gw(app):
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        # Before as well as after. The engine is a module global, so a straggler
+        # from the previous test that is still awaiting a session writes into
+        # whichever database is current when it wakes — which is this test's.
+        # Draining after alone left that window open, and it showed: roughly one
+        # run in four.
+        await _drain_detached()
         await db.create_tables(db.get_engine())
         yield client
         # RM-87 made a streamed request's accounting a detached task, precisely

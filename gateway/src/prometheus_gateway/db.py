@@ -8,6 +8,7 @@ Mirrors auth-service's db.py conventions (async SQLAlchemy, SQLite by default).
 from __future__ import annotations
 
 import uuid
+import json
 from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -98,6 +99,29 @@ def _interrupted_from(reason: str) -> bool:
     disagree on a row — which is the failure mode of keeping both.
     """
     return reason != TERMINATION_COMPLETE
+
+
+class ManagerCatalogSnapshot(Base):
+    """The last catalog the manager successfully reported — RM-99.
+
+    Read in exactly one situation: the gateway starts and cannot reach the
+    manager. [[RM-98]] made a *running* gateway survive a manager outage by
+    keeping its copy in memory, which leaves the case that matters most
+    uncovered — a gateway restarting while the manager is down, and a deploy is
+    precisely when someone is already touching the infrastructure.
+
+    Never consulted again once a sync succeeds: the manager is the source of
+    truth and this is only what to do when it cannot be asked.
+    """
+
+    __tablename__ = "manager_catalog_snapshot"
+
+    # One row. The id exists because a primary key must, not because there is
+    # ever more than one snapshot.
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, default=1)
+    written_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    # {node_name: [entry, ...]} as the manager reported them.
+    payload: Mapped[str] = mapped_column(Text, nullable=False)
 
 
 class UsageEvent(Base):
@@ -843,3 +867,50 @@ async def delete_circuit_breaker_config() -> bool:
         await session.delete(row)
         await session.commit()
         return True
+
+
+# ── RM-99: the catalog snapshot, for a start with no manager ─────────────────
+
+
+async def save_catalog_snapshot(payload: dict[str, Any]) -> None:
+    """Store the catalog the manager just reported.
+
+    Written on change rather than on every cycle: with a blocking query a sync
+    runs whenever the wait expires, and rewriting an identical snapshot a
+    thousand times a day would be churn for nothing.
+    """
+    serialised = json.dumps(payload, sort_keys=True, default=str)
+    async with get_session_factory()() as session:
+        row = await session.get(ManagerCatalogSnapshot, 1)
+        if row is not None and row.payload == serialised:
+            return
+        if row is None:
+            session.add(
+                ManagerCatalogSnapshot(
+                    id=1, written_at=datetime.now(timezone.utc), payload=serialised
+                )
+            )
+        else:
+            row.payload = serialised
+            row.written_at = datetime.now(timezone.utc)
+        await session.commit()
+
+
+async def load_catalog_snapshot() -> tuple[dict[str, Any], datetime] | None:
+    """The stored catalog and when it was stored, or None if there is none.
+
+    The age comes back with it deliberately. Falling back to a snapshot is worth
+    doing and worth saying out loud, and how old it is decides whether an
+    operator should trust it or go fix the manager.
+    """
+    async with get_session_factory()() as session:
+        row = await session.get(ManagerCatalogSnapshot, 1)
+        if row is None:
+            return None
+        written = row.written_at
+        if written.tzinfo is None:
+            written = written.replace(tzinfo=timezone.utc)
+        try:
+            return json.loads(row.payload), written
+        except (TypeError, ValueError):
+            return None

@@ -25,6 +25,7 @@ from __future__ import annotations
 import asyncio
 import time
 import uuid
+from datetime import datetime, timezone
 from typing import Any, Literal
 from urllib.parse import urlparse
 
@@ -32,6 +33,7 @@ import httpx
 import structlog
 
 from .registry import ModelEntry, ModelRegistry
+from .. import db
 from ..admin.nodes_client import fetch_nodes
 from ..telemetry import get_logger
 
@@ -101,6 +103,8 @@ class ManagerRegistrySync:
         # node that cannot be asked contributes what it last said instead of
         # nothing.
         self._last_good: dict[str, list[ModelEntry]] = {}
+        # RM-99: the same, as the manager reported it, for the disk snapshot.
+        self._raw_last_good: dict[str, list[dict[str, Any]]] = {}
         # When the catalog first went stale, so the log can say for how long.
         self._stale_since: float | None = None
         # Auto-renew credentials
@@ -209,7 +213,52 @@ class ManagerRegistrySync:
                 error=str(exc) or repr(exc),
                 exc_type=type(exc).__name__,
             )
+        if not self._registry._models:
+            await self._restore_from_snapshot()
         self._task = asyncio.create_task(self._poll_loop(), name="manager-registry-sync")
+
+    async def _restore_from_snapshot(self) -> None:
+        """Start from the last catalog on disk — RM-99.
+
+        Called in exactly one situation: the first sync of this process produced
+        nothing, meaning no node could be asked. Never called again. The manager
+        is the source of truth, and the moment it answers, its answer replaces
+        all of this — including dropping anything it no longer serves, because a
+        successful sync rebuilds the catalog from scratch rather than merging.
+        """
+        try:
+            stored = await db.load_catalog_snapshot()
+        except Exception as exc:
+            logger.warning("manager_sync.snapshot_read_failed", error=str(exc))
+            return
+        if stored is None:
+            logger.info("manager_sync.no_snapshot")
+            return
+
+        payload, written_at = stored
+        age_s = int((datetime.now(timezone.utc) - written_at).total_seconds())
+        restored: dict[str, ModelEntry] = {}
+        for node_name, backends in payload.items():
+            entries = [self._to_model_entry(node_name, b) for b in backends]
+            fresh = [e for e in entries if e is not None]
+            self._last_good[node_name] = fresh
+            self._raw_last_good[node_name] = backends
+            for entry in fresh:
+                restored[entry.id] = entry
+        self._registry._models = restored
+
+        # Loud on purpose, and with the age: this is the gateway saying it is
+        # routing on something nobody has confirmed. Whether an hour-old
+        # snapshot is fine and a three-week-old one means "go fix the manager
+        # first" is a judgement, and the operator can only make it if the number
+        # is in front of them. What the snapshot claims is alive is verified
+        # independently within seconds by health probing either way.
+        logger.warning(
+            "manager_sync.restored_from_snapshot",
+            count=len(restored),
+            snapshot_age_s=age_s,
+            written_at=written_at.isoformat(),
+        )
 
     async def stop(self) -> None:
         if self._task:
@@ -415,6 +464,10 @@ class ManagerRegistrySync:
             # answered with nothing genuinely has nothing, and that is a real
             # update rather than a failure.
             self._last_good[node_name] = fresh
+            # The snapshot stores what the manager said, not what we made of it,
+            # so a restart rebuilds entries through the same code path as a live
+            # sync rather than a second one that can drift from it.
+            self._raw_last_good[node_name] = backends
 
         # Atomically replace in-memory models
         self._registry._models = new_models
@@ -445,3 +498,17 @@ class ManagerRegistrySync:
             nodes=[name for name, _ in self._nodes],
             stale_nodes=stale_nodes or None,
         )
+
+        # RM-99: keep a copy on disk for the one case memory cannot cover — this
+        # process restarting while the manager is down. Only nodes that actually
+        # answered are written, so an outage never overwrites a good snapshot
+        # with the emptiness it caused.
+        if len(stale_nodes) < len(self._nodes):
+            try:
+                await db.save_catalog_snapshot(
+                    {node: self._raw_last_good.get(node, []) for node in self._last_good}
+                )
+            except Exception as exc:
+                # A snapshot that cannot be written is worth a line, not a
+                # failed sync: the live catalog is already correct in memory.
+                logger.warning("manager_sync.snapshot_write_failed", error=str(exc))
