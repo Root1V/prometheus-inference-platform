@@ -13,12 +13,14 @@ from __future__ import annotations
 
 import asyncio
 import os
+import time
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Annotated, Any
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi.responses import JSONResponse, Response
 from opentelemetry.trace import SpanKind
 from prometheus_manager_core.hf_discovery import shard_filenames
 from prometheus_manager_core.registry import Registry, RegistryEntry
@@ -26,6 +28,15 @@ from prometheus_manager_core.scanner import ProcessState, scan
 from prometheus_manager_core.telemetry import get_tracer
 
 from .auth import require_backend_registry_read
+
+# RM-97: how long a blocking query may be held. Long enough that a quiet
+# registry costs one request a minute rather than one every poll interval;
+# short enough to stay under any proxy's idle timeout without configuration.
+_MAX_BLOCKING_WAIT_S = 90
+# How often a held request re-reads the registry. The read is a SQLite load of a
+# table with tens of rows, and deliberately does not scan processes — see
+# Registry.index().
+_BLOCKING_POLL_S = 1.0
 
 router = APIRouter()
 
@@ -64,16 +75,43 @@ async def list_backends(
     include_hidden: Annotated[
         bool, Query(description="RM-10: also include discovery=false entries (operator use).")
     ] = False,
-) -> dict[str, Any]:
+    index: Annotated[
+        str | None,
+        Query(description="RM-97: blocking query — the registry index the caller already holds."),
+    ] = None,
+    wait: Annotated[
+        int, Query(ge=0, le=_MAX_BLOCKING_WAIT_S, description="RM-97: seconds to hold the request.")
+    ] = 0,
+) -> Response:
     """Return all registered backends with their live process state.
 
     Implements: memory/specs/008-llama-server-manager.md — AC-11
     Implements: docs/roadmap.md — RM-10 (include_hidden for the admin dashboard)
+    Implements: docs/roadmap.md — RM-97 (blocking query)
+
+    With `index` and `wait`, this becomes a blocking query in the sense Consul
+    uses the term: hand back the index you already have and the request is held
+    until the registry stops matching it, or `wait` seconds pass. A caller then
+    learns about a change in about a second instead of up to a poll interval,
+    and spends one held request per interval instead of one request per cycle.
+
+    Anchored on an index rather than delivering events on purpose. A dropped
+    connection cannot lose anything — the caller simply asks again with the
+    index it still holds, so reconnection is self-healing rather than something
+    the protocol has to replay.
     """
     with _tracer.start_as_current_span("backend.list", kind=SpanKind.INTERNAL) as span:
         registry: Registry = request.app.state.registry
         # Always reload from disk so TUI changes appear immediately without restart.
         registry.reload()
+
+        if index and wait:
+            deadline = time.monotonic() + wait
+            span.set_attribute("blocking_query", True)
+            while registry.index() == index and time.monotonic() < deadline:
+                await asyncio.sleep(_BLOCKING_POLL_S)
+                registry.reload()
+            span.set_attribute("blocking_query.changed", registry.index() != index)
 
         proxy_host: str = getattr(request.app.state, "proxy_host", "")
         # AC-18 (spec 010): only expose entries with discovery: true, unless the
@@ -154,7 +192,9 @@ async def list_backends(
 
         span.set_attribute("backend_count", len(backends))
         span.set_attribute("http.status_code", 200)
-        return {"backends": backends}
+        # The index goes in a header rather than the body so the existing
+        # response shape is untouched for every caller that does not block.
+        return JSONResponse({"backends": backends}, headers={"X-Registry-Index": registry.index()})
 
 
 @router.get("/v1/backends/{model_id}", tags=["backends"])

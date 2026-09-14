@@ -37,6 +37,10 @@ from ..telemetry import get_logger
 
 logger = get_logger(__name__)
 
+# RM-97: how long to ask a manager to hold a request. Under the manager's own
+# 90s ceiling, so the manager is the one that decides when to answer.
+_BLOCKING_WAIT_S = 60
+
 # Always trusted regardless of configured nodes — loopback and the container
 # host aliases used by the existing single-host container deployment.
 _BASE_ALLOWED_BACKEND_HOSTS: frozenset[str] = frozenset(
@@ -82,6 +86,14 @@ class ManagerRegistrySync:
         self._allowed_backend_hosts: frozenset[str] = _BASE_ALLOWED_BACKEND_HOSTS
         self._registry = registry
         self._poll_interval_s = poll_interval_s
+        # RM-97: the registry fingerprint each node last handed back, so the next
+        # request can ask to be held until it changes.
+        self._node_index: dict[str, str] = {}
+        # Turned off the first time a node answers without the header, which is
+        # what a manager predating RM-97 does. Then this degrades to the poll it
+        # replaced rather than to a busy loop.
+        self._blocking_supported = True
+        self._last_cycle_returned_early = False
         # Auto-renew credentials
         self._client_id = manager_client_id
         self._client_secret = manager_client_secret
@@ -200,7 +212,14 @@ class ManagerRegistrySync:
 
     async def _poll_loop(self) -> None:
         while True:
-            await asyncio.sleep(self._poll_interval_s)
+            # RM-97: a blocking query already waits on the manager's side, so a
+            # cycle that came back because something changed goes straight round
+            # again. Sleeping here too would put the poll interval back on top of
+            # a mechanism built to remove it. The sleep is the fallback for a
+            # node that does not support blocking queries, and the backstop if
+            # one starts returning instantly.
+            if not self._blocking_supported or self._last_cycle_returned_early:
+                await asyncio.sleep(self._poll_interval_s)
             # Give each poll cycle its own short trace_id for log correlation
             structlog.contextvars.bind_contextvars(trace_id=f"poll-{str(uuid.uuid4())[:8]}")
             try:
@@ -222,11 +241,39 @@ class ManagerRegistrySync:
         if ctx_trace_id and ctx_trace_id != "none":
             headers["X-Trace-ID"] = ctx_trace_id
 
+        # RM-97: hand back the index this node last gave us and let the manager
+        # hold the request until it stops matching. A change now lands in about
+        # a second instead of waiting out a poll interval, and a quiet registry
+        # costs one held request a minute rather than one every interval.
+        params: dict[str, Any] = {}
+        known_index = self._node_index.get(node_name)
+        if known_index:
+            params = {"index": known_index, "wait": _BLOCKING_WAIT_S}
+
         try:
-            async with httpx.AsyncClient(timeout=10.0) as client:
-                resp = await client.get(f"{manager_url}/v1/backends", headers=headers)
+            # The read timeout has to outlast the wait the manager was asked to
+            # hold, with room for the round trip. Shorter and we would time out
+            # on our own request every quiet minute.
+            timeout = httpx.Timeout(10.0, read=_BLOCKING_WAIT_S + 15.0)
+            async with httpx.AsyncClient(timeout=timeout) as client:
+                started = time.monotonic()
+                resp = await client.get(
+                    f"{manager_url}/v1/backends", headers=headers, params=params
+                )
                 resp.raise_for_status()
                 data = resp.json()
+            new_index = resp.headers.get("X-Registry-Index")
+            if new_index:
+                self._node_index[node_name] = new_index
+            else:
+                # A node that predates RM-97 answers immediately and without the
+                # header. Stop asking it to block and fall back to sleeping.
+                self._blocking_supported = False
+            # Distinguishes "the registry changed" from "the wait expired", which
+            # is what decides whether the loop sleeps before asking again.
+            self._last_cycle_returned_early = (
+                bool(params) and (time.monotonic() - started) < _BLOCKING_WAIT_S * 0.5
+            )
             backends: list[dict[str, Any]] = data.get("backends", [])
             return backends
         except Exception as exc:

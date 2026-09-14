@@ -3699,6 +3699,45 @@ it.
 **Not urgent, and deliberately not bundled**: nothing is broken. It is an exposure that should
 not exist, found while answering Argus about which of our paths cross service boundaries.
 
+## RM-97 — blocking query instead of a 30s poll for the catalog (done)
+
+**Why**: the gateway asked the manager for the whole catalog every 30 seconds. The cost was never
+the bandwidth — one node, 7 KB a cycle, 2880 cycles a day for a catalog that changes a few times
+a week. The cost was the **staleness window**: up to half a minute routing to a backend that had
+gone, or not routing to one that had arrived. There is direct evidence it hurt — [[RM-69]] added
+active health probing precisely because "the manager registry poll runs every 30s, so an instance
+that dies between polls keeps being offered". We had built a second mechanism to cover for the
+first one's latency.
+
+**Shape**: Consul's blocking query. `GET /v1/backends?index=<held>&wait=<seconds>` is held until
+the registry stops matching that index, or the wait expires; the current index comes back in
+`X-Registry-Index`. The gateway hands back what it holds and goes straight round again when
+something changed.
+
+**Why anchored on an index rather than streaming events** (SSE or WebSocket), which is the
+obvious alternative and is what Envoy's xDS does: a dropped connection cannot lose anything here.
+The caller asks again with the index it still holds, so reconnection is self-healing instead of
+needing `Last-Event-ID` and replay. Kubernetes' watch is streaming and still anchors on
+`resourceVersion`, returning `410 Gone` and forcing a re-list when a client falls behind —
+evidence that streaming needs a state fallback anyway. WebSockets were rejected outright:
+bidirectional machinery, proxy configuration and heartbeats for a one-directional feed, plus a
+connection that outlives the token that authorised it. With one gateway and one node, none of
+that pays.
+
+**What the index deliberately excludes**: live process state. Process metrics change on every
+read, so a fingerprint including them would never hold still and the blocking query would become
+a busy loop. Liveness is not the registry's to report either — a process that dies without
+deregistering is the gateway's health probing to catch, because a dead process cannot announce
+itself. Declared state is watched; liveness is probed.
+
+**Degrades rather than breaks**: a manager predating this answers immediately and without the
+header, and the gateway notices, stops asking for a block, and goes back to sleeping the poll
+interval.
+
+**Measured end to end**, against the running stack: a registry change reached the gateway in
+**1.2 seconds**, against up to 30 before. The held request itself releases about a second after
+the change, and returns immediately when the index already differs.
+
 Append a new row to the table with the next `RM-NN` id and a new `## RM-NN — ...` section
 below, following the same shape (Why / Scope). Re-sort the table if the new item's
 priority isn't "last."

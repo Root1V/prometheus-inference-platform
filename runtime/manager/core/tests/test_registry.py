@@ -802,3 +802,34 @@ class TestFamilyIsNeverEmptyRM89:
         reg.add_catalog(CatalogEntry(id="junk", path=str(junk)))
 
         assert reg.get_catalog("junk").family == "unknown"
+
+
+class TestRegistryIndexRM97:
+    """RM-97: the fingerprint a blocking query waits on."""
+
+    def test_the_index_is_stable_while_nothing_changes(self, tmp_path: Path):
+        reg = Registry(tmp_path / "registry.db")
+        reg.add_catalog(CatalogEntry(id="model-a", slug="model-a", path="x.gguf", family="qwen3"))
+
+        first = reg.index()
+        reg.reload()
+
+        assert reg.index() == first, "a reload alone must not look like a change"
+
+    def test_the_index_moves_when_the_catalog_does(self, tmp_path: Path):
+        reg = Registry(tmp_path / "registry.db")
+        reg.add_catalog(CatalogEntry(id="model-a", slug="model-a", path="x.gguf", family="qwen3"))
+        before = reg.index()
+
+        reg.add_catalog(CatalogEntry(id="model-b", slug="model-b", path="y.gguf", family="qwen3"))
+
+        assert reg.index() != before
+
+    def test_the_index_moves_when_an_instance_does(self, tmp_path: Path):
+        reg = Registry(tmp_path / "registry.db")
+        reg.add_catalog(CatalogEntry(id="model-a", slug="model-a", path="x.gguf", family="qwen3"))
+        before = reg.index()
+
+        reg.add_instance("model-a-1", "model-a", port=8080, discovery=True)
+
+        assert reg.index() != before
