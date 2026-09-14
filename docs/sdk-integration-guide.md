@@ -1,6 +1,6 @@
 # Prometheus Gateway — SDK Integration Guide
 
-**Revision**: 2026-09-14c · `cef5ab3`
+**Revision**: 2026-09-14d · `pending`
 <!-- Consumers vendor this file and diff it. The date and commit above are what to quote
      when asking whether a copy is current; they change whenever this document does. -->
 
@@ -26,19 +26,26 @@ publishing an SDK against a specific deployment — flagged in §9.
 
 ## 1. Architecture at a glance
 
-Two services:
+**The SDK needs one host: the gateway.** Everything a client calls — token issuance included
+— is reachable there.
 
-- **auth-service** — issues OAuth2 access tokens (JWT, RS256). The SDK talks to this once per
-  token acquisition/refresh.
-- **gateway** — the actual inference API (`/v1/...`). The SDK sends every real request here,
-  with the token from auth-service as a Bearer credential.
+Behind it there are two services, and this matters for reading error messages and timeouts,
+not for configuration:
 
-All client-facing endpoints live under the `/v1/` prefix. There is no other API versioning
-mechanism (no version header) — path prefix is the only version signal.
+- **gateway** — the inference API (`/v1/...`), and the token endpoint (`POST /oauth2/token`),
+  which it forwards to the auth-service. Tokens are issued by the auth-service in both cases;
+  the gateway never signs one itself.
+- **auth-service** — issues the OAuth2 access tokens (JWT, RS256). **An SDK should not call it
+  directly.** It is an internal service, and a deployment is free to keep it off any network
+  the SDK can reach.
 
-**Base URLs**: not hardcoded anywhere in this codebase — confirm the real host/port for your
+Inference endpoints live under the `/v1/` prefix; `/oauth2/token` deliberately does not, to
+keep the path identical to the auth-service's own. There is no other API versioning mechanism
+(no version header) — path prefix is the only version signal.
+
+**Base URL**: not hardcoded anywhere in this codebase — confirm the real host/port for your
 target deployment with the platform operator (see §9). Examples in this guide use
-`https://auth.example.internal` and `https://gateway.example.internal` as placeholders.
+`https://gateway.example.internal` as a placeholder.
 
 ---
 
@@ -46,7 +53,11 @@ target deployment with the platform operator (see §9). Examples in this guide u
 
 ### 2.1 Obtaining a token — `POST /oauth2/token`
 
-Auth-service only supports two grant types: `client_credentials` (what an SDK/service
+**Call this on the gateway**, at the same path you would have used on the auth-service. The
+gateway forwards the request verbatim and returns the response verbatim, error bodies
+included — so an SDK that already talked to the auth-service changes only the host.
+
+Only two grant types are supported: `client_credentials` (what an SDK/service
 integration should use) and `password` (for human/email-login accounts — not relevant to an
 SDK). This guide covers `client_credentials` only.
 
@@ -94,6 +105,12 @@ from the gateway's own error format described in §5:
 Possible `error` values: `unsupported_grant_type` (400), `invalid_scope` (400 — either an
 unrecognized scope string, or one your account isn't allowed to request), `invalid_client`
 (401 — bad client_id/secret), `unauthorized_client` (401 — account deactivated).
+
+**One exception to the verbatim rule**: if the gateway cannot reach the auth-service at all,
+the failure is the gateway's, not an OAuth2 outcome, so it answers `503` in the gateway's own
+problem+json envelope (§5) with `type` ending in `/upstream-unavailable` — or
+`/not-configured` if that deployment has no token endpoint wired up. Parse `4xx` as OAuth2 and
+`503` as a gateway problem document; a `503` is retryable, an `invalid_client` never is.
 
 ### 2.2 Using the token
 
@@ -786,8 +803,10 @@ same account.
 
 ## 9. Confirm with the platform operator before finalizing the SDK
 
-- **Exact base URL(s) and ports** for auth-service and gateway in each target environment
-  (dev/staging/prod) — not defined anywhere in the codebase itself, it's deployment-specific.
+- **The gateway's base URL and port** in each target environment (dev/staging/prod) — not
+  defined anywhere in the codebase itself, it's deployment-specific. That is the only host the
+  SDK should need; if an environment still hands you an auth-service URL as well, say so,
+  because it means the token proxy isn't reachable there yet.
 - **TLS trust chain** for each environment — self-signed dev cert (needs explicit client-side
   trust configuration, see §2.6) vs. a real CA-signed production certificate.
 - Whether any **per-client rate-limit overrides** exist beyond the global RPM/TPM defaults —

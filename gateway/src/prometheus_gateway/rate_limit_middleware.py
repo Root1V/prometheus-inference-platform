@@ -114,7 +114,10 @@ class RateLimitMiddleware:
 
     # Paths that bypass rate limiting (no claims needed either)
     _EXEMPT_PATHS: frozenset[str] = frozenset(
-        {"/health", "/metrics", "/v1/models", "/v1/backends", "/v1/usage"}
+        # PRM-96: /oauth2/token is exempt because the limiter keys on claims and
+        # this is the request that produces them. auth-service applies its own
+        # limits to token issuance, which is where that belongs.
+        {"/health", "/metrics", "/v1/models", "/v1/backends", "/v1/usage", "/oauth2/token"}
     )
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:

@@ -19,8 +19,11 @@ logger = get_logger(__name__)
 # RM-10: /admin/api/auth/login has no Bearer token yet by definition — it's how
 # the admin dashboard SPA obtains one (proxied server-side to the auth-service
 # to avoid a cross-origin call the browser would otherwise block via CORS).
+# PRM-96: /oauth2/token carries its own credentials in the body, so demanding a
+# Bearer token to obtain one would be circular. Same reason as the login above,
+# for the SDK path rather than the dashboard's.
 EXEMPT_PATHS: frozenset[str] = frozenset(
-    {"/health", "/metrics", "/v1/models", "/admin/api/auth/login"}
+    {"/health", "/metrics", "/v1/models", "/admin/api/auth/login", "/oauth2/token"}
 )
 # Implements: memory/specs/013-web-chat-ui-proxy.md — all /ui/* paths use cookie auth, not Bearer
 _EXEMPT_PREFIXES: tuple[str, ...] = ("/ui",)
