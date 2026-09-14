@@ -174,3 +174,69 @@ async def test_export_filters_by_client_id(app, admin_headers):
     non_total_rows = [row for row in data_rows if row[5] != "TOTAL"]
     assert len(non_total_rows) == 1
     assert non_total_rows[0][3] == "client-a"
+
+
+# ── PRM-100: a caller reads the row for its own request ─────────────────────
+
+
+@pytest.fixture
+def client_headers(rsa_keys):
+    """An ordinary caller: inference scope, no admin. `azp` is the client id the
+    row is filed under, which is what the endpoint filters by."""
+    token = make_token(rsa_keys["private"], scope="inference:read", sub="a-user", azp="client-a")
+    return {"Authorization": f"Bearer {token}"}
+
+
+async def test_a_client_reads_its_own_usage_row(app, client_headers):
+    """The point of the endpoint: we added termination_reason so a charge for a
+    half-delivered answer could be explained, then put both usage endpoints
+    behind admin:read — leaving it visible only to the party that does not need
+    it. This reads one row, the caller's own, with no admin scope.
+    """
+    await db.create_tables(db.get_engine())
+    await db.record_usage(
+        "client-a",
+        "qwen3-0.6b",
+        100,
+        40,
+        instance_id="qwen3-1",
+        request_id="req-aaa",
+        cached_prompt_tokens=64,
+    )
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
+        resp = await c.get("/v1/usage/req-aaa", headers=client_headers)
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["request_id"] == "req-aaa"
+    assert body["termination_reason"] == "complete"
+    assert body["instance_id"] == "qwen3-1"
+    # Broken down exactly as the inference response reports it. An aggregate
+    # cannot be reconciled against what the caller received once caching is
+    # involved, and reconciling is all this is for.
+    assert body["usage"] == {
+        "prompt_tokens": 100,
+        "completion_tokens": 40,
+        "total_tokens": 140,
+        "prompt_tokens_details": {"cached_tokens": 64},
+    }
+
+
+async def test_another_clients_request_is_404_not_403(app, client_headers):
+    """404 rather than 403, on Axonium's suggestion: a 403 would confirm that
+    the id exists, which is exactly what a probe wants to learn."""
+    await db.create_tables(db.get_engine())
+    await db.record_usage("someone-else", "qwen3-0.6b", 10, 5, request_id="req-bbb")
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
+        resp = await c.get("/v1/usage/req-bbb", headers=client_headers)
+
+    assert resp.status_code == 404
+
+
+async def test_an_unknown_request_is_also_404(app, client_headers):
+    await db.create_tables(db.get_engine())
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
+        resp = await c.get("/v1/usage/req-never", headers=client_headers)
+    assert resp.status_code == 404

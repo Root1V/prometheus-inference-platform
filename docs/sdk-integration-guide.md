@@ -1,6 +1,6 @@
 # Prometheus Gateway — SDK Integration Guide
 
-**Revision**: 2026-09-14 · `55c2174`
+**Revision**: 2026-09-14b · `pending`
 <!-- Consumers vendor this file and diff it. The date and commit above are what to quote
      when asking whether a copy is current; they change whenever this document does. -->
 
@@ -466,6 +466,51 @@ X-RateLimit-Reset-Tokens
   send on the request.
 
 **No API-version header exists.** `/v1/` in the path is the only version signal.
+
+---
+
+### 3.6 `GET /v1/usage/{request_id}` — what one of your own requests was charged
+
+Requires any authenticated token; **no admin scope**. Reads exactly one row, the caller's own.
+
+Every inference response carries `x-request-id`. That id is what this takes:
+
+```json
+{
+  "request_id": "a0f3ec1b-25e5-4025-abba-73bec9c8b390",
+  "model": "qwen3-0.6b",
+  "request_kind": "chat",
+  "usage": {
+    "prompt_tokens": 10,
+    "completion_tokens": 8,
+    "total_tokens": 18,
+    "prompt_tokens_details": { "cached_tokens": 9 }
+  },
+  "image_count": 0,
+  "interrupted": false,
+  "termination_reason": "complete",
+  "cost_usd": null,
+  "instance_id": "qwen3-0-6b-iq4-nl-local-1",
+  "created_at": "2026-09-14T19:33:54.580624"
+}
+```
+
+The `usage` object mirrors the inference response field for field, including
+`prompt_tokens_details.cached_tokens` — a **subset** of `prompt_tokens`, not a separate bucket.
+That is deliberate: an aggregate could not be reconciled against what you received once caching
+is involved, and reconciling is what this endpoint is for.
+
+`termination_reason` is one of `complete`, `upstream_error` or `client_disconnected`, and
+`interrupted` is derived from it — true for anything that is not `complete`. A request that was
+billed for a half-delivered answer says so here.
+
+**404 covers both "no such request" and "not yours."** They are deliberately indistinguishable: a
+`403` would confirm that an id exists, which is what a probe wants to learn.
+
+**A replay has its own id and no row of its own**, because replaying does not use the model and is
+not billed. Looking up a replay's `x-request-id` therefore returns `404`, correctly. The replay
+response carries `X-Idempotent-Replay-Of` naming the generation that *was* billed — use that id
+here.
 
 ---
 

@@ -83,6 +83,12 @@ class Replay:
 
     status_code: int
     body: Any
+    #: PRM-100: the request id of the generation being replayed. A replay is
+    #: given its own request id, and by design records no usage — so the id its
+    #: caller holds leads to no row at all. Handing back the original's means
+    #: the link exists at the moment it is known, without a lookup table and
+    #: without asking the caller to correlate anything later.
+    original_request_id: str | None = None
 
 
 @dataclass(frozen=True)
@@ -182,7 +188,11 @@ async def begin(
                     f"The request with {HEADER} {key!r} already succeeded, but its response "
                     "was too large to retain, so it can't be replayed. Do not retry it.",
                 )
-            return Replay(status_code=row.status_code or 200, body=json.loads(row.response_body))
+            return Replay(
+                status_code=row.status_code or 200,
+                body=json.loads(row.response_body),
+                original_request_id=row.request_id,
+            )
 
         session.add(
             db.IdempotencyRecord(client_id=client_id, key=key, fingerprint=want, state=_IN_PROGRESS)
@@ -201,7 +211,9 @@ async def begin(
     return Claim(client_id=client_id, key=key)
 
 
-async def complete(claim: Claim, status_code: int, body: Any) -> None:
+async def complete(
+    claim: Claim, status_code: int, body: Any, request_id: str | None = None
+) -> None:
     """Store the result so a replay returns it instead of generating again."""
     try:
         serialised: str | None = json.dumps(body)
@@ -217,6 +229,8 @@ async def complete(claim: Claim, status_code: int, body: Any) -> None:
         row.state = _COMPLETED
         row.status_code = status_code
         row.response_body = serialised
+        if request_id:
+            row.request_id = request_id
         await session.commit()
 
 

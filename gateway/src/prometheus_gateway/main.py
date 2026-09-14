@@ -272,7 +272,12 @@ def create_app(
         result = getattr(request.state, "idempotency_result", None)
         try:
             if result is not None:
-                await idempotency.complete(claim, result[0], result[1])
+                await idempotency.complete(
+                    claim,
+                    result[0],
+                    result[1],
+                    getattr(request.state, "request_id", None),
+                )
             else:
                 await idempotency.release(claim)
         except Exception as exc:
