@@ -1,6 +1,6 @@
 # Prometheus Gateway — SDK Integration Guide
 
-**Revision**: 2026-09-14d · `cd9f33d`
+**Revision**: 2026-09-14e · `pending`
 <!-- Consumers vendor this file and diff it. The date and commit above are what to quote
      when asking whether a copy is current; they change whenever this document does. -->
 
@@ -486,7 +486,7 @@ X-RateLimit-Reset-Tokens
 
 ---
 
-### 3.6 `GET /v1/usage/{request_id}` — what one of your own requests was charged
+### 3.7 `GET /v1/usage/{request_id}` — what one of your own requests was charged
 
 Requires any authenticated token; **no admin scope**. Reads exactly one row, the caller's own.
 
@@ -531,7 +531,7 @@ here.
 
 ---
 
-### 3.7 `GET /v1/usage/export` — the CSV, and how its columns change
+### 3.8 `GET /v1/usage/export` — the CSV, and how its columns change
 
 Requires `admin:read`. Not something an SDK calls; documented because consumers parse the file
 and had no written contract for its shape.
@@ -673,9 +673,13 @@ model" as something only the SDK can catch.
 | 503 | `backend-unavailable` | Two distinct causes share this same `type`, and only one of them sets `Retry-After` — see the note below the table. | See below |
 | 503 | `rate-limiting-unavailable` | Redis (rate limiter backing store) is down and the deployment is configured fail-closed. | **Yes**, with backoff — transient infra issue |
 | 503 | `usage-store-unavailable` | Only on `GET /v1/usage`/`/v1/usage/export` — DB read failed. | **Yes**, with backoff |
+| 404 | `not-found` | Only on `GET /v1/usage/{request_id}` (§3.7) — no usage row with that id **belonging to this client**. Deliberately not a `403`: telling you which ids exist but aren't yours leaks other clients' traffic. | No |
+| 503 | `upstream-unavailable` | Only on `POST /oauth2/token` (§2.1) — the gateway could not reach the auth-service. Note this is the *only* problem+json a token request can produce; every other token outcome uses the OAuth2 error shape. | **Yes**, with backoff |
+| 503 | `not-configured` | Only on `POST /oauth2/token` — this deployment has no token endpoint wired up. | No — needs operator action |
 
 There is no `404` on the inference-family endpoints for "model not found" — that's a `400
-unknown-model`, not a `404`. Reserve `404` handling in the SDK for genuinely unmapped routes.
+unknown-model`, not a `404`. The only `404` an SDK should expect from a client-facing endpoint
+is the `not-found` row above; treat any other one as a genuinely unmapped route.
 
 **`503 backend-unavailable`'s two causes, confirmed precisely (this is not the same code path
 in both cases)**:
