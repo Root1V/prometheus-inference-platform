@@ -658,3 +658,45 @@ async def test_reasoning_tokens_are_counted_when_a_stream_breaks(gw, rsa_keys):
     assert events[0].completion_tokens == 3
     assert events[0].interrupted is True
     assert events[0].termination_reason == db.TERMINATION_UPSTREAM_ERROR
+
+
+# ── RM-95: the GenAI semantic conventions Argus asked for ────────────────────
+
+
+def test_genai_request_attributes_use_the_conventional_names():
+    from prometheus_gateway.router import _genai_request_attrs
+
+    attrs = _genai_request_attrs("chat", "qwen3-0.6b", "llama_cpp")
+
+    assert attrs == {
+        "gen_ai.operation.name": "chat",
+        "gen_ai.request.model": "qwen3-0.6b",
+        "gen_ai.provider.name": "llama.cpp",
+    }
+
+
+def test_a_stream_the_caller_abandoned_says_so_in_finish_reasons():
+    """Argus called this the most valuable attribute we have and said almost
+    nobody measures it: it separates "we failed" from "they stopped waiting",
+    which are different problems with different fixes."""
+    from prometheus_gateway.router import _genai_response_attrs
+
+    attrs = _genai_response_attrs(
+        response_model="qwen3-0.6b",
+        input_tokens=10,
+        output_tokens=5,
+        finish_reason=db.TERMINATION_CLIENT_DISCONNECTED,
+        backend_id="qwen3-0-6b-1",
+        ttft_ms=180,
+    )
+
+    assert attrs["gen_ai.response.finish_reasons"] == ["client_disconnected"]
+    assert attrs["gen_ai.usage.output_tokens"] == 5
+    assert attrs["argus.inference.backend_id"] == "qwen3-0-6b-1"
+    assert attrs["argus.inference.ttft_ms"] == 180
+
+
+def test_attributes_nobody_measured_are_left_out_rather_than_guessed():
+    from prometheus_gateway.router import _genai_response_attrs
+
+    assert _genai_response_attrs(output_tokens=3) == {"gen_ai.usage.output_tokens": 3}

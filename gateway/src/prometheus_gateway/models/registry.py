@@ -46,6 +46,11 @@ class ModelEntry:
     # with image content parts), or "embedding" (/v1/embeddings). Determines
     # request routing/validation — see memory/wiki/model-registry.md.
     modality: str = "text"
+    # RM-95: which engine serves this instance (llama_cpp, sd_cpp). The manager
+    # has always sent it and the gateway threw it away, which is why health
+    # probing had to guess a path that fits every engine — and settled on
+    # accepting a 404.
+    backend: str = "llama_cpp"
     # RM-51: which catalog (models) entry this instance belongs to, on its
     # manager node. Falls back to this entry's own id (matching manager-api's
     # pre-upgrade behavior) when a node hasn't shipped model_id yet.
@@ -134,6 +139,7 @@ class ModelRegistry:
                 backend_status=backend_status,
                 discovery=bool(entry.get("discovery", True)),
                 modality=entry.get("modality", "text"),
+                backend=entry.get("backend") or "llama_cpp",
             )
             self._models[model.id] = model
         logger.info("registry.loaded", extra={"count": len(self._models)})
