@@ -706,3 +706,56 @@ def test_attributes_nobody_measured_are_left_out_rather_than_guessed():
     from prometheus_gateway.router import _genai_response_attrs
 
     assert _genai_response_attrs(output_tokens=3) == {"gen_ai.usage.output_tokens": 3}
+
+
+@respx.mock
+async def test_the_genai_attributes_actually_reach_a_span(gw, rsa_keys):
+    """The three tests above check that the helpers build the right dictionaries
+    and never that anything uses them. Deleting the call that puts them on the
+    span left all 455 tests green — verified by mutating it.
+
+    Axonium hit the same class of gap on their side and named it: a corpus that
+    asserts the raw payload cannot see anything the code derives from it. This
+    asserts the derived output, which is the part a consumer reads.
+    """
+    from opentelemetry import trace
+    from opentelemetry.sdk.trace import TracerProvider
+    from opentelemetry.sdk.trace.export import SimpleSpanProcessor
+    from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
+
+    exporter = InMemorySpanExporter()
+    provider = TracerProvider()
+    provider.add_span_processor(SimpleSpanProcessor(exporter))
+    previous = trace.get_tracer_provider()
+    trace._TRACER_PROVIDER = provider  # type: ignore[attr-defined]
+    try:
+        import prometheus_gateway.router as router_module
+
+        router_module._tracer = trace.get_tracer("test")
+        respx.post(f"{BACKEND_URL}/v1/chat/completions").mock(
+            return_value=Response(
+                200,
+                json={
+                    "model": "solo",
+                    "choices": [{"message": {"role": "assistant", "content": "hi"}}],
+                    "usage": {"prompt_tokens": 3, "completion_tokens": 1},
+                },
+            )
+        )
+        headers = {
+            "Authorization": f"Bearer {make_token(rsa_keys['private'], scope='inference:read model:solo')}",
+        }
+
+        await gw.post("/v1/chat/completions", json=_chat(), headers=headers)
+
+        attrs: dict = {}
+        for span in exporter.get_finished_spans():
+            if "gen_ai.request.model" in (span.attributes or {}):
+                attrs = dict(span.attributes or {})
+        assert attrs, "no span carried the GenAI attributes"
+        assert attrs["gen_ai.operation.name"] == "chat"
+        assert attrs["gen_ai.usage.output_tokens"] == 1
+        assert attrs["gen_ai.response.finish_reasons"] == ("complete",)
+    finally:
+        trace._TRACER_PROVIDER = previous  # type: ignore[attr-defined]
+        router_module._tracer = trace.get_tracer("prometheus_gateway")

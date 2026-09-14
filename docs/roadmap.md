@@ -3876,11 +3876,19 @@ behaviour. Verified against the deployment: two ids, one row.
 Answer, going one step past their proposal:
 - **`X-Idempotent-Replay-Of` on the replay response**, so the link exists at the moment it is
   known and needs no storage or lookup. Cheap and can ship ahead of the rest.
-- **A replay writes its own usage row** — zero tokens, zero cost, `termination_reason: "replay"`,
-  `replay_of` pointing at the original. Preferred over a side table because it keeps one place to
-  look and turns "no row" into an explicit statement rather than an absence to interpret, which
-  is precisely their objection. Note `_record_usage` currently returns early on zero tokens, so
-  this needs a deliberate exception, and zero-token rows will appear in the CSV export.
+- **A replay writes its own usage row** — zero tokens, zero cost, `replay_of` pointing at the
+  original. Preferred over a side table because it keeps one place to look and turns "no row" into
+  an explicit statement rather than an absence to interpret, which is precisely their objection.
+  Note `_record_usage` currently returns early on zero tokens, so this needs a deliberate
+  exception, and zero-token rows will appear in the CSV export.
+- **No fourth `termination_reason`.** The first draft used `"replay"`, and Axonium asked what
+  `interrupted` would then be — `true`, under the existing derivation, which is false: nothing was
+  interrupted because nothing was generated. Answering showed the value was in the wrong column
+  entirely. `termination_reason` says *how a generation ended*; a replay is a different **billing
+  relationship** to a generation that already ended. So the replay row carries
+  `termination_reason: "complete"` — accurate, because only complete responses are ever stored for
+  replay: an error hands its key back, and a stream that ended in an error frame is released rather
+  than stored. Three values, and the `interrupted` derivation is untouched.
 
 They asked whether this changes the cost enough to reconsider. It does raise it, and the answer
 is still yes: an endpoint that returns `404` for the ordinary case is not cheaper, it is unusable.
