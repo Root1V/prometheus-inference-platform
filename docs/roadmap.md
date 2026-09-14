@@ -3889,6 +3889,14 @@ Answer, going one step past their proposal:
   `termination_reason: "complete"` — accurate, because only complete responses are ever stored for
   replay: an error hands its key back, and a stream that ended in an error frame is released rather
   than stored. Three values, and the `interrupted` derivation is untouched.
+- **`replay_of` becomes the discriminator, and that has to reach the CSV export.** Axonium spotted
+  the consequence: with no fourth value, replay rows land in the `complete` bucket, so counting
+  generations with `WHERE termination_reason = 'complete'` over-counts — silently, because the
+  number comes out plausible and nothing fails. `replay_of IS NULL` is the test instead.
+  They asked for a line in the guide; the export needs more than that. Its column list is
+  explicit, so adding replay rows without adding `replay_of` to it would produce a file containing
+  rows the reader cannot filter out — worse than the ambiguity it replaced, because a doc can tell
+  you what to filter by only if the field is there. Both ship together or neither does.
 
 They asked whether this changes the cost enough to reconsider. It does raise it, and the answer
 is still yes: an endpoint that returns `404` for the ordinary case is not cheaper, it is unusable.
