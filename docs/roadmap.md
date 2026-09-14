@@ -3673,6 +3673,32 @@ span, parented to the request's captured context, because the handler's span has
 before a stream's outcome is known; that is the path carrying `client_disconnected`, which Argus
 called the most valuable attribute we have.
 
+## RM-96 — the SDK must reach only the gateway, never auth-service (todo)
+
+**Why**: `docs/sdk-integration-guide.md` tells clients to obtain a token with
+`POST /oauth2/token` against **auth-service**, and then to call the **gateway** with it. So an
+SDK needs network reach to both, and the service that issues credentials has to be exposed
+wherever a client runs. That is a second public surface, with its own authentication, its own
+CORS, and its own ways to be got wrong — for no benefit the gateway could not provide.
+
+Confirmed: the gateway exposes no token endpoint of its own today.
+
+The same reasoning already settled the admin panel the other way. The dashboard reaches
+auth-service *through* the gateway, which is the API-gateway-as-single-entry-point pattern and
+the reason auth-service's admin API is not public. Token issuance is the one path that escaped
+it.
+
+**Scope** (not designed):
+- The gateway fronts token issuance, so a client needs exactly one address.
+- auth-service goes back to being reachable only from inside.
+- This is a client-visible change: Axonium's SDKs point at two hosts today, so it needs a
+  transition where both work, and notice before the old path closes.
+- Worth deciding at the same time whether the gateway proxies the request or issues tokens
+  itself. Proxying keeps one issuer and one key; issuing moves signing into the hot path.
+
+**Not urgent, and deliberately not bundled**: nothing is broken. It is an exposure that should
+not exist, found while answering Argus about which of our paths cross service boundaries.
+
 Append a new row to the table with the next `RM-NN` id and a new `## RM-NN — ...` section
 below, following the same shape (Why / Scope). Re-sort the table if the new item's
 priority isn't "last."
