@@ -3750,7 +3750,7 @@ and recovery within one poll interval once it came back.
 catalog with nothing and serves zero models, rather than continuing on what it last knew. See
 [[RM-98]].
 
-## RM-98 — a manager outage empties the gateway's routing table (todo)
+## RM-98 — a manager outage empties the gateway's routing table (done)
 
 **Why**: found by asking a simple question — what happens if the manager is not there? Measured:
 the gateway goes to **zero models** and serves nothing until the manager returns.
@@ -3765,11 +3765,33 @@ the control plane is not in the data plane's critical path: the manager is where
 models, and inference should not stop because it is being restarted. Today the copy is discarded
 the moment it cannot be refreshed, so that benefit is not actually delivered.
 
-**Scope** (not designed): a failed fetch should leave the previous entries in place rather than
-replace them, with the staleness visible — a backend that has really gone is caught by health
-probing within ten seconds anyway, which is the mechanism for exactly that. Worth deciding how
-long a stale catalog may be served before admitting ignorance is better, and whether a node that
-returns successfully with an empty list is distinguishable from one that failed.
+**What the industry does**, converging from three independent directions: Envoy keeps its last
+known good configuration when the control plane is unreachable and documents it as a feature;
+AWS calls it static stability — the data plane keeps working through a control-plane impairment;
+RFC 8767 has DNS serve stale answers rather than fail, with refresh attempts rate-limited. All
+three say the same thing: the data plane does not fall when the control plane does.
+
+**Chosen: fail static, indefinitely, and visibly.** The alternative worth taking seriously was a
+bounded grace period, RFC 8767's shape. Rejected because a TTL puts back on a timer exactly the
+coupling static stability exists to break: a manager down for twenty minutes with a fifteen
+minute grace still produces an outage, just later and while the operator is already busy. DNS
+bounds it because a stale record can point at an address that now belongs to someone else — our
+catalog points at backends we operate and whose liveness we verify ourselves every ten seconds,
+so the risk that justifies the bound is not present here.
+
+Indefinite but **not silent**, which is the part that separates graceful degradation from being
+quietly broken: `manager_sync.serving_stale` says which nodes and for how long, and
+`stale_cleared` says when it ended. "It still works" is precisely what stops anyone looking.
+
+**The bug underneath was a lost distinction**: `_fetch_node_backends` returned `[]` both when a
+node failed and when it genuinely served nothing, so the caller could not tell them apart and
+keeping the last known state was impossible. It returns `None` on failure now. A node that
+answers with an empty list still empties — an empty answer is an answer, and retiring the last
+model on a node has to work.
+
+**Verified live**: with the manager stopped, the gateway kept serving its 7 models and completed
+a real inference — HTTP 200, 10/12 tokens — where it previously returned 404 on everything. The
+stale warning appeared while it lasted and cleared when the manager returned.
 
 Append a new row to the table with the next `RM-NN` id and a new `## RM-NN — ...` section
 below, following the same shape (Why / Scope). Re-sort the table if the new item's

@@ -97,6 +97,12 @@ class ManagerRegistrySync:
         # a failure, a node that does not support blocking, the first cycle
         # before we hold an index — leaves it False, so the loop sleeps.
         self._held_last_request = False
+        # RM-98: the last entries each node successfully reported, kept so a
+        # node that cannot be asked contributes what it last said instead of
+        # nothing.
+        self._last_good: dict[str, list[ModelEntry]] = {}
+        # When the catalog first went stale, so the log can say for how long.
+        self._stale_since: float | None = None
         # Auto-renew credentials
         self._client_id = manager_client_id
         self._client_secret = manager_client_secret
@@ -238,9 +244,18 @@ class ManagerRegistrySync:
 
     # ── Registry sync ─────────────────────────────────────────────────────────
 
-    async def _fetch_node_backends(self, node_name: str, manager_url: str) -> list[dict[str, Any]]:
-        """GET /v1/backends from one node. Returns [] on failure — one down node
-        must not block the others (partial availability, not all-or-nothing)."""
+    async def _fetch_node_backends(
+        self, node_name: str, manager_url: str
+    ) -> list[dict[str, Any]] | None:
+        """GET /v1/backends from one node.
+
+        RM-98: returns **None** when the node could not be asked, and a list —
+        possibly empty — when it answered. The two used to be the same `[]`, and
+        that is what emptied the whole catalog the moment a manager went down: a
+        node that failed was indistinguishable from one that genuinely serves
+        nothing. A caller cannot keep the last known good state for a node if it
+        cannot tell that the node failed.
+        """
         headers = await self._get_auth_headers()
         ctx_trace_id = structlog.contextvars.get_contextvars().get("trace_id")
         if ctx_trace_id and ctx_trace_id != "none":
@@ -289,7 +304,7 @@ class ManagerRegistrySync:
                 error=str(exc) or repr(exc),
                 exc_type=type(exc).__name__,
             )
-            return []
+            return None
 
     def _to_model_entry(self, node_name: str, b: dict[str, Any]) -> ModelEntry | None:
         model_id: str = b.get("id", "")
@@ -347,15 +362,37 @@ class ManagerRegistrySync:
         # RM-20: pick up any node added/removed via the dashboard before polling.
         await self._refresh_nodes()
 
-        # RM-08 phase 2: poll every configured node concurrently. One
-        # unreachable node degrades to "its models disappear" rather than
-        # blocking the whole registry refresh.
+        # RM-08 phase 2: poll every configured node concurrently, so one
+        # unreachable node does not block refreshing the others.
         results = await asyncio.gather(
             *(self._fetch_node_backends(name, url) for name, url in self._nodes)
         )
 
         new_models: dict[str, ModelEntry] = {}
+        stale_nodes: list[str] = []
         for (node_name, _url), backends in zip(self._nodes, results, strict=True):
+            if backends is None:
+                # RM-98: fail static. The manager is a control plane — where a
+                # human registers and retires models — and inference is the data
+                # plane. A control plane being restarted must not stop the data
+                # plane, which is what Envoy does with its last known good
+                # configuration and what AWS calls static stability. Previously
+                # this replaced the catalog with nothing and the gateway served
+                # zero models.
+                #
+                # Safe here for a reason that would not hold elsewhere: these
+                # backends are ours and we verify their liveness ourselves every
+                # few seconds, so a stale entry pointing at something that died
+                # is caught by health probing rather than by this refresh. What
+                # stale cannot catch is a model retired on purpose — and the
+                # control for that is stopping the backend or revoking the
+                # scope, neither of which needs the manager.
+                stale_nodes.append(node_name)
+                for kept in self._last_good.get(node_name, []):
+                    new_models[kept.id] = kept
+                continue
+
+            fresh: list[ModelEntry] = []
             for b in backends:
                 entry = self._to_model_entry(node_name, b)
                 if entry is None:
@@ -373,11 +410,38 @@ class ManagerRegistrySync:
                     )
                     continue
                 new_models[entry.id] = entry
+                fresh.append(entry)
+            # Only a node that answered updates its last known good. A node that
+            # answered with nothing genuinely has nothing, and that is a real
+            # update rather than a failure.
+            self._last_good[node_name] = fresh
 
         # Atomically replace in-memory models
         self._registry._models = new_models
+
+        # RM-98: serving stale has to be visible. The difference between a
+        # system that degrades gracefully and one that is quietly broken is
+        # whether anyone can tell — and "it still works" is exactly what stops
+        # people from looking.
+        if stale_nodes:
+            if self._stale_since is None:
+                self._stale_since = time.monotonic()
+            logger.warning(
+                "manager_sync.serving_stale",
+                nodes=stale_nodes,
+                stale_for_s=int(time.monotonic() - self._stale_since),
+                count=len(new_models),
+            )
+        elif self._stale_since is not None:
+            logger.info(
+                "manager_sync.stale_cleared",
+                was_stale_for_s=int(time.monotonic() - self._stale_since),
+            )
+            self._stale_since = None
+
         logger.info(
             "manager_sync.refreshed",
             count=len(new_models),
             nodes=[name for name, _ in self._nodes],
+            stale_nodes=stale_nodes or None,
         )

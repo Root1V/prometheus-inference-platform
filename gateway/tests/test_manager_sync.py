@@ -267,5 +267,48 @@ async def test_an_unreachable_manager_does_not_spin(monkeypatch):
     sync._get_auth_headers = _headers  # type: ignore[method-assign]
     result = await ms.ManagerRegistrySync._fetch_node_backends(sync, "local", "http://manager.test")
 
-    assert result == []
+    # RM-98: None, not [] — a node that could not be asked has to be
+    # distinguishable from one that genuinely serves nothing, or the caller
+    # cannot keep its last known good state.
+    assert result is None
     assert sync._held_last_request is False, "a failed request must fall back to sleeping"
+
+
+async def test_a_manager_outage_keeps_the_last_known_catalog():
+    """RM-98: fail static. The manager is a control plane — where a human
+    registers models — and inference is the data plane. Restarting the former
+    must not stop the latter. This used to replace the catalog with nothing, so
+    the gateway served zero models: a control-plane component causing an
+    inference outage.
+    """
+    sync = _sync()
+    with respx.mock:
+        _mock_nodes(("mac", "http://mac.local:8090"))
+        route = respx.get("http://mac.local:8090/v1/backends")
+        route.mock(return_value=Response(200, json={"backends": [_backend("model-a", 8080)]}))
+        await sync._sync()
+        assert set(sync._registry._models) == {"model-a"}
+
+        # The manager goes away.
+        route.mock(side_effect=httpx.ConnectError("refused"))
+        await sync._sync()
+
+    assert set(sync._registry._models) == {"model-a"}, "the catalog must survive the manager"
+
+
+async def test_a_node_that_answers_with_nothing_really_has_nothing():
+    """The other half: an empty answer is an answer. Holding stale entries for a
+    node that successfully reported an empty list would make retiring the last
+    model on a node impossible.
+    """
+    sync = _sync()
+    with respx.mock:
+        _mock_nodes(("mac", "http://mac.local:8090"))
+        route = respx.get("http://mac.local:8090/v1/backends")
+        route.mock(return_value=Response(200, json={"backends": [_backend("model-a", 8080)]}))
+        await sync._sync()
+
+        route.mock(return_value=Response(200, json={"backends": []}))
+        await sync._sync()
+
+    assert sync._registry._models == {}
