@@ -3738,6 +3738,39 @@ interval.
 **1.2 seconds**, against up to 30 before. The held request itself releases about a second after
 the change, and returns immediately when the index already differs.
 
+**A regression this introduced, found by asking what happens when the manager is down**: the
+loop skipped its sleep unless the previous cycle had *returned early*, and a failed request never
+updated that flag — so an unreachable manager became a busy loop, measured at **1455 sync cycles
+in ten seconds and 85% of a core**. An outage is exactly when a gateway must not spin. The test
+is now the other way round: sleep unless the manager actually held the request, which a failure
+by definition did not. Verified with the manager stopped — 0 cycles in 15 seconds, 0.0% CPU —
+and recovery within one poll interval once it came back.
+
+**Separately, and not caused by this**: a gateway that cannot reach the manager replaces its
+catalog with nothing and serves zero models, rather than continuing on what it last knew. See
+[[RM-98]].
+
+## RM-98 — a manager outage empties the gateway's routing table (todo)
+
+**Why**: found by asking a simple question — what happens if the manager is not there? Measured:
+the gateway goes to **zero models** and serves nothing until the manager returns.
+
+The cause is one line of intent that reads reasonably and is wrong at this scale.
+`_fetch_node_backends` returns `[]` on failure, commented "one down node must not block the
+others — partial availability, not all-or-nothing". With several nodes that is right. With one,
+`[]` *is* all-or-nothing, and the whole catalog disappears.
+
+This matters more than it looks. The gateway keeps a copy of the manager's registry precisely so
+the control plane is not in the data plane's critical path: the manager is where humans register
+models, and inference should not stop because it is being restarted. Today the copy is discarded
+the moment it cannot be refreshed, so that benefit is not actually delivered.
+
+**Scope** (not designed): a failed fetch should leave the previous entries in place rather than
+replace them, with the staleness visible — a backend that has really gone is caught by health
+probing within ten seconds anyway, which is the mechanism for exactly that. Worth deciding how
+long a stale catalog may be served before admitting ignorance is better, and whether a node that
+returns successfully with an empty list is distinguishable from one that failed.
+
 Append a new row to the table with the next `RM-NN` id and a new `## RM-NN — ...` section
 below, following the same shape (Why / Scope). Re-sort the table if the new item's
 priority isn't "last."

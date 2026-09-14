@@ -93,7 +93,10 @@ class ManagerRegistrySync:
         # what a manager predating RM-97 does. Then this degrades to the poll it
         # replaced rather than to a busy loop.
         self._blocking_supported = True
-        self._last_cycle_returned_early = False
+        # True only after a request the manager actually held. Anything else —
+        # a failure, a node that does not support blocking, the first cycle
+        # before we hold an index — leaves it False, so the loop sleeps.
+        self._held_last_request = False
         # Auto-renew credentials
         self._client_id = manager_client_id
         self._client_secret = manager_client_secret
@@ -212,13 +215,15 @@ class ManagerRegistrySync:
 
     async def _poll_loop(self) -> None:
         while True:
-            # RM-97: a blocking query already waits on the manager's side, so a
-            # cycle that came back because something changed goes straight round
-            # again. Sleeping here too would put the poll interval back on top of
-            # a mechanism built to remove it. The sleep is the fallback for a
-            # node that does not support blocking queries, and the backstop if
-            # one starts returning instantly.
-            if not self._blocking_supported or self._last_cycle_returned_early:
+            # RM-97: when the manager held the request, it already did the
+            # waiting, so going straight round is right — sleeping on top would
+            # put back the interval this exists to remove. Every other case
+            # sleeps, and the default is to sleep: the first version of this
+            # inverted the test and a failed request skipped the sleep, which
+            # turned an unreachable manager into a busy loop at 85% of a core,
+            # 1455 cycles in ten seconds. An outage is exactly when a gateway
+            # must not spin.
+            if not self._held_last_request:
                 await asyncio.sleep(self._poll_interval_s)
             # Give each poll cycle its own short trace_id for log correlation
             structlog.contextvars.bind_contextvars(trace_id=f"poll-{str(uuid.uuid4())[:8]}")
@@ -256,7 +261,6 @@ class ManagerRegistrySync:
             # on our own request every quiet minute.
             timeout = httpx.Timeout(10.0, read=_BLOCKING_WAIT_S + 15.0)
             async with httpx.AsyncClient(timeout=timeout) as client:
-                started = time.monotonic()
                 resp = await client.get(
                     f"{manager_url}/v1/backends", headers=headers, params=params
                 )
@@ -269,14 +273,15 @@ class ManagerRegistrySync:
                 # A node that predates RM-97 answers immediately and without the
                 # header. Stop asking it to block and fall back to sleeping.
                 self._blocking_supported = False
-            # Distinguishes "the registry changed" from "the wait expired", which
-            # is what decides whether the loop sleeps before asking again.
-            self._last_cycle_returned_early = (
-                bool(params) and (time.monotonic() - started) < _BLOCKING_WAIT_S * 0.5
-            )
+            # Held means the manager did the waiting for us, whether it came
+            # back on a change or on the wait expiring. Either way the loop has
+            # nothing to add by sleeping again.
+            self._held_last_request = bool(params) and self._blocking_supported
             backends: list[dict[str, Any]] = data.get("backends", [])
             return backends
         except Exception as exc:
+            # Back to sleeping. A manager we cannot reach must be asked slowly.
+            self._held_last_request = False
             logger.warning(
                 "manager_sync.node_unreachable",
                 node=node_name,
