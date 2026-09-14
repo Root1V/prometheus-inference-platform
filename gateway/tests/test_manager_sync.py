@@ -8,10 +8,14 @@ from __future__ import annotations
 
 from collections.abc import Collection
 
+from datetime import datetime, timezone
+from unittest.mock import patch
+
 import httpx
 import respx
 from httpx import Response
 
+from prometheus_gateway import db
 from prometheus_gateway.models.manager_sync import ManagerRegistrySync
 from prometheus_gateway.models.registry import ModelRegistry
 
@@ -312,3 +316,53 @@ async def test_a_node_that_answers_with_nothing_really_has_nothing():
         await sync._sync()
 
     assert sync._registry._models == {}
+
+
+async def test_the_snapshot_is_only_read_when_a_start_finds_no_manager():
+    """RM-99: the disk copy is the exceptional case, not a second source of
+    truth. It is read when the first sync of a process produced nothing, and
+    never again — the moment the manager answers, its answer replaces
+    everything, including dropping what it no longer serves.
+    """
+    sync = _sync()
+    sync._registry._models = {"from-snapshot": object()}  # type: ignore[dict-item]
+
+    called = False
+
+    async def _should_not_run():
+        nonlocal called
+        called = True
+
+    sync._restore_from_snapshot = _should_not_run  # type: ignore[method-assign]
+
+    with respx.mock:
+        _mock_nodes(("mac", "http://mac.local:8090"))
+        respx.get("http://mac.local:8090/v1/backends").mock(
+            return_value=Response(200, json={"backends": [_backend("model-a", 8080)]})
+        )
+        await sync.start()
+        await sync.stop()
+
+    assert called is False, "a start that reached the manager must not read the snapshot"
+    assert set(sync._registry._models) == {"model-a"}
+
+
+async def test_a_start_with_no_manager_restores_the_snapshot():
+    sync = _sync()
+    stored = {"mac": [_backend("model-a", 8080)]}
+
+    async def _load():
+        return stored, datetime.now(timezone.utc)
+
+    with (
+        respx.mock,
+        patch.object(db, "load_catalog_snapshot", _load),
+    ):
+        _mock_nodes(("mac", "http://mac.local:8090"))
+        respx.get("http://mac.local:8090/v1/backends").mock(
+            side_effect=httpx.ConnectError("refused")
+        )
+        await sync.start()
+        await sync.stop()
+
+    assert set(sync._registry._models) == {"model-a"}
