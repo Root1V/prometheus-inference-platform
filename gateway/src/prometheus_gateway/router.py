@@ -1313,13 +1313,14 @@ def create_router(registry: ModelRegistry, pool: "BackendPool") -> APIRouter:
                 health = health._replace(usable=[target])
 
             entry = health.usable[0]
-            # RM-95: the request half of the GenAI convention, set as soon as the
-            # engine is known. The response half is set where it becomes known —
-            # below for a non-streaming answer, and in the generator's own span
-            # for a streamed one, because this span has ended by then.
-            inf_span.set_attributes(
-                _genai_request_attrs("chat", resolution.model_key, entry.backend)
-            )
+            # PRM-104: the GenAI attributes used to be set here, on the INTERNAL
+            # span — but only for a non-streaming answer, because a streamed one
+            # outlives this span and carries its own. That left the same data
+            # arriving under two span kinds and two names depending on whether
+            # the caller asked for a stream, so a consumer's client-side RED
+            # metrics saw half the traffic. Both paths now emit one CLIENT span
+            # named `chat <model>`; this one stays INTERNAL and describes the
+            # gateway's own work, which is what it actually is.
             # resolve() only ever returns members that have a backend_url;
             # binding it states that invariant for the type checker.
             assert entry.backend_url is not None
@@ -1432,6 +1433,10 @@ def create_router(registry: ModelRegistry, pool: "BackendPool") -> APIRouter:
                 else:
                     await metrics_store.inc_requests_active()
                     backend_start = time.monotonic()
+                    # PRM-104: monotonic cannot be handed to a span, which wants
+                    # an epoch. Both are taken so the latency we report and the
+                    # span's duration come from the same call.
+                    backend_start_ns = time.time_ns()
                     try:
                         # AC-17: retry logic inside pool.forward()
                         # AC-8 (018): forward X-Trace-ID header to backend
@@ -1445,6 +1450,7 @@ def create_router(registry: ModelRegistry, pool: "BackendPool") -> APIRouter:
                         )
                         entry = _served_by(health.usable, served_id, entry)
                         backend_latency_ms = int((time.monotonic() - backend_start) * 1000)
+                        backend_end_ns = time.time_ns()
                     finally:
                         await metrics_store.dec_requests_active()
 
@@ -1548,7 +1554,20 @@ def create_router(registry: ModelRegistry, pool: "BackendPool") -> APIRouter:
                         ),
                     )
 
-                    inf_span.set_attributes(
+                    # PRM-104: one CLIENT span for the call to the model, the
+                    # same shape the streamed path already emitted. Started and
+                    # ended at the call's real bounds rather than wrapping the
+                    # block, because the tokens it has to report are only known
+                    # after the response is parsed.
+                    genai_span = _tracer.start_span(
+                        f"chat {resolution.model_key}",
+                        kind=SpanKind.CLIENT,
+                        start_time=backend_start_ns,
+                    )
+                    genai_span.set_attributes(
+                        _genai_request_attrs("chat", resolution.model_key, entry.backend)
+                    )
+                    genai_span.set_attributes(
                         _genai_response_attrs(
                             response_model=resolution.model_key,
                             input_tokens=prompt_tokens,
@@ -1557,6 +1576,7 @@ def create_router(registry: ModelRegistry, pool: "BackendPool") -> APIRouter:
                             backend_id=entry.id,
                         )
                     )
+                    genai_span.end(end_time=backend_end_ns)
 
                     # RM-32: record persisted daily usage
                     await _record_usage(

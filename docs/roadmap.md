@@ -3710,6 +3710,25 @@ gives clients a path that needs one host; making auth-service unreachable from o
 operational change, and it needs notice to Axonium first, since their SDKs point at two hosts
 today and both must keep working through the transition.
 
+## PRM-104 — one CLIENT span per model call, streamed or not (done)
+
+**Why**: Argus (A-21) reported that `inference.request` was `Internal` where the convention asks
+for `Client`. Checking it found something they could not see from outside: the GenAI attributes
+went onto that INTERNAL span for a non-streaming answer, but a streamed one outlives that span
+and already carried its own `CLIENT` span named `chat <model>`. So **the same data arrived under
+two span kinds and two names, chosen by whether the caller asked for a stream** — their
+client-side RED metrics saw half the traffic, and which half was the client's decision.
+
+**Shape**: both paths emit one `CLIENT` span named `chat <model>` carrying the request and
+response halves. On the non-streaming path it is started and ended at the backend call's real
+bounds rather than wrapping the block, because the tokens it reports are only known after the
+response is parsed. `inference.request` stays `INTERNAL` and keeps only its own attributes —
+it describes the gateway's work, which is what it is.
+
+**Verified** live against a real OTLP sink: one request of each kind now produces the same
+`CLIENT chat qwen3-0.6b`. A test asserts both paths and compares them; asserting either one
+alone could never have caught this.
+
 ## PRM-103 — the server span carries HTTP attributes (done)
 
 **Why**: Argus (A-14, then A-19) measured our server spans and found them named `http.get`
