@@ -1,7 +1,12 @@
 # /// script
 # dependencies = ["python-dotenv"]
 # ///
-"""One-shot AC-15 circuit breaker validation script."""
+"""One-shot AC-15 circuit breaker validation script.
+
+PRM-102: auth-service no longer publishes a host port, so the two admin calls
+below need `podman exec prometheus-auth ...`. Token issuance goes through the
+gateway.
+"""
 import os
 import sys
 import time
@@ -78,7 +83,7 @@ client_id, client_secret = body["client_id"], body["client_secret"]
 ok(f"Registered inference client → {client_id[:12]}…")
 
 # 2. Get inference token
-status, body, _ = http_form(f"{AUTH}/oauth2/token", {
+status, body, _ = http_form(f"{GW}/oauth2/token", {
     "grant_type": "client_credentials",
     "client_id": client_id,
     "client_secret": client_secret,
@@ -99,7 +104,7 @@ status, body, _ = http_post(
 if status != 200 or "client_id" not in body:
     fail(f"Admin client registration failed: {status} {body}")
 adm_id, adm_secret = body["client_id"], body["client_secret"]
-status, body, _ = http_form(f"{AUTH}/oauth2/token", {
+status, body, _ = http_form(f"{GW}/oauth2/token", {
     "grant_type": "client_credentials",
     "client_id": adm_id,
     "client_secret": adm_secret,

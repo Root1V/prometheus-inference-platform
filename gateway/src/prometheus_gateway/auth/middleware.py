@@ -26,7 +26,10 @@ EXEMPT_PATHS: frozenset[str] = frozenset(
     {"/health", "/metrics", "/v1/models", "/admin/api/auth/login", "/oauth2/token"}
 )
 # Implements: memory/specs/013-web-chat-ui-proxy.md — all /ui/* paths use cookie auth, not Bearer
-_EXEMPT_PREFIXES: tuple[str, ...] = ("/ui",)
+# PRM-102: /share/<token> is opened by the person receiving the credentials, who
+# has no token yet — the link is the credential. The token in the path is what
+# authenticates it, exactly once, and auth-service is the one that checks it.
+_EXEMPT_PREFIXES: tuple[str, ...] = ("/ui", "/share/")
 # RM-10: the admin SPA shell (index.html + JS/CSS bundle + client-side routes like
 # /admin/instances) is public static content — the SPA calls /admin/api/auth/login
 # (exempt above) to get a Bearer token, then attaches it to every other

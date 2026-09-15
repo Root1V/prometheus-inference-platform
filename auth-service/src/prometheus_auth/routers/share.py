@@ -34,6 +34,14 @@ async def _get_db() -> Any:
         yield session
 
 
+def _client_ip(request: Request) -> str:
+    forwarded = request.headers.get("x-forwarded-for", "")
+    if forwarded:
+        # Leftmost entry is the originating client (RFC 7239 ordering).
+        return forwarded.split(",")[0].strip()
+    return request.client.host if request.client else "unknown"
+
+
 def _apply_headers(response: Any) -> Any:
     for k, v in _SECURITY_HEADERS.items():
         response.headers[k] = v
@@ -102,7 +110,13 @@ async def view_share(
         return _apply_headers(resp)
 
     # AC-9: stamp used_at, used_by_ip, clear plaintext — do this BEFORE rendering
-    client_ip = request.client.host if request.client else "unknown"
+    #
+    # PRM-102: this page is now reached through the gateway, so request.client is
+    # the gateway on every read and would make used_by_ip useless as an audit
+    # trail. The gateway sends the real visitor in X-Forwarded-For, overwriting
+    # anything the visitor supplied. Trusting that header is only safe because
+    # this service is not published — the gateway is the sole possible caller.
+    client_ip = _client_ip(request)
     raw_ua = request.headers.get("user-agent", "")
     share.used_at = now
     share.used_by_ip = client_ip

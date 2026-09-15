@@ -93,6 +93,9 @@ services:
       # UI — memory/specs/013-web-chat-ui-proxy.md
       - UI_ENABLED=true
       - AUTH_SERVICE_TOKEN_URL=https://auth-service:9000/oauth2/token
+      # PRM-102: the one-time credential page, fronted here so auth-service
+      # needs no published port.
+      - AUTH_SERVICE_SHARE_URL=https://auth-service:9000/share
       - AUTH_SERVICE_TLS_VERIFY=false
 
     depends_on:
@@ -138,11 +141,16 @@ services:
     labels:
       prometheus.service: auth-service
 
-    ports:
-      # AC-12: bound to loopback by default — use AUTH_BIND_HOST=0.0.0.0 only
-      # when dashboard access from another host is needed (combine with TLS).
-      # See memory/specs/017-auth-service-tls.md — AC-12, AC-20
-      - "${AUTH_BIND_HOST:-127.0.0.1}:9000:9000"
+    # PRM-102: auth-service has NO host port binding — internal-only, like redis.
+    # "9000:9000" is intentionally absent. Everything a client or an operator
+    # needs from it now arrives through the gateway: /oauth2/token (PRM-96),
+    # /admin/api/* (the dashboard's Users and Nodes sections), and /share/<token>
+    # (the one-time credential page). The gateway and the manager read the JWKS
+    # over this network. Publishing it again would re-open a second authenticated
+    # surface for nothing the gateway cannot serve.
+    # See memory/specs/017-auth-service-tls.md — AC-12, AC-20
+    expose:
+      - "9000"
 
     env_file:
       - ./auth-service/.env

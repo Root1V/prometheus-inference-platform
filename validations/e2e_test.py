@@ -16,6 +16,11 @@ Tests:
   9. No token → 401
   10. admin API: list clients
   11. Admin key required → 403
+
+PRM-102: auth-service no longer publishes a host port, so AUTH_URL is only
+reachable from inside the pod — run the admin steps (4, 10, 11) with
+`podman exec prometheus-auth ...`, or point AUTH_URL at a tunnel. Token issuance
+(step 5) goes through the gateway now and needs nothing special.
 """
 
 import base64
@@ -115,7 +120,8 @@ form = urllib.parse.urlencode({
     "client_secret": client_secret,
     "scope": "inference:read",
 }).encode()
-status, body = get_json(f"{AUTH_URL}/oauth2/token", method="POST", data=form)
+# PRM-102: through the gateway — the only address a client needs.
+status, body = get_json(f"{GW_URL}/oauth2/token", method="POST", data=form)
 
 if status == 200 and "access_token" in body:
     token = body["access_token"]

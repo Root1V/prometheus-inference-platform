@@ -882,7 +882,11 @@ async def test_share_user_credential_proxies_to_auth_service(gw, rsa_keys):
             headers=_headers(rsa_keys, "admin:write"),
         )
     assert resp.status_code == 200
-    assert resp.json()["share_url"] == "https://x/share/tok"
+    # PRM-102: the link is rewritten to point at the gateway. auth-service builds
+    # it from the base URL of the request that asked for it, and that request
+    # comes from here — so what it returns is an internal address. The token is
+    # what has to survive, not the host. See test_share_proxy.py.
+    assert resp.json()["share_url"] == "http://test/share/tok"
 
 
 # ── GET /admin/api/config — docs/roadmap.md RM-31 ───────────────────────────

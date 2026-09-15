@@ -128,6 +128,12 @@ class Settings(BaseSettings):
     # API predates and doesn't use the platform's own token scheme.
     auth_service_admin_url: str | None = None
     auth_service_admin_api_key: str | None = None
+    # PRM-102: the one-time credential view. Creating and revoking a share link
+    # already go through /admin/api/*; *opening* it is the only auth-service
+    # surface a person outside the platform ever touches, and the reason the
+    # service still had to be published. Fronting it here is what lets the port
+    # close. Full endpoint URL like the two above, e.g. http://auth:9000/share
+    auth_service_share_url: str | None = None
 
     @model_validator(mode="after")
     def validate_admin_dashboard_requirements(self) -> "Settings":
@@ -141,6 +147,14 @@ class Settings(BaseSettings):
             raise ValueError(
                 "AUTH_SERVICE_ADMIN_URL and AUTH_SERVICE_ADMIN_API_KEY are required "
                 "when ADMIN_DASHBOARD_ENABLED=true."
+            )
+        # PRM-102: the dashboard can hand an operator a credential share link,
+        # and that link now points here. Without this the button still works and
+        # produces a URL that 503s — fail at startup instead.
+        if self.admin_dashboard_enabled and not self.auth_service_share_url:
+            raise ValueError(
+                "AUTH_SERVICE_SHARE_URL is required when ADMIN_DASHBOARD_ENABLED=true "
+                "— the dashboard's credential share links are served through the gateway."
             )
         return self
 
