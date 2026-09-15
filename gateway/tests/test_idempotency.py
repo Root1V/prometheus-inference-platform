@@ -883,3 +883,139 @@ async def test_the_internal_span_no_longer_carries_genai_attributes(gw, rsa_keys
     finally:
         trace._TRACER_PROVIDER = previous  # type: ignore[attr-defined]
         router_module._tracer = trace.get_tracer("prometheus_gateway")
+
+
+# ── PRM-105: the two things 30 minutes of traffic showed Argus would never see ──
+
+
+@respx.mock
+async def test_request_model_is_what_the_caller_asked_for(settings, rsa_keys):
+    """Both halves used to come from the resolved name, so the pair could never
+    differ — and the pair is the whole point: Argus uses it to spot "asked for
+    one model, served another", which they say explains half their incidents.
+    Verified live first by asking for an alias and watching the span report the
+    resolved name on both.
+    """
+    from opentelemetry import trace
+    from opentelemetry.sdk.trace import TracerProvider
+    from opentelemetry.sdk.trace.export import SimpleSpanProcessor
+    from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
+
+    import prometheus_gateway.router as router_module
+    from prometheus_gateway.main import create_app
+
+    # Its own registry rather than the shared fixture: an entry whose instance
+    # id differs from its slug is exactly the RM-70 alias shape, and adding one
+    # to the shared fixture would turn "solo" into a two-replica group and
+    # change what every other test in this file is exercising.
+    registry = ModelRegistry.__new__(ModelRegistry)
+    registry._models = {
+        "solo-alias": ModelEntry(
+            id="solo-alias",
+            path="/m/solo.gguf",
+            context_length=4096,
+            family="test",
+            quantization="Q4_0",
+            backend_url=BACKEND_URL,
+            backend_status="active",
+            node="local",
+            modality="text",
+            model_id="solo",
+            model_slug="solo",
+        )
+    }
+    app = create_app(settings=settings, registry=registry)
+
+    exporter = InMemorySpanExporter()
+    provider = TracerProvider()
+    provider.add_span_processor(SimpleSpanProcessor(exporter))
+    previous = trace.get_tracer_provider()
+    trace._TRACER_PROVIDER = provider  # type: ignore[attr-defined]
+    router_module._tracer = trace.get_tracer("test")
+    try:
+        await db.create_tables(db.get_engine())
+        respx.post(f"{BACKEND_URL}/v1/chat/completions").mock(
+            return_value=Response(
+                200,
+                json={
+                    "model": "solo",
+                    "choices": [{"message": {"role": "assistant", "content": "hi"}}],
+                    "usage": {"prompt_tokens": 3, "completion_tokens": 1},
+                },
+            )
+        )
+        body = _chat()
+        body["model"] = "solo-alias"
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            await client.post(
+                "/v1/chat/completions",
+                json=body,
+                headers={
+                    "Authorization": f"Bearer {make_token(rsa_keys['private'], scope='inference:read model:solo-alias model:solo')}"
+                },
+            )
+        span = _genai_span(exporter)
+        assert span is not None
+        attrs = dict(span.attributes or {})
+        assert attrs["gen_ai.request.model"] == "solo-alias", "what the caller asked for"
+        assert attrs["gen_ai.response.model"] == "solo", "what was actually served"
+        assert attrs["gen_ai.request.model"] != attrs["gen_ai.response.model"]
+        # Argus asked for the convention here, cardinality being their problem.
+        assert span.name == "chat solo-alias"
+    finally:
+        trace._TRACER_PROVIDER = previous  # type: ignore[attr-defined]
+        router_module._tracer = trace.get_tracer("prometheus_gateway")
+
+
+@respx.mock
+async def test_first_token_ms_is_set_even_when_nothing_visible_is_streamed(gw, rsa_keys):
+    """A reasoning model streams `reasoning_content` before any `content`.
+    ttft_ms deliberately waits for visible output, which left it on 13 of 247
+    spans — and the missing ones chosen by how much the model reasons, not by
+    anything Argus controls. first_token_ms answers the other question.
+    """
+    from opentelemetry import trace
+    from opentelemetry.sdk.trace import TracerProvider
+    from opentelemetry.sdk.trace.export import SimpleSpanProcessor
+    from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
+
+    import prometheus_gateway.router as router_module
+
+    async def only_reasoning(request):
+        async def body():
+            for word in ("Let", " me", " think"):
+                yield (
+                    b'data: {"choices":[{"delta":{"reasoning_content":"'
+                    + word.encode()
+                    + b'"}}]}\n\n'
+                )
+            raise httpx.ReadError("gone while still reasoning")
+
+        return Response(200, stream=body(), headers={"Content-Type": "text/event-stream"})
+
+    exporter = InMemorySpanExporter()
+    provider = TracerProvider()
+    provider.add_span_processor(SimpleSpanProcessor(exporter))
+    previous = trace.get_tracer_provider()
+    trace._TRACER_PROVIDER = provider  # type: ignore[attr-defined]
+    router_module._tracer = trace.get_tracer("test")
+    try:
+        respx.post(f"{BACKEND_URL}/v1/chat/completions").mock(side_effect=only_reasoning)
+        await gw.post(
+            "/v1/chat/completions",
+            json=_chat(stream=True),
+            headers={
+                "Authorization": f"Bearer {make_token(rsa_keys['private'], scope='inference:stream model:solo')}"
+            },
+        )
+        await _drain_detached()
+        span = _genai_span(exporter)
+        assert span is not None
+        attrs = dict(span.attributes or {})
+        assert "argus.inference.first_token_ms" in attrs, "no measure of when the model started"
+        assert attrs["argus.inference.first_token_ms"] >= 0
+        # ttft_ms keeps its meaning: nothing visible was ever streamed.
+        assert "argus.inference.ttft_ms" not in attrs
+    finally:
+        trace._TRACER_PROVIDER = previous  # type: ignore[attr-defined]
+        router_module._tracer = trace.get_tracer("prometheus_gateway")

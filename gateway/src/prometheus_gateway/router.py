@@ -271,6 +271,7 @@ def _genai_response_attrs(
     finish_reason: str | None = None,
     backend_id: str | None = None,
     ttft_ms: int | None = None,
+    first_token_ms: int | None = None,
 ) -> dict[str, Any]:
     """What the answer turned out to be.
 
@@ -295,6 +296,8 @@ def _genai_response_attrs(
         attrs["argus.inference.backend_id"] = backend_id
     if ttft_ms is not None:
         attrs["argus.inference.ttft_ms"] = ttft_ms
+    if first_token_ms is not None:
+        attrs["argus.inference.first_token_ms"] = first_token_ms
     return attrs
 
 
@@ -1426,9 +1429,9 @@ def create_router(registry: ModelRegistry, pool: "BackendPool") -> APIRouter:
                         reservation=reservation,
                         alert_thresholds_percent=alert_thresholds_percent,
                         idempotency_claim=stream_claim,
-                        genai_request_attrs=_genai_request_attrs(
-                            "chat", resolution.model_key, entry.backend
-                        ),
+                        # PRM-105: what the caller asked for; the response half
+                        # carries what was actually served.
+                        genai_request_attrs=_genai_request_attrs("chat", body.model, entry.backend),
                     )
                 else:
                     await metrics_store.inc_requests_active()
@@ -1559,13 +1562,20 @@ def create_router(registry: ModelRegistry, pool: "BackendPool") -> APIRouter:
                     # ended at the call's real bounds rather than wrapping the
                     # block, because the tokens it has to report are only known
                     # after the response is parsed.
+                    # PRM-105: `body.model`, not the resolved name. Both halves
+                    # used to come from the resolution, so the pair could never
+                    # differ and the attribute Argus relies on to spot "asked for
+                    # one model, served another" was empty by construction.
+                    # Span name follows the convention, {operation} {request.model}
+                    # — Argus asked us not to trade the standard for their
+                    # cardinality, which they handle on their side.
                     genai_span = _tracer.start_span(
-                        f"chat {resolution.model_key}",
+                        f"chat {body.model}",
                         kind=SpanKind.CLIENT,
                         start_time=backend_start_ns,
                     )
                     genai_span.set_attributes(
-                        _genai_request_attrs("chat", resolution.model_key, entry.backend)
+                        _genai_request_attrs("chat", body.model, entry.backend)
                     )
                     genai_span.set_attributes(
                         _genai_response_attrs(
@@ -2468,6 +2478,15 @@ async def _stream_response(
         # delta.content, i.e. the token a streaming client actually sees first
         # (not the empty role-only opening chunk some backends send first).
         ttft_ms: int | None = None
+        # PRM-105: ttft_ms is "time to first *visible* token" and stays that way
+        # — it is a latency metric with history behind it. But a reasoning model
+        # streams `reasoning_content` first: qwen3-0.6b sent 30 of those before
+        # a single `content` chunk, so ttft_ms appeared on 13 of 247 spans and
+        # only on the long ones. A histogram built on 5% of requests, with the
+        # 5% chosen by how much the model reasons, is worse than none. This one
+        # answers the other question — when did the model start working — and
+        # is always there. Argus picked this over redefining ttft_ms.
+        first_token_ms: int | None = None
         # See the non-streaming path's identical comment — same `timings`
         # object, present on the backend's final chunk for llama.cpp-family
         # backends only.
@@ -2554,6 +2573,10 @@ async def _stream_response(
                                     # every chart that uses it.
                                     if ttft_ms is None and delta_content:
                                         ttft_ms = int((time.monotonic() - backend_start) * 1000)
+                                    if first_token_ms is None:
+                                        first_token_ms = int(
+                                            (time.monotonic() - backend_start) * 1000
+                                        )
                                 # RM-77: the backend names itself here —
                                 # llama.cpp echoes its own --alias, which is
                                 # the instance id. The body has to name the
@@ -2721,6 +2744,7 @@ async def _stream_response(
                         finish_reason=termination_reason,
                         backend_id=backend_id,
                         ttft_ms=ttft_ms,
+                        first_token_ms=first_token_ms,
                     )
                 )
                 genai_span.end()

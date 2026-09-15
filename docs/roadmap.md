@@ -3710,6 +3710,28 @@ gives clients a path that needs one host; making auth-service unreachable from o
 operational change, and it needs notice to Axonium first, since their SDKs point at two hosts
 today and both must keep working through the transition.
 
+## PRM-105 — the model pair can differ, and first-token stops being a reasoning artefact (done)
+
+Both found while producing the traffic Argus asked for in A-21 — neither would have shown up in
+the data itself, which is the point worth keeping.
+
+**The model pair**: `gen_ai.request.model` and `gen_ai.response.model` both came from
+`resolution.model_key`, so they could never differ. Argus uses that pair to spot "asked for one
+model, served another", which they say explains half their incidents; they would have watched 30
+minutes, seen no difference, and concluded it does not happen here. Measured by asking for an
+RM-70 alias: the HTTP body reported the resolved name and the span reported it on both halves.
+`request.model` is now what the caller sent. Span name follows the convention,
+`{operation} {request.model}` — Argus explicitly asked us not to trade the standard for their
+cardinality, which they solved by aggregating their RED metrics on `response.model` instead.
+
+**First-token latency**: `ttft_ms` is set by the first *visible* token and deliberately stays
+that way — it has history behind it. But a reasoning model streams `reasoning_content` first:
+`qwen3-0.6b` sent 30 of those before one `content` chunk, so `ttft_ms` appeared on 13 of 247
+spans, and the ones that had it were the long `gpt-oss` answers. The sample was selected by
+model and by length at once, so a p99 over it would have been wrong in a specific direction, not
+merely noisy. Added `argus.inference.first_token_ms` — first token of any kind — which Argus
+named and now feeds their latency histogram, keeping `ttft_ms` for experience dashboards.
+
 ## PRM-104 — one CLIENT span per model call, streamed or not (done)
 
 **Why**: Argus (A-21) reported that `inference.request` was `Internal` where the convention asks
