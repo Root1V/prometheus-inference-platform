@@ -3710,6 +3710,38 @@ gives clients a path that needs one host; making auth-service unreachable from o
 operational change, and it needs notice to Axonium first, since their SDKs point at two hosts
 today and both must keep working through the transition.
 
+## PRM-103 — the server span carries HTTP attributes (done)
+
+**Why**: Argus (A-14, then A-19) measured our server spans and found them named `http.get`
+with **no attributes at all**. `TraceIDMiddleware` opened them by hand, and by hand meant
+nothing but a name. For `auth-service` and `manager-api`, which have no other instrumentation,
+that meant Argus knew how many requests arrived and nothing else — no `http.route`, no status
+code, no latency per endpoint, so no RED metrics and no per-endpoint SLO. It also meant the
+`OTEL_SEMCONV_STABILITY_OPT_IN=http/dup` we set for A-11 had nothing to act on in two of three
+services.
+
+**Shape**: `instrument_fastapi()` in the shared telemetry package hands the SERVER span to
+`opentelemetry-instrumentation-fastapi`, called last in each app so it wraps every middleware
+and the routes are registered for `http.route` to resolve. `TraceIDMiddleware` stops opening a
+span when that instrumentation is active and keeps only its own job: read the id from the span
+that exists, bind it to the log context, return `X-Trace-ID`. Health and metrics stay excluded
+— probe traffic was 57% of everything we sent Argus (RM-95).
+
+**The guarantee that had to survive**: the ASGI instrumentation adopts a caller's `traceparent`
+through the global propagator, which is exactly what AC-11 forbids. `instrument_fastapi()`
+installs a propagator that extracts nothing and injects nothing — the `never` policy Argus
+asked us to leave untouched, now enforced by configuration rather than by not having the
+feature. Measured live with a forged `traceparent`: not adopted.
+
+**Measured**: 0 attributes before, 23 after, with `http.route` templated
+(`/v1/usage/{request_id}`, not the concrete id) so cardinality stays bounded — captured off the
+wire from all three services with a real OTLP sink, not from a unit test.
+
+**Not done, deliberately** — the `traceparent` change of A-06: Argus measured it and
+recommended against it themselves. Our inference never crosses service boundaries, and the one
+serious cross-service failure they had (A-18) was a `ConnectError`, so there was no server span
+on the far side to join.
+
 ## PRM-102 — auth-service stops being published (done)
 
 **Why**: [[PRM-96]] moved token issuance to the gateway, which left exactly one auth-service

@@ -20,6 +20,7 @@ from prometheus_telemetry import (  # noqa: F401  (re-exported for callers)
     configure_tracing,
     get_logger,
     get_tracer,
+    instrument_fastapi,
     trace_id_from_context,
 )
 
@@ -29,6 +30,7 @@ __all__ = [
     "configure_tracing",
     "get_logger",
     "get_tracer",
+    "instrument_fastapi",
     "new_trace_id",
     "trace_id_from_context",
 ]

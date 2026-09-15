@@ -16,7 +16,13 @@ from .routers.admin import router as admin_router
 from .routers.oauth2 import router as oauth2_router
 from .routers.share import router as share_router
 from .routers.well_known import router as well_known_router
-from prometheus_telemetry import TraceIDMiddleware, configure_logging, configure_tracing, get_logger
+from prometheus_telemetry import (
+    TraceIDMiddleware,
+    configure_logging,
+    configure_tracing,
+    get_logger,
+    instrument_fastapi,
+)
 
 
 def create_app(settings: Settings | None = None) -> FastAPI:
@@ -96,5 +102,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     # memory/specs/016-credential-share-link.md — public one-time credential delivery
     app.include_router(share_router)
+
+    # Argus A-19: last, so the SERVER span wraps every middleware above it and
+    # carries the HTTP attributes this service has never produced. Routes must
+    # be registered first for http.route to resolve.
+    instrument_fastapi(app)
 
     return app

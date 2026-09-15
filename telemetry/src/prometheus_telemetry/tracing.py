@@ -15,6 +15,7 @@ from typing import Any
 
 from opentelemetry import trace
 from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
+from opentelemetry.propagators.textmap import TextMapPropagator
 from opentelemetry.sdk.resources import Resource
 from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import BatchSpanProcessor
@@ -24,6 +25,10 @@ _CONFIGURED = False
 
 # Public flag — TraceIDMiddleware checks this to decide whether to create OTEL spans.
 _TRACING_ACTIVE = False
+
+# Set by instrument_fastapi(). When true, the ASGI instrumentation opens the
+# SERVER span and TraceIDMiddleware must not open a second one.
+_ASGI_INSTRUMENTED = False
 
 # RM-92: there is no default collector. This used to be "http://tempo:4318", a
 # hostname that resolved only inside the compose network of an observability
@@ -119,6 +124,73 @@ def configure_tracing(
         HTTPXClientInstrumentor().instrument()
 
     _TRACING_ACTIVE = True
+
+
+class _NoInboundContextPropagator(TextMapPropagator):
+    """Extracts nothing, injects nothing.
+
+    The SDK has no shipped no-op for this (a `CompositePropagator([])` returns
+    None from extract instead of a context, which the ASGI instrumentation then
+    dereferences). This is the policy Argus called `never`: a caller cannot hand
+    us a trace id, and we do not hand ours to anyone.
+    """
+
+    def extract(self, carrier: Any, context: Any = None, getter: Any = None) -> Any:
+        from opentelemetry.context import get_current
+
+        return context if context is not None else get_current()
+
+    def inject(self, carrier: Any, context: Any = None, setter: Any = None) -> None:
+        return
+
+    @property
+    def fields(self) -> set[str]:
+        return set()
+
+
+def instrument_fastapi(app: Any, excluded_paths: frozenset[str] | None = None) -> bool:
+    """Let the ASGI instrumentation open the SERVER span, with HTTP attributes.
+
+    Argus A-19: our server spans were named `http.get` and carried no attributes
+    at all — so for auth-service and manager-api they recorded that a request
+    happened and nothing else. No `http.route`, no status code, no latency per
+    endpoint, which means no RED metrics and no per-endpoint SLO. This hands the
+    span to `opentelemetry-instrumentation-fastapi`, which emits the semantic
+    conventions properly and is what `OTEL_SEMCONV_STABILITY_OPT_IN=http/dup`
+    has been configured for all along without having anything to act on.
+
+    Inbound trace context stays ignored. The ASGI instrumentation would adopt a
+    caller's `traceparent` through the global propagator, so the propagator is
+    replaced with a no-op one: nothing is extracted, nothing is injected. That
+    is the same guarantee TraceIDMiddleware enforced by hand (AC-11, OWASP A03),
+    and the policy Argus asked to leave untouched — `never`, in all four
+    services.
+
+    Returns True when instrumentation was applied. A no-op when tracing is not
+    active, so a process with no collector configured behaves exactly as before.
+
+    Implements: memory/specs/022-opentelemetry-sdk-instrumentation.md — AC-11
+    """
+    global _ASGI_INSTRUMENTED
+    if not _TRACING_ACTIVE:
+        return False
+
+    from opentelemetry.propagate import set_global_textmap
+
+    set_global_textmap(_NoInboundContextPropagator())
+
+    from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
+
+    from .core import _DEFAULT_EXCLUDED_PATHS
+
+    paths = _DEFAULT_EXCLUDED_PATHS if excluded_paths is None else excluded_paths
+    # RM-95/P-13: health and metrics stay out. Argus measured that probe traffic
+    # was 57% of everything we sent them; it is not worth a span.
+    FastAPIInstrumentor.instrument_app(
+        app, excluded_urls=",".join(sorted(p.lstrip("/") for p in paths))
+    )
+    _ASGI_INSTRUMENTED = True
+    return True
 
 
 def get_tracer(name: str = "prometheus") -> trace.Tracer:
