@@ -547,6 +547,71 @@ def create_router(registry: ModelRegistry, pool: "BackendPool") -> APIRouter:
             media_type=upstream.headers.get("content-type", "application/json"),
         )
 
+    # ── GET /share/{token} ──────────────────────────────────────────────────
+    # PRM-102: the one-time credential view. Creating and revoking a share link
+    # already went through the gateway; opening one did not, which left
+    # auth-service as an address an operator had to hand to a person. Worse, the
+    # link auth-service builds comes from the base URL of the request that asked
+    # for it — and that request arrives from the gateway, so the operator was
+    # being shown an internal hostname the recipient could not resolve anyway.
+    #
+    # Fronting it here fixes both: the link now points at the gateway, which is
+    # the address everyone already has, and auth-service stops needing a
+    # published port.
+    @router.get("/share/{token}")
+    async def share_view(token: str, request: Request) -> Response:
+        """Proxy the one-time credential page from auth-service.
+
+        Implements: docs/roadmap.md — PRM-102
+        """
+        settings = getattr(getattr(request.app, "state", None), "settings", None)
+        share_url = getattr(settings, "auth_service_share_url", None)
+        if not share_url:
+            return _problem(
+                request,
+                503,
+                "not-configured",
+                "Not Configured",
+                "AUTH_SERVICE_SHARE_URL is not set on the gateway — credential "
+                "share links cannot be opened through this host.",
+            )
+
+        # auth-service stamps used_by_ip/used_by_ua on the row, which is the
+        # audit trail for a secret being read. Proxying would record the
+        # gateway every time, so the real client is forwarded — *overwritten*,
+        # never appended to, so a visitor cannot forge whose read it was.
+        client_ip = request.client.host if request.client else "unknown"
+        headers = {
+            "X-Forwarded-For": client_ip,
+            "User-Agent": request.headers.get("user-agent", ""),
+        }
+        try:
+            async with httpx.AsyncClient(
+                timeout=10.0,
+                verify=getattr(settings, "auth_service_tls_verify", True),
+            ) as client:
+                upstream = await client.get(f"{share_url}/{token}", headers=headers)
+        except httpx.HTTPError as exc:
+            logger.warning("share.proxy_unreachable", error=str(exc))
+            return _problem(
+                request,
+                503,
+                "upstream-unavailable",
+                "Upstream Unavailable",
+                f"The auth-service is currently unreachable: {exc}",
+            )
+
+        # The page carries Cache-Control: no-store, X-Robots-Tag: noindex and
+        # Referrer-Policy: no-referrer. Those are the whole point of the
+        # response — a secret rendered in a browser — so pass the headers
+        # through rather than rebuilding a set that could fall behind.
+        skip = {"content-length", "content-encoding", "transfer-encoding", "connection"}
+        return Response(
+            content=upstream.content,
+            status_code=upstream.status_code,
+            headers={k: v for k, v in upstream.headers.items() if k.lower() not in skip},
+        )
+
     # ── GET /v1/models ──────────────────────────────────────────────────────
     # Implements: memory/specs/006-multi-model-gateway.md — AC-1
     @router.get("/v1/models")

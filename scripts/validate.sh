@@ -24,6 +24,10 @@ set -uo pipefail
 PROJECT_DIR="/opt/prometheus-ai-inference"
 LLMOPS_USER="llmops"
 GW_CACERT="/etc/prometheus/certs/gateway.crt"
+# PRM-102: auth-service is no longer reachable from the host, so nothing here
+# makes a TLS call to it any more. The flag is still accepted so existing
+# runbooks and invocations keep working; step-7 still checks the cert file
+# itself exists, by path.
 AUTH_CACERT="/etc/prometheus/certs/auth.crt"
 
 # ── Argument parsing ───────────────────────────────────────────────────────────
@@ -392,19 +396,21 @@ fi
 # ── Runtime: auth-health — Podman container
 # Implements: AC-14
 # ──────────────────────────────────────────────────────────────────────────────
-echo "[ auth-health ] Checking auth-service health endpoint..."
-if [[ -f "${AUTH_CACERT}" ]]; then
-    AUTH_RESP="$(curl -sf --max-time 5 --cacert "${AUTH_CACERT}" https://localhost:9000/health 2>/dev/null || echo "")"
-else
-    AUTH_RESP="$(curl -sf --max-time 5 https://localhost:9000/health 2>/dev/null || echo "")"
-fi
+# PRM-102: auth-service no longer publishes a port, so this is checked through
+# the gateway's token endpoint — which is a better probe anyway: it exercises the
+# path clients actually use. An unsupported grant_type is answered by
+# auth-service itself with a 400, so a 400 proves it is alive and reachable;
+# the gateway answers 503 when it is not.
+echo "[ auth-health ] Checking auth-service through the gateway's token endpoint..."
+AUTH_CODE="$(curl -so /dev/null -w '%{http_code}' --max-time 5 \
+    ${GW_CACERT:+--cacert "${GW_CACERT}"} \
+    -X POST https://localhost:8000/oauth2/token \
+    -d "grant_type=prometheus-liveness-probe" 2>/dev/null || echo "000")"
 
-if echo "${AUTH_RESP}" | grep -q '"status"'; then
-    _pass "auth-health" "${AUTH_RESP}"
+if [[ "${AUTH_CODE}" == "400" ]]; then
+    _pass "auth-health" "auth-service answered through the gateway (HTTP 400 unsupported_grant_type)"
 else
-    HTTP_CODE="$(curl -so /dev/null -w '%{http_code}' --max-time 5 \
-        ${AUTH_CACERT:+--cacert "${AUTH_CACERT}"} https://localhost:9000/health 2>/dev/null || echo "000")"
-    _fail "auth-health" "HTTP ${HTTP_CODE} from https://localhost:9000/health"
+    _fail "auth-health" "HTTP ${AUTH_CODE} from https://localhost:8000/oauth2/token (expected 400)"
 fi
 
 # ── Runtime: oauth2 — full round-trip (register → token → /v1/models → delete)
@@ -417,20 +423,26 @@ ADMIN_KEY="$(grep '^AUTH_ADMIN_API_KEY=' "${AUTH_ENV_FILE}" 2>/dev/null | cut -d
 if [[ -z "${ADMIN_KEY}" || "${ADMIN_KEY}" == *"replace-"* || "${ADMIN_KEY}" == *"<replace"* ]]; then
     _fail "oauth2" "AUTH_ADMIN_API_KEY not set or still a placeholder in auth-service/.env — skipping"
 else
-    AUTH_BASE="https://localhost:9000"
     GW_BASE="https://localhost:8000"
-    CACERT_AUTH="${AUTH_CACERT}"
     CACERT_GW="${GW_CACERT}"
     TEST_CLIENT_NAME="validate-smoke-test-$(date +%s)"
 
+    # PRM-102: auth-service's admin API is internal-only now, so client
+    # registration runs inside the container. This is the same way an operator
+    # creates the first client — see install-rhel.sh's bootstrap instructions.
+    # The cert is the one auth-service itself serves, bind-mounted at this path
+    # by podman-compose.yml. TLS stays verified.
+    _auth_admin() {
+        podman exec prometheus-auth \
+            curl -sf --max-time 10 --cacert /run/secrets/auth_tls.crt "$@" 2>/dev/null || echo ""
+    }
+
     # Register a temporary test client
-    REG_RESP="$(curl -sf --max-time 10 \
-        ${CACERT_AUTH:+--cacert "${CACERT_AUTH}"} \
-        -X POST "${AUTH_BASE}/admin/clients" \
+    REG_RESP="$(_auth_admin \
+        -X POST "https://localhost:9000/admin/clients" \
         -H "Content-Type: application/json" \
         -H "X-Admin-Key: ${ADMIN_KEY}" \
-        -d "{\"client_name\":\"${TEST_CLIENT_NAME}\",\"role\":\"app\",\"allowed_scopes\":[\"inference:read\"]}" \
-        2>/dev/null || echo "")"
+        -d "{\"client_name\":\"${TEST_CLIENT_NAME}\",\"role\":\"app\",\"allowed_scopes\":[\"inference:read\"]}")"
 
     CLIENT_ID="$(echo "${REG_RESP}" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('client_id',''))" 2>/dev/null || echo "")"
     CLIENT_SECRET="$(echo "${REG_RESP}" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('client_secret',''))" 2>/dev/null || echo "")"
@@ -440,8 +452,8 @@ else
     else
         # Obtain token
         TOKEN_RESP="$(curl -sf --max-time 10 \
-            ${CACERT_AUTH:+--cacert "${CACERT_AUTH}"} \
-            -X POST "${AUTH_BASE}/oauth2/token" \
+            ${CACERT_GW:+--cacert "${CACERT_GW}"} \
+            -X POST "${GW_BASE}/oauth2/token" \
             -H "Content-Type: application/x-www-form-urlencoded" \
             -d "grant_type=client_credentials&client_id=${CLIENT_ID}&client_secret=${CLIENT_SECRET}&scope=inference:read" \
             2>/dev/null || echo "")"
@@ -465,9 +477,8 @@ else
         fi
 
         # Clean up: delete test client (best-effort — failure does not affect exit code)
-        curl -sf --max-time 5 \
-            ${CACERT_AUTH:+--cacert "${CACERT_AUTH}"} \
-            -X DELETE "${AUTH_BASE}/admin/clients/${CLIENT_ID}" \
+        _auth_admin \
+            -X DELETE "https://localhost:9000/admin/clients/${CLIENT_ID}" \
             -H "X-Admin-Key: ${ADMIN_KEY}" \
             &>/dev/null || true
 

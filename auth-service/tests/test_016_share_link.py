@@ -227,6 +227,52 @@ async def test_016_AC8_AC9_one_time_view(client: AsyncClient) -> None:
         assert updated.secret_plaintext_enc is None
 
 
+# ── PRM-102: the audit trail survives the gateway ─────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_PRM102_used_by_ip_is_the_visitor_not_the_proxy(client: AsyncClient) -> None:
+    """The page is reached through the gateway now, so request.client is the
+    gateway on every read. used_by_ip is the record of who read a secret — if it
+    said "the gateway" every time it would record nothing at all.
+    """
+    from sqlalchemy import select
+
+    from prometheus_auth.db import CredentialShareToken, get_session_factory
+    from prometheus_auth.share_crypto import encrypt_secret
+
+    now = datetime.now(timezone.utc)
+    token_value = "prm102-audit-" + uuid.uuid4().hex
+    async with get_session_factory()() as db:
+        db.add(
+            CredentialShareToken(
+                id=str(uuid.uuid4()),
+                token=token_value,
+                client_id="audit-client",
+                client_name="Audit",
+                client_id_value="audit-client",
+                secret_plaintext_enc=encrypt_secret(_TEST_KEY, "s3cr3t"),
+                expires_at=now + timedelta(hours=1),
+            )
+        )
+        await db.commit()
+
+    r = await client.get(
+        f"/share/{token_value}",
+        headers={"X-Forwarded-For": "203.0.113.7, 198.51.100.1"},
+    )
+    assert r.status_code == 200
+
+    async with get_session_factory()() as db:
+        row = (
+            await db.execute(
+                select(CredentialShareToken).where(CredentialShareToken.token == token_value)
+            )
+        ).scalar_one()
+    # Leftmost entry — the originating client, not an intermediary.
+    assert row.used_by_ip == "203.0.113.7"
+
+
 # ── AC-10: used token → 410 ───────────────────────────────────────────────────
 
 

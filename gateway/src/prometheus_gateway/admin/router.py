@@ -63,6 +63,7 @@ Implements: docs/roadmap.md — RM-48 (Models: discover/download/manage on Huggi
 
 from __future__ import annotations
 
+import json
 from typing import Any
 
 import httpx
@@ -108,6 +109,31 @@ async def _resolve_node(request: Request, node: str) -> str | None:
         if name == node:
             return url
     return None
+
+
+def _rewrite_share_url(resp: Response, request: Request) -> Response:
+    """Point the share link at the gateway, not at auth-service.
+
+    PRM-102: auth-service builds the link from the base URL of the request that
+    asked for it. That request comes from the gateway, so the operator was shown
+    an address on the internal network — a link the recipient could not open
+    even before the port was closed. The gateway is the only party that knows
+    its own public address, so it is the one that can fix this.
+    """
+    if resp.status_code != 200:
+        return resp
+    try:
+        body = json.loads(bytes(resp.body))
+    except (ValueError, TypeError):
+        return resp
+    url = body.get("share_url")
+    if not isinstance(url, str):
+        return resp
+    _, sep, token = url.rpartition("/share/")
+    if not sep:
+        return resp
+    body["share_url"] = f"{str(request.base_url).rstrip('/')}/share/{token}"
+    return JSONResponse(content=body, status_code=200)
 
 
 def _passthrough(resp: httpx.Response) -> JSONResponse:
@@ -621,7 +647,8 @@ def create_admin_router(manager_client: ManagerApiClient) -> APIRouter:
     ) -> Response:
         if (forbidden := _require_scope(request, "admin:write")) is not None:
             return forbidden
-        return await _auth_admin_request(request, "POST", f"/clients/{client_id}/share", json=body)
+        resp = await _auth_admin_request(request, "POST", f"/clients/{client_id}/share", json=body)
+        return _rewrite_share_url(resp, request)
 
     # ── Nodes — docs/roadmap.md RM-20 ─────────────────────────────────────────
     # Proxies to auth-service's /admin/nodes/* — same X-Admin-Key pattern as Users.

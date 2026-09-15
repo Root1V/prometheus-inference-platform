@@ -3710,6 +3710,42 @@ gives clients a path that needs one host; making auth-service unreachable from o
 operational change, and it needs notice to Axonium first, since their SDKs point at two hosts
 today and both must keep working through the transition.
 
+## PRM-102 — auth-service stops being published (done)
+
+**Why**: [[PRM-96]] moved token issuance to the gateway, which left exactly one auth-service
+surface an outsider still had to reach: `GET /share/<token>`, the one-time credential page.
+Creating and revoking a share link already went through the gateway; opening one did not, so
+the service still needed a published port for a single page.
+
+Measured before building anything, and it was worse than "an exposure": auth-service builds
+the link from `request.base_url` of the request that asked for it, and that request arrives
+**from the gateway**. So the URL the dashboard showed an operator was `http://auth-service:9000/share/...`
+— an internal hostname the recipient could not resolve. The link was already broken for anyone
+not on the host. Closing the port did not break it; it made it visible.
+
+**Shape**:
+- `GET /share/{token}` on the gateway, proxying the page with its `no-store` / `noindex` /
+  `no-referrer` headers intact — those headers are the point of a response that renders a
+  secret in a browser, so they pass through rather than being rebuilt.
+- The gateway rewrites `share_url` in the create-link response to its own base URL. It is the
+  only party that knows its public address; auth-service should not have to know who is in
+  front of it.
+- The real visitor's IP and User-Agent are forwarded, because auth-service stamps
+  `used_by_ip`/`used_by_ua` on the row — the record of who read a secret. Proxying without
+  this would have recorded the gateway on every read and quietly emptied the audit trail.
+  `X-Forwarded-For` is **overwritten**, never appended to, so a visitor cannot choose what the
+  log says; trusting it is only safe because the service is no longer published.
+- `podman-compose.yml`: auth-service goes from `ports:` to `expose:`, the same shape redis
+  already had. `AUTH_BIND_HOST` is gone — it was a documented escape hatch justified by
+  "dashboard access from another host", which stopped being true some time ago.
+- The operator paths that reached port 9000 move inside the container (`podman exec`), and
+  `validate.sh`'s auth health check now goes through the gateway's token endpoint — a better
+  probe, because it exercises the path clients actually use.
+
+**Not included**: `validations/*.py` are one-shot development scripts whose admin steps now
+need `podman exec`. They carry a header saying so rather than being rewritten — they also
+reference models that no longer exist, which is a separate cleanup.
+
 ## RM-97 — blocking query instead of a 30s poll for the catalog (done)
 
 **Why**: the gateway asked the manager for the whole catalog every 30 seconds. The cost was never
