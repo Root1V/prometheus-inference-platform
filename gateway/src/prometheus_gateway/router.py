@@ -487,6 +487,66 @@ def create_router(registry: ModelRegistry, pool: "BackendPool") -> APIRouter:
 
     router = APIRouter()
 
+    # ── POST /oauth2/token ──────────────────────────────────────────────────
+    # PRM-96: an SDK should only ever need one host. Until now it needed two —
+    # the gateway for inference and the auth-service for its token — which
+    # meant exposing the auth-service to every client that wanted to call us.
+    #
+    # The gateway proxies token issuance instead of issuing tokens itself:
+    # one issuer, one signing key, and no second copy of the client/scope/TTL
+    # rules to drift out of step with the first. Same path as upstream, so an
+    # SDK migrating off the direct auth-service URL changes only the host.
+    @router.post("/oauth2/token")
+    async def token(request: Request) -> Response:
+        """Proxy OAuth2 token issuance to the auth-service, verbatim.
+
+        Implements: docs/roadmap.md — PRM-96
+        """
+        settings = getattr(getattr(request.app, "state", None), "settings", None)
+        token_url = getattr(settings, "auth_service_token_url", None)
+        if not token_url:
+            return _problem(
+                request,
+                503,
+                "not-configured",
+                "Not Configured",
+                "AUTH_SERVICE_TOKEN_URL is not set on the gateway — token issuance "
+                "is unavailable through this host.",
+            )
+
+        body = await request.body()
+        content_type = request.headers.get("content-type", "application/x-www-form-urlencoded")
+        try:
+            async with httpx.AsyncClient(
+                timeout=10.0,
+                verify=getattr(settings, "auth_service_tls_verify", True),
+            ) as client:
+                upstream = await client.post(
+                    token_url,
+                    content=body,
+                    headers={"content-type": content_type},
+                )
+        except httpx.HTTPError as exc:
+            logger.warning("oauth2.proxy_unreachable", error=str(exc))
+            return _problem(
+                request,
+                503,
+                "upstream-unavailable",
+                "Upstream Unavailable",
+                f"The auth-service is currently unreachable: {exc}",
+            )
+
+        # Returned as-is, errors included. An OAuth2 client expects
+        # {"error": "invalid_client"} per RFC 6749 §5.2 — translating that into
+        # problem+json would make the gateway a worse token endpoint than the
+        # one it replaces. (The dashboard's /admin/api/auth/login normalizes
+        # instead, because its caller is our own SPA, not an OAuth2 client.)
+        return Response(
+            content=upstream.content,
+            status_code=upstream.status_code,
+            media_type=upstream.headers.get("content-type", "application/json"),
+        )
+
     # ── GET /v1/models ──────────────────────────────────────────────────────
     # Implements: memory/specs/006-multi-model-gateway.md — AC-1
     @router.get("/v1/models")

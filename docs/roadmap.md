@@ -3673,7 +3673,7 @@ span, parented to the request's captured context, because the handler's span has
 before a stream's outcome is known; that is the path carrying `client_disconnected`, which Argus
 called the most valuable attribute we have.
 
-## PRM-96 — the SDK must reach only the gateway, never auth-service (todo)
+## PRM-96 — the SDK must reach only the gateway, never auth-service (done)
 
 **Why**: `docs/sdk-integration-guide.md` tells clients to obtain a token with
 `POST /oauth2/token` against **auth-service**, and then to call the **gateway** with it. So an
@@ -3688,16 +3688,27 @@ auth-service *through* the gateway, which is the API-gateway-as-single-entry-poi
 the reason auth-service's admin API is not public. Token issuance is the one path that escaped
 it.
 
-**Scope** (not designed):
-- The gateway fronts token issuance, so a client needs exactly one address.
-- auth-service goes back to being reachable only from inside.
-- This is a client-visible change: Axonium's SDKs point at two hosts today, so it needs a
-  transition where both work, and notice before the old path closes.
-- Worth deciding at the same time whether the gateway proxies the request or issues tokens
-  itself. Proxying keeps one issuer and one key; issuing moves signing into the hot path.
+**Decided — the gateway proxies, it does not issue**: one issuer, one signing key, and no
+second copy of the client/scope/TTL rules to drift out of step with the first. Issuing would
+have put bcrypt and RS256 signing on the same process that serves inference. The precedent was
+already in the repo: `/admin/api/auth/login` proxies to auth-service for the dashboard.
 
-**Not urgent, and deliberately not bundled**: nothing is broken. It is an exposure that should
-not exist, found while answering Argus about which of our paths cross service boundaries.
+**Shape**: `POST /oauth2/token` on the gateway — the same path as upstream, so an SDK changes
+only the host. The body is forwarded verbatim and the response returned verbatim, **error
+bodies included**: an OAuth2 client parses `{"error": "invalid_client"}` (RFC 6749 §5.2), and
+translating that into problem+json would make this a worse token endpoint than the one it
+replaces. The dashboard's login normalizes instead, because its caller is our own SPA. The one
+thing the gateway answers for itself is `503` when it cannot reach auth-service at all, or is
+not configured with a token URL — those are the gateway's failures, not OAuth2 outcomes.
+
+Exempt from both the Bearer check (demanding a token to obtain one is circular) and the rate
+limiter (which keys on claims this request has not produced yet — auth-service applies its own
+limits to issuance, which is where they belong).
+
+**What this does not do**: closing the old door is deployment configuration, not code. PRM-96
+gives clients a path that needs one host; making auth-service unreachable from outside is an
+operational change, and it needs notice to Axonium first, since their SDKs point at two hosts
+today and both must keep working through the transition.
 
 ## RM-97 — blocking query instead of a 30s poll for the catalog (done)
 

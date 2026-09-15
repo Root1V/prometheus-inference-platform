@@ -284,6 +284,7 @@ async def test_a_streaming_replay_is_not_billed_again(gw, rsa_keys):
     await gw.post("/v1/chat/completions", json=_chat(stream=True), headers=headers)
     await gw.post("/v1/chat/completions", json=_chat(stream=True), headers=headers)
 
+    await _drain_detached()
     utc_today = datetime.now(timezone.utc).date()
     events = await db.query_usage_events_range(utc_today, utc_today)
     assert len(events) == 1
@@ -517,6 +518,7 @@ async def test_a_clean_stream_is_not_marked_interrupted(gw, rsa_keys):
 
     await gw.post("/v1/chat/completions", json=_chat(stream=True), headers=headers)
 
+    await _drain_detached()
     utc_today = datetime.now(timezone.utc).date()
     events = await db.query_usage_events_range(utc_today, utc_today)
     assert [e.interrupted for e in events] == [False]
@@ -549,6 +551,7 @@ async def test_a_stream_that_broke_after_producing_tokens_is_billed_and_marked(g
 
     assert "stream interrupted" in resp.text
 
+    await _drain_detached()
     utc_today = datetime.now(timezone.utc).date()
     events = await db.query_usage_events_range(utc_today, utc_today)
     assert len(events) == 1
@@ -658,6 +661,7 @@ async def test_reasoning_tokens_are_counted_when_a_stream_breaks(gw, rsa_keys):
 
     await gw.post("/v1/chat/completions", json=_chat(stream=True), headers=headers)
 
+    await _drain_detached()
     utc_today = datetime.now(timezone.utc).date()
     events = await db.query_usage_events_range(utc_today, utc_today)
     assert len(events) == 1
