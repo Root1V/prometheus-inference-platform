@@ -22,6 +22,7 @@ from .telemetry import (
     configure_logging,
     configure_tracing,
     get_logger,
+    instrument_fastapi,
     metrics_store,
 )
 
@@ -454,5 +455,10 @@ def create_app(
             )
     # When admin_dashboard_enabled=False, all /admin/* paths fall through to
     # FastAPI's 404 handler (same as /ui/* when ui_enabled=False).
+
+    # Argus A-19: last, after every router and middleware, so the SERVER span
+    # the ASGI instrumentation opens wraps the whole stack and can resolve
+    # http.route. Our own span carried no attributes at all.
+    instrument_fastapi(app)
 
     return app

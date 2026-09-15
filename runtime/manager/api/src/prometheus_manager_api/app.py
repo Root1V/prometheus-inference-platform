@@ -13,6 +13,7 @@ from prometheus_manager_core.telemetry import (
     TraceIDMiddleware,
     configure_logging,
     configure_tracing,
+    instrument_fastapi,
 )
 
 from .control import router as control_router
@@ -38,6 +39,11 @@ app.include_router(router)
 app.include_router(control_router)
 # RM-48: search/download/manage models from Hugging Face
 app.include_router(discovery_router)
+
+# Argus A-19: after the routers, so the SERVER span the ASGI instrumentation
+# opens can resolve http.route, and outside TraceIDMiddleware so that
+# middleware reads the id from it rather than opening a bare second span.
+instrument_fastapi(app)
 
 
 @app.exception_handler(404)

@@ -3710,6 +3710,79 @@ gives clients a path that needs one host; making auth-service unreachable from o
 operational change, and it needs notice to Axonium first, since their SDKs point at two hosts
 today and both must keep working through the transition.
 
+## PRM-105 — the model pair can differ, and first-token stops being a reasoning artefact (done)
+
+Both found while producing the traffic Argus asked for in A-21 — neither would have shown up in
+the data itself, which is the point worth keeping.
+
+**The model pair**: `gen_ai.request.model` and `gen_ai.response.model` both came from
+`resolution.model_key`, so they could never differ. Argus uses that pair to spot "asked for one
+model, served another", which they say explains half their incidents; they would have watched 30
+minutes, seen no difference, and concluded it does not happen here. Measured by asking for an
+RM-70 alias: the HTTP body reported the resolved name and the span reported it on both halves.
+`request.model` is now what the caller sent. Span name follows the convention,
+`{operation} {request.model}` — Argus explicitly asked us not to trade the standard for their
+cardinality, which they solved by aggregating their RED metrics on `response.model` instead.
+
+**First-token latency**: `ttft_ms` is set by the first *visible* token and deliberately stays
+that way — it has history behind it. But a reasoning model streams `reasoning_content` first:
+`qwen3-0.6b` sent 30 of those before one `content` chunk, so `ttft_ms` appeared on 13 of 247
+spans, and the ones that had it were the long `gpt-oss` answers. The sample was selected by
+model and by length at once, so a p99 over it would have been wrong in a specific direction, not
+merely noisy. Added `argus.inference.first_token_ms` — first token of any kind — which Argus
+named and now feeds their latency histogram, keeping `ttft_ms` for experience dashboards.
+
+## PRM-104 — one CLIENT span per model call, streamed or not (done)
+
+**Why**: Argus (A-21) reported that `inference.request` was `Internal` where the convention asks
+for `Client`. Checking it found something they could not see from outside: the GenAI attributes
+went onto that INTERNAL span for a non-streaming answer, but a streamed one outlives that span
+and already carried its own `CLIENT` span named `chat <model>`. So **the same data arrived under
+two span kinds and two names, chosen by whether the caller asked for a stream** — their
+client-side RED metrics saw half the traffic, and which half was the client's decision.
+
+**Shape**: both paths emit one `CLIENT` span named `chat <model>` carrying the request and
+response halves. On the non-streaming path it is started and ended at the backend call's real
+bounds rather than wrapping the block, because the tokens it reports are only known after the
+response is parsed. `inference.request` stays `INTERNAL` and keeps only its own attributes —
+it describes the gateway's work, which is what it is.
+
+**Verified** live against a real OTLP sink: one request of each kind now produces the same
+`CLIENT chat qwen3-0.6b`. A test asserts both paths and compares them; asserting either one
+alone could never have caught this.
+
+## PRM-103 — the server span carries HTTP attributes (done)
+
+**Why**: Argus (A-14, then A-19) measured our server spans and found them named `http.get`
+with **no attributes at all**. `TraceIDMiddleware` opened them by hand, and by hand meant
+nothing but a name. For `auth-service` and `manager-api`, which have no other instrumentation,
+that meant Argus knew how many requests arrived and nothing else — no `http.route`, no status
+code, no latency per endpoint, so no RED metrics and no per-endpoint SLO. It also meant the
+`OTEL_SEMCONV_STABILITY_OPT_IN=http/dup` we set for A-11 had nothing to act on in two of three
+services.
+
+**Shape**: `instrument_fastapi()` in the shared telemetry package hands the SERVER span to
+`opentelemetry-instrumentation-fastapi`, called last in each app so it wraps every middleware
+and the routes are registered for `http.route` to resolve. `TraceIDMiddleware` stops opening a
+span when that instrumentation is active and keeps only its own job: read the id from the span
+that exists, bind it to the log context, return `X-Trace-ID`. Health and metrics stay excluded
+— probe traffic was 57% of everything we sent Argus (RM-95).
+
+**The guarantee that had to survive**: the ASGI instrumentation adopts a caller's `traceparent`
+through the global propagator, which is exactly what AC-11 forbids. `instrument_fastapi()`
+installs a propagator that extracts nothing and injects nothing — the `never` policy Argus
+asked us to leave untouched, now enforced by configuration rather than by not having the
+feature. Measured live with a forged `traceparent`: not adopted.
+
+**Measured**: 0 attributes before, 23 after, with `http.route` templated
+(`/v1/usage/{request_id}`, not the concrete id) so cardinality stays bounded — captured off the
+wire from all three services with a real OTLP sink, not from a unit test.
+
+**Not done, deliberately** — the `traceparent` change of A-06: Argus measured it and
+recommended against it themselves. Our inference never crosses service boundaries, and the one
+serious cross-service failure they had (A-18) was a `ConnectError`, so there was no server span
+on the far side to join.
+
 ## PRM-102 — auth-service stops being published (done)
 
 **Why**: [[PRM-96]] moved token issuance to the gateway, which left exactly one auth-service

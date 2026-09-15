@@ -763,3 +763,259 @@ async def test_the_genai_attributes_actually_reach_a_span(gw, rsa_keys):
     finally:
         trace._TRACER_PROVIDER = previous  # type: ignore[attr-defined]
         router_module._tracer = trace.get_tracer("prometheus_gateway")
+
+
+def _genai_span(exporter):
+    for span in exporter.get_finished_spans():
+        if "gen_ai.request.model" in (span.attributes or {}):
+            return span
+    return None
+
+
+@respx.mock
+async def test_streaming_and_not_produce_the_same_kind_of_span(gw, rsa_keys):
+    """PRM-104, from Argus A-21. They reported `inference.request` as Internal.
+    It was worse than that: the same data arrived under two span kinds and two
+    names depending on whether the caller asked for a stream, so their
+    client-side RED metrics saw half the traffic and which half was the client's
+    choice. Asserting one path could never have caught it — this asserts both
+    and compares them.
+    """
+    from opentelemetry import trace
+    from opentelemetry.sdk.trace import TracerProvider
+    from opentelemetry.sdk.trace.export import SimpleSpanProcessor
+    from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
+
+    import prometheus_gateway.router as router_module
+
+    headers = {
+        "Authorization": f"Bearer {make_token(rsa_keys['private'], scope='inference:stream inference:read model:solo')}",
+    }
+    seen = {}
+    for streaming in (False, True):
+        exporter = InMemorySpanExporter()
+        provider = TracerProvider()
+        provider.add_span_processor(SimpleSpanProcessor(exporter))
+        previous = trace.get_tracer_provider()
+        trace._TRACER_PROVIDER = provider  # type: ignore[attr-defined]
+        router_module._tracer = trace.get_tracer("test")
+        try:
+            if streaming:
+                respx.post(f"{BACKEND_URL}/v1/chat/completions").mock(
+                    return_value=Response(
+                        200,
+                        text=(
+                            'data: {"choices":[{"delta":{"content":"hi"}}],'
+                            '"timings":{"prompt_n":3,"predicted_n":1}}\n\n'
+                            "data: [DONE]\n\n"
+                        ),
+                        headers={"Content-Type": "text/event-stream"},
+                    )
+                )
+            else:
+                respx.post(f"{BACKEND_URL}/v1/chat/completions").mock(
+                    return_value=Response(
+                        200,
+                        json={
+                            "model": "solo",
+                            "choices": [{"message": {"role": "assistant", "content": "hi"}}],
+                            "usage": {"prompt_tokens": 3, "completion_tokens": 1},
+                        },
+                    )
+                )
+            await gw.post("/v1/chat/completions", json=_chat(stream=streaming), headers=headers)
+            await _drain_detached()
+            span = _genai_span(exporter)
+            assert span is not None, f"no GenAI span (streaming={streaming})"
+            seen[streaming] = (span.kind, span.name)
+        finally:
+            trace._TRACER_PROVIDER = previous  # type: ignore[attr-defined]
+            router_module._tracer = trace.get_tracer("prometheus_gateway")
+
+    assert seen[False][0] == trace.SpanKind.CLIENT, "calling a model is a client operation"
+    assert seen[False] == seen[True], (
+        f"the two paths disagree: non-streaming={seen[False]}, streaming={seen[True]}"
+    )
+    assert seen[False][1] == "chat solo"
+
+
+@respx.mock
+async def test_the_internal_span_no_longer_carries_genai_attributes(gw, rsa_keys):
+    """`inference.request` describes the gateway's own work. Leaving the GenAI
+    attributes on it too would report every call twice to anything aggregating
+    by attribute rather than by span kind."""
+    from opentelemetry import trace
+    from opentelemetry.sdk.trace import TracerProvider
+    from opentelemetry.sdk.trace.export import SimpleSpanProcessor
+    from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
+
+    import prometheus_gateway.router as router_module
+
+    exporter = InMemorySpanExporter()
+    provider = TracerProvider()
+    provider.add_span_processor(SimpleSpanProcessor(exporter))
+    previous = trace.get_tracer_provider()
+    trace._TRACER_PROVIDER = provider  # type: ignore[attr-defined]
+    router_module._tracer = trace.get_tracer("test")
+    try:
+        respx.post(f"{BACKEND_URL}/v1/chat/completions").mock(
+            return_value=Response(
+                200,
+                json={
+                    "model": "solo",
+                    "choices": [{"message": {"role": "assistant", "content": "hi"}}],
+                    "usage": {"prompt_tokens": 3, "completion_tokens": 1},
+                },
+            )
+        )
+        await gw.post(
+            "/v1/chat/completions",
+            json=_chat(),
+            headers={
+                "Authorization": f"Bearer {make_token(rsa_keys['private'], scope='inference:read model:solo')}"
+            },
+        )
+        internal = [s for s in exporter.get_finished_spans() if s.name == "inference.request"]
+        assert len(internal) == 1
+        attrs = dict(internal[0].attributes or {})
+        assert not any(k.startswith("gen_ai.") for k in attrs)
+        assert attrs["model"] == "solo"  # its own description is untouched
+    finally:
+        trace._TRACER_PROVIDER = previous  # type: ignore[attr-defined]
+        router_module._tracer = trace.get_tracer("prometheus_gateway")
+
+
+# ── PRM-105: the two things 30 minutes of traffic showed Argus would never see ──
+
+
+@respx.mock
+async def test_request_model_is_what_the_caller_asked_for(settings, rsa_keys):
+    """Both halves used to come from the resolved name, so the pair could never
+    differ — and the pair is the whole point: Argus uses it to spot "asked for
+    one model, served another", which they say explains half their incidents.
+    Verified live first by asking for an alias and watching the span report the
+    resolved name on both.
+    """
+    from opentelemetry import trace
+    from opentelemetry.sdk.trace import TracerProvider
+    from opentelemetry.sdk.trace.export import SimpleSpanProcessor
+    from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
+
+    import prometheus_gateway.router as router_module
+    from prometheus_gateway.main import create_app
+
+    # Its own registry rather than the shared fixture: an entry whose instance
+    # id differs from its slug is exactly the RM-70 alias shape, and adding one
+    # to the shared fixture would turn "solo" into a two-replica group and
+    # change what every other test in this file is exercising.
+    registry = ModelRegistry.__new__(ModelRegistry)
+    registry._models = {
+        "solo-alias": ModelEntry(
+            id="solo-alias",
+            path="/m/solo.gguf",
+            context_length=4096,
+            family="test",
+            quantization="Q4_0",
+            backend_url=BACKEND_URL,
+            backend_status="active",
+            node="local",
+            modality="text",
+            model_id="solo",
+            model_slug="solo",
+        )
+    }
+    app = create_app(settings=settings, registry=registry)
+
+    exporter = InMemorySpanExporter()
+    provider = TracerProvider()
+    provider.add_span_processor(SimpleSpanProcessor(exporter))
+    previous = trace.get_tracer_provider()
+    trace._TRACER_PROVIDER = provider  # type: ignore[attr-defined]
+    router_module._tracer = trace.get_tracer("test")
+    try:
+        await db.create_tables(db.get_engine())
+        respx.post(f"{BACKEND_URL}/v1/chat/completions").mock(
+            return_value=Response(
+                200,
+                json={
+                    "model": "solo",
+                    "choices": [{"message": {"role": "assistant", "content": "hi"}}],
+                    "usage": {"prompt_tokens": 3, "completion_tokens": 1},
+                },
+            )
+        )
+        body = _chat()
+        body["model"] = "solo-alias"
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            await client.post(
+                "/v1/chat/completions",
+                json=body,
+                headers={
+                    "Authorization": f"Bearer {make_token(rsa_keys['private'], scope='inference:read model:solo-alias model:solo')}"
+                },
+            )
+        span = _genai_span(exporter)
+        assert span is not None
+        attrs = dict(span.attributes or {})
+        assert attrs["gen_ai.request.model"] == "solo-alias", "what the caller asked for"
+        assert attrs["gen_ai.response.model"] == "solo", "what was actually served"
+        assert attrs["gen_ai.request.model"] != attrs["gen_ai.response.model"]
+        # Argus asked for the convention here, cardinality being their problem.
+        assert span.name == "chat solo-alias"
+    finally:
+        trace._TRACER_PROVIDER = previous  # type: ignore[attr-defined]
+        router_module._tracer = trace.get_tracer("prometheus_gateway")
+
+
+@respx.mock
+async def test_first_token_ms_is_set_even_when_nothing_visible_is_streamed(gw, rsa_keys):
+    """A reasoning model streams `reasoning_content` before any `content`.
+    ttft_ms deliberately waits for visible output, which left it on 13 of 247
+    spans — and the missing ones chosen by how much the model reasons, not by
+    anything Argus controls. first_token_ms answers the other question.
+    """
+    from opentelemetry import trace
+    from opentelemetry.sdk.trace import TracerProvider
+    from opentelemetry.sdk.trace.export import SimpleSpanProcessor
+    from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
+
+    import prometheus_gateway.router as router_module
+
+    async def only_reasoning(request):
+        async def body():
+            for word in ("Let", " me", " think"):
+                yield (
+                    b'data: {"choices":[{"delta":{"reasoning_content":"'
+                    + word.encode()
+                    + b'"}}]}\n\n'
+                )
+            raise httpx.ReadError("gone while still reasoning")
+
+        return Response(200, stream=body(), headers={"Content-Type": "text/event-stream"})
+
+    exporter = InMemorySpanExporter()
+    provider = TracerProvider()
+    provider.add_span_processor(SimpleSpanProcessor(exporter))
+    previous = trace.get_tracer_provider()
+    trace._TRACER_PROVIDER = provider  # type: ignore[attr-defined]
+    router_module._tracer = trace.get_tracer("test")
+    try:
+        respx.post(f"{BACKEND_URL}/v1/chat/completions").mock(side_effect=only_reasoning)
+        await gw.post(
+            "/v1/chat/completions",
+            json=_chat(stream=True),
+            headers={
+                "Authorization": f"Bearer {make_token(rsa_keys['private'], scope='inference:stream model:solo')}"
+            },
+        )
+        await _drain_detached()
+        span = _genai_span(exporter)
+        assert span is not None
+        attrs = dict(span.attributes or {})
+        assert "argus.inference.first_token_ms" in attrs, "no measure of when the model started"
+        assert attrs["argus.inference.first_token_ms"] >= 0
+        # ttft_ms keeps its meaning: nothing visible was ever streamed.
+        assert "argus.inference.ttft_ms" not in attrs
+    finally:
+        trace._TRACER_PROVIDER = previous  # type: ignore[attr-defined]
+        router_module._tracer = trace.get_tracer("prometheus_gateway")

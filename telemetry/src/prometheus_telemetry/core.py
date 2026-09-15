@@ -267,11 +267,36 @@ class TraceIDMiddleware:
         structlog.contextvars.bind_contextvars(service=self._service)
 
         # ── Decide which trace-ID strategy to use ─────────────────────────
-        from .tracing import _TRACING_ACTIVE, get_tracer, trace_id_from_context
+        from . import tracing as _tracing
+        from .tracing import get_tracer, trace_id_from_context
 
-        use_otel = _TRACING_ACTIVE and request.url.path not in self._excluded_paths
+        use_otel = _tracing._TRACING_ACTIVE and request.url.path not in self._excluded_paths
 
-        if use_otel:
+        if use_otel and _tracing._ASGI_INSTRUMENTED:
+            # Argus A-19: the ASGI instrumentation already opened the SERVER
+            # span, with the HTTP attributes this middleware never produced.
+            # Opening a second one here would nest a bare `http.get` inside a
+            # properly described span and make the trace worse, so this reads
+            # the id from the span that exists rather than creating one.
+            #
+            # Inbound traceparent is still ignored: instrument_fastapi() installs
+            # a no-op propagator, so the span above is a fresh root either way.
+            trace_id = trace_id_from_context()
+            structlog.contextvars.bind_contextvars(trace_id=trace_id)
+            request.state.trace_id = trace_id
+
+            async def _send_instrumented(message: Any) -> None:
+                if message["type"] == "http.response.start":
+                    headers = list(message.get("headers", []))
+                    headers.append((b"x-trace-id", trace_id.encode()))
+                    message = {**message, "headers": headers}
+                await send(message)
+
+            try:
+                await self.app(scope, receive, _send_instrumented)
+            finally:
+                structlog.contextvars.clear_contextvars()
+        elif use_otel:
             # OTEL mode: start a root SERVER span, extract the W3C trace ID.
             # Inbound X-Trace-ID / traceparent headers are intentionally ignored
             # to prevent external injection of forged trace contexts (AC-11).
