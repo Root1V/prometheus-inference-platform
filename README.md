@@ -124,7 +124,8 @@ podman machine start
 
 podman compose -f podman-compose.yml up --build -d
 # Gateway: http://localhost:8000
-# Auth Service: http://localhost:9000
+# Auth Service: no published port (PRM-102) — everything reaches it through the
+# gateway; its admin API is available inside the pod via `podman exec`.
 ```
 
 **Option B — Local development (no container):**
@@ -136,11 +137,14 @@ uvicorn prometheus_gateway.asgi:app --host 0.0.0.0 --port 8000 --reload
 ### 4. Verify the stack is running
 
 ```bash
-curl http://localhost:9000/health
-# {"status":"ok"}
-
 curl http://localhost:8000/health
 # {"status":"ok"}
+
+# auth-service is checked through the gateway — an unsupported grant_type is
+# answered by auth-service itself, so a 400 means it is alive and reachable.
+curl -s -o /dev/null -w '%{http_code}\n' \
+  -X POST http://localhost:8000/oauth2/token -d "grant_type=liveness-probe"
+# 400
 
 curl http://localhost:8000/v1/models
 # {"object":"list","data":[{"id":"llama3-8b-q4-local",...}]}
@@ -149,16 +153,19 @@ curl http://localhost:8000/v1/models
 ### 5. Get a token and call the API
 
 ```bash
-# Register a client with the auth service
-CLIENT=$(curl -s -X POST http://localhost:9000/admin/clients \
+# Register a client. auth-service's admin API is internal-only (PRM-102), so
+# this runs inside the container — the same way the first client is created.
+CLIENT=$(podman exec prometheus-auth curl -s \
+  --cacert /run/secrets/auth_tls.crt \
+  -X POST https://localhost:9000/admin/clients \
   -H "X-Admin-Key: $AUTH_ADMIN_API_KEY" \
   -H "Content-Type: application/json" \
   -d '{"client_name":"my-app","role":"app","allowed_scopes":["inference:read"]}')
 CLIENT_ID=$(echo $CLIENT | python3 -c "import sys,json; print(json.load(sys.stdin)['client_id'])")
 CLIENT_SECRET=$(echo $CLIENT | python3 -c "import sys,json; print(json.load(sys.stdin)['client_secret'])")
 
-# Obtain a JWT via client credentials
-TOKEN=$(curl -s -X POST http://localhost:9000/oauth2/token \
+# Obtain a JWT via client credentials — through the gateway (PRM-96)
+TOKEN=$(curl -s -X POST http://localhost:8000/oauth2/token \
   -d "grant_type=client_credentials&client_id=$CLIENT_ID&client_secret=$CLIENT_SECRET" \
   | python3 -c "import sys,json; print(json.load(sys.stdin)['access_token'])")
 
@@ -200,10 +207,11 @@ Common questions from a developer wiring up a real client against this platform:
   can't be retrieved again afterwards.
 
 **`POST /oauth2/token` example** (`client_credentials` grant — real response shape,
-captured against a local dev instance and redacted for this doc):
+captured against a local dev instance and redacted for this doc). Note the port: the
+gateway fronts token issuance (PRM-96), so a client only ever needs one address:
 
 ```bash
-curl -X POST http://localhost:9000/oauth2/token \
+curl -X POST http://localhost:8000/oauth2/token \
   -d "grant_type=client_credentials" \
   -d "client_id=<client_id from POST /admin/clients>" \
   -d "client_secret=<client_secret from POST /admin/clients>" \
@@ -367,6 +375,8 @@ See `gateway/.env.podman.example` and `auth-service/.env.example` for full confi
 | `ADMIN_DASHBOARD_ENABLED` | No | Serve the admin dashboard SPA at `/admin` (default: `false`) — instance lifecycle (RM-10) and the Users section (RM-11). |
 | `AUTH_SERVICE_ADMIN_URL` | When admin dashboard enabled | auth-service admin base URL (e.g. `http://auth-service:9000/admin`) — backs the Users section. |
 | `AUTH_SERVICE_ADMIN_API_KEY` | When admin dashboard enabled | Must match auth-service's own `AUTH_ADMIN_API_KEY`. |
+| `AUTH_SERVICE_TOKEN_URL` | When UI or dashboard enabled | auth-service's token endpoint (e.g. `http://auth-service:9000/oauth2/token`) — also backs the gateway's own `POST /oauth2/token` (PRM-96). |
+| `AUTH_SERVICE_SHARE_URL` | When admin dashboard enabled | auth-service's credential-share base URL (e.g. `http://auth-service:9000/share`) — backs `GET /share/<token>` (PRM-102). |
 
 **Auth Service** (`auth-service/.env`):
 
