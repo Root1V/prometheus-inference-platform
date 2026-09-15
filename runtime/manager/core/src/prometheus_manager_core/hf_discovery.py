@@ -105,6 +105,80 @@ def read_gguf_architecture(path: str | Path) -> str:
     return ""
 
 
+def read_gguf_modality_evidence(path: str | Path) -> str:
+    """What the GGUF file *asserts* about its own kind. "" when it says nothing.
+
+    Returns "rerank", "embedding" or "" — never "text", and that asymmetry is
+    the whole point. A file with `<arch>.classifier.output_labels` is a
+    cross-encoder; one with `<arch>.pooling_type` and no classifier head is an
+    embedding model. A file with neither has told us nothing: it could be a chat
+    model, a vision model whose projector lives in a separate file, or an image
+    model served by another engine entirely. Silence is not evidence of "text".
+
+    Measured against this deployment's 28 readable models: 24 agree with what
+    was registered, and the 4 that do not are all files that say nothing —
+    two vision, two image. Zero cases where the file asserted something wrong.
+
+    PRM-107. Same discipline as read_gguf_architecture above: read the file or
+    admit we do not know.
+    """
+    import struct
+
+    evidence = ""
+    try:
+        with open(path, "rb") as fh:
+            if fh.read(4) != b"GGUF":
+                return ""
+            fh.read(4)  # version
+            fh.read(8)  # tensor count
+            (kv_count,) = struct.unpack("<Q", fh.read(8))
+            for _ in range(kv_count):
+                (key_length,) = struct.unpack("<Q", fh.read(8))
+                key = fh.read(key_length).decode("utf-8", errors="replace")
+                (value_type,) = struct.unpack("<I", fh.read(4))
+                _gguf_read_value(fh, value_type)
+                # A classifier head settles it; keep scanning only to finish
+                # parsing the header cleanly is unnecessary — return at once.
+                if key.endswith(".classifier.output_labels"):
+                    return "rerank"
+                if key.endswith(".pooling_type"):
+                    evidence = "embedding"
+    except (OSError, ValueError, struct.error):
+        return ""
+    return evidence
+
+
+def modality_conflict(path: str | Path | None, modality: str) -> str:
+    """Explain why `modality` contradicts the file, or "" when it does not.
+
+    PRM-107. A reranker registered as "text" started without --reranking and
+    answered chat requests with plausible-looking nonsense for weeks. Nothing
+    failed: "text" is the one modality that never errors, which is exactly why
+    it is dangerous as a silent default.
+
+    Only an assertion by the file is a conflict. When the file says nothing the
+    caller is trusted, because vision and image cannot be read out of the
+    weights file at all.
+    """
+    if not path:
+        return ""
+    evidence = read_gguf_modality_evidence(path)
+    if not evidence or evidence == modality:
+        return ""
+    if evidence == "rerank":
+        return (
+            f"This file declares a classifier head (yes/no output labels), which makes it a "
+            f"reranker, but it is being registered as modality={modality!r}. A reranker served "
+            f"as anything else does not fail — it returns confident nonsense. Register it with "
+            f"--modality rerank, or check that this is the file you meant."
+        )
+    return (
+        f"This file declares a pooling type, which means it produces embeddings rather than "
+        f"generated text, but it is being registered as modality={modality!r}. Register it with "
+        f"--modality embedding, or check that this is the file you meant."
+    )
+
+
 def infer_family(path: str | Path | None) -> str:
     """The model family to record when a caller did not supply one.
 

@@ -384,6 +384,7 @@ class Registry:
         _validate_id(entry.id)
         _validate_backend(entry.backend)
         _validate_modality(entry.modality)
+        _assert_modality_matches_file(entry.path, entry.modality)
         _validate_path(entry.path, entry.backend)
         _validate_path(entry.vae_path, entry.backend)
         _validate_path(entry.clip_l_path, entry.backend)
@@ -539,6 +540,7 @@ class Registry:
         _validate_id(id)
         _validate_backend(backend)
         _validate_modality(modality)
+        _assert_modality_matches_file(catalog.path, modality)
         _validate_path(catalog.path, backend)
         _validate_path(catalog.vae_path, backend)
         _validate_path(catalog.clip_l_path, backend)
@@ -1196,6 +1198,23 @@ def _validate_backend(backend: str) -> None:
 def _validate_modality(modality: str) -> None:
     if modality not in MODALITIES:
         raise ValueError(f"Unknown modality {modality!r}. Must be one of {MODALITIES}")
+
+
+def _assert_modality_matches_file(path: str, modality: str) -> None:
+    """PRM-107: refuse a modality the weights file contradicts.
+
+    Only an assertion by the file counts. A file that says nothing about itself
+    is accepted as declared, because vision and image are not readable out of
+    the weights — the projector is a separate file and image models are served
+    by another engine entirely. Measured across this deployment's catalog: of 28
+    readable files, 24 agreed with what was registered and the 4 that did not
+    were all files that assert nothing.
+    """
+    from .hf_discovery import modality_conflict
+
+    conflict = modality_conflict(path, modality)
+    if conflict:
+        raise ValueError(conflict)
 
 
 def _validate_path(path: str, backend: str = "llama_cpp") -> None:

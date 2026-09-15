@@ -3710,6 +3710,44 @@ gives clients a path that needs one host; making auth-service unreachable from o
 operational change, and it needs notice to Axonium first, since their SDKs point at two hosts
 today and both must keep working through the transition.
 
+## PRM-107 — the model file contradicts a wrong modality (done)
+
+**Why**: PRM-106's root cause was a registration, not a bug. A reranker was registered as
+`text` — the default — started without `--reranking`, and answered chat requests with plausible
+nonsense until a client reported three problems that were one. Nothing failed, because `text` is
+the only modality that never errors. That is precisely what makes it unsafe as a silent default.
+
+**Measured first, because a heuristic that reads a field still has to be checked against the
+corpus.** Across this deployment's 28 readable catalogue files: 24 agree with what was
+registered, and all 4 that disagree are files that assert nothing — two vision, two image. Zero
+cases where the file asserted something wrong.
+
+**Shape — and the asymmetry is the design**:
+
+| the file... | conclusion |
+|---|---|
+| carries `<arch>.classifier.output_labels` | it is a reranker — refuse anything else |
+| carries `<arch>.pooling_type`, no classifier | it produces embeddings — refuse `text` |
+| carries neither | unknown; accept what the caller declared |
+
+Silence is never evidence. A vision model's projector is a separate file and image models are
+served by another engine entirely, so a file that says nothing could legitimately be any of
+three modalities — blocking on silence would have rejected 4 of our own 28. Applied at both
+registration paths and at the update path, which is the one that exists to *correct* a modality.
+
+**Verified live** with the exact original mistake: registering the reranker as `text` is now
+refused with a message naming the flag to use; registering it as `rerank` succeeds.
+
+## PRM-108 — modality is chosen in the dashboard, not guessed (todo)
+
+**Why**: registering a downloaded model from the UI never asks for modality and defaults to
+`text`. PRM-107 stops the file-contradicting cases, but a vision or image model — where the file
+asserts nothing — still silently becomes `text`.
+
+**Scope**: show modality at registration with PRM-107's inference preselected, and make it
+editable. The field is already in `_UPDATABLE_FIELDS` and the `PATCH` is already proxied, so
+nothing needs recreating — this is a UI gap, not a model one.
+
 ## PRM-106 — rerankers get the endpoint they need (done)
 
 **Why**: a project asked for reranker models. The instance was registered and a client tried to

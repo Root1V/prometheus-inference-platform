@@ -32,6 +32,7 @@ from prometheus_manager_core.lifecycle import (
 from prometheus_manager_core.registry import (
     Registry,
     RegistryEntry,
+    _assert_modality_matches_file,
     _validate_backend,
     _validate_modality,
     _validate_path,
@@ -244,6 +245,10 @@ async def update_backend(
         try:
             _validate_backend(merged_backend)
             _validate_modality(merged_modality)
+            # PRM-107: the same check registration does. Correcting a modality
+            # is the main reason this endpoint exists, so it must be possible to
+            # set the right one — and impossible to set one the file denies.
+            _assert_modality_matches_file(merged_path, merged_modality)
             _validate_path(merged_path, merged_backend)
             _validate_path(merged_vae_path, merged_backend)
             _validate_path(merged_clip_l_path, merged_backend)
