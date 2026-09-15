@@ -3710,6 +3710,38 @@ gives clients a path that needs one host; making auth-service unreachable from o
 operational change, and it needs notice to Axonium first, since their SDKs point at two hosts
 today and both must keep working through the transition.
 
+## PRM-106 — rerankers get the endpoint they need (done)
+
+**Why**: a project asked for reranker models. The instance was registered and a client tried to
+use it, then filed three bugs: (1) the gateway discards `logprobs`, so they could only get a
+binary yes/no instead of `P(yes)/(P(yes)+P(no))`; (2) requests "hang" 30-60s sporadically under
+concurrency; (3) the chat template needs manual prefill or the model returns junk.
+
+**They were one problem.** A reranker is a cross-encoder, and it was being served as a text
+generator. Measured before changing anything:
+
+- `llama-server` **does** implement `/rerank` — it answers `501 "Start it with --reranking"`.
+  The instance had been started without the flag, so the only way in was chat completions.
+- The "hangs" are not hangs. A 429's `Retry-After` is seconds-until-window-reset, so it ranges
+  0-60s; their SDK honours it, waits, retries, and the caller sees *one slow request* among fast
+  ones. Their own ladder totals 57 requests against a 60 RPM limit, which is why it looked like
+  no clean load threshold.
+- The template and the score both come free from the native endpoint.
+
+**Shape**: `modality: "rerank"` in the manager (adds `--reranking`), and `POST /v1/rerank` on the
+gateway — the de-facto Cohere/Jina shape that llama.cpp already implements: one query, N
+documents, `{index, relevance_score}` back, ordered. Scope, idempotency, circuit breaker,
+spend cap, usage recording (`request_kind="rerank"`, prompt-only — a reranker generates nothing)
+all follow the `/v1/embeddings` precedent. A rerank model is refused by chat completions (RM-66
+already did this) and a chat model is refused here.
+
+**The rate-limit half fixes itself**: scoring 50 candidates was 50 requests against a 60 RPM
+budget and is now 1.
+
+**Verified live** end to end, with the backend started by the manager rather than by hand:
+a four-document query ranked the relevant document at 0.992 and "Lima is the capital of Peru"
+at 0.00006.
+
 ## PRM-105 — the model pair can differ, and first-token stops being a reasoning artefact (done)
 
 Both found while producing the traffic Argus asked for in A-21 — neither would have shown up in

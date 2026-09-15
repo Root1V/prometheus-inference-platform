@@ -1,6 +1,6 @@
 # Prometheus Gateway — SDK Integration Guide
 
-**Revision**: 2026-09-14e · `52a51ce`
+**Revision**: 2026-09-15a · `pending`
 <!-- Consumers vendor this file and diff it. The date and commit above are what to quote
      when asking whether a copy is current; they change whenever this document does. -->
 
@@ -450,7 +450,66 @@ etc. are **not** supported by the gateway's schema even if the underlying backen
 **Images come back as base64 (`b64_json`), not a URL.** The SDK is responsible for decoding
 and persisting the image if the caller wants a file.
 
-### 3.6 Headers
+### 3.6 `POST /v1/rerank` — score documents against a query
+
+For **rerank-capable models only** (`modality: "rerank"` in `GET /v1/models`). A reranker is a
+cross-encoder: it scores a query against each document and returns them ordered. It does not
+generate text, and a rerank model returns `400 modality-mismatch` from `/v1/chat/completions`.
+
+```
+POST /v1/rerank
+Content-Type: application/json
+
+{
+  "model": "qwen3-reranker-0-6b-q4-k-m-local",
+  "query": "how do I reorder search results by relevance?",
+  "documents": [
+    "A reranker is a cross-encoder that scores each query-document pair.",
+    "Lima is the capital of Peru.",
+    "Use a reranker after retrieval to reorder the top-k candidates."
+  ],
+  "top_n": 3
+}
+```
+
+- `query`, `documents` — required. `documents` must be non-empty (`400 validation-error`).
+- `top_n` — optional; omit to get every document back.
+
+**Response** (`200`) — real values from a live deployment:
+
+```json
+{
+  "model": "qwen3-reranker-0-6b-q4-k-m-local",
+  "object": "list",
+  "usage": { "prompt_tokens": 368, "total_tokens": 368 },
+  "results": [
+    { "index": 2, "relevance_score": 0.9918406009674072 },
+    { "index": 0, "relevance_score": 0.03621646389365196 },
+    { "index": 1, "relevance_score": 0.00006435815885197371 }
+  ]
+}
+```
+
+- **`results` is ordered by score, best first.** `index` refers to the position in *your*
+  `documents` array, so a reordered result stays attributable to the input.
+- `relevance_score` is a probability in `[0, 1]`, computed by the engine. **You do not need
+  `logprobs` to obtain it** — an earlier integration reconstructed it from
+  `P(yes)/(P(yes)+P(no))` because this endpoint did not exist yet.
+- `usage.total_tokens` equals `prompt_tokens`: a reranker generates nothing, so there are no
+  completion tokens. Billing is prompt-only.
+
+**Three things worth knowing if you are migrating from a chat-based workaround:**
+
+1. **No prompt template to prefill.** The engine applies the reranker's own template. Sending an
+   assistant message with `<think>\n\n</think>` was a workaround for the chat endpoint and is
+   neither needed nor honoured here.
+2. **The whole document set is one request**, not one per document. This matters against the
+   rate limit: scoring 50 candidates used to cost 50 of your 60 RPM budget, and now costs 1.
+3. **`logprobs` and `top_logprobs` are not accepted** by this gateway on any endpoint. They were
+   never silently dropped in a way that changed an answer — the request schema is an allowlist,
+   so unknown fields simply do not reach the backend.
+
+### 3.7 Headers
 
 **Required**: `Authorization: Bearer <token>` on every endpoint except `GET /v1/models`.
 `Content-Type: application/json` on every POST.
@@ -486,7 +545,7 @@ X-RateLimit-Reset-Tokens
 
 ---
 
-### 3.7 `GET /v1/usage/{request_id}` — what one of your own requests was charged
+### 3.8 `GET /v1/usage/{request_id}` — what one of your own requests was charged
 
 Requires any authenticated token; **no admin scope**. Reads exactly one row, the caller's own.
 
@@ -531,7 +590,7 @@ here.
 
 ---
 
-### 3.8 `GET /v1/usage/export` — the CSV, and how its columns change
+### 3.9 `GET /v1/usage/export` — the CSV, and how its columns change
 
 Requires `admin:read`. Not something an SDK calls; documented because consumers parse the file
 and had no written contract for its shape.
@@ -658,7 +717,7 @@ model" as something only the SDK can catch.
 | Status | `type` suffix | Meaning | Retryable? |
 |---|---|---|---|
 | 400 | `unknown-model` | Model ID not registered. Checked *before* any scope check — an unrecognized model is always 400, never 403, regardless of what the token can access. | No |
-| 400 | `modality-mismatch` | Calling `/v1/chat/completions` with a model whose modality isn't `text`/`vision` (e.g. an embedding or image-generation model — fixed in RM-66, see note below), sending an image content part to a non-vision model, or calling `/v1/embeddings`/`/v1/images/generations` with the wrong modality. | No |
+| 400 | `modality-mismatch` | Calling `/v1/rerank` with a non-rerank model, calling `/v1/chat/completions` with a model whose modality isn't `text`/`vision` (e.g. an embedding or image-generation model — fixed in RM-66, see note below), sending an image content part to a non-vision model, or calling `/v1/embeddings`/`/v1/images/generations` with the wrong modality. | No |
 | 400 | `context-exceeded` | Request exceeds the model's context window. | No (shrink the request) |
 | 422 | `validation-error` | Request body failed schema validation (missing/wrong-typed field). `errors` extension member carries Pydantic's per-field detail. | No (fix the request) |
 | 401 | `missing-credentials` | No/malformed `Authorization` header, or token passed as a query param. | No (fix the request) |
@@ -673,7 +732,7 @@ model" as something only the SDK can catch.
 | 503 | `backend-unavailable` | Two distinct causes share this same `type`, and only one of them sets `Retry-After` — see the note below the table. | See below |
 | 503 | `rate-limiting-unavailable` | Redis (rate limiter backing store) is down and the deployment is configured fail-closed. | **Yes**, with backoff — transient infra issue |
 | 503 | `usage-store-unavailable` | Only on `GET /v1/usage`/`/v1/usage/export` — DB read failed. | **Yes**, with backoff |
-| 404 | `not-found` | Only on `GET /v1/usage/{request_id}` (§3.7) — no usage row with that id **belonging to this client**. Deliberately not a `403`: telling you which ids exist but aren't yours leaks other clients' traffic. | No |
+| 404 | `not-found` | Only on `GET /v1/usage/{request_id}` (§3.8) — no usage row with that id **belonging to this client**. Deliberately not a `403`: telling you which ids exist but aren't yours leaks other clients' traffic. | No |
 | 503 | `upstream-unavailable` | Only on `POST /oauth2/token` (§2.1) — the gateway could not reach the auth-service. Note this is the *only* problem+json a token request can produce; every other token outcome uses the OAuth2 error shape. | **Yes**, with backoff |
 | 503 | `not-configured` | Only on `POST /oauth2/token` — this deployment has no token endpoint wired up. | No — needs operator action |
 

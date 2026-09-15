@@ -118,6 +118,12 @@ def _build_llama_cpp_cmd(binary: str, entry: RegistryEntry, port: int, bind_host
     # today — mlx/vllm/sglang accept the field but don't act on it yet.
     if entry.modality == "embedding":
         cmd.append("--embedding")
+    elif entry.modality == "rerank":
+        # PRM-106: without this llama-server answers /rerank with 501 and serves
+        # the weights as a chat model instead — which does not fail, it returns
+        # plausible-looking text. A client then has to reconstruct the score
+        # from logprobs by hand, which is how this reached us as a bug report.
+        cmd.append("--reranking")
     elif entry.modality == "vision" and entry.mmproj_path:
         cmd.extend(["--mmproj", entry.mmproj_path])
 

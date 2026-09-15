@@ -55,7 +55,11 @@ BACKENDS = ("llama_cpp", "mlx", "vllm", "sglang", "sd_cpp")
 # (text -> /v1/chat/completions, embedding -> /v1/embeddings, vision -> chat
 # completions with image content parts). See memory/wiki/model-registry.md.
 # RM-38: "image" -> POST /v1/images/generations (sd_cpp only).
-MODALITIES = ("text", "embedding", "vision", "image")
+# PRM-106: "rerank" is a cross-encoder scoring a query against documents. It
+# is not text generation with a different prompt — llama-server refuses /rerank
+# unless started with --reranking, and a reranker started without it answers
+# chat requests with confident nonsense instead of an error.
+MODALITIES = ("text", "embedding", "vision", "image", "rerank")
 
 _SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS models (
