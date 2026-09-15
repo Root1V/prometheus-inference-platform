@@ -33,7 +33,9 @@ interface RegisterModelModalProps {
 }
 
 const BACKENDS: Backend[] = ["llama_cpp", "mlx", "vllm", "sglang", "sd_cpp"];
-const MODALITIES: Modality[] = ["text", "vision", "embedding", "image"];
+// PRM-108: "rerank" was missing, so a reranker could not be registered
+// correctly from this dashboard at all — only from the CLI.
+const MODALITIES: Modality[] = ["text", "vision", "embedding", "image", "rerank"];
 
 interface FormState {
   slug: string;
@@ -143,12 +145,18 @@ export function RegisterModelModal({
     setSelectedSourceId(sourceId);
     const source = modelsOnNode.find((m) => m.id === sourceId);
     if (!source) return;
-    // Only catalog-owned fields come from the selection — backend/modality/
-    // context_length are per-instance choices the operator makes here, not
-    // derived from the downloaded file.
+    // PRM-108: modality used to be excluded here, on the reasoning that it was
+    // a per-instance choice rather than a fact about the file. That was wrong,
+    // and it cost us: a reranker registered as "text" served chat requests
+    // with confident nonsense for weeks. Modality is a property of the weights
+    // (RM-70 put it on the catalog entry for that reason) and the catalog now
+    // derives it from the file when the file declares one. The operator can
+    // still change it below — for a vision or image model the file says
+    // nothing, so their "text" is a default, not an answer.
     setForm((current) => ({
       ...current,
       path: source.path,
+      modality: source.modality || current.modality,
       family: source.family,
       quantization: source.quantization,
       mmproj_path: source.mmproj_path,

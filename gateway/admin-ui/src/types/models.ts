@@ -1,3 +1,5 @@
+import type { Modality } from "./instance";
+
 /** RM-48 — Models page: discover/download/manage models from Hugging Face. */
 
 export interface HfSearchResult {
@@ -62,6 +64,10 @@ export interface StartDownloadResult {
  * (if any) the operator has since created from it. */
 export interface ModelCatalogEntry {
   id: string;
+  /** PRM-108: derived from the weights file when the file declares it
+   * (a classifier head or a pooling type), so registering a downloaded model
+   * starts from what it actually is rather than from the "text" default. */
+  modality: Modality;
   path: string;
   family: string;
   quantization: string;

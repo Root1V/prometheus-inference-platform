@@ -3738,15 +3738,28 @@ registration paths and at the update path, which is the one that exists to *corr
 **Verified live** with the exact original mistake: registering the reranker as `text` is now
 refused with a message naming the flag to use; registering it as `rerank` succeeds.
 
-## PRM-108 — modality is chosen in the dashboard, not guessed (todo)
+## PRM-108 — modality is chosen in the dashboard, not guessed (done)
 
-**Why**: registering a downloaded model from the UI never asks for modality and defaults to
-`text`. PRM-107 stops the file-contradicting cases, but a vision or image model — where the file
-asserts nothing — still silently becomes `text`.
+**Why**: PRM-107 stops a registration the file can contradict, but two gaps stayed open. The
+dashboard's modality list did not contain `rerank` at all — a reranker could not be registered
+correctly from the UI, only from the CLI. And selecting a downloaded file deliberately did *not*
+carry its modality across, on the reasoning (written in the code) that modality was "a
+per-instance choice, not derived from the downloaded file". That reasoning is what this whole
+sequence disproved.
 
-**Scope**: show modality at registration with PRM-107's inference preselected, and make it
-editable. The field is already in `_UPDATABLE_FIELDS` and the `PATCH` is already proxied, so
-nothing needs recreating — this is a UI gap, not a model one.
+**Shape**:
+- `rerank` added to the `Modality` type and to the dashboard's list.
+- `add_catalog()` derives modality from the file when the file declares one — the same place and
+  the same argument RM-89 used for `family`: a default that cannot be told apart from a choice
+  gets filled in once, centrally, so a third call site cannot reintroduce it. Unlike `family`
+  the file wins over the caller here, because modality is a property of the weights.
+- Selecting a downloaded model in the register modal now carries its modality into the form,
+  still editable — for vision and image the file says nothing, so their `text` is a default
+  rather than an answer.
+
+**The two paths differ on purpose**: cataloguing a download *corrects* silently (nobody chose
+anything), while registering an instance with an explicitly wrong modality is *refused*
+(someone did choose, and correcting it quietly would hide the mistake instead of teaching it).
 
 ## PRM-106 — rerankers get the endpoint they need (done)
 

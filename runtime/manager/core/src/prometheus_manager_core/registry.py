@@ -31,7 +31,7 @@ from typing import Any
 
 import yaml
 
-from .hf_discovery import infer_family
+from .hf_discovery import infer_family, read_gguf_modality_evidence
 
 _ID_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{1,62}[a-z0-9]$")
 
@@ -667,6 +667,18 @@ class Registry:
         # overwritten.
         if not (entry.family or "").strip():
             entry.family = infer_family(entry.path)
+        # PRM-108: and the same treatment for modality, for the same reason —
+        # the default is "text", which is indistinguishable from a deliberate
+        # choice and is the one value that never fails loudly. Unlike family,
+        # the file's answer *wins* here rather than deferring to the caller:
+        # modality is a property of the weights (RM-70 put it on the catalog
+        # entry for exactly that reason), so a file that declares a classifier
+        # head is a reranker no matter what the registration says. Only an
+        # assertion counts; a silent file leaves the caller's value alone,
+        # which is what keeps vision and image registrable.
+        evidence = read_gguf_modality_evidence(entry.path) if entry.path else ""
+        if evidence and evidence != entry.modality:
+            entry.modality = evidence
         _validate_id(entry.id)
         _validate_path_traversal(entry.path)
         _validate_path_traversal(entry.vae_path)

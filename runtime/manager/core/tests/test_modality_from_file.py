@@ -148,3 +148,49 @@ def test_against_the_real_downloaded_weights(rel, expected):
     if not path.exists():
         pytest.skip(f"{rel} not downloaded here")
     assert read_gguf_modality_evidence(path) == expected
+
+
+# ── PRM-108: cataloguing derives it, registering refuses a wrong one ────────
+
+
+def test_cataloguing_a_reranker_does_not_leave_it_as_text(tmp_path):
+    """The download path. Nobody chose "text" here — it is the dataclass
+    default, and RM-89 already established that a default indistinguishable
+    from a choice gets filled in at add_catalog() rather than at each call site.
+    """
+    from prometheus_manager_core.registry import CatalogEntry, Registry
+
+    reg = Registry(tmp_path / "reg.db")
+    reg.add_catalog(CatalogEntry(id="rr-model", path=_reranker(tmp_path), downloaded=True))
+    assert reg.get_catalog("rr-model").modality == "rerank"
+
+
+def test_cataloguing_leaves_a_silent_file_alone(tmp_path):
+    """A vision model's projector is a separate file, so the weights assert
+    nothing — overriding the caller here would make vision unregisterable."""
+    from prometheus_manager_core.registry import CatalogEntry, Registry
+
+    reg = Registry(tmp_path / "reg.db")
+    reg.add_catalog(
+        CatalogEntry(id="vl-model", path=_chat(tmp_path), modality="vision", downloaded=True)
+    )
+    assert reg.get_catalog("vl-model").modality == "vision"
+
+
+def test_registering_an_instance_with_the_wrong_modality_is_refused(tmp_path):
+    """The explicit path. Here someone *did* choose, so correcting silently
+    would hide the mistake instead of teaching it."""
+    from prometheus_manager_core.registry import Registry, RegistryEntry
+
+    reg = Registry(tmp_path / "reg.db")
+    with pytest.raises(ValueError, match="reranker"):
+        reg.add(
+            RegistryEntry(
+                id="rr-instance",
+                path=_reranker(tmp_path),
+                port=9999,
+                context_length=4096,
+                modality="text",
+                backend="llama_cpp",
+            )
+        )
