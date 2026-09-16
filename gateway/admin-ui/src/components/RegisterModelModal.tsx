@@ -33,9 +33,6 @@ interface RegisterModelModalProps {
 }
 
 const BACKENDS: Backend[] = ["llama_cpp", "mlx", "vllm", "sglang", "sd_cpp"];
-// PRM-108: "rerank" was missing, so a reranker could not be registered
-// correctly from this dashboard at all — only from the CLI.
-const MODALITIES: Modality[] = ["text", "vision", "embedding", "image", "rerank"];
 
 interface FormState {
   slug: string;
@@ -95,7 +92,17 @@ function stateFromInstance(instance: InstanceEntry): FormState {
 const inputClass =
   "w-full rounded-lg border border-border bg-background px-3 py-2 text-sm text-text focus:border-primary focus:outline-none";
 
-function Field({ label, required, children }: { label: string; required?: boolean; children: ReactNode }) {
+function Field({
+  label,
+  required,
+  hint,
+  children,
+}: {
+  label: string;
+  required?: boolean;
+  hint?: string;
+  children: ReactNode;
+}) {
   return (
     <label className="block text-sm text-text">
       <span className="mb-1 block text-xs font-medium text-text-muted">
@@ -103,6 +110,7 @@ function Field({ label, required, children }: { label: string; required?: boolea
         {required && <span className="text-red-500"> *</span>}
       </span>
       {children}
+      {hint && <span className="mt-1 block text-xs text-text-muted">{hint}</span>}
     </label>
   );
 }
@@ -118,10 +126,6 @@ export function RegisterModelModal({
   const registerModel = useRegisterModel();
   const updateModel = useUpdateModel();
   const isEditing = editing !== null;
-  // RM-70 backfilled slug = model id for everything that predated slugs, so a
-  // slug still equal to its id was never chosen — that's the one case where
-  // naming is allowed. manager-api enforces the same rule.
-  const isUnnamed = editing !== null && editing.model_slug === (editing.model_id || editing.id);
   const [form, setForm] = useState<FormState>(() =>
     editing ? stateFromInstance(editing) : initialState(""),
   );
@@ -180,7 +184,7 @@ export function RegisterModelModal({
       const body: UpdateModelRequest = {
         port: Number(form.port),
         backend: form.backend,
-        modality: form.modality,
+        // PRM-109: not modality — the server refuses it on an instance now.
         discovery: form.discovery,
         path: form.path,
         context_length: Number(form.context_length) || undefined,
@@ -190,10 +194,6 @@ export function RegisterModelModal({
         hf_repo: form.hf_repo,
         hf_sha256: form.hf_sha256,
       };
-      // RM-70: only sent when it actually changed. A model whose slug is still
-      // the id has never been named, and manager-api allows naming it once;
-      // sending an unchanged slug would just be refused as a rename.
-      if (form.slug && form.slug !== editing!.model_slug) body.slug = form.slug;
       updateModel.mutate(
         { node: selectedNode, modelId: form.id, data: body },
         {
@@ -212,7 +212,8 @@ export function RegisterModelModal({
       model_id: selectedSourceId,
       port: Number(form.port),
       backend: form.backend,
-      modality: form.modality,
+      // PRM-110: not modality — the server takes it from the catalog entry
+      // this instance references.
       discovery: form.discovery,
     };
     if (form.context_length) body.context_length = Number(form.context_length);
@@ -275,21 +276,18 @@ export function RegisterModelModal({
                 className={cn(inputClass, isEditing && "cursor-not-allowed opacity-60")}
               />
             </Field>
+            {/* PRM-112: the public name moved to the Models page, alongside
+                name, family and modality. It names the *model* — every instance
+                of it answers to the same string — so editing it from one
+                instance was editing the wrong thing, the same mistake PRM-109
+                found with modality. Shown here read-only because it is the one
+                thing a caller actually sends. */}
             {isEditing && (
-              <Field label="Public name">
-                <input
-                  value={form.slug}
-                  onChange={(e) => update("slug", e.target.value)}
-                  disabled={!isUnnamed}
-                  pattern="^[a-zA-Z0-9][a-zA-Z0-9._-]{1,62}[a-zA-Z0-9]$"
-                  title="Letters, digits, dots, hyphens, underscores"
-                  className={cn(inputClass, !isUnnamed && "cursor-not-allowed opacity-60")}
-                />
-                <span className="mt-1 block text-xs text-text-muted">
-                  {isUnnamed
-                    ? "What clients send as `model`. Can be set once — after that it's frozen, because clients route on it and their grants key off it."
-                    : "Frozen: clients already route on this name."}
-                </span>
+              <Field
+                label="Public name"
+                hint="Belongs to the model — set it from the Models page."
+              >
+                <input value={form.slug} readOnly disabled className={inputClass} />
               </Field>
             )}
             {!isEditing && (
@@ -351,18 +349,18 @@ export function RegisterModelModal({
                 ))}
               </select>
             </Field>
-            <Field label="Modality">
-              <select
-                value={form.modality}
-                onChange={(e) => update("modality", e.target.value as Modality)}
-                className={inputClass}
-              >
-                {MODALITIES.map((m) => (
-                  <option key={m} value={m}>
-                    {m}
-                  </option>
-                ))}
-              </select>
+            {/* PRM-110: read-only in both modes. PRM-109 left this editable
+                while "registering", on the belief that the call created the
+                model too — it does not: it sends `model_id` and creates an
+                instance of a model already in the catalog. So there was always
+                something to inherit from, and offering a dropdown here only
+                ever let someone disagree with it. The pencil on the Models page
+                is where modality changes. */}
+            <Field
+              label="Modality"
+              hint="Belongs to the model — change it from the Models page so every instance agrees."
+            >
+              <input value={form.modality} readOnly disabled className={inputClass} />
             </Field>
             <Field label="Family">
               <input

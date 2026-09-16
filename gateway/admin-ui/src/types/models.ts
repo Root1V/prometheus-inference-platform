@@ -64,6 +64,12 @@ export interface StartDownloadResult {
  * (if any) the operator has since created from it. */
 export interface ModelCatalogEntry {
   id: string;
+  /** RM-70: display label, safe to change — nothing keys off it. Defaults to
+   * the id, so it is never blank. */
+  name: string;
+  /** RM-70: the public name clients route on. Nameable once, frozen after —
+   * tokens and model grants key off it. Shown, never edited from here. */
+  slug: string;
   /** PRM-108: derived from the weights file when the file declares it
    * (a classifier head or a pooling type), so registering a downloaded model
    * starts from what it actually is rather than from the "text" default. */

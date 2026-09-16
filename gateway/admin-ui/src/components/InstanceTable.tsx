@@ -105,7 +105,7 @@ export function InstanceTable({
   if (instances.length === 0) {
     return (
       <div className="rounded-xl border border-border bg-surface p-12 text-center text-text-muted">
-        No models registered yet — click "Register model" to add one.
+        No instances yet — click "Register instance" to run one of your downloaded models.
       </div>
     );
   }

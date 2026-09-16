@@ -45,7 +45,13 @@ from prometheus_manager_core.hf_discovery import (
     shard_filenames,
 )
 from prometheus_manager_core.lifecycle import deregister_model
-from prometheus_manager_core.registry import CatalogEntry, Registry
+from prometheus_manager_core.registry import (
+    CatalogEntry,
+    Registry,
+    RegistryIntegrityError,
+    _assert_modality_matches_file,
+    _validate_modality,
+)
 from prometheus_manager_core.scanner import scan
 from prometheus_manager_core.telemetry import get_tracer
 
@@ -215,6 +221,104 @@ async def update_models_config(
 
 
 # ── GET /v1/models — catalog listing ─────────────────────────────────────────
+
+
+@router.patch("/v1/models/{model_id}", tags=["models"])
+async def update_model_catalog(
+    model_id: str,
+    body: dict[str, Any],
+    request: Request,
+    _claims: Annotated[Claims, Depends(require_backend_registry_write)],
+) -> dict[str, Any]:
+    """Edit a catalog entry — the model, not one of its instances.
+
+    PRM-109: modality is a property of the weights, so it belongs to the model
+    and every instance of it inherits the same answer. It used to be editable
+    per instance, which meant two replicas of one model could route differently
+    and a correction had to be applied in two places. This is now the only way
+    to change it; PATCH /v1/backends/{id} refuses the field and says so.
+
+    Handles `name`, `family`, `modality` and `slug`. `path` and `quantization`
+    come from the download flow and are not editable here.
+
+    PRM-112: `slug` moved here from the instance PATCH for the same reason
+    modality did — it names the *model*, so editing it per instance was editing
+    the wrong thing. Its RM-70 rule is unchanged and still enforced by
+    set_slug(): nameable once while it is still the id the migration backfilled,
+    frozen after, because clients route on it and `model:<slug>` grants key off
+    it.
+
+    PRM-110: `family` is here for a reason RM-89 already wrote down — the
+    fallback is the GGUF's `general.architecture`, "which is a true fact about
+    the file but is not always the lineage a human would name: phi4-mini is
+    architecture `phi3`, minicpm5 is `llama`". Nothing keys off family, it is
+    read by people, and until now the only way to correct one was the instance
+    PATCH, which meant fixing every replica separately.
+    """
+    registry: Registry = request.app.state.registry
+    catalog = registry.get_catalog(model_id)
+    if catalog is None:
+        raise _problem(404, "not-found", "Not Found", f"Model {model_id!r} is not in the catalog.")
+
+    updates: dict[str, Any] = {}
+    if "name" in body:
+        name = str(body["name"]).strip()
+        if not name:
+            raise _problem(
+                400,
+                "invalid-update",
+                "Invalid Update",
+                "name cannot be empty — it is the label everything shows. Leave it as the "
+                "model id if there is nothing better to call it.",
+            )
+        updates["name"] = name
+    if "family" in body:
+        family = str(body["family"]).strip()
+        if not family:
+            raise _problem(
+                400,
+                "invalid-update",
+                "Invalid Update",
+                "family cannot be empty — RM-89: a blank family is indistinguishable from "
+                "'nobody filled this in', which is how an SDK team came to ask about the same "
+                "field four rounds running.",
+            )
+        updates["family"] = family
+    if "modality" in body:
+        modality = str(body["modality"]).strip()
+        try:
+            _validate_modality(modality)
+            # PRM-107: and the file still gets a veto. Moving the control to the
+            # model does not make a wrong answer any more correct.
+            _assert_modality_matches_file(catalog.path, modality)
+        except ValueError as exc:
+            raise _problem(400, "invalid-update", "Invalid Update", str(exc)) from exc
+        updates["modality"] = modality
+
+    if not updates and "slug" not in body:
+        raise _problem(
+            400,
+            "invalid-update",
+            "Invalid Update",
+            "Nothing to update: send name, family, modality or slug.",
+        )
+
+    # Slug is not an ordinary field: set_slug() enforces the once-only rule and
+    # checks the new name is free, so it goes through its own call.
+    if "slug" in body:
+        slug = str(body["slug"]).strip()
+        if slug and slug != catalog.slug:
+            try:
+                registry.set_slug(model_id, slug)
+            except RegistryIntegrityError as exc:
+                raise _problem(409, "slug-frozen", "Slug Frozen", str(exc)) from exc
+            except (ValueError, KeyError) as exc:
+                raise _problem(400, "invalid-update", "Invalid Update", str(exc)) from exc
+
+    if updates:
+        registry.update_catalog(model_id, **updates)
+    entry = registry.get_catalog(model_id)
+    return entry.to_dict() if entry else {}
 
 
 @router.get("/v1/models", tags=["models"])

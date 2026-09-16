@@ -3738,6 +3738,103 @@ registration paths and at the update path, which is the one that exists to *corr
 **Verified live** with the exact original mistake: registering the reranker as `text` is now
 refused with a message naming the flag to use; registering it as `rerank` succeeds.
 
+## PRM-112 — the public name is set on the model, and the table says which name is which (done)
+
+**Two things, both noticed from the screen.**
+
+**The slug was edited from the instance form** — the same wrong place PRM-109 found modality in,
+for the same reason: it names the *model*, and every instance of it answers to that one string.
+Moved to the model's pencil. RM-70's rule is untouched and still enforced by `set_slug()`:
+nameable once while it is still the id the migration backfilled, frozen after, because clients
+route on it and `model:<slug>` grants key off it. A frozen slug now returns `409 slug-frozen`
+rather than a generic failure.
+
+**The subtitle under each model name was unreadable** — it rendered the slug only when it
+differed from the display name, and never said what it was. So it appeared on some rows and not
+others, and the one question it exists to answer ("which of these strings do I put in `model`?")
+had no reliable answer. Now always rendered, always labelled `model:`.
+
+**Measured while verifying**, and worth knowing before renaming anything in production: naming a
+slug does not break existing clients, but it does leave their grants behind. A client holding
+`model:<old-name>` keeps working **with the old name** — RM-70 keeps it resolvable as an alias —
+and gets `403` on the new one until its grant is reissued.
+
+## PRM-111 — the model's display name is editable, and finally visible (done)
+
+**Why**: PRM-110 accepted `name` in the catalog PATCH and then never surfaced it. Spotted by
+asking the obvious question — "I don't see where to edit the model's name" — and the answer was
+that there was nowhere, and nowhere to see it either.
+
+**Three identifiers, and the table was showing the one that cannot change**:
+
+| field | what it is | changeable |
+|---|---|---|
+| `id` | the registry key | no |
+| `slug` | what clients put in `model` — tokens and grants key off it | once (RM-70) |
+| `name` | display label, nothing keys off it | freely |
+
+The Models table rendered `id`. Measured: all 31 catalog rows have `name` populated, and one of
+them already read "Qwen3 0.6B Instruct" — a name someone had set that appeared nowhere in the
+product.
+
+**Shape**: the table shows `name` with the routing slug underneath when they differ, because the
+slug is what a client actually sends and it was invisible too. The pencil edits the name; the id
+and slug are shown read-only beside it so it is obvious which one renaming does *not* touch.
+Blank is refused, same as family.
+
+**Verified live**: renamed the reranker to "Qwen3 Reranker 0.6B", confirmed its slug did not
+move, and confirmed a client calling by that slug still scores.
+
+## PRM-110 — family and name editable, and the button says what it does (done)
+
+Two observations from using the dashboard, and the second corrected a mistake in PRM-109.
+
+**The button.** "Register model" on the Instances page sends `model_id` — RM-51's "create an
+instance of this already-catalogued model". It never registered a model; downloading one is what
+puts it in the catalog. Renamed to "Register instance".
+
+That also invalidates the exception PRM-109 left: modality stayed editable "while registering,
+because that call creates the model too". It does not. So there was always a catalog entry to
+inherit from, and the dropdown could only ever be used to disagree with it. Modality is now
+read-only in both modes of that form, `add_instance()` no longer takes it as a parameter, and
+manager-api stops passing one — the catalog entry answers.
+
+**Family.** Joins modality and name as editable on the model. The argument was already written
+in RM-89: the fallback is the GGUF's `general.architecture`, "a true fact about the file but not
+always the lineage a human would name — phi4-mini is architecture `phi3`, minicpm5 is `llama`".
+Nothing keys off family, people read it, and until now correcting one meant the instance PATCH —
+once per replica. Blank is refused, for RM-89's reason.
+
+**Found live while testing**: the reranker's family was `unknown`, which is the same blank box an
+SDK team asked about four rounds running. Fixed through the new path.
+
+## PRM-109 — modality belongs to the model, and is edited there (done)
+
+**Why**: noticed from the UI — the modality dropdown sat on the Instances page, when modality
+describes the weights. Checking it found the UI was not the problem, it was the symptom.
+
+The column exists on **both** tables. RM-70 put it on `models` with a comment saying that made
+"replicas disagreeing about it impossible" — but the `RegistryEntry` handed to the gateway is
+built with `modality=inst_raw["modality"]` while every other property of the weights around it
+(`path`, `family`, `quantization`, `mmproj_path`, `slug`) comes from the catalog. Modality was
+the only one on the wrong side, so the guarantee never held: two replicas of one model could
+route differently, and correcting PRM-106's reranker meant updating two tables by hand.
+
+**Shape**:
+- The entry the gateway receives reads `catalog.modality`. One source of truth where it is
+  actually read.
+- `PATCH /v1/backends/{id}` **refuses** `modality` rather than ignoring it, and the message names
+  the model to patch instead — a silently dropped field is how you think you changed something.
+- New `PATCH /v1/models/{id}` for the catalog (name and modality only), proxied by the gateway at
+  `/admin/api/nodes/{node}/catalog/{id}`. PRM-107's file veto applies here too: moving the control
+  does not make a wrong answer correct.
+- Dashboard: a Modality column and a pencil on the Models page; read-only on the instance form,
+  with a hint pointing at Models. Still editable while *registering*, because that call creates
+  the model too — there is nothing to inherit from yet.
+
+**Not done**: `instances.modality` still exists and is now ignored on read. Dropping it means
+recreating the table in SQLite, which is not worth it for a column nothing reads.
+
 ## PRM-108 — modality is chosen in the dashboard, not guessed (done)
 
 **Why**: PRM-107 stops a registration the file can contradict, but two gaps stayed open. The
