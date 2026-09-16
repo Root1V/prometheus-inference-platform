@@ -33,9 +33,6 @@ interface RegisterModelModalProps {
 }
 
 const BACKENDS: Backend[] = ["llama_cpp", "mlx", "vllm", "sglang", "sd_cpp"];
-// PRM-108: "rerank" was missing, so a reranker could not be registered
-// correctly from this dashboard at all — only from the CLI.
-const MODALITIES: Modality[] = ["text", "vision", "embedding", "image", "rerank"];
 
 interface FormState {
   slug: string;
@@ -223,7 +220,8 @@ export function RegisterModelModal({
       model_id: selectedSourceId,
       port: Number(form.port),
       backend: form.backend,
-      modality: form.modality,
+      // PRM-110: not modality — the server takes it from the catalog entry
+      // this instance references.
       discovery: form.discovery,
     };
     if (form.context_length) body.context_length = Number(form.context_length);
@@ -362,35 +360,18 @@ export function RegisterModelModal({
                 ))}
               </select>
             </Field>
-            {/* PRM-109: editable while registering — that call creates the
-                model as well as the instance, so there is nothing to inherit
-                from yet. Read-only when editing an existing instance: modality
-                belongs to the model, every replica shares one answer, and the
-                server refuses the field here. The pencil on the Models page is
-                where it changes. */}
+            {/* PRM-110: read-only in both modes. PRM-109 left this editable
+                while "registering", on the belief that the call created the
+                model too — it does not: it sends `model_id` and creates an
+                instance of a model already in the catalog. So there was always
+                something to inherit from, and offering a dropdown here only
+                ever let someone disagree with it. The pencil on the Models page
+                is where modality changes. */}
             <Field
               label="Modality"
-              hint={
-                isEditing
-                  ? "Belongs to the model — change it from the Models page so every instance agrees."
-                  : undefined
-              }
+              hint="Belongs to the model — change it from the Models page so every instance agrees."
             >
-              {isEditing ? (
-                <input value={form.modality} readOnly disabled className={inputClass} />
-              ) : (
-                <select
-                  value={form.modality}
-                  onChange={(e) => update("modality", e.target.value as Modality)}
-                  className={inputClass}
-                >
-                  {MODALITIES.map((m) => (
-                    <option key={m} value={m}>
-                      {m}
-                    </option>
-                  ))}
-                </select>
-              )}
+              <input value={form.modality} readOnly disabled className={inputClass} />
             </Field>
             <Field label="Family">
               <input

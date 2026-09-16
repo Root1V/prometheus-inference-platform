@@ -174,7 +174,7 @@ export function useUpdateCatalogEntry() {
     }: {
       node: string;
       modelId: string;
-      data: { name?: string; modality?: Modality };
+      data: { name?: string; family?: string; modality?: Modality };
     }) => (await apiClient.patch<ModelCatalogEntry>(`/nodes/${node}/catalog/${modelId}`, data)).data,
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: CATALOG_KEY });

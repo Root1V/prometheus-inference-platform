@@ -237,9 +237,16 @@ async def update_model_catalog(
     and a correction had to be applied in two places. This is now the only way
     to change it; PATCH /v1/backends/{id} refuses the field and says so.
 
-    Deliberately narrow: `name` and `modality` only. `path`, `family` and
-    `quantization` come from the file and the download flow, and `slug` has its
-    own single-use rule (RM-70).
+    Deliberately narrow: `name`, `family` and `modality`. `path` and
+    `quantization` come from the download flow, and `slug` has its own
+    single-use rule (RM-70) because clients route on it.
+
+    PRM-110: `family` is here for a reason RM-89 already wrote down — the
+    fallback is the GGUF's `general.architecture`, "which is a true fact about
+    the file but is not always the lineage a human would name: phi4-mini is
+    architecture `phi3`, minicpm5 is `llama`". Nothing keys off family, it is
+    read by people, and until now the only way to correct one was the instance
+    PATCH, which meant fixing every replica separately.
     """
     registry: Registry = request.app.state.registry
     catalog = registry.get_catalog(model_id)
@@ -249,6 +256,18 @@ async def update_model_catalog(
     updates: dict[str, Any] = {}
     if "name" in body:
         updates["name"] = str(body["name"]).strip()
+    if "family" in body:
+        family = str(body["family"]).strip()
+        if not family:
+            raise _problem(
+                400,
+                "invalid-update",
+                "Invalid Update",
+                "family cannot be empty — RM-89: a blank family is indistinguishable from "
+                "'nobody filled this in', which is how an SDK team came to ask about the same "
+                "field four rounds running.",
+            )
+        updates["family"] = family
     if "modality" in body:
         modality = str(body["modality"]).strip()
         try:
@@ -262,7 +281,10 @@ async def update_model_catalog(
 
     if not updates:
         raise _problem(
-            400, "invalid-update", "Invalid Update", "Nothing to update: send name or modality."
+            400,
+            "invalid-update",
+            "Invalid Update",
+            "Nothing to update: send name, family or modality.",
         )
 
     registry.update_catalog(model_id, **updates)

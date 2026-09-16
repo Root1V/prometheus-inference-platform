@@ -3738,6 +3738,29 @@ registration paths and at the update path, which is the one that exists to *corr
 **Verified live** with the exact original mistake: registering the reranker as `text` is now
 refused with a message naming the flag to use; registering it as `rerank` succeeds.
 
+## PRM-110 — family and name editable, and the button says what it does (done)
+
+Two observations from using the dashboard, and the second corrected a mistake in PRM-109.
+
+**The button.** "Register model" on the Instances page sends `model_id` — RM-51's "create an
+instance of this already-catalogued model". It never registered a model; downloading one is what
+puts it in the catalog. Renamed to "Register instance".
+
+That also invalidates the exception PRM-109 left: modality stayed editable "while registering,
+because that call creates the model too". It does not. So there was always a catalog entry to
+inherit from, and the dropdown could only ever be used to disagree with it. Modality is now
+read-only in both modes of that form, `add_instance()` no longer takes it as a parameter, and
+manager-api stops passing one — the catalog entry answers.
+
+**Family.** Joins modality and name as editable on the model. The argument was already written
+in RM-89: the fallback is the GGUF's `general.architecture`, "a true fact about the file but not
+always the lineage a human would name — phi4-mini is architecture `phi3`, minicpm5 is `llama`".
+Nothing keys off family, people read it, and until now correcting one meant the instance PATCH —
+once per replica. Blank is refused, for RM-89's reason.
+
+**Found live while testing**: the reranker's family was `unknown`, which is the same blank box an
+SDK team asked about four rounds running. Fixed through the new path.
+
 ## PRM-109 — modality belongs to the model, and is edited there (done)
 
 **Why**: noticed from the UI — the modality dropdown sat on the Instances page, when modality

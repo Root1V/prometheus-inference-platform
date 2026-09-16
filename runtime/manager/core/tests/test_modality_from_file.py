@@ -216,7 +216,6 @@ def test_every_instance_of_a_model_reports_the_catalog_modality(tmp_path):
             model_id="rr-model",
             port=port,
             backend="llama_cpp",
-            modality="rerank",
             context_length=4096,
         )
 

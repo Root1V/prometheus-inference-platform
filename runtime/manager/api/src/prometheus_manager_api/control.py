@@ -144,7 +144,8 @@ async def register_backend(
                     model_id,
                     port=int(body.get("port", 0)),
                     backend=body.get("backend", "llama_cpp"),
-                    modality=body.get("modality", "text"),
+                    # PRM-110: no modality here — it comes from the catalog
+                    # entry this instance references. See add_instance().
                     context_length=int(body.get("context_length", 4096)),
                     discovery=bool(body.get("discovery", False)),
                     rss_estimate_mb=body.get("rss_estimate_mb"),

@@ -61,7 +61,11 @@ export default function Dashboard() {
             className="flex items-center gap-2 rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:opacity-90"
           >
             <Plus size={16} />
-            Register model
+            {/* PRM-110: it sends `model_id` — RM-51's "create an instance of
+                this already-catalogued model". It never registered a model.
+                Downloading one is what puts it in the catalog, on the Models
+                page. */}
+            Register instance
           </button>
         </div>
 

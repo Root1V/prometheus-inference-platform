@@ -44,15 +44,18 @@ export function EditModelModal({ open, model, node, onClose }: EditModelModalPro
   const { showToast } = useToast();
   const updateCatalog = useUpdateCatalogEntry();
   const [modality, setModality] = useState<Modality>(model.modality || "text");
+  const [family, setFamily] = useState(model.family || "");
 
   if (!open) return null;
 
+  const dirty = modality !== model.modality || family.trim() !== (model.family || "");
+
   const handleSave = () => {
     updateCatalog.mutate(
-      { node, modelId: model.id, data: { modality } },
+      { node, modelId: model.id, data: { modality, family: family.trim() } },
       {
         onSuccess: () => {
-          showToast(`${model.id} is now ${modality}`, "success");
+          showToast(`${model.id} updated`, "success");
           onClose();
         },
         onError: (err) => showToast(getErrorMessage(err), "error"),
@@ -76,6 +79,18 @@ export function EditModelModal({ open, model, node, onClose }: EditModelModalPro
         </div>
 
         <div className="space-y-4">
+          {/* PRM-110: family is read by people and nothing keys off it. The
+              fallback is the GGUF's own architecture, which is true about the
+              file but not always the lineage a human would name — phi4-mini is
+              architecture phi3. That makes it exactly the field worth editing. */}
+          <Field label="Family" hint="What people see. Defaults to the file's architecture.">
+            <input
+              value={family}
+              onChange={(e) => setFamily(e.target.value)}
+              placeholder="e.g. qwen3, llama, mistral"
+              className={inputClass}
+            />
+          </Field>
           <Field
             label="Modality"
             hint="Applies to every instance of this model — it describes the weights, not a process."
@@ -113,7 +128,7 @@ export function EditModelModal({ open, model, node, onClose }: EditModelModalPro
           <button
             type="button"
             onClick={handleSave}
-            disabled={updateCatalog.isPending || modality === model.modality}
+            disabled={updateCatalog.isPending || !dirty || !family.trim()}
             className={cn(
               "rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:opacity-90",
               "disabled:cursor-not-allowed disabled:opacity-50",

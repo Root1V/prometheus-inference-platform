@@ -525,22 +525,26 @@ class Registry:
         *,
         port: int,
         backend: str = "llama_cpp",
-        modality: str = "text",
         context_length: int = 4096,
         discovery: bool = False,
         rss_estimate_mb: int | None = None,
         cfg_scale: float | None = None,
     ) -> None:
         """Create a new instance referencing an *existing* catalog entry —
-        the "create instance from a downloaded model" flow (RM-51)."""
+        the "create instance from a downloaded model" flow (RM-51).
+
+        PRM-110: modality is not a parameter. The catalog entry already has the
+        answer and every instance of a model must share it, so accepting one
+        here could only be used to disagree — which is the bug PRM-109 closed
+        on the read side. Taken from the catalog instead.
+        """
         with self._lock:
             catalog = self._catalog.get(model_id)
         if catalog is None:
             raise ValueError(f"No catalog entry {model_id!r} — download or register it first.")
+        modality = catalog.modality
         _validate_id(id)
         _validate_backend(backend)
-        _validate_modality(modality)
-        _assert_modality_matches_file(catalog.path, modality)
         _validate_path(catalog.path, backend)
         _validate_path(catalog.vae_path, backend)
         _validate_path(catalog.clip_l_path, backend)
