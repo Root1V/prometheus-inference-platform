@@ -4333,6 +4333,29 @@ noticed. The four idempotency ones reach `_problem()` as `outcome.kind` rather t
 the guard reads them from where they are declared.
 
 
+## PRM-117 — Rows a bug billed as unpriced get the price that was already in force
+
+**Why**: found by reading the dashboard, not the code — models with real traffic showing `-` in
+the total. Two causes, and only one was a defect. Most were simply never priced, where `-` is
+correct and deliberate ("no price configured" is not "free"). But 95 rows of
+`qwen3-embedding-0-6b-q8-0-local` were billed null while a price for it existed the whole time:
+the rows were keyed on the model's public name and `model_price_config` on the catalog id, so
+the lookup missed. That is PRM-113's bug, and `reunify_usage_history.py` re-keyed those rows
+without ever recomputing what they cost.
+
+**Scope**: `scripts/reprice_unpriced_usage.py`, dry-run by default like the reunify tool. The
+part worth having is what it refuses: RM-60 prices a row at the rate in force when it was used
+and never re-rates it, so a row older than its model's price is reported and left alone. That
+check earned itself on the first run — a `sd-turbo-test` image row predates its own price by
+eight hours, so 95 of the 96 candidates were repairable and the 96th was not.
+
+**Two things it deliberately does not do.** It adds to `usage_daily` rather than rebuilding it
+from `usage_events`: 41 of this deployment's 72 daily rows predate the events table entirely, so
+a rebuild would silently zero the history that only lives in the rollup. And it leaves alone the
+5 daily rows whose sub-costs already disagree with their total — a separate pre-existing defect,
+not this tool's business; the test asserts the count does not grow.
+
+
 Append a new row to the table with the next `RM-NN` id and a new `## RM-NN — ...` section
 below, following the same shape (Why / Scope). Re-sort the table if the new item's
 priority isn't "last."
