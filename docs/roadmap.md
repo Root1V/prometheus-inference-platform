@@ -4285,6 +4285,30 @@ change does not affect them but explicitly declined to answer for Aeon, who do i
 row counts. Not built until they answer; the header above already covers the case a caller hits
 today.
 
+## PRM-115 — The usage row reports the name the caller used
+
+**Why**: PRM-113 re-keyed usage on the immutable catalog id so a rename could not split a
+model's billing history. That was right for the ledger and wrong at one exit: `GET
+/v1/usage/{request_id}` returned the catalog id as `model`. Axonium measured it against the
+deployment and found the row disagreeing with the response about the same request — and the
+value is not resolvable, because `GET /v1/models` advertises the slug and the catalog id is
+deliberately unlisted (RM-70: a model picker should not show replicas as models). They export
+`RequestUsage.model` in all three SDKs, so the field reached every consumer returning something
+with no use.
+
+**Scope**: the endpoint returns `model_slug` — stored per row at write time, so a row keeps the
+name in force when it was billed — falling back to the catalog id where the column is null. The
+guide's §3.8 needed no change: the fix is what it already documented. The export keeps both
+columns and is the surface where the stable id belongs; a caller joining the two now joins on
+`model_slug`, which is why a second identifier here would have bought nothing.
+
+**Not fixed, and the real cause**: our stable ids look like names — `qwen3-0-6b-iq4-nl-local-2`
+is a model, `qwen3-0-6b-iq4-nl-local-1` an instance of it, `qwen3-0.6b` the public name. Stripe
+(`price_1ABC` + nickname) and Docker (digest + tag) avoid this by making the id opaque; ours is
+a fossilised old slug, and Axonium misread the `instance_id` in the same payload for exactly
+that reason. Making catalog ids opaque is a migration nobody has asked for yet.
+
+
 Append a new row to the table with the next `RM-NN` id and a new `## RM-NN — ...` section
 below, following the same shape (Why / Scope). Re-sort the table if the new item's
 priority isn't "last."

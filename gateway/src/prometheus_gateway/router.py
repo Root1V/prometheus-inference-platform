@@ -1102,7 +1102,14 @@ def create_router(registry: ModelRegistry, pool: "BackendPool") -> APIRouter:
 
         return {
             "request_id": event.request_id,
-            "model": event.model_id,
+            # PRM-115: the name the caller used, not the catalog id PRM-113 put
+            # in `model_id`. Reconciling means comparing this against the
+            # `model` the inference response returned, and the catalog id is
+            # neither that value nor one `GET /v1/models` advertises — so a
+            # caller could not resolve it to anything. `model_slug` is stored
+            # at write time, so a row keeps the name in force when it was
+            # billed even after the model is renamed.
+            "model": event.model_slug or event.model_id,
             "request_kind": event.request_kind,
             "usage": {
                 "prompt_tokens": event.prompt_tokens,
