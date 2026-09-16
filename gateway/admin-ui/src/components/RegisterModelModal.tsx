@@ -95,7 +95,17 @@ function stateFromInstance(instance: InstanceEntry): FormState {
 const inputClass =
   "w-full rounded-lg border border-border bg-background px-3 py-2 text-sm text-text focus:border-primary focus:outline-none";
 
-function Field({ label, required, children }: { label: string; required?: boolean; children: ReactNode }) {
+function Field({
+  label,
+  required,
+  hint,
+  children,
+}: {
+  label: string;
+  required?: boolean;
+  hint?: string;
+  children: ReactNode;
+}) {
   return (
     <label className="block text-sm text-text">
       <span className="mb-1 block text-xs font-medium text-text-muted">
@@ -103,6 +113,7 @@ function Field({ label, required, children }: { label: string; required?: boolea
         {required && <span className="text-red-500"> *</span>}
       </span>
       {children}
+      {hint && <span className="mt-1 block text-xs text-text-muted">{hint}</span>}
     </label>
   );
 }
@@ -180,7 +191,7 @@ export function RegisterModelModal({
       const body: UpdateModelRequest = {
         port: Number(form.port),
         backend: form.backend,
-        modality: form.modality,
+        // PRM-109: not modality — the server refuses it on an instance now.
         discovery: form.discovery,
         path: form.path,
         context_length: Number(form.context_length) || undefined,
@@ -351,18 +362,35 @@ export function RegisterModelModal({
                 ))}
               </select>
             </Field>
-            <Field label="Modality">
-              <select
-                value={form.modality}
-                onChange={(e) => update("modality", e.target.value as Modality)}
-                className={inputClass}
-              >
-                {MODALITIES.map((m) => (
-                  <option key={m} value={m}>
-                    {m}
-                  </option>
-                ))}
-              </select>
+            {/* PRM-109: editable while registering — that call creates the
+                model as well as the instance, so there is nothing to inherit
+                from yet. Read-only when editing an existing instance: modality
+                belongs to the model, every replica shares one answer, and the
+                server refuses the field here. The pencil on the Models page is
+                where it changes. */}
+            <Field
+              label="Modality"
+              hint={
+                isEditing
+                  ? "Belongs to the model — change it from the Models page so every instance agrees."
+                  : undefined
+              }
+            >
+              {isEditing ? (
+                <input value={form.modality} readOnly disabled className={inputClass} />
+              ) : (
+                <select
+                  value={form.modality}
+                  onChange={(e) => update("modality", e.target.value as Modality)}
+                  className={inputClass}
+                >
+                  {MODALITIES.map((m) => (
+                    <option key={m} value={m}>
+                      {m}
+                    </option>
+                  ))}
+                </select>
+              )}
             </Field>
             <Field label="Family">
               <input

@@ -1,6 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { apiClient } from "./client";
 import { INSTANCES_KEY } from "./instances";
+import type { Modality } from "../types/instance";
 import type {
   DownloadEntry,
   HfFile,
@@ -153,6 +154,31 @@ export function useDeleteDownloadedModel() {
       queryClient.invalidateQueries({ queryKey: INSTANCES_KEY });
       queryClient.invalidateQueries({ queryKey: ["downloads"] });
       queryClient.invalidateQueries({ queryKey: CATALOG_KEY });
+    },
+  });
+}
+
+/** PRM-109: edit the model itself — not one of its instances.
+ *
+ * Modality is a property of the weights, so every replica inherits one answer.
+ * It used to be editable per instance, which meant two replicas of the same
+ * model could route differently and correcting a mistake meant finding every
+ * one of them. `PATCH /v1/backends/{id}` now refuses the field outright. */
+export function useUpdateCatalogEntry() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async ({
+      node,
+      modelId,
+      data,
+    }: {
+      node: string;
+      modelId: string;
+      data: { name?: string; modality?: Modality };
+    }) => (await apiClient.patch<ModelCatalogEntry>(`/nodes/${node}/catalog/${modelId}`, data)).data,
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: CATALOG_KEY });
+      queryClient.invalidateQueries({ queryKey: INSTANCES_KEY });
     },
   });
 }

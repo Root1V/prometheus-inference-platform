@@ -1,0 +1,129 @@
+import { Pencil, X } from "lucide-react";
+import { useState, type ReactNode } from "react";
+import { createPortal } from "react-dom";
+import { useUpdateCatalogEntry } from "../api/models";
+import { useToast } from "../context/ToastContext";
+import { cn } from "../lib/cn";
+import { getErrorMessage } from "../lib/errors";
+import type { Modality } from "../types/instance";
+import type { ModelCatalogEntry } from "../types/models";
+
+interface EditModelModalProps {
+  open: boolean;
+  model: ModelCatalogEntry;
+  node: string;
+  onClose: () => void;
+}
+
+const inputClass =
+  "w-full rounded-lg border border-border bg-background px-3 py-2 text-sm text-text focus:border-primary focus:outline-none";
+
+const MODALITIES: Modality[] = ["text", "vision", "embedding", "image", "rerank"];
+
+function Field({ label, hint, children }: { label: string; hint?: string; children: ReactNode }) {
+  return (
+    <label className="block text-sm text-text">
+      <span className="mb-1 block text-xs font-medium text-text-muted">{label}</span>
+      {children}
+      {hint && <span className="mt-1 block text-xs text-text-muted">{hint}</span>}
+    </label>
+  );
+}
+
+/**
+ * PRM-109: modality is edited here, on the model, and nowhere else.
+ *
+ * It is a property of the weights, so every instance of this model inherits the
+ * same answer — which is what the instance form used to let you break. The
+ * server still has the final say: a file that declares a classifier head or a
+ * pooling type refuses a modality that contradicts it (PRM-107), so a wrong
+ * choice here comes back as an error rather than as a model that answers with
+ * confident nonsense.
+ */
+export function EditModelModal({ open, model, node, onClose }: EditModelModalProps) {
+  const { showToast } = useToast();
+  const updateCatalog = useUpdateCatalogEntry();
+  const [modality, setModality] = useState<Modality>(model.modality || "text");
+
+  if (!open) return null;
+
+  const handleSave = () => {
+    updateCatalog.mutate(
+      { node, modelId: model.id, data: { modality } },
+      {
+        onSuccess: () => {
+          showToast(`${model.id} is now ${modality}`, "success");
+          onClose();
+        },
+        onError: (err) => showToast(getErrorMessage(err), "error"),
+      },
+    );
+  };
+
+  const runningWarning = model.instance_ids.length > 0;
+
+  return createPortal(
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 px-4 py-8">
+      <div className="w-full max-w-md rounded-xl bg-surface p-6 shadow-lg">
+        <div className="mb-4 flex items-center justify-between">
+          <h2 className="flex items-center gap-2 text-lg font-semibold text-text">
+            <Pencil size={18} />
+            Edit model — {model.id}
+          </h2>
+          <button type="button" onClick={onClose} aria-label="Close">
+            <X size={18} className="text-text-muted" />
+          </button>
+        </div>
+
+        <div className="space-y-4">
+          <Field
+            label="Modality"
+            hint="Applies to every instance of this model — it describes the weights, not a process."
+          >
+            <select
+              value={modality}
+              onChange={(e) => setModality(e.target.value as Modality)}
+              className={inputClass}
+            >
+              {MODALITIES.map((m) => (
+                <option key={m} value={m}>
+                  {m}
+                </option>
+              ))}
+            </select>
+          </Field>
+
+          {runningWarning && (
+            <p className="rounded-lg border border-border bg-background px-3 py-2 text-xs text-text-muted">
+              {model.instance_ids.length === 1 ? "1 instance" : `${model.instance_ids.length} instances`}{" "}
+              already exist. Restart them after saving — the flags a backend starts with depend on
+              this, so a running process keeps whatever it was launched as.
+            </p>
+          )}
+        </div>
+
+        <div className="mt-6 flex justify-end gap-3">
+          <button
+            type="button"
+            onClick={onClose}
+            className="rounded-lg border border-border px-4 py-2 text-sm font-medium text-text hover:bg-background"
+          >
+            Cancel
+          </button>
+          <button
+            type="button"
+            onClick={handleSave}
+            disabled={updateCatalog.isPending || modality === model.modality}
+            className={cn(
+              "rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:opacity-90",
+              "disabled:cursor-not-allowed disabled:opacity-50",
+            )}
+          >
+            {updateCatalog.isPending ? "Saving…" : "Save"}
+          </button>
+        </div>
+      </div>
+    </div>,
+    document.body,
+  );
+}

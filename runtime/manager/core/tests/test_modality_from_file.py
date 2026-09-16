@@ -194,3 +194,43 @@ def test_registering_an_instance_with_the_wrong_modality_is_refused(tmp_path):
                 backend="llama_cpp",
             )
         )
+
+
+# ── PRM-109: the model owns it, not the instance ───────────────────────────
+
+
+def test_every_instance_of_a_model_reports_the_catalog_modality(tmp_path):
+    """RM-70 said putting modality on the model row made replicas disagreeing
+    about it impossible. It did not: the entry handed to the gateway read the
+    instance copy, so two replicas of one model could route differently. This
+    is that guarantee, finally enforced where it is read.
+    """
+    from prometheus_manager_core.registry import CatalogEntry, Registry
+
+    db = tmp_path / "reg.db"
+    reg = Registry(db)
+    reg.add_catalog(CatalogEntry(id="rr-model", path=_reranker(tmp_path), downloaded=True))
+    for port in (9101, 9102):
+        reg.add_instance(
+            id=f"rr-{port}",
+            model_id="rr-model",
+            port=port,
+            backend="llama_cpp",
+            modality="rerank",
+            context_length=4096,
+        )
+
+    # Force the instance rows out of step the only way left — straight at the
+    # database, which is what a stale row from before this change looks like.
+    import sqlite3
+
+    raw = sqlite3.connect(db)
+    raw.execute("UPDATE instances SET modality = 'text' WHERE id = 'rr-9101'")
+    raw.commit()
+    raw.close()
+
+    reloaded = Registry(db)
+    served = {e.id: e.modality for e in reloaded.entries}
+    assert served == {"rr-9101": "rerank", "rr-9102": "rerank"}, (
+        "an instance row disagreeing with its model must not change how it routes"
+    )

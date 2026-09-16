@@ -359,6 +359,29 @@ def create_admin_router(manager_client: ManagerApiClient) -> APIRouter:
             return _proxy_error_response(request, exc)
         return _passthrough(resp)
 
+    @router.patch("/admin/api/nodes/{node}/catalog/{model_id}")
+    async def update_catalog_entry(
+        node: str, model_id: str, body: dict[str, Any], request: Request
+    ) -> Response:
+        """PRM-109: edit the model itself — its name and its modality.
+
+        Separate from the instance PATCH below on purpose. Modality is a
+        property of the weights, so every replica inherits one answer; editing
+        it per instance let two replicas of one model route differently.
+        """
+        if (forbidden := _require_scope(request, "admin:write")) is not None:
+            return forbidden
+        node_url = await _resolve_node(request, node)
+        if node_url is None:
+            return _problem(
+                request, 400, "unknown-node", "Unknown Node", f"Node {node!r} is not configured."
+            )
+        try:
+            resp = await manager_client.patch(node_url, f"/v1/models/{model_id}", json=body)
+        except Exception as exc:
+            return _proxy_error_response(request, exc)
+        return _passthrough(resp)
+
     @router.patch("/admin/api/nodes/{node}/models/{model_id}")
     async def update_model(
         node: str, model_id: str, body: dict[str, Any], request: Request

@@ -1,4 +1,4 @@
-import { ArrowDown, ArrowUp, ArrowUpDown, Trash2 } from "lucide-react";
+import { ArrowDown, ArrowUp, ArrowUpDown, Pencil, Trash2 } from "lucide-react";
 import { useMemo, useState } from "react";
 import { useDeleteDownloadedModel } from "../api/models";
 import { useToast } from "../context/ToastContext";
@@ -9,6 +9,7 @@ import type { InstanceEntry } from "../types/instance";
 import type { ModelCatalogEntry } from "../types/models";
 import { Badge } from "./Badge";
 import { ConfirmDialog } from "./ConfirmDialog";
+import { EditModelModal } from "./EditModelModal";
 import { TableSearchInput } from "./TableSearchInput";
 
 type SortKey = "family" | "size" | "instances";
@@ -64,6 +65,7 @@ function DownloadedModelRow({
 }) {
   const { showToast } = useToast();
   const [confirmDelete, setConfirmDelete] = useState(false);
+  const [editing, setEditing] = useState(false);
   const deleteDownloaded = useDeleteDownloadedModel();
   const hasInstances = model.instance_ids.length > 0;
 
@@ -79,6 +81,11 @@ function DownloadedModelRow({
         <td className="px-4 py-3 text-text-muted">{rowNumber}</td>
         <td className="px-4 py-3 font-medium text-text">{model.id}</td>
         <td className="px-4 py-3 text-text-muted">{model.family || "—"}</td>
+        {/* PRM-109: shown on the model, because that is what it belongs to.
+            Every instance inherits this one answer. */}
+        <td className="px-4 py-3">
+          <Badge>{model.modality || "—"}</Badge>
+        </td>
         <td className="px-4 py-3">
           <Badge>{model.quantization || "—"}</Badge>
         </td>
@@ -88,6 +95,18 @@ function DownloadedModelRow({
         </td>
         <td className="px-4 py-3">
           <div className="flex items-center gap-1">
+            <button
+              type="button"
+              title="Edit model"
+              aria-label={`Edit ${model.id}`}
+              onClick={(e) => {
+                e.stopPropagation();
+                setEditing(true);
+              }}
+              className="rounded-md p-1.5 text-text-muted transition-colors hover:bg-background hover:text-text"
+            >
+              <Pencil size={16} />
+            </button>
             <button
               type="button"
               title="Delete downloaded file"
@@ -104,6 +123,12 @@ function DownloadedModelRow({
           </div>
         </td>
       </tr>
+      <EditModelModal
+        open={editing}
+        model={model}
+        node={node}
+        onClose={() => setEditing(false)}
+      />
       <ConfirmDialog
         open={confirmDelete}
         title={`Delete ${model.id}?`}
@@ -232,6 +257,7 @@ export function DownloadedModelsTable({
             <th className="px-4 py-3 font-medium">
               <SortableHeader label="Family" sortKey="family" {...sortProps} />
             </th>
+            <th className="px-4 py-3 font-medium">Modality</th>
             <th className="px-4 py-3 font-medium">Quantization</th>
             <th className="px-4 py-3 font-medium">
               <SortableHeader label="Size" sortKey="size" {...sortProps} />

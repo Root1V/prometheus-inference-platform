@@ -3738,6 +3738,33 @@ registration paths and at the update path, which is the one that exists to *corr
 **Verified live** with the exact original mistake: registering the reranker as `text` is now
 refused with a message naming the flag to use; registering it as `rerank` succeeds.
 
+## PRM-109 — modality belongs to the model, and is edited there (done)
+
+**Why**: noticed from the UI — the modality dropdown sat on the Instances page, when modality
+describes the weights. Checking it found the UI was not the problem, it was the symptom.
+
+The column exists on **both** tables. RM-70 put it on `models` with a comment saying that made
+"replicas disagreeing about it impossible" — but the `RegistryEntry` handed to the gateway is
+built with `modality=inst_raw["modality"]` while every other property of the weights around it
+(`path`, `family`, `quantization`, `mmproj_path`, `slug`) comes from the catalog. Modality was
+the only one on the wrong side, so the guarantee never held: two replicas of one model could
+route differently, and correcting PRM-106's reranker meant updating two tables by hand.
+
+**Shape**:
+- The entry the gateway receives reads `catalog.modality`. One source of truth where it is
+  actually read.
+- `PATCH /v1/backends/{id}` **refuses** `modality` rather than ignoring it, and the message names
+  the model to patch instead — a silently dropped field is how you think you changed something.
+- New `PATCH /v1/models/{id}` for the catalog (name and modality only), proxied by the gateway at
+  `/admin/api/nodes/{node}/catalog/{id}`. PRM-107's file veto applies here too: moving the control
+  does not make a wrong answer correct.
+- Dashboard: a Modality column and a pencil on the Models page; read-only on the instance form,
+  with a hint pointing at Models. Still editable while *registering*, because that call creates
+  the model too — there is nothing to inherit from yet.
+
+**Not done**: `instances.modality` still exists and is now ignored on read. Dropping it means
+recreating the table in SQLite, which is not worth it for a column nothing reads.
+
 ## PRM-108 — modality is chosen in the dashboard, not guessed (done)
 
 **Why**: PRM-107 stops a registration the file can contradict, but two gaps stayed open. The

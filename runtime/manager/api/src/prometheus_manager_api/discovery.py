@@ -45,7 +45,12 @@ from prometheus_manager_core.hf_discovery import (
     shard_filenames,
 )
 from prometheus_manager_core.lifecycle import deregister_model
-from prometheus_manager_core.registry import CatalogEntry, Registry
+from prometheus_manager_core.registry import (
+    CatalogEntry,
+    Registry,
+    _assert_modality_matches_file,
+    _validate_modality,
+)
 from prometheus_manager_core.scanner import scan
 from prometheus_manager_core.telemetry import get_tracer
 
@@ -215,6 +220,54 @@ async def update_models_config(
 
 
 # ── GET /v1/models — catalog listing ─────────────────────────────────────────
+
+
+@router.patch("/v1/models/{model_id}", tags=["models"])
+async def update_model_catalog(
+    model_id: str,
+    body: dict[str, Any],
+    request: Request,
+    _claims: Annotated[Claims, Depends(require_backend_registry_write)],
+) -> dict[str, Any]:
+    """Edit a catalog entry — the model, not one of its instances.
+
+    PRM-109: modality is a property of the weights, so it belongs to the model
+    and every instance of it inherits the same answer. It used to be editable
+    per instance, which meant two replicas of one model could route differently
+    and a correction had to be applied in two places. This is now the only way
+    to change it; PATCH /v1/backends/{id} refuses the field and says so.
+
+    Deliberately narrow: `name` and `modality` only. `path`, `family` and
+    `quantization` come from the file and the download flow, and `slug` has its
+    own single-use rule (RM-70).
+    """
+    registry: Registry = request.app.state.registry
+    catalog = registry.get_catalog(model_id)
+    if catalog is None:
+        raise _problem(404, "not-found", "Not Found", f"Model {model_id!r} is not in the catalog.")
+
+    updates: dict[str, Any] = {}
+    if "name" in body:
+        updates["name"] = str(body["name"]).strip()
+    if "modality" in body:
+        modality = str(body["modality"]).strip()
+        try:
+            _validate_modality(modality)
+            # PRM-107: and the file still gets a veto. Moving the control to the
+            # model does not make a wrong answer any more correct.
+            _assert_modality_matches_file(catalog.path, modality)
+        except ValueError as exc:
+            raise _problem(400, "invalid-update", "Invalid Update", str(exc)) from exc
+        updates["modality"] = modality
+
+    if not updates:
+        raise _problem(
+            400, "invalid-update", "Invalid Update", "Nothing to update: send name or modality."
+        )
+
+    registry.update_catalog(model_id, **updates)
+    entry = registry.get_catalog(model_id)
+    return entry.to_dict() if entry else {}
 
 
 @router.get("/v1/models", tags=["models"])

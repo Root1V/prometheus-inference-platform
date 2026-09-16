@@ -815,7 +815,14 @@ class Registry:
                 label=inst_raw["label"],
                 port=inst_raw["port"],
                 backend=inst_raw["backend"],
-                modality=inst_raw["modality"],
+                # PRM-109: from the catalog, like every other property of the
+                # weights around it. RM-70 put modality on the model row saying
+                # it made replicas disagreeing about it impossible — but the
+                # entry handed to the gateway kept reading the instance copy, so
+                # the guarantee never held and two replicas of one model could
+                # route differently. The instance column stays for now and is
+                # ignored; it is written from the catalog value on every save.
+                modality=(catalog.modality if catalog else inst_raw["modality"]),
                 context_length=inst_raw["context_length"],
                 discovery=bool(inst_raw["discovery"]),
                 rss_estimate_mb=inst_raw["rss_estimate_mb"],

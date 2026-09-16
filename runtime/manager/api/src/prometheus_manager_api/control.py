@@ -55,7 +55,9 @@ _UPDATABLE_FIELDS = frozenset(
         "family",
         "quantization",
         "backend",
-        "modality",
+        # PRM-109: "modality" is deliberately absent. It belongs to the model,
+        # not to one of its processes — see the refusal below, which explains
+        # where to change it instead of silently dropping the field.
         "mmproj_path",
         "discovery",
         "hf_repo",
@@ -233,11 +235,22 @@ async def update_backend(
                 span.set_attribute("http.status_code", 400)
                 raise _problem(400, "invalid-update", "Invalid Update", str(exc)) from exc
 
+        if "modality" in body:
+            span.set_attribute("http.status_code", 400)
+            raise _problem(
+                400,
+                "invalid-update",
+                "Invalid Update",
+                "Modality belongs to the model, not to one of its instances — every "
+                f"replica must agree on it. Use PATCH /v1/models/{entry.model_id or model_id} "
+                "instead.",
+            )
+
         updates = {k: v for k, v in body.items() if k in _UPDATABLE_FIELDS}
         merged_backend = updates.get("backend", entry.backend)
         merged_path = updates.get("path", entry.path)
         merged_port = updates.get("port", entry.port)
-        merged_modality = updates.get("modality", entry.modality)
+        merged_modality = entry.modality
         merged_vae_path = updates.get("vae_path", entry.vae_path)
         merged_clip_l_path = updates.get("clip_l_path", entry.clip_l_path)
         merged_t5xxl_path = updates.get("t5xxl_path", entry.t5xxl_path)
