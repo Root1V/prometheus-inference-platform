@@ -4309,6 +4309,30 @@ a fossilised old slug, and Axonium misread the `instance_id` in the same payload
 that reason. Making catalog ids opaque is a migration nobody has asked for yet.
 
 
+## PRM-116 — The guide stops denying the idempotency it documents
+
+**Why**: §6.2 — the section an SDK author reads to decide whether a retry is safe — stated
+*«There is no idempotency-key mechanism in this API»*, while §3.8 of the same document described
+`X-Idempotent-Replay-Of`. Stale text that survived every revision since RM-78 built the thing it
+denies. An SDK following it never sends a key and bills a second generation on every retry.
+Axonium found it, and were unharmed only because they build from their own recorded catalog
+rather than our guide — which is the part worth worrying about: the guide had been wrong for
+weeks and the reason it surfaced is that a reader had stopped trusting it.
+
+**Scope**: §6.2's bullet now says what is actually true. §3.7 documents the request headers,
+which appeared nowhere: `Idempotency-Key` (shape, fingerprinting, streaming, the 24h window) and
+`X-Prometheus-Instance` (pinning, and that it never falls back). The response-header list gains
+the four it was missing. §3.6's example uses the reranker's public slug instead of its catalog
+id.
+
+**And the guard, which is the actual fix**: a test compares every `type` suffix the gateway
+raises against the guide's §5.2 table, in the same shape as A-13's export-columns guard. It
+found **ten** undocumented — the four idempotency refusals Axonium named, plus `unknown-instance`,
+`inconsistent-model-group`, `unauthorized`, and the export's three range errors, which nobody had
+noticed. The four idempotency ones reach `_problem()` as `outcome.kind` rather than a literal, so
+the guard reads them from where they are declared.
+
+
 Append a new row to the table with the next `RM-NN` id and a new `## RM-NN — ...` section
 below, following the same shape (Why / Scope). Re-sort the table if the new item's
 priority isn't "last."
