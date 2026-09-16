@@ -983,6 +983,12 @@ def create_router(registry: ModelRegistry, pool: "BackendPool") -> APIRouter:
                 # now, with the column list.
                 "request_id",
                 "cached_prompt_tokens",
+                # PRM-113: appended, by the same rule. `model_id` is now the
+                # catalog id, which never changes — it used to be the slug, so
+                # naming a model split its history in two. This is the name the
+                # model answered to when the row was written, which is what an
+                # invoice should show.
+                "model_slug",
             ]
         )
         total_prompt = total_completion = total_images = total_cached = 0
@@ -1009,6 +1015,7 @@ def create_router(registry: ModelRegistry, pool: "BackendPool") -> APIRouter:
                     ev.termination_reason,
                     ev.request_id or "",
                     ev.cached_prompt_tokens,
+                    ev.model_slug or ev.model_id,
                 ]
             )
             total_prompt += ev.prompt_tokens
@@ -1042,6 +1049,9 @@ def create_router(registry: ModelRegistry, pool: "BackendPool") -> APIRouter:
                 "",
                 # PRM-100: cached tokens do total, being a count.
                 total_cached,
+                # PRM-113: blank, like the other per-request labels. A total
+                # spans whatever names the model went by.
+                "",
             ]
         )
         filename = f"usage-{start_day.isoformat()}-to-{end_day.isoformat()}.csv"
@@ -1359,6 +1369,9 @@ def create_router(registry: ModelRegistry, pool: "BackendPool") -> APIRouter:
                         if body.max_tokens is not None
                         else max(0, entry.context_length - estimated_input_tokens)
                     )
+                    # PRM-113: the reserve runs before a replica is chosen, so
+                    # only the slug is in scope. _lookup() tries the slug too,
+                    # so a table written against either name still reserves.
                     est_cost = pricing.get_pricing_table().estimate_cost_usd(
                         resolution.model_key, estimated_input_tokens, worst_case_completion
                     )
@@ -1429,6 +1442,7 @@ def create_router(registry: ModelRegistry, pool: "BackendPool") -> APIRouter:
                         entry.id,
                         trace_id,
                         served_name=resolution.model_key,
+                        billing_id=_billing_id(entry),
                         served_by_headers=_served_by_headers(entry),
                         budget_redis=budget_redis,
                         reservation=reservation,
@@ -1596,9 +1610,10 @@ def create_router(registry: ModelRegistry, pool: "BackendPool") -> APIRouter:
                     # RM-32: record persisted daily usage
                     await _record_usage(
                         claims,
-                        resolution.model_key,
+                        _billing_id(entry),
                         prompt_tokens,
                         completion_tokens,
+                        model_slug=resolution.model_key,
                         instance_id=entry.id,
                         request_id=request_id,
                         cached_prompt_tokens=cached_prompt_tokens,
@@ -1607,7 +1622,10 @@ def create_router(registry: ModelRegistry, pool: "BackendPool") -> APIRouter:
                     # RM-60: settle the spend-cap reservation with the real cost
                     if reservation is not None and reservation.allowed and budget_redis is not None:
                         actual_cost = pricing.get_pricing_table().estimate_cost_usd(
-                            resolution.model_key, prompt_tokens, completion_tokens
+                            _billing_id(entry),
+                            prompt_tokens,
+                            completion_tokens,
+                            model_slug=resolution.model_key,
                         )
                         if actual_cost is not None:
                             newly_crossed = await BudgetTracker(budget_redis).settle(
@@ -1949,16 +1967,17 @@ def create_router(registry: ModelRegistry, pool: "BackendPool") -> APIRouter:
         # accounting was blind to this entire request type.
         await _record_usage(
             claims,
-            resolution.model_key,
+            _billing_id(entry),
             embeddings_prompt_tokens,
             0,
             request_kind="embedding",
+            model_slug=resolution.model_key,
             instance_id=entry.id,
             request_id=getattr(getattr(request, "state", None), "request_id", None),
         )
         if budget_redis is not None and reservation is not None and reservation.allowed:
             actual_cost = pricing.get_pricing_table().estimate_cost_usd(
-                resolution.model_key, embeddings_prompt_tokens, 0
+                _billing_id(entry), embeddings_prompt_tokens, 0, model_slug=resolution.model_key
             )
             if actual_cost is not None:
                 newly_crossed = await BudgetTracker(budget_redis).settle(
@@ -2236,16 +2255,17 @@ def create_router(registry: ModelRegistry, pool: "BackendPool") -> APIRouter:
 
         await _record_usage(
             claims,
-            resolution.model_key,
+            _billing_id(entry),
             rerank_prompt_tokens,
             0,
             request_kind="rerank",
+            model_slug=resolution.model_key,
             instance_id=entry.id,
             request_id=getattr(getattr(request, "state", None), "request_id", None),
         )
         if budget_redis is not None and reservation is not None and reservation.allowed:
             actual_cost = pricing.get_pricing_table().estimate_cost_usd(
-                resolution.model_key, rerank_prompt_tokens, 0
+                _billing_id(entry), rerank_prompt_tokens, 0, model_slug=resolution.model_key
             )
             if actual_cost is not None:
                 newly_crossed = await BudgetTracker(budget_redis).settle(
@@ -2519,17 +2539,18 @@ def create_router(registry: ModelRegistry, pool: "BackendPool") -> APIRouter:
         # usage/cost accounting was blind to this entire request type.
         await _record_usage(
             claims,
-            resolution.model_key,
+            _billing_id(entry),
             0,
             0,
             request_kind="image",
             image_count=num_images,
+            model_slug=resolution.model_key,
             instance_id=entry.id,
             request_id=getattr(getattr(request, "state", None), "request_id", None),
         )
         if budget_redis is not None and reservation is not None and reservation.allowed:
             actual_cost = pricing.get_pricing_table().estimate_image_cost_usd(
-                resolution.model_key, num_images
+                _billing_id(entry), num_images, model_slug=resolution.model_key
             )
             if actual_cost is not None:
                 newly_crossed = await BudgetTracker(budget_redis).settle(
@@ -2584,6 +2605,7 @@ async def _record_usage(
     termination_reason: str = db.TERMINATION_COMPLETE,
     request_id: str | None = None,
     cached_prompt_tokens: int = 0,
+    model_slug: str | None = None,
 ) -> None:
     """Write an immutable usage_events row + persisted per-day rollup counters.
 
@@ -2610,9 +2632,25 @@ async def _record_usage(
             termination_reason=termination_reason,
             request_id=request_id,
             cached_prompt_tokens=cached_prompt_tokens,
+            model_slug=model_slug,
         )
     except Exception as exc:
         logger.warning("usage.db_write_error", error=str(exc))
+
+
+def _billing_id(entry: ModelEntry) -> str:
+    """The identifier a usage row is keyed on — PRM-113.
+
+    The catalog id, which never changes. Usage used to be keyed on the slug,
+    and RM-70 lets an operator name a model once: doing so split its billing
+    history into two buckets under two names, and made it miss its pricing.yaml
+    entry so it silently billed nothing from that point on. Both were found in
+    this deployment's own data.
+
+    Falls back to the instance id for an entry with no catalog row, matching
+    how the registry itself resolves it.
+    """
+    return entry.model_id or entry.id
 
 
 def _estimate_text_tokens(text_input: str | list[str]) -> int:
@@ -2662,6 +2700,10 @@ async def _stream_response(
     # this, while metrics and the circuit breaker stay on backend_id — the
     # replica that actually did the work.
     served_name: str | None = None,
+    # PRM-113: the stable catalog id this request bills against. `served_name`
+    # is the slug, which is what the answer is labelled with; they differ once
+    # a model has been named.
+    billing_id: str | None = None,
     budget_redis: Any = None,
     reservation: "BudgetReservation | None" = None,
     alert_thresholds_percent: list[int] | None = None,
@@ -2974,9 +3016,10 @@ async def _stream_response(
                 # RM-32: persisted daily usage for streaming
                 await _record_usage(
                     claims,
-                    billed_name,
+                    billing_id or billed_name,
                     prompt_tokens,
                     completion_tokens,
+                    model_slug=billed_name,
                     instance_id=backend_id,
                     termination_reason=termination_reason,
                     request_id=request_id,

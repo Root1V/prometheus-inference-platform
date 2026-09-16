@@ -1,6 +1,6 @@
 # Prometheus Gateway — SDK Integration Guide
 
-**Revision**: 2026-09-15a · `b2d924d`
+**Revision**: 2026-09-15b · `e636e51`
 <!-- Consumers vendor this file and diff it. The date and commit above are what to quote
      when asking whether a copy is current; they change whenever this document does. -->
 
@@ -600,20 +600,38 @@ Columns, in order:
 ```
 generated_at, period_start, period_end, client_id, recorded_at, model_id, request_kind,
 prompt_tokens, completion_tokens, image_count, prompt_price_per_1m, completion_price_per_1m,
-image_price_each, cost_usd, interrupted, termination_reason, request_id, cached_prompt_tokens
+image_price_each, cost_usd, interrupted, termination_reason, request_id, cached_prompt_tokens,
+model_slug
 ```
 
 **New columns are appended at the end. Existing columns never move and never change meaning.**
 That is a commitment, not a description of the current file: a consumer reading by position keeps
 working when the file grows, and one reading by name gains whatever was added. It is the rule we
 have followed each time — `interrupted`, then `termination_reason`, then `request_id` and
-`cached_prompt_tokens` — and it lived only in correspondence until it was written here.
+`cached_prompt_tokens`, now `model_slug` — and it lived only in correspondence until it was
+written here.
+
+**`model_id` changed meaning, and this is the one time we are telling you that instead of
+appending.** It is now the model's **catalog id**, which never changes. It used to be the
+model's public name — the same string you send as `model` — and that name can be set by an
+operator, so naming a model split its billing history into two groups under two names and made
+it stop matching its configured price. `model_slug` is the new column: the public name the model
+answered to when that row was written.
+
+What this means for you:
+
+- **Group by `model_id`** for anything that has to add up across time. It is stable.
+- **Show `model_slug`** to a person: it is what they sent, and what the model was called then.
+- Rows written before this change have the old public name in **both** columns, which is exactly
+  what it was called at the time — so grouping by `model_id` reunites a history that a rename had
+  split only if the rename happened after this release. We did not rewrite old rows.
 
 One row per `usage_events` row, not pre-aggregated, so a rate change mid-period is visible per
 request. The last row is a `TOTAL` reconciliation line: columns that genuinely sum do
 (`prompt_tokens`, `completion_tokens`, `image_count`, `cached_prompt_tokens`, `cost_usd`), and
 columns that describe a single request are left blank rather than given an invented total
-(`interrupted`, `termination_reason`, `request_id`).
+(`interrupted`, `termination_reason`, `request_id`, `model_slug` — a total spans whatever names
+the model went by).
 
 `cached_prompt_tokens` is a **subset** of `prompt_tokens`, matching
 `prompt_tokens_details.cached_tokens` in the inference response — adding the two would double

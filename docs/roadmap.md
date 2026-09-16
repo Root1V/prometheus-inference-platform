@@ -3738,6 +3738,57 @@ registration paths and at the update path, which is the one that exists to *corr
 **Verified live** with the exact original mistake: registering the reranker as `text` is now
 refused with a message naming the flag to use; registering it as `rerank` succeeds.
 
+## PRM-114 — the rename field asks the server instead of guessing (done)
+
+**Why**: spotted from the screen — "gpt-oss-20b-mxfp4 already has billing and a grant, why does
+it let me change the slug?". The server did not: it answered `409` naming three clients and 39
+billed rows. The *form* offered the field, because PRM-113 changed the rule on the server and
+left the browser using the old one:
+
+```
+const unnamed = (model.slug || model.id) === model.id;   // "was it ever set"
+```
+
+`gpt-oss-20b-mxfp4` has `slug == id`, so the browser called it unnamed and enabled the input —
+promising something the server would refuse on save.
+
+**Shape**: the real question is whether anything depends on the name, and the answer needs
+grants (auth-service), usage rows and pricing — none of which a browser can see. So the catalog
+listing computes it, once for the whole list, and returns `rename_blockers` per model. Empty
+means editable; otherwise the field is disabled and says what is in the way. A lookup that fails
+leaves the field off rather than assuming it is safe.
+
+## PRM-113 — billing keys on an id that cannot change (done)
+
+**Why**: asked directly — "renaming a model, doesn't that affect billing too?" — and it did, in
+two ways, both visible in this deployment's own data.
+
+`usage_events.model_id` held the model's **public name**, which RM-70 lets an operator set once.
+So naming a model:
+
+1. **split its billing history in two.** `qwen3-0.6b` (85 rows) sat beside
+   `qwen3-0-6b-iq4-nl-local-2` (37) — one model, two piles, and any per-model report counted
+   them separately.
+2. **lost it its price.** The same string is the pricing.yaml lookup key. Verified directly
+   rather than inferred: a table keyed on the old name returns `0.621` for it and `None` for the
+   new one. From that point the model billed `cost_usd = NULL` with nothing erroring — the exact
+   silent-zero RM-60 set out to prevent.
+
+**Shape**:
+- Rows key on the **catalog id**, which never changes, and carry `model_slug` — the name in
+  force when the row was written, because an invoice should say what the thing was called then.
+- Prices resolve under **either** name, so an operator's existing pricing.yaml keeps working
+  whichever identifier it was written against.
+- `model_slug` appended to the CSV export by the append-only rule. `model_id` **changed meaning**,
+  which is a first — called out explicitly in the guide rather than left to a diff.
+- A rename is now refused only when something depends on the old name: a `model:<slug>` grant, a
+  usage row, or a configured price. That check lives in the gateway, the only process that can
+  see all three; the manager keeps what it alone can enforce, that a slug is never handed to
+  another model. An unreachable auth-service **blocks** rather than waving through.
+- `scripts/reunify_usage_history.py` reunites histories a past rename already split. Deliberately
+  a separate, dry-run-by-default step: the slug→id mapping lives in the manager's registry, not
+  the gateway's database, and rewriting billing history should be something an operator chooses.
+
 ## PRM-112 — the public name is set on the model, and the table says which name is which (done)
 
 **Two things, both noticed from the screen.**
