@@ -1,6 +1,6 @@
 # Prometheus Gateway — SDK Integration Guide
 
-**Revision**: 2026-09-15b · `e636e51`
+**Revision**: 2026-09-16a · `pending`
 <!-- Consumers vendor this file and diff it. The date and commit above are what to quote
      when asking whether a copy is current; they change whenever this document does. -->
 
@@ -461,7 +461,7 @@ POST /v1/rerank
 Content-Type: application/json
 
 {
-  "model": "qwen3-reranker-0-6b-q4-k-m-local",
+  "model": "qwen3-reranker",
   "query": "how do I reorder search results by relevance?",
   "documents": [
     "A reranker is a cross-encoder that scores each query-document pair.",
@@ -479,7 +479,7 @@ Content-Type: application/json
 
 ```json
 {
-  "model": "qwen3-reranker-0-6b-q4-k-m-local",
+  "model": "qwen3-reranker",
   "object": "list",
   "usage": { "prompt_tokens": 368, "total_tokens": 368 },
   "results": [
@@ -514,6 +514,34 @@ Content-Type: application/json
 **Required**: `Authorization: Bearer <token>` on every endpoint except `GET /v1/models`.
 `Content-Type: application/json` on every POST.
 
+**Optional request headers**:
+
+```
+Idempotency-Key         — makes a retry a replay instead of a second generation
+X-Prometheus-Instance   — pin the request to one replica of the model
+```
+
+**`Idempotency-Key`** is the header §6.2 tells you to weigh a retry against, and it is what
+makes retrying a generation safe at all. Shape follows OpenAI and Anthropic — an opaque key you
+generate, a 24h window, the stored result replayed — so an SDK written against either works here
+unchanged. Max 255 characters.
+
+- A replay is **not billed and does not use the model**; it carries `Idempotent-Replay: true`
+  and `X-Idempotent-Replay-Of`, the `x-request-id` of the generation that *was* billed. Use that
+  id with §3.8 — a replay's own id has no usage row, correctly.
+- The key is scoped to your client and **fingerprinted against the path and payload**, so
+  reusing one with different parameters is refused rather than answered with the earlier
+  result. Reusing it for a different endpoint is the same refusal.
+- Streaming works: the SSE body is stored and replayed.
+- The four ways a key can be refused are four distinct `type` suffixes, in §5.2. Only one of
+  them resolves by waiting, so branch on the suffix — never on the message.
+
+**`X-Prometheus-Instance`** pins a request to one replica, by instance id or by its per-model
+label (`#2`). It never silently falls back to another replica — the reason to pin is to reach
+*that* one — so naming an instance that does not serve the model is a `400 unknown-instance`
+rather than a quiet reassignment. Responses carry `X-Prometheus-Instance` and
+`X-Prometheus-Instance-Id` saying which replica actually answered.
+
 **Response headers worth reading** (all endpoints except `/health`, `/metrics`, `/v1/models`,
 `/v1/backends`, `/v1/usage`):
 
@@ -526,6 +554,10 @@ X-RateLimit-Reset-Requests         — unix timestamp of the next window
 X-RateLimit-Limit-Tokens
 X-RateLimit-Remaining-Tokens
 X-RateLimit-Reset-Tokens
+X-Prometheus-Instance              — which replica answered (its per-model label, e.g. "#2")
+X-Prometheus-Instance-Id           — the same replica's instance id
+Idempotent-Replay                  — "true" only on a replayed response
+X-Idempotent-Replay-Of             — on a replay: the request id that was actually billed
 ```
 
 **`X-Trace-ID` adoption rule, confirmed precisely (two deployment modes exist)**:
@@ -737,6 +769,12 @@ model" as something only the SDK can catch.
 | 400 | `unknown-model` | Model ID not registered. Checked *before* any scope check — an unrecognized model is always 400, never 403, regardless of what the token can access. | No |
 | 400 | `modality-mismatch` | Calling `/v1/rerank` with a non-rerank model, calling `/v1/chat/completions` with a model whose modality isn't `text`/`vision` (e.g. an embedding or image-generation model — fixed in RM-66, see note below), sending an image content part to a non-vision model, or calling `/v1/embeddings`/`/v1/images/generations` with the wrong modality. | No |
 | 400 | `context-exceeded` | Request exceeds the model's context window. | No (shrink the request) |
+| 400 | `unknown-instance` | `X-Prometheus-Instance` (§3.7) names something that does not serve this model. A pin never falls back to another replica. | No (fix or drop the header) |
+| 400 | `inconsistent-model-group` | The replicas serving this model disagree about their modality, so the gateway refuses the whole group rather than quietly dropping the odd one — answering a chat request from an embedding backend produces confident nonsense, not an error. The detail names each instance and what it claims. | No — needs operator action |
+| 400 | `invalid-idempotency-key` | `Idempotency-Key` is malformed or over 255 characters. A `400`, not a `409`, on purpose: it never conflicted with anything, and calling it a conflict would tell you that you had repeated a request. | No (fix the key) |
+| 409 | `idempotency-key-reuse` | The key was already used for a *different* request — the fingerprint spans path and payload. Retrying never helps; generate a new key, or resend the original request unchanged. | No |
+| 409 | `idempotency-in-progress` | The first call with this key is still running. The one idempotency refusal that resolves by waiting, and the only one carrying `Retry-After`. | **Yes**, after `Retry-After` |
+| 409 | `idempotency-response-not-retained` | The original succeeded, but its response was too large to store (over 1 MiB — in practice only images), so there is nothing to replay. Retrying **generates and bills again**; that is why this is refused rather than silently regenerated. | No — a deliberate decision, not a retry |
 | 422 | `validation-error` | Request body failed schema validation (missing/wrong-typed field). `errors` extension member carries Pydantic's per-field detail. | No (fix the request) |
 | 401 | `missing-credentials` | No/malformed `Authorization` header, or token passed as a query param. | No (fix the request) |
 | 401 | `invalid-token` | Signature/algorithm/issuer/audience/`sub`-claim validation failed. | No |
@@ -750,6 +788,10 @@ model" as something only the SDK can catch.
 | 503 | `backend-unavailable` | Two distinct causes share this same `type`, and only one of them sets `Retry-After` — see the note below the table. | See below |
 | 503 | `rate-limiting-unavailable` | Redis (rate limiter backing store) is down and the deployment is configured fail-closed. | **Yes**, with backoff — transient infra issue |
 | 503 | `usage-store-unavailable` | Only on `GET /v1/usage`/`/v1/usage/export` — DB read failed. | **Yes**, with backoff |
+| 401 | `unauthorized` | Only on `GET /v1/usage/{request_id}` (§3.8) — the request carried no verified claims. Distinct from `missing-credentials`, which the auth middleware raises earlier for a missing or malformed header. | No |
+| 400 | `invalid-date` | Only on `GET /v1/usage` / `/v1/usage/export` (§3.9) — `start`/`end` is not a `YYYY-MM-DD` date. | No (fix the request) |
+| 400 | `invalid-range` | Only on `GET /v1/usage/export` — `end` is before `start`. | No (fix the request) |
+| 400 | `range-too-large` | Only on `GET /v1/usage/export` — the range exceeds 366 days. Split it into several exports. | No (narrow the range) |
 | 404 | `not-found` | Only on `GET /v1/usage/{request_id}` (§3.8) — no usage row with that id **belonging to this client**. Deliberately not a `403`: telling you which ids exist but aren't yours leaks other clients' traffic. | No |
 | 503 | `upstream-unavailable` | Only on `POST /oauth2/token` (§2.1) — the gateway could not reach the auth-service. Note this is the *only* problem+json a token request can produce; every other token outcome uses the OAuth2 error shape. | **Yes**, with backoff |
 | 503 | `not-configured` | Only on `POST /oauth2/token` — this deployment has no token endpoint wired up. | No — needs operator action |
@@ -806,11 +848,14 @@ SDK to detect (via the in-band error chunk, §3.3) and decide whether to retry f
   already ran close to the full timeout — see the timeout/duplicate-generation warning in §4.
 - **Never retry**: `400`, `401` (other than `token-expired`), `402`, `403`, `503
   model-not-loaded` (needs operator intervention, not a transient condition).
-- **There is no idempotency-key mechanism in this API.** A retried chat/embeddings/images
-  request is a genuinely new generation, not a safe replay — this matters both for cost (the
-  client may be billed twice) and for correctness (streaming in particular: a partial response
-  was already delivered to the caller before the failure). SDKs should surface this tradeoff to
-  their own callers rather than silently retrying generation requests by default.
+- **Retrying a generation without an `Idempotency-Key` bills twice.** Without a key a retried
+  chat/embeddings/images request is a genuinely new generation, not a safe replay — which
+  matters for cost and for correctness (streaming in particular: a partial response was already
+  delivered to the caller before the failure). **With** a key (§3.7) the retry replays the first
+  result: not billed, and the model is not used. This is the mechanism that makes the commonest
+  retry — after the SDK's own timeout, where the platform cannot prove nothing ran — safe at
+  all. Send one on every generation request the SDK might retry, and surface the tradeoff to
+  callers rather than silently retrying without a key.
 
 ### 6.3 Proactive rate-limit awareness
 

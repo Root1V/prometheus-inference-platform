@@ -317,3 +317,45 @@ def test_the_documented_column_list_matches_the_file():
     documented = [c.strip() for c in block.replace("\n", " ").split(",") if c.strip()]
 
     assert in_code == documented, "the guide's column list has drifted from the export"
+
+
+def test_every_error_the_gateway_raises_is_in_the_guide():
+    """PRM-116 / A-18. Axonium found five `type` suffixes we had documented
+    nowhere — four of them the entire subject of one round — and a §6.2 bullet
+    denying the idempotency §3.7 describes. They were unharmed because they
+    build from their own recorded catalog rather than our guide, which is the
+    part that should worry us: the guide had drifted for weeks and the only
+    reason anyone noticed was that a reader stopped trusting it.
+
+    Same shape as the export-columns guard above, and for the same reason —
+    writing a contract down is worth little if it can drift from the code. One
+    direction only: the guide legitimately documents errors raised in
+    middleware, which never appear in this file.
+    """
+    import re
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[2]
+    src = (root / "gateway/src/prometheus_gateway/router.py").read_text()
+    raised = set(re.findall(r'_problem\(\s*request,\s*\d+,\s*"([a-z0-9-]+)"', src))
+    # The four idempotency refusals reach `_problem` as `outcome.kind`, so the
+    # pattern above cannot see them — which is exactly the set A-18 was about.
+    # Read them where they are declared instead.
+    idem = (root / "gateway/src/prometheus_gateway/idempotency.py").read_text()
+    # Public constants only — the private ones next to them are internal state
+    # ("completed", "in_progress"), not error types a caller ever sees.
+    raised |= set(re.findall(r'^[A-Z][A-Z_]* = "([a-z0-9-]+)"$', idem, re.MULTILINE))
+
+    guide = (root / "docs/sdk-integration-guide.md").read_text()
+    table = guide[
+        guide.index("### 5.2 Full error catalog") : guide.index(
+            "There is no `404` on the inference-family"
+        )
+    ]
+    documented = set(re.findall(r"\|\s*`([a-z0-9-]+)`\s*\|", table))
+
+    assert raised, "the extraction stopped matching — fix this before trusting it"
+    assert not (raised - documented), (
+        f"raised by the gateway, absent from the guide's error catalog: "
+        f"{sorted(raised - documented)}"
+    )
