@@ -3738,6 +3738,32 @@ registration paths and at the update path, which is the one that exists to *corr
 **Verified live** with the exact original mistake: registering the reranker as `text` is now
 refused with a message naming the flag to use; registering it as `rerank` succeeds.
 
+## PRM-111 — the model's display name is editable, and finally visible (done)
+
+**Why**: PRM-110 accepted `name` in the catalog PATCH and then never surfaced it. Spotted by
+asking the obvious question — "I don't see where to edit the model's name" — and the answer was
+that there was nowhere, and nowhere to see it either.
+
+**Three identifiers, and the table was showing the one that cannot change**:
+
+| field | what it is | changeable |
+|---|---|---|
+| `id` | the registry key | no |
+| `slug` | what clients put in `model` — tokens and grants key off it | once (RM-70) |
+| `name` | display label, nothing keys off it | freely |
+
+The Models table rendered `id`. Measured: all 31 catalog rows have `name` populated, and one of
+them already read "Qwen3 0.6B Instruct" — a name someone had set that appeared nowhere in the
+product.
+
+**Shape**: the table shows `name` with the routing slug underneath when they differ, because the
+slug is what a client actually sends and it was invisible too. The pencil edits the name; the id
+and slug are shown read-only beside it so it is obvious which one renaming does *not* touch.
+Blank is refused, same as family.
+
+**Verified live**: renamed the reranker to "Qwen3 Reranker 0.6B", confirmed its slug did not
+move, and confirmed a client calling by that slug still scores.
+
 ## PRM-110 — family and name editable, and the button says what it does (done)
 
 Two observations from using the dashboard, and the second corrected a mistake in PRM-109.

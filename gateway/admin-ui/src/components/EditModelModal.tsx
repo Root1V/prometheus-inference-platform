@@ -45,14 +45,18 @@ export function EditModelModal({ open, model, node, onClose }: EditModelModalPro
   const updateCatalog = useUpdateCatalogEntry();
   const [modality, setModality] = useState<Modality>(model.modality || "text");
   const [family, setFamily] = useState(model.family || "");
+  const [name, setName] = useState(model.name || model.id);
 
   if (!open) return null;
 
-  const dirty = modality !== model.modality || family.trim() !== (model.family || "");
+  const dirty =
+    modality !== model.modality ||
+    family.trim() !== (model.family || "") ||
+    name.trim() !== (model.name || model.id);
 
   const handleSave = () => {
     updateCatalog.mutate(
-      { node, modelId: model.id, data: { modality, family: family.trim() } },
+      { node, modelId: model.id, data: { name: name.trim(), family: family.trim(), modality } },
       {
         onSuccess: () => {
           showToast(`${model.id} updated`, "success");
@@ -79,6 +83,25 @@ export function EditModelModal({ open, model, node, onClose }: EditModelModalPro
         </div>
 
         <div className="space-y-4">
+          {/* PRM-111: the display label. `id` is the registry key and cannot
+              change; `slug` is what clients route on and RM-70 lets it be set
+              exactly once, so neither is edited here. This is the one that is
+              safe to rename as often as you like. */}
+          <Field label="Name" hint="Display label. The id and the routing name below do not change.">
+            <input
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              className={inputClass}
+            />
+          </Field>
+          <div className="rounded-lg border border-border bg-background px-3 py-2 text-xs text-text-muted">
+            <div>
+              id <span className="font-mono text-text">{model.id}</span>
+            </div>
+            <div className="mt-0.5">
+              clients route on <span className="font-mono text-text">{model.slug || model.id}</span>
+            </div>
+          </div>
           {/* PRM-110: family is read by people and nothing keys off it. The
               fallback is the GGUF's own architecture, which is true about the
               file but not always the lineage a human would name — phi4-mini is
@@ -128,7 +151,7 @@ export function EditModelModal({ open, model, node, onClose }: EditModelModalPro
           <button
             type="button"
             onClick={handleSave}
-            disabled={updateCatalog.isPending || !dirty || !family.trim()}
+            disabled={updateCatalog.isPending || !dirty || !family.trim() || !name.trim()}
             className={cn(
               "rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:opacity-90",
               "disabled:cursor-not-allowed disabled:opacity-50",

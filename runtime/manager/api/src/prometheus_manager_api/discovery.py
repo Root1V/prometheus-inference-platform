@@ -255,7 +255,16 @@ async def update_model_catalog(
 
     updates: dict[str, Any] = {}
     if "name" in body:
-        updates["name"] = str(body["name"]).strip()
+        name = str(body["name"]).strip()
+        if not name:
+            raise _problem(
+                400,
+                "invalid-update",
+                "Invalid Update",
+                "name cannot be empty — it is the label everything shows. Leave it as the "
+                "model id if there is nothing better to call it.",
+            )
+        updates["name"] = name
     if "family" in body:
         family = str(body["family"]).strip()
         if not family:

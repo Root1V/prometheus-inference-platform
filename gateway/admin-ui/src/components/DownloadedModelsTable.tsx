@@ -79,7 +79,17 @@ function DownloadedModelRow({
         )}
       >
         <td className="px-4 py-3 text-text-muted">{rowNumber}</td>
-        <td className="px-4 py-3 font-medium text-text">{model.id}</td>
+        {/* PRM-111: the display name, with the routing slug under it. This
+            column used to show `id` — the registry key, which cannot change —
+            so a model someone had already named showed its id anyway and the
+            name was invisible. The slug is what clients put in `model`, so it
+            belongs next to the name rather than nowhere. */}
+        <td className="px-4 py-3">
+          <div className="font-medium text-text">{model.name || model.id}</div>
+          {model.slug && model.slug !== (model.name || model.id) && (
+            <div className="text-xs text-text-muted">{model.slug}</div>
+          )}
+        </td>
         <td className="px-4 py-3 text-text-muted">{model.family || "—"}</td>
         {/* PRM-109: shown on the model, because that is what it belongs to.
             Every instance inherits this one answer. */}
