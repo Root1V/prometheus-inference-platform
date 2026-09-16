@@ -31,7 +31,12 @@ from .budget import (
     parse_thresholds,
 )
 from .models.registry import ModelEntry, ModelRegistry, ModelResolution
-from .models.schemas import ChatCompletionRequest, EmbeddingsRequest, ImageGenerationRequest
+from .models.schemas import (
+    ChatCompletionRequest,
+    EmbeddingsRequest,
+    ImageGenerationRequest,
+    RerankRequest,
+)
 from .notifications import send_budget_alert_email
 from .telemetry import get_logger, get_tracer, metrics_store
 
@@ -1983,6 +1988,289 @@ def create_router(registry: ModelRegistry, pool: "BackendPool") -> APIRouter:
             tokens_per_second=(
                 round(embeddings_prompt_tokens / (embeddings_latency_ms / 1000), 2)
                 if embeddings_latency_ms > 0 and embeddings_prompt_tokens > 0
+                else None
+            ),
+        )
+        if isinstance(resp_body, dict) and resp_body.get("model") is not None:
+            resp_body["model"] = resolution.model_key  # RM-77
+        request.state.idempotency_result = (resp.status_code, resp_body)  # RM-78
+        return JSONResponse(
+            content=resp_body,
+            status_code=resp.status_code,
+            media_type="application/json",
+            headers=_served_by_headers(entry),
+        )
+
+    # ── POST /v1/rerank ─────────────────────────────────────────────────────
+    # Implements: docs/roadmap.md — PRM-106
+    #
+    # A reranker is a cross-encoder: it scores a query against each document
+    # and returns them ordered. It is not text generation, and serving it as
+    # though it were is how this arrived — as a bug report describing three
+    # problems that were one. Without this endpoint a caller had to send a
+    # scoring prompt to /v1/chat/completions, ask for logprobs to rebuild
+    # P(yes)/(P(yes)+P(no)) by hand, prefill the chat template themselves, and
+    # spend one request per document against a 60 RPM limit. The engine already
+    # computes that score; it just was not reachable.
+    @router.post("/v1/rerank")
+    async def rerank(body: RerankRequest, request: Request) -> Any:
+        """Score documents against a query on a rerank-capable backend."""
+        claims = getattr(getattr(request, "state", None), "claims", None)
+        request_id = getattr(getattr(request, "state", None), "request_id", "unknown")
+
+        resolution = registry.resolve(body.model)
+        if resolution is None:
+            return _problem(
+                request,
+                400,
+                "unknown-model",
+                "Unknown Model",
+                f"Model {body.model!r} is not registered. Use GET /v1/models to list them.",
+            )
+        if resolution.mismatch:
+            return _problem(
+                request,
+                400,
+                "inconsistent-model-group",
+                "Inconsistent Model Group",
+                resolution.mismatch,
+            )
+
+        if resolution.modality != "rerank":
+            return _problem(
+                request,
+                400,
+                "modality-mismatch",
+                "Modality Mismatch",
+                f"Model {body.model!r} is not a rerank model (modality={resolution.modality!r}). "
+                f"Use GET /v1/models to find a rerank-capable model.",
+            )
+
+        is_admin_bypass = claims is not None and claims.has_scope("admin:write")
+        if claims is None or not (claims.has_scope("inference:read") or is_admin_bypass):
+            return _problem(
+                request,
+                403,
+                "forbidden",
+                "Forbidden",
+                "This endpoint requires inference:read scope.",
+            )
+        if not (_may_use(claims, body.model, resolution) or is_admin_bypass):
+            return _problem(
+                request,
+                403,
+                "forbidden",
+                "Forbidden",
+                f"This client is not authorized to use model {body.model!r}. "
+                "Contact the platform operator to request access.",
+            )
+
+        if not body.documents:
+            return _problem(
+                request,
+                400,
+                "validation-error",
+                "Validation Error",
+                "documents must contain at least one document to score.",
+            )
+
+        if not resolution.members:
+            return _problem(
+                request,
+                503,
+                "model-not-loaded",
+                "Model Not Loaded",
+                f"Model {body.model!r} is registered but has no active backend. "
+                "Contact the platform operator.",
+            )
+
+        replay = await _begin_idempotent(
+            request, claims, "/v1/rerank", body.model_dump(), resolution.model_key
+        )
+        if replay is not None:
+            return replay
+
+        health = await _healthy_members(pool, request, resolution.members)
+        if not health.usable:
+            return _no_replica_available(request, body.model, health)
+
+        pinned = request.headers.get(INSTANCE_HEADER)
+        if pinned:
+            target = _pin_to_instance(resolution, pinned)
+            if target is False:
+                return _problem(
+                    request,
+                    400,
+                    "unknown-instance",
+                    "Unknown Instance",
+                    f"No instance {pinned!r} serves model {body.model!r}. "
+                    f"Drop the {INSTANCE_HEADER} header to let the gateway choose.",
+                )
+            if target not in health.usable:
+                return _no_replica_available(request, body.model, health)
+            health = health._replace(usable=[target])
+
+        entry = health.usable[0]
+        assert entry.backend_url is not None
+
+        # Spend cap: priced prompt-only, like embeddings. A reranker generates
+        # no tokens — the query is re-encoded against every document, so the
+        # estimate covers query plus all documents.
+        budget_redis = getattr(pool, "_redis", None)
+        reservation: BudgetReservation | None = None
+        alert_thresholds_percent: list[int] = []
+        if claims is not None and budget_redis is not None:
+            billing_settings = await get_client_billing_settings_cached(claims.client_id)
+            cap_usd = billing_settings.monthly_spend_cap_usd if billing_settings else None
+            if cap_usd is not None:
+                settings = getattr(getattr(request.app, "state", None), "settings", None)
+                default_thresholds = getattr(
+                    settings, "budget_alert_thresholds_percent_default", "50,80,100"
+                )
+                alert_thresholds_percent = parse_thresholds(
+                    billing_settings.alert_thresholds_percent if billing_settings else None,
+                    default_thresholds,
+                )
+                estimated_tokens = _estimate_text_tokens([body.query, *body.documents])
+                est_cost = pricing.get_pricing_table().estimate_cost_usd(
+                    resolution.model_key, estimated_tokens, 0
+                )
+                if est_cost is not None:
+                    reservation = await BudgetTracker(budget_redis).reserve(
+                        claims.client_id,
+                        est_cost,
+                        cap_usd=cap_usd,
+                        alert_thresholds_percent=alert_thresholds_percent,
+                    )
+                    await _dispatch_threshold_alerts(
+                        request,
+                        claims.client_id,
+                        cap_usd,
+                        reservation.total_spend_usd,
+                        reservation.crossed_thresholds,
+                    )
+                    if not reservation.allowed:
+                        return _problem(
+                            request,
+                            402,
+                            "spend-cap-exceeded",
+                            "Spend Cap Exceeded",
+                            f"Client '{claims.client_id}' has reached its monthly spend cap of "
+                            f"${cap_usd:.2f}. Current spend: ${reservation.total_spend_usd:.2f}. "
+                            "Contact the platform operator to raise the cap.",
+                        )
+
+        trace_id = getattr(getattr(request, "state", None), "trace_id", None)
+        if trace_id is None:
+            trace_id = structlog.contextvars.get_contextvars().get("trace_id", "none")
+
+        logger.info(
+            "rerank.forwarding",
+            model=body.model,
+            backend_url=entry.backend_url,
+            documents=len(body.documents),
+            request_id=request_id,
+        )
+
+        backend_start = time.monotonic()
+        try:
+            resp, served_id = await pool.forward_with_failover(
+                _candidates(health.usable),
+                "/v1/rerank",
+                body.to_llama_payload(),
+                extra_headers={"X-Trace-ID": trace_id},
+            )
+            entry = _served_by(health.usable, served_id, entry)
+        except (httpx.ConnectError, httpx.ConnectTimeout, httpx.RemoteProtocolError) as exc:
+            logger.error(
+                "rerank.unreachable",
+                model=body.model,
+                backend_url=entry.backend_url,
+                error=str(exc),
+            )
+            await metrics_store.record_inference(
+                prompt_tokens=0,
+                completion_tokens=0,
+                latency_ms=int((time.monotonic() - backend_start) * 1000),
+                backend_id=entry.id,
+                model_id=resolution.model_key,
+                error=True,
+            )
+            return _problem(
+                request,
+                503,
+                "backend-unavailable",
+                "Backend Unavailable",
+                "The inference backend is currently unreachable. Please try again later.",
+            )
+        except Exception as exc:
+            logger.error(
+                "rerank.upstream_error",
+                model=body.model,
+                backend_url=entry.backend_url,
+                error=str(exc),
+            )
+            await metrics_store.record_inference(
+                prompt_tokens=0,
+                completion_tokens=0,
+                latency_ms=int((time.monotonic() - backend_start) * 1000),
+                backend_id=entry.id,
+                model_id=resolution.model_key,
+                error=True,
+            )
+            return _problem(
+                request,
+                502,
+                "upstream-error",
+                "Upstream Error",
+                "The inference backend returned an unrecoverable error after retries.",
+            )
+
+        try:
+            resp_body: Any = resp.json()
+        except Exception:
+            resp_body = {}
+        rerank_usage = resp_body.get("usage", {}) if isinstance(resp_body, dict) else {}
+        rerank_prompt_tokens = rerank_usage.get("prompt_tokens", 0)
+        rerank_latency_ms = int((time.monotonic() - backend_start) * 1000)
+
+        await _record_usage(
+            claims,
+            resolution.model_key,
+            rerank_prompt_tokens,
+            0,
+            request_kind="rerank",
+            instance_id=entry.id,
+            request_id=getattr(getattr(request, "state", None), "request_id", None),
+        )
+        if budget_redis is not None and reservation is not None and reservation.allowed:
+            actual_cost = pricing.get_pricing_table().estimate_cost_usd(
+                resolution.model_key, rerank_prompt_tokens, 0
+            )
+            if actual_cost is not None:
+                newly_crossed = await BudgetTracker(budget_redis).settle(
+                    claims.client_id,
+                    reservation.reserved_usd,
+                    actual_cost,
+                    cap_usd=reservation.cap_usd,
+                    alert_thresholds_percent=alert_thresholds_percent,
+                )
+                await _dispatch_threshold_alerts(
+                    request,
+                    claims.client_id,
+                    reservation.cap_usd,
+                    reservation.total_spend_usd,
+                    newly_crossed,
+                )
+        await metrics_store.record_inference(
+            prompt_tokens=rerank_prompt_tokens,
+            completion_tokens=0,
+            latency_ms=rerank_latency_ms,
+            backend_id=entry.id,
+            model_id=resolution.model_key,
+            tokens_per_second=(
+                round(rerank_prompt_tokens / (rerank_latency_ms / 1000), 2)
+                if rerank_latency_ms > 0 and rerank_prompt_tokens > 0
                 else None
             ),
         )

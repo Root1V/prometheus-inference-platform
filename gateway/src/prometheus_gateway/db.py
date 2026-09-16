@@ -184,7 +184,7 @@ class UsageEvent(Base):
     )
     request_kind: Mapped[str] = mapped_column(
         String(16), nullable=False
-    )  # "chat" | "embedding" | "image"
+    )  # "chat" | "embedding" | "image" | "rerank" (PRM-106)
     prompt_tokens: Mapped[int] = mapped_column(BigInteger, default=0, nullable=False)
     completion_tokens: Mapped[int] = mapped_column(BigInteger, default=0, nullable=False)
     image_count: Mapped[int] = mapped_column(BigInteger, default=0, nullable=False)

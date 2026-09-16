@@ -139,6 +139,34 @@ class EmbeddingsRequest(BaseModel):
         return {"model": self.model, "input": self.input}
 
 
+class RerankRequest(BaseModel):
+    """Allowlist schema for /v1/rerank — PRM-106.
+
+    The shape is the de-facto one (Cohere, Jina, and llama.cpp's own /rerank):
+    one query, N documents, scores back with the original indices. Deliberately
+    not a chat request with a scoring prompt — that is what a client had to do
+    without this endpoint, and it forced them to reconstruct the score from
+    logprobs, prefill the chat template by hand, and spend one request per
+    document against the rate limit.
+    """
+
+    model: str
+    query: str
+    documents: list[str]
+    # Cohere calls this top_n; keep the name callers already use. None = all.
+    top_n: int | None = None
+
+    def to_llama_payload(self) -> dict[str, object]:
+        payload: dict[str, object] = {
+            "model": self.model,
+            "query": self.query,
+            "documents": self.documents,
+        }
+        if self.top_n is not None:
+            payload["top_n"] = self.top_n
+        return payload
+
+
 class ImageGenerationRequest(BaseModel):
     """Allowlist schema for /v1/images/generations — RM-38.
 
