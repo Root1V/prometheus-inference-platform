@@ -47,10 +47,13 @@ export function EditModelModal({ open, model, node, onClose }: EditModelModalPro
   const [family, setFamily] = useState(model.family || "");
   const [name, setName] = useState(model.name || model.id);
   const [slug, setSlug] = useState(model.slug || model.id);
-  // RM-70 backfilled slug = id for everything that predated slugs, so a slug
-  // still equal to its id was never chosen. That is the one case where it can
-  // be named; after that clients route on it and their grants key off it.
-  const unnamed = (model.slug || model.id) === model.id;
+  // PRM-114: the server decides. This used to ask "is the slug still the id",
+  // which is the rule PRM-113 replaced — it let you type a new name for a model
+  // with grants and billed history and only told you on save. The real question
+  // is whether anything depends on the current name, and only the server can
+  // see all three things that can.
+  const blockers = model.rename_blockers ?? [];
+  const unnamed = blockers.length === 0;
 
   if (!open) return null;
 
@@ -116,8 +119,8 @@ export function EditModelModal({ open, model, node, onClose }: EditModelModalPro
             label="Public name (what clients send as `model`)"
             hint={
               unnamed
-                ? "Can be set once. After that it is frozen — clients route on it and their model grants key off it."
-                : "Frozen: clients already route on this name."
+                ? "Free to change — nothing depends on this name yet. Once a client holds a grant for it, it is billed under it, or it has a price, it stays put."
+                : `Cannot be changed: ${blockers.join("; ")}.`
             }
           >
             <input

@@ -67,9 +67,13 @@ export interface ModelCatalogEntry {
   /** RM-70: display label, safe to change — nothing keys off it. Defaults to
    * the id, so it is never blank. */
   name: string;
-  /** RM-70: the public name clients route on. Nameable once, frozen after —
-   * tokens and model grants key off it. Shown, never edited from here. */
+  /** RM-70: the public name clients route on. Renameable while nothing depends
+   * on it — see `rename_blockers`. */
   slug: string;
+  /** PRM-114: why this model's public name cannot be changed, empty when it
+   * can. The server decides, because the answer needs grants (auth-service),
+   * usage rows and pricing — none of which the browser can see. */
+  rename_blockers?: string[];
   /** PRM-108: derived from the weights file when the file declares it
    * (a classifier head or a pooling type), so registering a downloaded model
    * starts from what it actually is rather than from the "text" default. */

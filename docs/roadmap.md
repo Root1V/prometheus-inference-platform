@@ -3738,6 +3738,26 @@ registration paths and at the update path, which is the one that exists to *corr
 **Verified live** with the exact original mistake: registering the reranker as `text` is now
 refused with a message naming the flag to use; registering it as `rerank` succeeds.
 
+## PRM-114 — the rename field asks the server instead of guessing (done)
+
+**Why**: spotted from the screen — "gpt-oss-20b-mxfp4 already has billing and a grant, why does
+it let me change the slug?". The server did not: it answered `409` naming three clients and 39
+billed rows. The *form* offered the field, because PRM-113 changed the rule on the server and
+left the browser using the old one:
+
+```
+const unnamed = (model.slug || model.id) === model.id;   // "was it ever set"
+```
+
+`gpt-oss-20b-mxfp4` has `slug == id`, so the browser called it unnamed and enabled the input —
+promising something the server would refuse on save.
+
+**Shape**: the real question is whether anything depends on the name, and the answer needs
+grants (auth-service), usage rows and pricing — none of which a browser can see. So the catalog
+listing computes it, once for the whole list, and returns `rename_blockers` per model. Empty
+means editable; otherwise the field is disabled and says what is in the way. A lookup that fails
+leaves the field off rather than assuming it is safe.
+
 ## PRM-113 — billing keys on an id that cannot change (done)
 
 **Why**: asked directly — "renaming a model, doesn't that affect billing too?" — and it did, in

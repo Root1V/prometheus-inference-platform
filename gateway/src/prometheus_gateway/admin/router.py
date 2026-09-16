@@ -303,6 +303,16 @@ def create_admin_router(manager_client: ManagerApiClient) -> APIRouter:
                 logger.warning("admin.node_unreachable", node=name, error=str(exc))
                 unreachable_nodes.append(name)
 
+        # PRM-114: tell the dashboard which of these can still be renamed, so the
+        # form stops offering a field the server will refuse. The rule is "does
+        # anything depend on this name", and until now the UI used the old one
+        # ("was it ever set"), which let you type a name into gpt-oss-20b-mxfp4
+        # — 3 grants and 39 billed rows — and only learn on save.
+        #
+        # Computed for the whole list at once: one grant lookup, one usage query
+        # per model, prices in memory. Failing to work it out leaves the field
+        # off rather than guessing it is safe.
+        await _annotate_rename_blockers(request, models)
         return {"models": models, "unreachable_nodes": unreachable_nodes}
 
     @router.post("/admin/api/nodes/{node}/models")
@@ -358,6 +368,61 @@ def create_admin_router(manager_client: ManagerApiClient) -> APIRouter:
         except Exception as exc:
             return _proxy_error_response(request, exc)
         return _passthrough(resp)
+
+    async def _grant_holders(request: Request) -> dict[str, list[str]] | None:
+        """model name -> client names holding a grant for it. None when
+        auth-service could not be asked, which is never read as "nobody"."""
+        settings: Settings = request.app.state.settings
+        if not (settings.auth_service_admin_url and settings.auth_service_admin_api_key):
+            return {}
+        try:
+            async with httpx.AsyncClient(
+                timeout=10.0, verify=settings.auth_service_tls_verify
+            ) as http_client:
+                resp = await http_client.get(
+                    f"{settings.auth_service_admin_url}/clients",
+                    headers={"X-Admin-Key": settings.auth_service_admin_api_key},
+                )
+            if resp.status_code != 200:
+                return None
+            clients = resp.json()
+        except Exception:
+            return None
+        holders: dict[str, list[str]] = {}
+        for client in clients if isinstance(clients, list) else []:
+            if not isinstance(client, dict):
+                continue
+            who = str(client.get("client_name") or client.get("client_id") or "?")
+            for scope in client.get("allowed_scopes") or []:
+                if isinstance(scope, str) and scope.startswith("model:"):
+                    holders.setdefault(scope[len("model:") :], []).append(who)
+        return holders
+
+    async def _annotate_rename_blockers(request: Request, models: list[dict[str, Any]]) -> None:
+        holders = await _grant_holders(request)
+        table = pricing.get_pricing_table()
+        for entry in models:
+            model_id = str(entry.get("id") or "")
+            slug = str(entry.get("slug") or model_id)
+            names = {n for n in (model_id, slug) if n}
+            blockers: list[str] = []
+            if holders is None:
+                blockers.append("auth-service could not be reached to check for model grants")
+            else:
+                who = sorted({w for n in names for w in holders.get(n, [])})
+                if who:
+                    blockers.append(f"held as a model grant by: {', '.join(who)}")
+            try:
+                rows = await db.count_usage_rows_for_model(model_id, slug)
+            except Exception:
+                rows = None
+            if rows is None:
+                blockers.append("usage history could not be checked")
+            elif rows:
+                blockers.append(f"{rows} usage row(s) billed under this name")
+            if any(table.get_price(n) is not None for n in names):
+                blockers.append("a price is configured for this name")
+            entry["rename_blockers"] = blockers
 
     async def _current_slug(request: Request, node_url: str, model_id: str) -> str | None:
         """Today's slug, straight from the node — the rename is only checked
