@@ -630,9 +630,20 @@ class TestModelIdentity:
         assert catalog is not None
         assert catalog.slug == "llama3"
 
-    def test_renaming_a_published_slug_is_refused(self, tmp_path: Path):
-        """Once a real name is out there, clients route on it and their grants
-        key off it — which is exactly what immutability protects."""
+    def test_renaming_a_published_slug_is_allowed_here(self, tmp_path: Path):
+        """PRM-113 moved the freeze out of this process, and the reason matters.
+
+        The rule used to be "frozen once set". What is worth protecting is not
+        that it was set, it is that something now depends on it — a client's
+        `model:<slug>` grant, a usage row billed under that name, a configured
+        price. None of those are visible from the manager: grants live in
+        auth-service and the other two in the gateway's database. So the check
+        moved to the gateway, which can see all three, and the old rule made a
+        typo permanent while locking a model nobody had touched just as hard.
+
+        What this process still enforces is what it alone can: a slug is never
+        handed to a model that is not its owner.
+        """
         client = _authed(_make_client(tmp_path))
         try:
             client.patch(
@@ -648,9 +659,9 @@ class TestModelIdentity:
             catalog = app.state.registry.get_catalog("llama3-test")
         finally:
             _clear_override()
-        assert resp.status_code == 400
+        assert resp.status_code == 200
         assert catalog is not None
-        assert catalog.slug == "llama3"
+        assert catalog.slug == "llama3-again"
 
     def test_a_slug_auth_service_would_reject_is_refused(self, tmp_path: Path):
         """A slug becomes a `model:<slug>` scope. One auth-service won't accept

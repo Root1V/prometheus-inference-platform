@@ -70,7 +70,7 @@ import httpx
 from fastapi import APIRouter, Request, Response
 from fastapi.responses import JSONResponse
 
-from .. import db, rate_limits
+from .. import db, pricing, rate_limits
 from ..config import Settings
 from ..router import _problem
 from ..telemetry import activity_tracker, get_logger
@@ -359,6 +359,85 @@ def create_admin_router(manager_client: ManagerApiClient) -> APIRouter:
             return _proxy_error_response(request, exc)
         return _passthrough(resp)
 
+    async def _current_slug(request: Request, node_url: str, model_id: str) -> str | None:
+        """Today's slug, straight from the node — the rename is only checked
+        when the name is actually changing."""
+        try:
+            resp = await manager_client.get(node_url, "/v1/models")
+            body = resp.json()
+        except Exception:
+            return None
+        entries = body if isinstance(body, list) else body.get("models", [])
+        for entry in entries:
+            if isinstance(entry, dict) and entry.get("id") == model_id:
+                return str(entry.get("slug") or model_id)
+        return None
+
+    async def _slug_blockers(request: Request, model_id: str, current_slug: str) -> list[str]:
+        """What would break if this model were renamed — PRM-113.
+
+        RM-70 froze a slug permanently after one change, which made a typo
+        permanent while a model nobody had touched was locked just as hard. The
+        thing worth protecting is not "it was set once", it is "something
+        depends on it", and three things can:
+
+        - a `model:<slug>` grant held by a client, which would start returning
+          403 on the new name,
+        - usage rows already billed under that name,
+        - a pricing.yaml entry keyed on it, whose price the model would stop
+          finding — the failure that bills nothing while nothing errors.
+
+        Only the gateway can see all three: grants live in auth-service and the
+        other two in its own database. Returns a human-readable list, empty when
+        renaming is safe.
+        """
+        blockers: list[str] = []
+        names = {n for n in (model_id, current_slug) if n}
+
+        # Grants — best effort. auth-service being unreachable must not be read
+        # as "nothing depends on it": that would be the dangerous direction, so
+        # an unreachable service blocks rather than waves through.
+        settings: Settings = request.app.state.settings
+        if settings.auth_service_admin_url and settings.auth_service_admin_api_key:
+            try:
+                async with httpx.AsyncClient(
+                    timeout=10.0, verify=settings.auth_service_tls_verify
+                ) as http_client:
+                    resp = await http_client.get(
+                        f"{settings.auth_service_admin_url}/clients",
+                        headers={"X-Admin-Key": settings.auth_service_admin_api_key},
+                    )
+                clients = resp.json() if resp.status_code == 200 else None
+            except Exception:
+                clients = None
+            if clients is None:
+                blockers.append(
+                    "auth-service could not be reached to check for model grants — refusing "
+                    "rather than assuming nobody holds one"
+                )
+            else:
+                holders = [
+                    c.get("client_name") or c.get("client_id")
+                    for c in clients
+                    if isinstance(c, dict)
+                    and any(f"model:{n}" in (c.get("allowed_scopes") or []) for n in names)
+                ]
+                if holders:
+                    blockers.append(
+                        f"{len(holders)} client(s) hold a model grant for this name: "
+                        + ", ".join(str(h) for h in holders[:5])
+                    )
+
+        rows = await db.count_usage_rows_for_model(model_id, current_slug)
+        if rows:
+            blockers.append(f"{rows} usage row(s) are already billed under this name")
+
+        table = pricing.get_pricing_table()
+        if any(table.get_price(n) is not None for n in names):
+            blockers.append("a price is configured for this name in the pricing table")
+
+        return blockers
+
     @router.patch("/admin/api/nodes/{node}/catalog/{model_id}")
     async def update_catalog_entry(
         node: str, model_id: str, body: dict[str, Any], request: Request
@@ -376,6 +455,23 @@ def create_admin_router(manager_client: ManagerApiClient) -> APIRouter:
             return _problem(
                 request, 400, "unknown-node", "Unknown Node", f"Node {node!r} is not configured."
             )
+        # PRM-113: renaming is allowed while nothing depends on the old name.
+        if "slug" in body:
+            current = await _current_slug(request, node_url, model_id)
+            if current is not None and str(body["slug"]).strip() not in ("", current):
+                blockers = await _slug_blockers(request, model_id, current)
+                if blockers:
+                    return _problem(
+                        request,
+                        409,
+                        "slug-in-use",
+                        "Name Already In Use",
+                        f"{model_id!r} cannot be renamed from {current!r}: "
+                        + "; ".join(blockers)
+                        + ". Renaming would leave those behind — grants stop matching, history "
+                        "splits in two, and a configured price stops being found.",
+                    )
+
         try:
             resp = await manager_client.patch(node_url, f"/v1/models/{model_id}", json=body)
         except Exception as exc:

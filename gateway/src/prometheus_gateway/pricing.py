@@ -97,11 +97,32 @@ class PricingTable:
         else:
             self._prices.pop(model_id, None)
 
+    def _lookup(self, *names: str | None) -> ModelPrice | None:
+        """First configured price among the names this model answers to.
+
+        PRM-113: a model has a catalog id and a slug, and RM-70 lets the slug be
+        named once. Looking up by one name only meant naming a model made it
+        miss its pricing.yaml entry — the price did not change, the key did, and
+        from then on it billed nothing at all with nothing failing. Verified
+        directly: a table keyed on the old name returns 0.621 for it and None
+        for the new one.
+        """
+        for name in names:
+            if name:
+                price = self._prices.get(name)
+                if price is not None:
+                    return price
+        return None
+
     def estimate_cost_usd(
-        self, model_id: str, prompt_tokens: int, completion_tokens: int
+        self,
+        model_id: str,
+        prompt_tokens: int,
+        completion_tokens: int,
+        model_slug: str | None = None,
     ) -> float | None:
         """None means "no price configured for this model", not "free"."""
-        price = self._prices.get(model_id)
+        price = self._lookup(model_id, model_slug)
         if (
             price is None
             or price.prompt_price_per_1m is None
@@ -113,9 +134,11 @@ class PricingTable:
             + completion_tokens * price.completion_price_per_1m
         ) / 1_000_000
 
-    def estimate_image_cost_usd(self, model_id: str, num_images: int) -> float | None:
+    def estimate_image_cost_usd(
+        self, model_id: str, num_images: int, model_slug: str | None = None
+    ) -> float | None:
         """None means "no price configured for this model", not "free"."""
-        price = self._prices.get(model_id)
+        price = self._lookup(model_id, model_slug)
         if price is None or price.image_price is None:
             return None
         return price.image_price * num_images

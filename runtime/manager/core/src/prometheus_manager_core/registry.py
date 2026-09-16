@@ -436,20 +436,25 @@ class Registry:
 
         RM-70 backfilled `slug = id` for every model that predated slugs, so
         nothing was ever *chosen* — the ids just happen to sit in the field.
-        Letting that placeholder be replaced once is not a rename: it's the
-        naming that never happened. Once a real slug is in place it is frozen,
-        because clients route on it and `model:<slug>` grants key off it, and
-        changing it under them is the thing immutability exists to prevent.
+
+        PRM-113: this used to freeze the slug permanently after one change, on
+        the grounds that clients route on it and `model:<slug>` grants key off
+        it. Both are true, and neither is visible from here: grants live in
+        auth-service and usage rows in the gateway's database. So the rule
+        froze on "it was already set" rather than on "something depends on it",
+        which made a typo permanent while a model nobody had touched was just as
+        locked.
+
+        The dependency check moved to the gateway, which is the only process
+        that can see all three — grants, usage rows and pricing entries — and it
+        refuses the rename with the specifics. What stays here is what this
+        object *can* enforce: a slug is never handed to a model that is not its
+        owner, because usage is billed against it.
         """
         with self._lock:
             catalog = self._catalog.get(model_id)
         if catalog is None:
             raise KeyError(model_id)
-        if catalog.slug != model_id:
-            raise RegistryIntegrityError(
-                f"Model {model_id!r} is already published as {catalog.slug!r}. A slug is "
-                "frozen once set — clients route on it and their grants key off it."
-            )
         _validate_slug(slug)
         self._assert_slug_free(slug, owner_id=model_id)
         with self._lock:

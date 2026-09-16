@@ -27,6 +27,7 @@ from sqlalchemy import (
     case,
     func,
     inspect,
+    or_,
     select,
     text,
 )
@@ -57,6 +58,8 @@ class UsageDaily(Base):
     day: Mapped[date] = mapped_column(Date, nullable=False)
     client_id: Mapped[str] = mapped_column(String(64), nullable=False)
     model_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    # PRM-113: display name at the time, alongside the stable id above.
+    model_slug: Mapped[str | None] = mapped_column(String(128), nullable=True)
     prompt_tokens: Mapped[int] = mapped_column(BigInteger, default=0, nullable=False)
     completion_tokens: Mapped[int] = mapped_column(BigInteger, default=0, nullable=False)
     request_count: Mapped[int] = mapped_column(BigInteger, default=0, nullable=False)
@@ -182,6 +185,10 @@ class UsageEvent(Base):
     interrupted: Mapped[bool] = mapped_column(
         Boolean, nullable=False, default=False, server_default=text("0")
     )
+    # PRM-113: the catalog id, which never changes. This used to be the slug,
+    # which RM-70 lets an operator name once — so naming a model split its
+    # billing history in two and lost its pricing.yaml entry at the same time.
+    model_slug: Mapped[str | None] = mapped_column(String(128), nullable=True)
     request_kind: Mapped[str] = mapped_column(
         String(16), nullable=False
     )  # "chat" | "embedding" | "image" | "rerank" (PRM-106)
@@ -473,6 +480,7 @@ def _usage_daily_upsert_stmt(
     day: date,
     client_id: str,
     model_id: str,
+    model_slug: str,
     prompt_tokens: int,
     completion_tokens: int,
     cost_usd: float | None,
@@ -486,6 +494,7 @@ def _usage_daily_upsert_stmt(
         day=day,
         client_id=client_id,
         model_id=model_id,
+        model_slug=model_slug,
         prompt_tokens=prompt_tokens,
         completion_tokens=completion_tokens,
         request_count=1,
@@ -498,6 +507,10 @@ def _usage_daily_upsert_stmt(
     return stmt.on_conflict_do_update(
         index_elements=["day", "client_id", "model_id"],
         set_={
+            # PRM-113: the day's row keeps the newest name the model answered
+            # to. The id it is keyed on has not changed, so this only ever
+            # refreshes a label.
+            "model_slug": excluded.model_slug,
             "prompt_tokens": UsageDaily.prompt_tokens + prompt_tokens,
             "completion_tokens": UsageDaily.completion_tokens + completion_tokens,
             "request_count": UsageDaily.request_count + 1,
@@ -527,6 +540,10 @@ async def record_usage(
     termination_reason: str = TERMINATION_COMPLETE,
     request_id: str | None = None,
     cached_prompt_tokens: int = 0,
+    # PRM-113: `model_id` is the catalog id and never changes; this is the name
+    # it answered to when the row was written. Defaults to model_id so a caller
+    # that has only one identifier still writes something truthful.
+    model_slug: str | None = None,
     day: date | None = None,
 ) -> None:
     """Record one request's usage: an immutable `usage_events` row (the audit
@@ -535,7 +552,12 @@ async def record_usage(
     """
     d = day or datetime.now(tz=timezone.utc).date()
     price_table = pricing.get_pricing_table()
-    price = price_table.get_price(model_id)
+    # PRM-113: by either name. The row is keyed on the catalog id now, but an
+    # operator's pricing.yaml may well be written against the slug — that
+    # mismatch is exactly what made a named model bill nothing.
+    price = price_table.get_price(model_id) or (
+        price_table.get_price(model_slug) if model_slug else None
+    )
 
     prompt_cost_usd: float | None
     completion_cost_usd: float | None
@@ -566,6 +588,7 @@ async def record_usage(
                 day=d,
                 client_id=client_id,
                 model_id=model_id,
+                model_slug=model_slug or model_id,
                 instance_id=instance_id,
                 termination_reason=termination_reason,
                 interrupted=_interrupted_from(termination_reason),
@@ -587,6 +610,7 @@ async def record_usage(
                 d,
                 client_id,
                 model_id,
+                model_slug or model_id,
                 prompt_tokens,
                 completion_tokens,
                 cost_usd,
@@ -956,3 +980,22 @@ async def get_usage_event_for_client(client_id: str, request_id: str) -> UsageEv
         )
         row: UsageEvent | None = result.scalars().first()
         return row
+
+
+async def count_usage_rows_for_model(model_id: str, model_slug: str | None = None) -> int:
+    """How many usage rows already reference this model, under either name.
+
+    PRM-113: one of the three things that make a slug un-renameable. Rows are
+    keyed on the catalog id now, but anything written before that carries the
+    slug there instead, so both are counted.
+    """
+    names = [n for n in (model_id, model_slug) if n]
+    if not names:
+        return 0
+    async with get_session_factory()() as session:
+        result = await session.execute(
+            select(func.count())
+            .select_from(UsageEvent)
+            .where(or_(UsageEvent.model_id.in_(names), UsageEvent.model_slug.in_(names)))
+        )
+        return int(result.scalar() or 0)

@@ -3738,6 +3738,37 @@ registration paths and at the update path, which is the one that exists to *corr
 **Verified live** with the exact original mistake: registering the reranker as `text` is now
 refused with a message naming the flag to use; registering it as `rerank` succeeds.
 
+## PRM-113 — billing keys on an id that cannot change (done)
+
+**Why**: asked directly — "renaming a model, doesn't that affect billing too?" — and it did, in
+two ways, both visible in this deployment's own data.
+
+`usage_events.model_id` held the model's **public name**, which RM-70 lets an operator set once.
+So naming a model:
+
+1. **split its billing history in two.** `qwen3-0.6b` (85 rows) sat beside
+   `qwen3-0-6b-iq4-nl-local-2` (37) — one model, two piles, and any per-model report counted
+   them separately.
+2. **lost it its price.** The same string is the pricing.yaml lookup key. Verified directly
+   rather than inferred: a table keyed on the old name returns `0.621` for it and `None` for the
+   new one. From that point the model billed `cost_usd = NULL` with nothing erroring — the exact
+   silent-zero RM-60 set out to prevent.
+
+**Shape**:
+- Rows key on the **catalog id**, which never changes, and carry `model_slug` — the name in
+  force when the row was written, because an invoice should say what the thing was called then.
+- Prices resolve under **either** name, so an operator's existing pricing.yaml keeps working
+  whichever identifier it was written against.
+- `model_slug` appended to the CSV export by the append-only rule. `model_id` **changed meaning**,
+  which is a first — called out explicitly in the guide rather than left to a diff.
+- A rename is now refused only when something depends on the old name: a `model:<slug>` grant, a
+  usage row, or a configured price. That check lives in the gateway, the only process that can
+  see all three; the manager keeps what it alone can enforce, that a slug is never handed to
+  another model. An unreachable auth-service **blocks** rather than waving through.
+- `scripts/reunify_usage_history.py` reunites histories a past rename already split. Deliberately
+  a separate, dry-run-by-default step: the slug→id mapping lives in the manager's registry, not
+  the gateway's database, and rewriting billing history should be something an operator chooses.
+
 ## PRM-112 — the public name is set on the model, and the table says which name is which (done)
 
 **Two things, both noticed from the screen.**
