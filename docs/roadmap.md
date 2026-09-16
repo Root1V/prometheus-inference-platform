@@ -3710,6 +3710,57 @@ gives clients a path that needs one host; making auth-service unreachable from o
 operational change, and it needs notice to Axonium first, since their SDKs point at two hosts
 today and both must keep working through the transition.
 
+## PRM-107 — the model file contradicts a wrong modality (done)
+
+**Why**: PRM-106's root cause was a registration, not a bug. A reranker was registered as
+`text` — the default — started without `--reranking`, and answered chat requests with plausible
+nonsense until a client reported three problems that were one. Nothing failed, because `text` is
+the only modality that never errors. That is precisely what makes it unsafe as a silent default.
+
+**Measured first, because a heuristic that reads a field still has to be checked against the
+corpus.** Across this deployment's 28 readable catalogue files: 24 agree with what was
+registered, and all 4 that disagree are files that assert nothing — two vision, two image. Zero
+cases where the file asserted something wrong.
+
+**Shape — and the asymmetry is the design**:
+
+| the file... | conclusion |
+|---|---|
+| carries `<arch>.classifier.output_labels` | it is a reranker — refuse anything else |
+| carries `<arch>.pooling_type`, no classifier | it produces embeddings — refuse `text` |
+| carries neither | unknown; accept what the caller declared |
+
+Silence is never evidence. A vision model's projector is a separate file and image models are
+served by another engine entirely, so a file that says nothing could legitimately be any of
+three modalities — blocking on silence would have rejected 4 of our own 28. Applied at both
+registration paths and at the update path, which is the one that exists to *correct* a modality.
+
+**Verified live** with the exact original mistake: registering the reranker as `text` is now
+refused with a message naming the flag to use; registering it as `rerank` succeeds.
+
+## PRM-108 — modality is chosen in the dashboard, not guessed (done)
+
+**Why**: PRM-107 stops a registration the file can contradict, but two gaps stayed open. The
+dashboard's modality list did not contain `rerank` at all — a reranker could not be registered
+correctly from the UI, only from the CLI. And selecting a downloaded file deliberately did *not*
+carry its modality across, on the reasoning (written in the code) that modality was "a
+per-instance choice, not derived from the downloaded file". That reasoning is what this whole
+sequence disproved.
+
+**Shape**:
+- `rerank` added to the `Modality` type and to the dashboard's list.
+- `add_catalog()` derives modality from the file when the file declares one — the same place and
+  the same argument RM-89 used for `family`: a default that cannot be told apart from a choice
+  gets filled in once, centrally, so a third call site cannot reintroduce it. Unlike `family`
+  the file wins over the caller here, because modality is a property of the weights.
+- Selecting a downloaded model in the register modal now carries its modality into the form,
+  still editable — for vision and image the file says nothing, so their `text` is a default
+  rather than an answer.
+
+**The two paths differ on purpose**: cataloguing a download *corrects* silently (nobody chose
+anything), while registering an instance with an explicitly wrong modality is *refused*
+(someone did choose, and correcting it quietly would hide the mistake instead of teaching it).
+
 ## PRM-106 — rerankers get the endpoint they need (done)
 
 **Why**: a project asked for reranker models. The instance was registered and a client tried to
