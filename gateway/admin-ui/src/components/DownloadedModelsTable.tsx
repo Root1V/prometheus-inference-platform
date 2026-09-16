@@ -79,16 +79,18 @@ function DownloadedModelRow({
         )}
       >
         <td className="px-4 py-3 text-text-muted">{rowNumber}</td>
-        {/* PRM-111: the display name, with the routing slug under it. This
-            column used to show `id` — the registry key, which cannot change —
-            so a model someone had already named showed its id anyway and the
-            name was invisible. The slug is what clients put in `model`, so it
-            belongs next to the name rather than nowhere. */}
+        {/* PRM-111: the display name, not `id` — the registry key cannot
+            change, so a model someone had already named still showed its id.
+            PRM-112: the routing name below it is always rendered and always
+            labelled. It was conditional on differing from the name, which made
+            it a subtitle that appeared on some rows and not others with nothing
+            saying what it was — so the one question it exists to answer ("which
+            of these do I put in `model`?") had no reliable answer. */}
         <td className="px-4 py-3">
           <div className="font-medium text-text">{model.name || model.id}</div>
-          {model.slug && model.slug !== (model.name || model.id) && (
-            <div className="text-xs text-text-muted">{model.slug}</div>
-          )}
+          <div className="text-xs text-text-muted">
+            model: <span className="font-mono">{model.slug || model.id}</span>
+          </div>
         </td>
         <td className="px-4 py-3 text-text-muted">{model.family || "—"}</td>
         {/* PRM-109: shown on the model, because that is what it belongs to.

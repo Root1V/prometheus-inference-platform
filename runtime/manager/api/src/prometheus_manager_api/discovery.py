@@ -48,6 +48,7 @@ from prometheus_manager_core.lifecycle import deregister_model
 from prometheus_manager_core.registry import (
     CatalogEntry,
     Registry,
+    RegistryIntegrityError,
     _assert_modality_matches_file,
     _validate_modality,
 )
@@ -237,9 +238,15 @@ async def update_model_catalog(
     and a correction had to be applied in two places. This is now the only way
     to change it; PATCH /v1/backends/{id} refuses the field and says so.
 
-    Deliberately narrow: `name`, `family` and `modality`. `path` and
-    `quantization` come from the download flow, and `slug` has its own
-    single-use rule (RM-70) because clients route on it.
+    Handles `name`, `family`, `modality` and `slug`. `path` and `quantization`
+    come from the download flow and are not editable here.
+
+    PRM-112: `slug` moved here from the instance PATCH for the same reason
+    modality did — it names the *model*, so editing it per instance was editing
+    the wrong thing. Its RM-70 rule is unchanged and still enforced by
+    set_slug(): nameable once while it is still the id the migration backfilled,
+    frozen after, because clients route on it and `model:<slug>` grants key off
+    it.
 
     PRM-110: `family` is here for a reason RM-89 already wrote down — the
     fallback is the GGUF's `general.architecture`, "which is a true fact about
@@ -288,15 +295,28 @@ async def update_model_catalog(
             raise _problem(400, "invalid-update", "Invalid Update", str(exc)) from exc
         updates["modality"] = modality
 
-    if not updates:
+    if not updates and "slug" not in body:
         raise _problem(
             400,
             "invalid-update",
             "Invalid Update",
-            "Nothing to update: send name, family or modality.",
+            "Nothing to update: send name, family, modality or slug.",
         )
 
-    registry.update_catalog(model_id, **updates)
+    # Slug is not an ordinary field: set_slug() enforces the once-only rule and
+    # checks the new name is free, so it goes through its own call.
+    if "slug" in body:
+        slug = str(body["slug"]).strip()
+        if slug and slug != catalog.slug:
+            try:
+                registry.set_slug(model_id, slug)
+            except RegistryIntegrityError as exc:
+                raise _problem(409, "slug-frozen", "Slug Frozen", str(exc)) from exc
+            except (ValueError, KeyError) as exc:
+                raise _problem(400, "invalid-update", "Invalid Update", str(exc)) from exc
+
+    if updates:
+        registry.update_catalog(model_id, **updates)
     entry = registry.get_catalog(model_id)
     return entry.to_dict() if entry else {}
 

@@ -126,10 +126,6 @@ export function RegisterModelModal({
   const registerModel = useRegisterModel();
   const updateModel = useUpdateModel();
   const isEditing = editing !== null;
-  // RM-70 backfilled slug = model id for everything that predated slugs, so a
-  // slug still equal to its id was never chosen — that's the one case where
-  // naming is allowed. manager-api enforces the same rule.
-  const isUnnamed = editing !== null && editing.model_slug === (editing.model_id || editing.id);
   const [form, setForm] = useState<FormState>(() =>
     editing ? stateFromInstance(editing) : initialState(""),
   );
@@ -198,10 +194,6 @@ export function RegisterModelModal({
         hf_repo: form.hf_repo,
         hf_sha256: form.hf_sha256,
       };
-      // RM-70: only sent when it actually changed. A model whose slug is still
-      // the id has never been named, and manager-api allows naming it once;
-      // sending an unchanged slug would just be refused as a rename.
-      if (form.slug && form.slug !== editing!.model_slug) body.slug = form.slug;
       updateModel.mutate(
         { node: selectedNode, modelId: form.id, data: body },
         {
@@ -284,21 +276,18 @@ export function RegisterModelModal({
                 className={cn(inputClass, isEditing && "cursor-not-allowed opacity-60")}
               />
             </Field>
+            {/* PRM-112: the public name moved to the Models page, alongside
+                name, family and modality. It names the *model* — every instance
+                of it answers to the same string — so editing it from one
+                instance was editing the wrong thing, the same mistake PRM-109
+                found with modality. Shown here read-only because it is the one
+                thing a caller actually sends. */}
             {isEditing && (
-              <Field label="Public name">
-                <input
-                  value={form.slug}
-                  onChange={(e) => update("slug", e.target.value)}
-                  disabled={!isUnnamed}
-                  pattern="^[a-zA-Z0-9][a-zA-Z0-9._-]{1,62}[a-zA-Z0-9]$"
-                  title="Letters, digits, dots, hyphens, underscores"
-                  className={cn(inputClass, !isUnnamed && "cursor-not-allowed opacity-60")}
-                />
-                <span className="mt-1 block text-xs text-text-muted">
-                  {isUnnamed
-                    ? "What clients send as `model`. Can be set once — after that it's frozen, because clients route on it and their grants key off it."
-                    : "Frozen: clients already route on this name."}
-                </span>
+              <Field
+                label="Public name"
+                hint="Belongs to the model — set it from the Models page."
+              >
+                <input value={form.slug} readOnly disabled className={inputClass} />
               </Field>
             )}
             {!isEditing && (

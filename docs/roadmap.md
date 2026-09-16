@@ -3738,6 +3738,27 @@ registration paths and at the update path, which is the one that exists to *corr
 **Verified live** with the exact original mistake: registering the reranker as `text` is now
 refused with a message naming the flag to use; registering it as `rerank` succeeds.
 
+## PRM-112 — the public name is set on the model, and the table says which name is which (done)
+
+**Two things, both noticed from the screen.**
+
+**The slug was edited from the instance form** — the same wrong place PRM-109 found modality in,
+for the same reason: it names the *model*, and every instance of it answers to that one string.
+Moved to the model's pencil. RM-70's rule is untouched and still enforced by `set_slug()`:
+nameable once while it is still the id the migration backfilled, frozen after, because clients
+route on it and `model:<slug>` grants key off it. A frozen slug now returns `409 slug-frozen`
+rather than a generic failure.
+
+**The subtitle under each model name was unreadable** — it rendered the slug only when it
+differed from the display name, and never said what it was. So it appeared on some rows and not
+others, and the one question it exists to answer ("which of these strings do I put in `model`?")
+had no reliable answer. Now always rendered, always labelled `model:`.
+
+**Measured while verifying**, and worth knowing before renaming anything in production: naming a
+slug does not break existing clients, but it does leave their grants behind. A client holding
+`model:<old-name>` keeps working **with the old name** — RM-70 keeps it resolvable as an alias —
+and gets `403` on the new one until its grant is reissued.
+
 ## PRM-111 — the model's display name is editable, and finally visible (done)
 
 **Why**: PRM-110 accepted `name` in the catalog PATCH and then never surfaced it. Spotted by

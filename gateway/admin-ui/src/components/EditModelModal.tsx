@@ -46,17 +46,34 @@ export function EditModelModal({ open, model, node, onClose }: EditModelModalPro
   const [modality, setModality] = useState<Modality>(model.modality || "text");
   const [family, setFamily] = useState(model.family || "");
   const [name, setName] = useState(model.name || model.id);
+  const [slug, setSlug] = useState(model.slug || model.id);
+  // RM-70 backfilled slug = id for everything that predated slugs, so a slug
+  // still equal to its id was never chosen. That is the one case where it can
+  // be named; after that clients route on it and their grants key off it.
+  const unnamed = (model.slug || model.id) === model.id;
 
   if (!open) return null;
 
   const dirty =
     modality !== model.modality ||
     family.trim() !== (model.family || "") ||
-    name.trim() !== (model.name || model.id);
+    name.trim() !== (model.name || model.id) ||
+    (unnamed && slug.trim() !== (model.slug || model.id));
 
   const handleSave = () => {
     updateCatalog.mutate(
-      { node, modelId: model.id, data: { name: name.trim(), family: family.trim(), modality } },
+      {
+        node,
+        modelId: model.id,
+        data: {
+          name: name.trim(),
+          family: family.trim(),
+          modality,
+          // Only when it can still be named — sending an unchanged slug is
+          // refused as a rename, which would fail the whole save.
+          ...(unnamed && slug.trim() !== model.id ? { slug: slug.trim() } : {}),
+        },
+      },
       {
         onSuccess: () => {
           showToast(`${model.id} updated`, "success");
@@ -94,13 +111,26 @@ export function EditModelModal({ open, model, node, onClose }: EditModelModalPro
               className={inputClass}
             />
           </Field>
+          {/* PRM-112: the public name lives here now, not on an instance. */}
+          <Field
+            label="Public name (what clients send as `model`)"
+            hint={
+              unnamed
+                ? "Can be set once. After that it is frozen — clients route on it and their model grants key off it."
+                : "Frozen: clients already route on this name."
+            }
+          >
+            <input
+              value={slug}
+              onChange={(e) => setSlug(e.target.value)}
+              disabled={!unnamed}
+              pattern="^[a-zA-Z0-9][a-zA-Z0-9._-]{1,62}[a-zA-Z0-9]$"
+              title="Letters, digits, dots, hyphens, underscores"
+              className={cn(inputClass, !unnamed && "cursor-not-allowed opacity-60")}
+            />
+          </Field>
           <div className="rounded-lg border border-border bg-background px-3 py-2 text-xs text-text-muted">
-            <div>
-              id <span className="font-mono text-text">{model.id}</span>
-            </div>
-            <div className="mt-0.5">
-              clients route on <span className="font-mono text-text">{model.slug || model.id}</span>
-            </div>
+            registry id <span className="font-mono text-text">{model.id}</span>
           </div>
           {/* PRM-110: family is read by people and nothing keys off it. The
               fallback is the GGUF's own architecture, which is true about the
