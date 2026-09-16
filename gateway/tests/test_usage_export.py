@@ -231,6 +231,53 @@ async def test_a_client_reads_its_own_usage_row(app, client_headers):
     }
 
 
+async def test_the_row_reports_the_name_the_caller_used(app, client_headers):
+    """PRM-115. PRM-113 re-keyed usage on the immutable catalog id, and this
+    endpoint returned that id as `model` — a value the caller never sent, never
+    received, and cannot look up, because `GET /v1/models` advertises the slug.
+    Axonium found it in all three SDKs at once: `RequestUsage.model` was
+    exposing something with no use.
+
+    Reconciling means holding this next to the `model` the inference response
+    returned, so it has to be the same string.
+    """
+    await db.create_tables(db.get_engine())
+    await db.record_usage(
+        "client-a",
+        "qwen3-0-6b-iq4-nl-local-2",  # the catalog id, which looks like a name
+        10,
+        5,
+        request_id="req-slug",
+        model_slug="qwen3-0.6b",  # what the caller asked for and got back
+    )
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
+        resp = await c.get("/v1/usage/req-slug", headers=client_headers)
+
+    assert resp.json()["model"] == "qwen3-0.6b"
+
+
+async def test_a_row_with_no_slug_at_all_still_names_something(app, client_headers):
+    """`model_slug` is nullable, so the column has to be readable as empty —
+    the migration backfills it, but a row that escaped that is the one case
+    where returning null would make every SDK special-case this field. Written
+    straight at the database because `record_usage()` will not produce one.
+    """
+    from sqlalchemy import text
+
+    await db.create_tables(db.get_engine())
+    await db.record_usage("client-a", "solo-un-nombre", 1, 1, request_id="req-bare")
+    async with db.get_engine().begin() as conn:
+        await conn.execute(
+            text("UPDATE usage_events SET model_slug = NULL WHERE request_id = 'req-bare'")
+        )
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
+        resp = await c.get("/v1/usage/req-bare", headers=client_headers)
+
+    assert resp.json()["model"] == "solo-un-nombre"
+
+
 async def test_another_clients_request_is_404_not_403(app, client_headers):
     """404 rather than 403, on Axonium's suggestion: a 403 would confirm that
     the id exists, which is exactly what a probe wants to learn."""
