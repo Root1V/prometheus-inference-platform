@@ -188,8 +188,18 @@ async def test_billing_summary_reflects_recorded_usage(app, admin_read_headers):
     assert body["request_count"] == 1
     assert body["preferred_currency"] == "USD"
     assert body["by_model"] == [
-        {"model_id": "small-model", "cost_usd": None, "tokens": 150, "request_count": 1}
+        {
+            "model_id": "small-model",
+            "cost_usd": None,
+            "tokens": 150,
+            "request_count": 1,
+            "unpriced_requests": 1,
+        }
     ]
+    # PRM-119: and the period says so rather than reporting a confident zero.
+    assert body["subtotal_usd"] is None
+    assert body["total_usd"] is None
+    assert body["unpriced_requests"] == 1
 
 
 async def test_billing_summary_invalid_period_returns_400(app, admin_read_headers):
@@ -415,3 +425,71 @@ async def test_get_pricing_reflects_yaml_and_db_sources(
     body = r.json()["data"]
     assert body["yaml-only-model"]["source"] == "file"
     assert body["db-model"]["source"] == "db"
+
+
+# ── PRM-119: an invoice must not state a zero it cannot stand behind ────────
+
+
+async def test_a_period_with_no_priced_usage_is_unknown_not_zero(app, admin_read_headers):
+    """Reported from the dashboard, with a screenshot: six requests, every row
+    showing "—", and a period total reading USD 0.00.
+
+    The rows were right — those models genuinely have no configured price, and
+    "no price" is not "free". The total was wrong: `sum(cost or 0.0)` turned
+    six unknowns into a confident zero, which is the one thing every other
+    layer of this system refuses to do. A client reading that total concludes
+    they owe nothing; the truth is we cannot say what they owe.
+    """
+    await db.create_tables(db.get_engine())
+    today = date.today()
+    for _ in range(4):
+        await db.record_usage("client-a", "unpriced-chat", 10, 8, day=today)
+    for _ in range(2):
+        await db.record_usage(
+            "client-a", "unpriced-rerank", 167, 0, request_kind="rerank", day=today
+        )
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
+        r = await c.get(
+            "/admin/api/billing/clients/client-a/summary",
+            params={"period": today.strftime("%Y-%m")},
+            headers=admin_read_headers,
+        )
+
+    body = r.json()
+    assert body["request_count"] == 6
+    assert body["subtotal_usd"] is None, "six unknowns are not zero dollars"
+    assert body["tax_amount_usd"] is None, "tax on an unknown is not zero"
+    assert body["total_usd"] is None
+    assert body["total_in_preferred_currency"] is None, (
+        "converting an unknown would invent a figure in the client's own currency"
+    )
+    assert body["unpriced_requests"] == 6
+
+
+async def test_a_partly_priced_period_says_how_much_it_misses(app, admin_write_headers):
+    """The more dangerous case, because it looks complete. A subtotal that
+    covers three of five requests is a lower bound, and nothing in the figure
+    itself says so."""
+    await db.create_tables(db.get_engine())
+    today = date.today()
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
+        await c.put(
+            "/admin/api/billing/pricing/priced-model",
+            json={"prompt_price_per_1m": 1000.0, "completion_price_per_1m": 1000.0},
+            headers=admin_write_headers,
+        )
+        await db.record_usage("client-b", "priced-model", 1000, 0, day=today)
+        await db.record_usage("client-b", "unpriced-model", 500, 0, day=today)
+
+        r = await c.get(
+            "/admin/api/billing/clients/client-b/summary",
+            params={"period": today.strftime("%Y-%m")},
+            headers=admin_write_headers,
+        )
+
+    body = r.json()
+    assert body["request_count"] == 2
+    assert body["subtotal_usd"] == pytest.approx(1000 * 1000 / 1_000_000)
+    assert body["unpriced_requests"] == 1, "the figure covers one of two requests and must say so"

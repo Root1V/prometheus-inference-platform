@@ -4333,6 +4333,116 @@ noticed. The four idempotency ones reach `_problem()` as `outcome.kind` rather t
 the guard reads them from where they are declared.
 
 
+## PRM-117 — Rows a bug billed as unpriced get the price that was already in force
+
+**Why**: found by reading the dashboard, not the code — models with real traffic showing `-` in
+the total. Two causes, and only one was a defect. Most were simply never priced, where `-` is
+correct and deliberate ("no price configured" is not "free"). But 95 rows of
+`qwen3-embedding-0-6b-q8-0-local` were billed null while a price for it existed the whole time:
+the rows were keyed on the model's public name and `model_price_config` on the catalog id, so
+the lookup missed. That is PRM-113's bug, and `reunify_usage_history.py` re-keyed those rows
+without ever recomputing what they cost.
+
+**Scope**: `scripts/reprice_unpriced_usage.py`, dry-run by default like the reunify tool. The
+part worth having is what it refuses: RM-60 prices a row at the rate in force when it was used
+and never re-rates it, so a row older than its model's price is reported and left alone. That
+check earned itself on the first run — a `sd-turbo-test` image row predates its own price by
+eight hours, so 95 of the 96 candidates were repairable and the 96th was not.
+
+**Two things it deliberately does not do.** It adds to `usage_daily` rather than rebuilding it
+from `usage_events`: 41 of this deployment's 72 daily rows predate the events table entirely, so
+a rebuild would silently zero the history that only lives in the rollup. And it leaves alone the
+5 daily rows whose sub-costs already disagree with their total — a separate pre-existing defect,
+not this tool's business; the test asserts the count does not grow.
+
+
+## PRM-118 — The spend cap finds the price of a model that was renamed
+
+**Why**: found while answering a fair challenge — if billing keys on `model_id` because that id
+never changes, why does the price lookup accept the slug at all? The answer is that the key and
+the lookup are different things: the reserve runs before a replica is chosen, and a model answers
+to two names. But measuring it turned up something worse than the inconsistency being discussed.
+`model_price_config` is keyed on the catalog id, and the reserve passed only the public name, so
+for every renamed model it resolved no price — `est_cost` was `None`, no reservation was made,
+and the cap never engaged. Measured on this deployment: `qwen3-embedding` and `qwen3-vl-8b` were
+both uncapped. Nothing failed and nothing was logged.
+
+RM-69 created `ModelResolution.model_key` to be the catalog id for exactly this reason, and its
+comment predicted the failure in those words — "free and uncapped under one of its names". RM-70
+then put the slug first in that expression and the field stopped being what every comment about
+it still said it was.
+
+**Scope**: `model_key` keeps its current meaning (the public name — 40 call sites read it as such,
+including scope checks and the `model` a response reports); the catalog id gets its own
+`model_catalog_id` rather than a second reinterpretation of one field, which is the mistake
+PRM-115 had just finished cleaning up elsewhere. Four reserves and the streaming settle now name
+the model both ways, as the four settles already did. `record_usage` resolved `price` by both
+names and `cost_usd` by one, two branches apart — fixed with them.
+
+**The actual fix is the test.** The rule is one line long and was still wrong in four places,
+because it lived at nine call sites and nowhere else. `test_every_price_lookup_names_the_model_both_ways`
+reads the source and fails on a lookup that names the model once. Run against the pre-fix tree it
+names all six.
+
+
+## PRM-119 — The invoice says what it cannot price, instead of saying zero
+
+**Why**: reported from the dashboard with a screenshot — six requests, every detail row showing
+`—`, and the period total reading `USD 0.00`. The rows were right: those two models have no
+configured price, and RM-60's rule is that "no price" is never "free". The total was wrong.
+`sum(row["cost_usd"] or 0.0 for ...)` collapsed six unknowns into a hard zero, so the one figure
+a client actually reads was the only one in the system telling them they owed nothing.
+
+**Scope**: `subtotal_usd` is None when nothing in the period could be priced, and `apply_tax` and
+`convert_currency` propagate that rather than multiplying an unknown into a fabricated figure in
+the client's own currency. The partly-priced period is the more dangerous case — it looks
+complete — so the summary, each day and each model carry `unpriced_requests`, and the dashboard
+marks a subtotal that does not cover every request. `CapIndicator` stops drawing a cap bar it
+cannot compute: an empty bar reads as "0% used", and an unpriced model is never budget-checked at
+all.
+
+**And the column a person actually reads**: the detail table showed `model_id`, the catalog id.
+The export's own comment beside `model_slug` says it is "what an invoice should show"; the
+invoice was not showing it, because the CSV parser read columns by position and stopped at index
+13, so a column appended later was invisible. It reads by header name now — A-13's appended-column
+contract keeps position-readers working, but it is exactly why position-reading misses anything
+new.
+
+
+## PRM-120 — Every catalogued model starts with a price
+
+**Why**: PRM-119 made the invoice admit what it could not price, which immediately showed how
+much that was: `USD 0.0051 + 79 unpriced`. An unpriced model is worse than a gap in a report — it
+records `cost_usd = NULL` and RM-60 never budget-checks it, so it is unbilled *and* uncapped.
+
+**Scope**: a flat base price per modality, applied to any catalogued model that has no price row,
+on every catalog sync (models are created in the manager; prices live in the gateway's database,
+and doing it on sync makes it self-healing for everything catalogued before this). Stored with
+`is_default = true` and surfaced as `source: "default"`, because RM-89's rule applies hardest to
+money: a default indistinguishable from a choice is a bug, and here the difference is the answer
+to why a client was charged what they were. Saving any price through the admin PUT clears the
+flag — pressing Save on the base figure unchanged still means someone looked at it.
+
+**Why flat, and not derived**: the first design computed a price from the model's file size and
+the node's hourly cost via RM-62's formula. It was measured against this fleet before being built.
+`tokens/s x GB` — the quantity that would have to be roughly constant for size to predict
+throughput — came out:
+
+    qwen3-0.6b   (dense,  0.36 GB)   363 tok/s ->   131
+    qwen3-8b-q6  (dense,  6.26 GB)    63 tok/s ->   396
+    gpt-oss-20b  (MoE,   11.28 GB)   115 tok/s ->  1295
+
+A 10x spread: a MoE model reads only its active experts, and a very small model is bound by
+overhead rather than bandwidth. That price would have been wrong by an order of magnitude on a
+model in this deployment *and* would have looked measured. A flat base price claims nothing it
+cannot support, and the throughput calculator on the pricing page replaces it with the real
+figure once the model has served traffic.
+
+**The figures** are aligned with published per-1M-token rates for hosted small-to-mid open models
+rather than with any node's own cost. They are a starting point to be checked against current
+rates, not a market quote.
+
+
 Append a new row to the table with the next `RM-NN` id and a new `## RM-NN — ...` section
 below, following the same shape (Why / Scope). Re-sort the table if the new item's
 priority isn't "last."

@@ -207,7 +207,15 @@ def create_billing_router() -> APIRouter:
                 "prompt_price_per_1m": price.prompt_price_per_1m,
                 "completion_price_per_1m": price.completion_price_per_1m,
                 "image_price": price.image_price,
-                "source": "db" if model_id in db_rows else "file",
+                # PRM-120: "default" is a third answer, not a flavour of "db".
+                # A seeded base price and a price somebody chose are both rows
+                # in the same table, and only this tells them apart — which is
+                # what an operator needs to know before invoicing on it.
+                "source": (
+                    ("default" if db_rows[model_id].is_default else "db")
+                    if model_id in db_rows
+                    else "file"
+                ),
             }
         return {"object": "list", "data": result}
 

@@ -113,10 +113,13 @@ uv run --project "$MANAGER_TUI_DIR" pytest "$MANAGER_TUI_DIR/tests" -v --tb=shor
 echo "[tests 7/7] runtime scripts (bash)"
 bash "$RUNTIME_DIR/tests/test_runtime_scripts.sh"
 
-echo "[tests 8/9] scripts/ (bash — spec 023)"
+echo "[tests 8/10] scripts/ (bash — spec 023)"
 bash "$ROOT/scripts/tests/test_scripts_023.sh"
 
-echo "[tests 9/9] scripts/ (bash — PRM-113 usage reunify)"
+echo "[tests 9/10] scripts/ (bash — PRM-113 usage reunify)"
 bash "$ROOT/scripts/tests/test_reunify_usage_history.sh"
+
+echo "[tests 10/10] scripts/ (bash — PRM-117 usage repricing)"
+bash "$ROOT/scripts/tests/test_reprice_unpriced_usage.sh"
 
 echo "--- All checks passed. Push allowed. ---"

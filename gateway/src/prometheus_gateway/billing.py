@@ -25,10 +25,18 @@ def month_bounds(period: str) -> tuple[date, date]:
     return date(year, month, 1), date(year, month, last_day)
 
 
-def convert_currency(amount_usd: float, currency_code: str, rates: dict[str, float]) -> float:
+def convert_currency(
+    amount_usd: float | None, currency_code: str, rates: dict[str, float]
+) -> float | None:
     """`rates` maps currency_code -> units_per_usd (e.g. {"PEN": 3.75}). USD is
     the identity conversion and never needs a rates entry.
+
+    PRM-119: an unknown amount converts to an unknown amount. Multiplying it
+    by a rate would invent a figure in the client's own currency, which is the
+    one place a fabricated 0.00 does the most damage.
     """
+    if amount_usd is None:
+        return None
     if currency_code == "USD":
         return amount_usd
     units_per_usd = rates.get(currency_code)
@@ -37,8 +45,17 @@ def convert_currency(amount_usd: float, currency_code: str, rates: dict[str, flo
     return amount_usd * units_per_usd
 
 
-def apply_tax(subtotal_usd: float, tax_rate_percent: float) -> tuple[float, float]:
-    """Returns (tax_amount_usd, total_usd) for a tax-exclusive line item."""
+def apply_tax(
+    subtotal_usd: float | None, tax_rate_percent: float
+) -> tuple[float | None, float | None]:
+    """Returns (tax_amount_usd, total_usd) for a tax-exclusive line item.
+
+    PRM-119: a subtotal of None means "nothing here could be priced", which is
+    not zero. Taxing it would turn an unknown into a confident 0.00 — the
+    silent $0 every other layer of this system refuses to produce.
+    """
+    if subtotal_usd is None:
+        return None, None
     tax_amount = subtotal_usd * (tax_rate_percent / 100)
     return tax_amount, subtotal_usd + tax_amount
 
@@ -53,9 +70,17 @@ async def build_period_summary(client_id: str, period: str) -> dict[str, Any]:
 
     daily_rows = await db.query_daily_cost_range(start_day, end_day, client_id)
     model_rows = await db.query_model_cost_range(start_day, end_day, client_id)
-    subtotal_usd = sum(row["cost_usd"] or 0.0 for row in daily_rows)
+    # PRM-119: `or 0.0` used to live here, which is how a period of entirely
+    # unpriced usage came to report "USD 0.00" — six requests, every row
+    # showing "—", and a total stating the client owed nothing. The rows were
+    # honest and the total was not. None means unknown; 0.0 now only ever
+    # means a real zero.
+    priced = [row["cost_usd"] for row in daily_rows if row["cost_usd"] is not None]
+    subtotal_usd = sum(priced) if priced else None
     total_tokens = sum(row["tokens"] for row in daily_rows)
     request_count = sum(row["request_count"] for row in daily_rows)
+    # A partly-priced period is the more dangerous case: it looks complete.
+    unpriced_requests = sum(row["unpriced_requests"] for row in daily_rows)
 
     tax_amount_usd, total_usd = apply_tax(subtotal_usd, tax_rate_percent)
 
@@ -78,6 +103,9 @@ async def build_period_summary(client_id: str, period: str) -> dict[str, Any]:
         else 1.0,
         "total_tokens": total_tokens,
         "request_count": request_count,
+        # PRM-119: how much of `request_count` the subtotal does not account
+        # for. Non-zero means the total is a lower bound, not a bill.
+        "unpriced_requests": unpriced_requests,
         "monthly_spend_cap_usd": cap_usd,
         "daily": [
             {
@@ -85,6 +113,7 @@ async def build_period_summary(client_id: str, period: str) -> dict[str, Any]:
                 "cost_usd": row["cost_usd"],
                 "tokens": row["tokens"],
                 "request_count": row["request_count"],
+                "unpriced_requests": row["unpriced_requests"],
             }
             for row in daily_rows
         ],
@@ -94,6 +123,9 @@ async def build_period_summary(client_id: str, period: str) -> dict[str, Any]:
                 "cost_usd": row["cost_usd"],
                 "tokens": row["tokens"],
                 "request_count": row["request_count"],
+                # PRM-119: per model, because this is where an operator can act
+                # on it — a model with traffic and no price is one row here.
+                "unpriced_requests": row["unpriced_requests"],
             }
             for row in model_rows
         ],

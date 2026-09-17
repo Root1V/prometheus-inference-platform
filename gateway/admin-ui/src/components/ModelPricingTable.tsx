@@ -56,6 +56,9 @@ function ModelPricingRow({
 
   const isBusy = updatePrice.isPending || deletePrice.isPending;
   const isDbOverride = entry?.source === "db";
+  // PRM-120: a seeded base price is not a decision anybody made. Saying so is
+  // the whole reason it is stored with a flag instead of looking like one.
+  const isDefault = entry?.source === "default";
 
   function handleSuggest() {
     if (!hourlyCostUsd) {
@@ -148,14 +151,23 @@ function ModelPricingRow({
         {modelId}
         {entry && (
           <span
+            title={
+              isDefault
+                ? "Base price for this modality, applied when the model was catalogued. " +
+                  "Nobody has reviewed it — use the calculator once this model has served " +
+                  "traffic, then Save."
+                : undefined
+            }
             className={
               "ml-2 rounded-full px-2 py-0.5 text-xs " +
               (isDbOverride
                 ? "bg-primary/10 text-primary"
-                : "bg-background text-text-muted")
+                : isDefault
+                  ? "bg-yellow-500/10 text-yellow-800 dark:text-yellow-300"
+                  : "bg-background text-text-muted")
             }
           >
-            {isDbOverride ? "custom" : "pricing.yaml"}
+            {isDbOverride ? "custom" : isDefault ? "base price" : "pricing.yaml"}
           </span>
         )}
       </td>

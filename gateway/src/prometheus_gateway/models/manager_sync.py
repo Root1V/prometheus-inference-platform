@@ -33,7 +33,7 @@ import httpx
 import structlog
 
 from .registry import ModelEntry, ModelRegistry
-from .. import db
+from .. import db, pricing
 from ..admin.nodes_client import fetch_nodes
 from ..telemetry import get_logger
 
@@ -471,6 +471,34 @@ class ManagerRegistrySync:
 
         # Atomically replace in-memory models
         self._registry._models = new_models
+
+        # PRM-120: every catalogued model starts with a price. Seeded here
+        # rather than at creation because models are created in the manager and
+        # prices live in the gateway's own database — and doing it on each sync
+        # makes it self-healing for models catalogued before this existed.
+        # Failure is logged, never raised: an unpriced model is a billing gap,
+        # but a sync that dies on it is an outage.
+        try:
+            catalogued = {
+                (e.model_id or e.id, e.modality) for e in new_models.values() if e.model_id or e.id
+            }
+            seeded = await db.seed_default_prices(catalogued)
+            if seeded:
+                # Apply to the live table too, the same way an admin write
+                # does — otherwise the model stays unpriced until a restart,
+                # which is the gap this exists to close.
+                table = pricing.get_pricing_table()
+                for row in await db.list_model_price_configs():
+                    if row.model_id in seeded:
+                        table.set_price(
+                            row.model_id,
+                            prompt_price_per_1m=row.prompt_price_per_1m,
+                            completion_price_per_1m=row.completion_price_per_1m,
+                            image_price=row.image_price,
+                        )
+                logger.info("manager_sync.seeded_default_prices", models=seeded)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("manager_sync.seed_default_prices_failed", error=str(exc))
 
         # RM-98: serving stale has to be visible. The difference between a
         # system that degrades gracefully and one that is quietly broken is

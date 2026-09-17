@@ -89,6 +89,12 @@ export async function downloadUsageExportCsv(params: {
 export interface UsageExportRow {
   recorded_at: string;
   model_id: string;
+  /** PRM-119: the name the model answered to when the row was written. The
+   *  export's own comment says this is "what an invoice should show", and the
+   *  invoice was showing `model_id` — the catalog id, which a person does not
+   *  recognise and which PRM-115 had just finished removing from the one other
+   *  place it faced a reader. */
+  model_slug: string;
   request_kind: string;
   prompt_tokens: number;
   completion_tokens: number;
@@ -163,27 +169,54 @@ async function fetchUsageExportRows(params: {
     params,
     responseType: "text",
   });
-  const lines = response.data.trim().split("\n");
+  // Split on CRLF *or* LF. Python's csv.writer emits RFC-4180 \r\n, and
+  // splitting on "\n" alone leaves a stray \r glued to the last field of
+  // every line — which made `header.indexOf("model_slug")` return -1 and
+  // silently fall back to model_id. Invisible while this read columns by
+  // position, because the last column was never one of them.
+  const lines = response.data.trim().split(/\r?\n/);
   const rows: UsageExportRow[] = [];
+  if (lines.length === 0) return rows;
+  // PRM-119: read by column NAME, not position. A-13 made "new columns are
+  // appended, existing ones never move" a written contract precisely so
+  // position-reading consumers keep working — but reading by position also
+  // means a column appended later is invisible, which is how `model_slug`
+  // (appended by PRM-113, and the one an invoice should show) never reached
+  // this table. By name, a future column costs nothing to pick up.
+  const header = splitCsvLine(lines[0]);
+  const at = (name: string) => header.indexOf(name);
+  const col = {
+    recorded_at: at("recorded_at"),
+    model_id: at("model_id"),
+    model_slug: at("model_slug"),
+    request_kind: at("request_kind"),
+    prompt_tokens: at("prompt_tokens"),
+    completion_tokens: at("completion_tokens"),
+    image_count: at("image_count"),
+    prompt_price_per_1m: at("prompt_price_per_1m"),
+    completion_price_per_1m: at("completion_price_per_1m"),
+    image_price_each: at("image_price_each"),
+    cost_usd: at("cost_usd"),
+  };
   for (const line of lines.slice(1)) {
     if (!line) continue;
     const f = splitCsvLine(line);
-    // Columns: generated_at, period_start, period_end, client_id, recorded_at,
-    // model_id, request_kind, prompt_tokens, completion_tokens, image_count,
-    // prompt_price_per_1m, completion_price_per_1m, image_price_each, cost_usd
-    const modelId = f[5];
+    const modelId = f[col.model_id];
     if (modelId === "TOTAL") continue;
     rows.push({
-      recorded_at: f[4],
+      recorded_at: f[col.recorded_at],
       model_id: modelId,
-      request_kind: f[6],
-      prompt_tokens: Number(f[7]) || 0,
-      completion_tokens: Number(f[8]) || 0,
-      image_count: Number(f[9]) || 0,
-      prompt_price_per_1m: parseNullableNumber(f[10]),
-      completion_price_per_1m: parseNullableNumber(f[11]),
-      image_price_each: parseNullableNumber(f[12]),
-      cost_usd: parseNullableNumber(f[13]),
+      // An export predating PRM-113 has no such column; fall back rather than
+      // render "undefined" at a reader.
+      model_slug: (col.model_slug >= 0 ? f[col.model_slug] : "") || modelId,
+      request_kind: f[col.request_kind],
+      prompt_tokens: Number(f[col.prompt_tokens]) || 0,
+      completion_tokens: Number(f[col.completion_tokens]) || 0,
+      image_count: Number(f[col.image_count]) || 0,
+      prompt_price_per_1m: parseNullableNumber(f[col.prompt_price_per_1m]),
+      completion_price_per_1m: parseNullableNumber(f[col.completion_price_per_1m]),
+      image_price_each: parseNullableNumber(f[col.image_price_each]),
+      cost_usd: parseNullableNumber(f[col.cost_usd]),
     });
   }
   return rows;
