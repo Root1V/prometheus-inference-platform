@@ -17,6 +17,13 @@ the whole reason this is a separate script and not a migration.
     python scripts/reprice_unpriced_usage.py            # plan only
     python scripts/reprice_unpriced_usage.py --apply    # write
 
+PRM-121 adds `--include-usage-older-than-its-price`, which switches off the
+refusal above and rates old usage at today's price — including the per-modality
+base price PRM-120 seeds. That is a deliberate exception to RM-60, safe only
+while no client has been invoiced yet, because it changes what a past period
+cost after the fact. It is a flag rather than the default so that using it is
+recorded as a decision someone made.
+
 Take a copy of gateway.db first. This edits rows you may have already invoiced.
 """
 
@@ -54,7 +61,36 @@ def _cost(kind: str, row: dict, price: dict) -> tuple[float, dict] | None:
     return cost, {"prompt_price_per_1m": pp, "completion_price_per_1m": cp}
 
 
-def plan(db: Path):
+# PRM-121: a row whose model has no price at all — a retired instance, say —
+# still has a request_kind, and the kind maps to exactly one modality. Only
+# consulted under --include-usage-older-than-its-price, where inventing a
+# little is already the point.
+_KIND_TO_MODALITY = {
+    "chat": "text",
+    "embedding": "embedding",
+    "rerank": "rerank",
+    "image": "image",
+}
+
+
+def _base_price_for_kind(kind: str) -> dict | None:
+    """The per-modality base price PRM-120 seeds, as a price-row-shaped dict."""
+    try:
+        from prometheus_gateway import pricing
+    except ImportError:
+        return None
+    base = pricing.default_price_for(_KIND_TO_MODALITY.get(kind, ""))
+    if base is None:
+        return None
+    return {
+        "prompt_price_per_1m": base.prompt_price_per_1m,
+        "completion_price_per_1m": base.completion_price_per_1m,
+        "image_price": base.image_price,
+        "updated_at": "(base price for this modality)",
+    }
+
+
+def plan(db: Path, *, ignore_age: bool = False):
     """(repairable, too_old, unpriced) — the three ways a null row can end up."""
     conn = sqlite3.connect(db)
     conn.row_factory = sqlite3.Row
@@ -65,13 +101,16 @@ def plan(db: Path):
             row = dict(r)
             # By either name, exactly as the gateway resolves it.
             price = prices.get(row["model_id"]) or prices.get(row["model_slug"] or "")
+            if price is None and ignore_age:
+                price = _base_price_for_kind(row["request_kind"])
             if price is None:
                 key = row["model_id"]
                 unpriced[key][0] += 1
                 unpriced[key][1] += row["prompt_tokens"] + row["completion_tokens"]
                 continue
-            # RM-60: never apply a price to usage that predates it.
-            if row["recorded_at"] <= price["updated_at"]:
+            # RM-60: never apply a price to usage that predates it — unless the
+            # operator has said, explicitly, that nobody has been invoiced yet.
+            if not ignore_age and row["recorded_at"] <= price["updated_at"]:
                 too_old.append((row, price))
                 continue
             computed = _cost(row["request_kind"], row, price)
@@ -124,13 +163,29 @@ def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--gateway-db", default="gateway.db", type=Path)
     ap.add_argument("--apply", action="store_true", help="write the changes")
+    ap.add_argument(
+        "--include-usage-older-than-its-price",
+        action="store_true",
+        dest="ignore_age",
+        help=(
+            "rate old usage at today's price, including PRM-120's per-modality base "
+            "price. Changes what a past period cost — only correct while no client "
+            "has been invoiced."
+        ),
+    )
     args = ap.parse_args()
 
     if not args.gateway_db.exists():
         print(f"not found: {args.gateway_db}", file=sys.stderr)
         return 2
 
-    repairable, too_old, unpriced = plan(args.gateway_db)
+    repairable, too_old, unpriced = plan(args.gateway_db, ignore_age=args.ignore_age)
+    if args.ignore_age:
+        print(
+            "MODO PRM-121: se tarifa uso anterior a su propio precio.\n"
+            "  Esto cambia lo que costo un periodo ya cerrado. Solo es correcto\n"
+            "  mientras no se haya facturado a ningun cliente.\n"
+        )
 
     if unpriced:
         print("Sin precio configurado — se quedan como están, que es lo correcto:")
@@ -156,7 +211,11 @@ def main() -> int:
     for row, cost, _ in repairable:
         by_model[row["model_id"]][0] += 1
         by_model[row["model_id"]][1] += cost
-    print("Reparables — el precio ya regía cuando se facturaron:")
+    print(
+        "A tarifar con el precio de HOY (puede no ser el vigente entonces):"
+        if args.ignore_age
+        else "Reparables — el precio ya regía cuando se facturaron:"
+    )
     print(f"  {'modelo':38} {'filas':>6} {'USD':>14}")
     for model, (n, cost) in sorted(by_model.items()):
         print(f"  {model[:38]:38} {n:>6} {cost:>14.8f}")

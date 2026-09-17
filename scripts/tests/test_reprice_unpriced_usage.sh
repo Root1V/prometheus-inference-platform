@@ -98,6 +98,27 @@ uv run --script "${ROOT}/scripts/reprice_unpriced_usage.py" --gateway-db "${TMP}
 echo "$OUT" | grep -q "2026-01-05" \
   && _pass "the refusal is reported, not silent" || _fail "the plan never mentioned the refused row"
 
+# ── PRM-121: the deliberate exception, once nobody has been invoiced ────────
+
+OUT2="$(uv run --script "${ROOT}/scripts/reprice_unpriced_usage.py" \
+  --gateway-db "${TMP}/gateway.db" --include-usage-older-than-its-price --apply 2>&1)"
+
+# 'b' is the row that predates its own price and was refused above.
+[[ "$(q "SELECT ROUND(cost_usd,6) FROM usage_events WHERE id='b'")" == "2.0" ]] \
+  && _pass "PRM-121: a row older than its price IS rated under the flag" \
+  || _fail "id=b cost=$(q "SELECT cost_usd FROM usage_events WHERE id='b'")"
+[[ "$(q "SELECT ROUND(cost_usd,6) FROM usage_daily WHERE day='2026-01-05'")" == "2.0" ]] \
+  && _pass "PRM-121: and its day's rollup moves with it" \
+  || _fail "the 01-05 rollup is $(q "SELECT cost_usd FROM usage_daily WHERE day='2026-01-05'")"
+# 'c' was priced before any of this and must still be untouched.
+[[ "$(q "SELECT cost_usd FROM usage_events WHERE id='c'")" == "9.99" ]] \
+  && _pass "PRM-121: an already-priced row is still never re-rated" || _fail "id=c changed"
+echo "$OUT2" | grep -qi "no se haya facturado" \
+  && _pass "PRM-121: the mode announces what it is doing" || _fail "the flag ran silently"
+# Half a price is still not a discount, flag or no flag.
+[[ "$(q "SELECT cost_usd IS NULL FROM usage_events WHERE id='f'")" == "1" ]] \
+  && _pass "PRM-121: half a token price is still not a discount" || _fail "id=f was priced"
+
 echo
 echo "  Results: ${PASS} passed, ${FAIL} failed"
 [[ "${FAIL}" -eq 0 ]]
