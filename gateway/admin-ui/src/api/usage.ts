@@ -169,7 +169,12 @@ async function fetchUsageExportRows(params: {
     params,
     responseType: "text",
   });
-  const lines = response.data.trim().split("\n");
+  // Split on CRLF *or* LF. Python's csv.writer emits RFC-4180 \r\n, and
+  // splitting on "\n" alone leaves a stray \r glued to the last field of
+  // every line — which made `header.indexOf("model_slug")` return -1 and
+  // silently fall back to model_id. Invisible while this read columns by
+  // position, because the last column was never one of them.
+  const lines = response.data.trim().split(/\r?\n/);
   const rows: UsageExportRow[] = [];
   if (lines.length === 0) return rows;
   // PRM-119: read by column NAME, not position. A-13 made "new columns are

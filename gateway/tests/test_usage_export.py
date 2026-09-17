@@ -359,3 +359,42 @@ def test_every_error_the_gateway_raises_is_in_the_guide():
         f"raised by the gateway, absent from the guide's error catalog: "
         f"{sorted(raised - documented)}"
     )
+
+
+def test_the_export_ends_lines_the_way_its_reader_expects():
+    """PRM-119 follow-up, from a screenshot: the dashboard's Model column kept
+    showing the catalog id after we switched it to the public name.
+
+    The cause was ours and it was one character. `csv.writer` emits RFC-4180
+    `\\r\\n`, and the dashboard's parser split on `"\\n"` — leaving a stray
+    `\\r` welded to the LAST field of every line. `model_slug` is the last
+    column, so `header.indexOf("model_slug")` returned -1 on every export and
+    the parser fell back to `model_id`, exactly as designed for an old file.
+
+    It was invisible while that parser read by position, because index 13 is
+    not the last column. Reading by name is still right; it just has to survive
+    the line ending the writer actually produces.
+
+    This pins both halves: the writer keeps emitting `\\r\\n` (other consumers
+    vendor this file and Excel expects it), and the reader keeps tolerating it.
+    """
+    import csv
+    import io
+    import re
+    from pathlib import Path
+
+    buf = io.StringIO()
+    csv.writer(buf).writerow(["a", "b"])
+    assert buf.getvalue().endswith("\r\n"), (
+        "csv.writer no longer emits CRLF — the note below is now wrong, not the code"
+    )
+
+    parser = (
+        Path(__file__).resolve().parents[2] / "gateway/admin-ui/src/api/usage.ts"
+    ).read_text()
+    split = re.search(r"response\.data\.trim\(\)\.split\((.+?)\);", parser)
+    assert split, "the export parser's line split moved — re-point this guard"
+    assert "\\r?\\n" in split.group(1), (
+        f"the parser splits lines on {split.group(1)} and will glue \\r onto the last "
+        "column of every row, which is where new columns are appended"
+    )
