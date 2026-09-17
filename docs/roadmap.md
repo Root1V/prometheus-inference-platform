@@ -4488,6 +4488,26 @@ test runner. That is now the second UI defect in this session a unit test would 
 other was the CSV parser's CRLF handling), which is worth weighing against the cost of adding one.
 
 
+## PRM-123 — Price the whole catalog, not just what happens to be running
+
+**Why**: reported from the Model pricing page — most rows were still empty. PRM-120 seeds prices
+on catalog sync, but it read the gateway's own registry, and that registry is built from
+`/v1/backends`: running instances. A model that has been downloaded and never started has no
+instance, so the gateway had never heard of it. 21 of this deployment's 30 catalogued models were
+in that state. `admin/router.py`'s own comment had said so all along — *"a catalog entry with zero
+instances only ever shows up here, not in list_instances"* — and the seeding read the wrong one.
+
+The timing is the point: a price is wanted *before* a model first runs. Seeding from the served
+set meant a model got its price only after it had already recorded requests at NULL, which is the
+window PRM-120 existed to close.
+
+**Scope**: the sync fetches each node's `/v1/models` and seeds from that, unioned with the served
+set so a node whose catalog cannot be read still prices what it is actually running. No long-poll
+index on the catalog call — it changes when somebody downloads a model, which is rare, and the
+loop is already awake. A node that fails to answer is logged and skipped, never treated as a node
+with an empty catalog (RM-98's rule).
+
+
 Append a new row to the table with the next `RM-NN` id and a new `## RM-NN — ...` section
 below, following the same shape (Why / Scope). Re-sort the table if the new item's
 priority isn't "last."

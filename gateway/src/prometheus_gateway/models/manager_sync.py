@@ -293,6 +293,34 @@ class ManagerRegistrySync:
 
     # ── Registry sync ─────────────────────────────────────────────────────────
 
+    async def _fetch_node_catalog(
+        self, node_name: str, manager_url: str
+    ) -> list[dict[str, Any]] | None:
+        """GET /v1/models from one node — the catalog, not the running set.
+
+        PRM-123: a model that has been downloaded but never started has no
+        instance, so it never appears in /v1/backends and the gateway's registry
+        has never heard of it. PRM-120 seeded prices from that registry, which
+        meant 21 of this deployment's 30 catalogued models stayed unpriced —
+        and a model's price is exactly the thing you want in place *before* it
+        first runs, not after.
+
+        No long-poll index here on purpose: the catalog changes when somebody
+        downloads a model, which is rare, and this runs on a loop that is
+        already awake. None on failure, like its sibling, so a node that cannot
+        be asked is never mistaken for a node with an empty catalog.
+        """
+        headers = await self._get_auth_headers()
+        try:
+            async with httpx.AsyncClient(timeout=httpx.Timeout(10.0)) as client:
+                resp = await client.get(f"{manager_url}/v1/models", headers=headers)
+                resp.raise_for_status()
+                models: list[dict[str, Any]] = resp.json().get("models", [])
+                return models
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("manager_sync.catalog_unreachable", node=node_name, error=str(exc))
+            return None
+
     async def _fetch_node_backends(
         self, node_name: str, manager_url: str
     ) -> list[dict[str, Any]] | None:
@@ -479,7 +507,19 @@ class ManagerRegistrySync:
         # Failure is logged, never raised: an unpriced model is a billing gap,
         # but a sync that dies on it is an outage.
         try:
-            catalogued = {
+            # PRM-123: from the catalog, which includes models that have never
+            # been started. The served set is the fallback, so a node whose
+            # catalog cannot be read still prices what it is actually running.
+            catalogued: set[tuple[str, str]] = set()
+            for name, url in self._nodes:
+                entries = await self._fetch_node_catalog(name, url)
+                if entries is None:
+                    continue
+                for catalog_entry in entries:
+                    catalog_id = catalog_entry.get("id")
+                    if catalog_id:
+                        catalogued.add((catalog_id, catalog_entry.get("modality") or "text"))
+            catalogued |= {
                 (e.model_id or e.id, e.modality) for e in new_models.values() if e.model_id or e.id
             }
             seeded = await db.seed_default_prices(catalogued)
