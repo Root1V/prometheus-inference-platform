@@ -4508,6 +4508,28 @@ loop is already awake. A node that fails to answer is logged and skipped, never 
 with an empty catalog (RM-98's rule).
 
 
+## PRM-124 — Reset restores the base price, not a dash
+
+**Why**: reported from the pricing table — pressing the reset arrow put the row back to an em
+dash. The endpoint was doing exactly what it was written to do: remove the DB override, fall back
+to `pricing.yaml` or to nothing. That was correct while unpriced was a normal state. PRM-120 made
+"every catalogued model has a price" an invariant, and after it, reset produced the one state the
+table is no longer supposed to have — and an unpriced model is not a blank cell, it is a model
+that bills nothing and is never budget-checked.
+
+**Scope**: DELETE removes the override and then writes the modality's base price, flagged
+`is_default` again, applying it to the live table so the next request is priced without a restart.
+Only when the modality cannot be determined at all is the model left unpriced — guessing one would
+price it wrong on purpose. The modality comes from the gateway's registry when the model is
+running, and from the node catalog otherwise, since most of the pricing table is models that have
+never been started (PRM-123). `app.state.registry` is exposed for the first half of that.
+
+**And the half that is not the endpoint**: the row's inputs are `useState` seeded from the entry,
+which only runs at mount, and the reset handler blanked them locally. Even with the server
+restoring the price, the row would have kept showing empty fields. The handler no longer touches
+them and the row is keyed on the stored price, so it remounts with whatever is actually there.
+
+
 Append a new row to the table with the next `RM-NN` id and a new `## RM-NN — ...` section
 below, following the same shape (Why / Scope). Re-sort the table if the new item's
 priority isn't "last."

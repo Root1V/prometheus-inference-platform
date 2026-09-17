@@ -226,6 +226,10 @@ def create_app(
     app.state.metrics_store = metrics_store
     # AC-29 (018) prompt-summary opt-in + RM-10 admin dashboard both read this.
     app.state.settings = settings
+    # PRM-124: resetting a price to its modality's base needs to know the
+    # modality, and for a model that is actually running this answers without
+    # a round trip to the manager.
+    app.state.registry = registry
     # RM-60: the same shared Redis client already threaded through BackendPool/
     # RateLimitMiddleware above — billing_router.py reads it here rather than
     # reaching into pool's private _redis attribute from another module.
@@ -435,7 +439,10 @@ def create_app(
         # RM-60: billing config CRUD — the enforcement hooks in router.py are
         # always active regardless of this flag; only the admin UI to
         # configure them is gated (matching the rest of this dashboard).
-        app.include_router(create_billing_router())
+        # PRM-124: the same manager client the admin router uses — resetting a
+        # price to its modality's base needs the catalog, and most of the
+        # pricing table is models with no running instance.
+        app.include_router(create_billing_router(manager_client))
 
         _admin_static_dir = Path(__file__).parent / "admin" / "static"
         if _admin_static_dir.is_dir():
