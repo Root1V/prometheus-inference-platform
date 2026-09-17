@@ -4530,6 +4530,27 @@ restoring the price, the row would have kept showing empty fields. The handler n
 them and the row is keyed on the stored price, so it remounts with whatever is actually there.
 
 
+## PRM-125 — Both toolbar buttons propose a price; Save commits it
+
+**Why**: the two buttons beside each price did different kinds of thing. The calculator filled the
+inputs and left them for review; the reset arrow wrote to the server on the click. So Save was
+meaningless on half the toolbar, and the asymmetry was not cosmetic — it cost a real figure. On
+this deployment `qwen3-embedding` was set to 0.437/0.5275, someone pressed reset while
+demonstrating a different bug, and the price became 0.02/0.0. Nothing asked, nothing warned, and
+it would have billed embeddings twenty times low until somebody happened to look. Restored from a
+backup; the point is that no click should have been able to do it.
+
+**Scope**: reset fills the inputs from the modality's base price and writes nothing, exactly as
+the calculator does. The base prices ship with `GET /admin/api/billing/pricing` as
+`defaults_by_modality` rather than from a second endpoint, so the table cannot hold a listing and
+a set of defaults that disagree. The button is shown wherever a base price exists, not only on
+overridden rows, since proposing a figure is useful on any of them.
+
+**The DELETE endpoint stays** and still restores the base price (PRM-124): an API caller asking
+for it explicitly is a different thing from a toolbar button doing it on a click. The dashboard no
+longer calls it, so `useDeleteModelPrice` — orphaned by this change — is removed.
+
+
 Append a new row to the table with the next `RM-NN` id and a new `## RM-NN — ...` section
 below, following the same shape (Why / Scope). Re-sort the table if the new item's
 priority isn't "last."
