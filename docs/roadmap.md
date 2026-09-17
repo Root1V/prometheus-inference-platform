@@ -4469,6 +4469,25 @@ recompute the split from — the total is complete and the breakdown is partial,
 difference would be worse than reporting it.
 
 
+## PRM-122 — A real charge never renders as zero
+
+**Why**: reported from the billing detail. Once PRM-121 gave every row a cost, most of them
+displayed as `USD 0.00` — `formatUsdCost` rounds to 4 decimals, and a single small request costs
+far less than that. 12 prompt + 12 completion tokens at PRM-120's base rate is 0.0000096 USD.
+This is the same defect PRM-119 fixed in the period total, one row down and in a different layer:
+a real figure rendered as a confident zero.
+
+**Scope**: `formatUsdCost` and `formatCurrency` widen to two significant digits for amounts below
+their floor, and keep 4 decimals as that floor, so every figure that already displayed well is
+unchanged (1.628 stays 1.628). A true zero still shows 0.00, because that one is zero, and null
+still shows an em dash. `formatCurrency` needed it too: a small USD amount stays small in PEN, and
+that is the figure a client reads as their bill.
+
+**Verified by running the function over the real amounts**, not by a test: `admin-ui` has no JS
+test runner. That is now the second UI defect in this session a unit test would have caught (the
+other was the CSV parser's CRLF handling), which is worth weighing against the cost of adding one.
+
+
 Append a new row to the table with the next `RM-NN` id and a new `## RM-NN — ...` section
 below, following the same shape (Why / Scope). Re-sort the table if the new item's
 priority isn't "last."

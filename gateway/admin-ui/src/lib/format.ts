@@ -23,6 +23,23 @@ export function formatBytes(n: number | null): string {
   return `${(n / 1024 ** i).toFixed(1)} ${units[i]}`;
 }
 
+/** Decimals needed for `amount` to show two significant digits — PRM-122.
+ *
+ * Four decimals is plenty for a period total and far too few for one request:
+ * 12 prompt + 12 completion tokens at the base rate costs 0.0000096 USD, which
+ * rounds to "USD 0.00" and reads as free. A per-request row is where this
+ * platform's money lives, and a charge displayed as zero is the same lie as a
+ * period total displayed as zero (PRM-119) — one row down.
+ *
+ * Never fewer than `floor`, so every figure that already read well still does;
+ * a true zero keeps showing as 0.00, because that one *is* zero.
+ */
+function significantDecimals(amount: number, floor = 4): number {
+  if (!Number.isFinite(amount) || amount === 0) return floor;
+  const magnitude = Math.floor(Math.log10(Math.abs(amount)));
+  return Math.min(20, Math.max(floor, -magnitude + 1));
+}
+
 /** Formats a USD cost, or "—" for null (docs/roadmap.md RM-33: null means "no price configured"). */
 export function formatUsdCost(cost: number | null): string {
   if (cost === null) return "—";
@@ -30,7 +47,7 @@ export function formatUsdCost(cost: number | null): string {
     style: "currency",
     currency: "USD",
     minimumFractionDigits: 2,
-    maximumFractionDigits: 4,
+    maximumFractionDigits: significantDecimals(cost),
   });
 }
 
@@ -52,6 +69,9 @@ export function formatCurrency(
     style: "currency",
     currency,
     minimumFractionDigits: 2,
-    maximumFractionDigits: 4,
+    // PRM-122: converting to a weaker currency multiplies the figure, but a
+    // small USD amount stays small in PEN or EUR — and rendering it as 0,00
+    // there is worse, because that is the number a client reads as their bill.
+    maximumFractionDigits: significantDecimals(amount),
   });
 }
