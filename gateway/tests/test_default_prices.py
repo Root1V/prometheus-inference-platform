@@ -141,3 +141,32 @@ async def test_a_seeded_model_actually_bills():
     assert events[0].cost_usd == pytest.approx(
         base.prompt_price_per_1m + base.completion_price_per_1m
     )
+
+
+# ── PRM-123: the catalog, not just what happens to be running ──────────────
+
+
+async def test_a_downloaded_but_never_started_model_is_priced():
+    """The gap PRM-120 left. A model with no instance never reaches the
+    gateway's registry, so seeding from the served set missed 21 of this
+    deployment's 30 catalogued models — and a price is exactly the thing you
+    want in place *before* a model first runs, not after its first request has
+    already been recorded at NULL.
+    """
+    catalog = [("downloaded-never-run", "text"), ("also-idle", "rerank")]
+    assert sorted(await db.seed_default_prices(catalog)) == ["also-idle", "downloaded-never-run"]
+
+    rows = {r.model_id: r for r in await db.list_model_price_configs()}
+    assert rows["downloaded-never-run"].prompt_price_per_1m == 0.20
+    assert rows["also-idle"].prompt_price_per_1m == 0.02
+    assert all(r.is_default for r in rows.values())
+
+
+async def test_the_catalog_and_the_served_set_are_merged_not_replaced():
+    """A node whose catalog cannot be read still has running models, and those
+    must keep getting priced — the fallback is why an unreachable manager
+    degrades instead of silently leaving new instances unpriced."""
+    seeded = await db.seed_default_prices(
+        [("from-catalog", "text"), ("from-served-set", "text"), ("from-catalog", "text")]
+    )
+    assert sorted(seeded) == ["from-catalog", "from-served-set"]
