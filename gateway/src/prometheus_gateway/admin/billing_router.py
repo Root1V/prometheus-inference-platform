@@ -29,7 +29,10 @@ from fastapi import APIRouter, Request, Response
 from fastapi.responses import JSONResponse
 
 from .. import billing, budget, db, pricing
+from ..config import Settings
 from ..router import _problem
+from .client import ManagerApiClient
+from .nodes_client import fetch_nodes
 from ..telemetry import get_logger
 
 logger = get_logger(__name__)
@@ -68,7 +71,7 @@ def _settings_to_dict(row: "db.ClientBillingSettings | None", client_id: str) ->
     }
 
 
-def create_billing_router() -> APIRouter:
+def create_billing_router(manager_client: "ManagerApiClient | None" = None) -> APIRouter:
     router = APIRouter()
 
     @router.get("/admin/api/billing/clients/{client_id}/settings")
@@ -278,16 +281,78 @@ def create_billing_router() -> APIRouter:
             "source": "db",
         }
 
+    async def _modality_of(request: Request, model_id: str) -> str | None:
+        """This model's modality, for restoring its base price — PRM-124.
+
+        The gateway's own registry answers instantly but only knows models with
+        a running instance, and most of the pricing table is models that have
+        never been started (PRM-123). So fall back to the catalog, which is one
+        round trip on a button click nobody presses in a loop.
+        """
+        registry = getattr(request.app.state, "registry", None)
+        if registry is not None:
+            for entry in getattr(registry, "_models", {}).values():
+                if model_id in (entry.model_id, entry.id):
+                    return str(entry.modality)
+
+        settings: Settings = request.app.state.settings
+        try:
+            nodes = await fetch_nodes(
+                settings.auth_service_admin_url,  # type: ignore[arg-type]
+                settings.auth_service_admin_api_key,  # type: ignore[arg-type]
+                tls_verify=settings.auth_service_tls_verify,
+            )
+            if manager_client is None:
+                return None
+            for _name, url in nodes:
+                resp = await manager_client.get(url, "/v1/models")
+                resp.raise_for_status()
+                for entry in resp.json().get("models", []):
+                    if entry.get("id") == model_id:
+                        return entry.get("modality") or None
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("billing.modality_lookup_failed", model_id=model_id, error=str(exc))
+        return None
+
     @router.delete("/admin/api/billing/pricing/{model_id}")
     async def delete_pricing(model_id: str, request: Request) -> Any:
-        """Removes the DB override. If pricing.yaml also has a price for this
-        model, that file-sourced price reappears (it was never touched) —
-        otherwise the model goes back to unpriced.
+        """Restores this model's base price — PRM-124.
+
+        This used to mean "remove the override", leaving the model unpriced
+        unless pricing.yaml happened to carry it. That was right until PRM-120
+        made "every model has a price" an invariant: since then, reset emptied
+        the row and the dashboard showed a dash, which is the one state the
+        table is no longer supposed to have.
+
+        Reset now means what the button looks like it means — back to the
+        per-modality base price, not back to nothing. Only if the modality
+        cannot be determined at all does it leave the model unpriced, because
+        inventing one would price it wrong on purpose.
         """
         if (err := _require_scope(request, "admin:write")) is not None:
             return err
         await db.delete_model_price_config(model_id)
         pricing.get_pricing_table().remove_price(model_id)
+
+        modality = await _modality_of(request, model_id)
+        base = pricing.default_price_for(modality) if modality else None
+        if base is None:
+            logger.info("billing.reset_left_unpriced", model_id=model_id, modality=modality)
+            return Response(status_code=204)
+
+        await db.upsert_model_price_config(
+            model_id,
+            prompt_price_per_1m=base.prompt_price_per_1m,
+            completion_price_per_1m=base.completion_price_per_1m,
+            image_price=base.image_price,
+            is_default=True,
+        )
+        pricing.get_pricing_table().set_price(
+            model_id,
+            prompt_price_per_1m=base.prompt_price_per_1m,
+            completion_price_per_1m=base.completion_price_per_1m,
+            image_price=base.image_price,
+        )
         return Response(status_code=204)
 
     return router

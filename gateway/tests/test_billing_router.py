@@ -369,7 +369,18 @@ async def test_put_pricing_image_only_is_allowed(app, admin_write_headers):
     assert r.json()["image_price"] == 0.02
 
 
-async def test_delete_pricing_removes_db_override(app, admin_write_headers):
+async def test_delete_pricing_replaces_the_override_rather_than_removing_it(
+    app, admin_write_headers
+):
+    """This asserted the opposite until PRM-124, and the change was deliberate.
+
+    DELETE used to mean "remove the override", leaving the model unpriced. That
+    was right while unpriced was a normal state. PRM-120 made "every catalogued
+    model has a price" an invariant, so the same call now swaps the operator's
+    figure for the modality's base price: the override is gone, which is what
+    was asked for, and the model is not left billing nothing, which was never
+    what the reset button looked like it promised.
+    """
     from prometheus_gateway import pricing
 
     await db.create_tables(db.get_engine())
@@ -383,8 +394,12 @@ async def test_delete_pricing_removes_db_override(app, admin_write_headers):
             "/admin/api/billing/pricing/small-model", headers=admin_write_headers
         )
     assert del_r.status_code == 204
-    assert pricing.get_pricing_table().estimate_cost_usd("small-model", 1_000_000, 0) is None
-    assert await db.list_model_price_configs() == []
+
+    rows = await db.list_model_price_configs()
+    assert [r.model_id for r in rows] == ["small-model"]
+    assert rows[0].is_default is True, "the operator's figure is gone"
+    assert rows[0].prompt_price_per_1m == pricing.default_price_for("text").prompt_price_per_1m
+    assert pricing.get_pricing_table().estimate_cost_usd("small-model", 1_000_000, 0) is not None
 
 
 async def test_get_pricing_reflects_yaml_and_db_sources(
@@ -493,3 +508,62 @@ async def test_a_partly_priced_period_says_how_much_it_misses(app, admin_write_h
     assert body["request_count"] == 2
     assert body["subtotal_usd"] == pytest.approx(1000 * 1000 / 1_000_000)
     assert body["unpriced_requests"] == 1, "the figure covers one of two requests and must say so"
+
+
+# ── PRM-124: reset means back to the base price, not back to nothing ────────
+
+
+async def test_reset_restores_the_base_price_instead_of_emptying_the_row(app, admin_write_headers):
+    """Reported from the pricing table: pressing the reset arrow put the row
+    back to a dash.
+
+    That was correct behaviour until PRM-120 made "every model has a price" an
+    invariant. Since then, "remove the override" leaves the one state the table
+    is no longer supposed to have — and an unpriced model is not just a blank
+    cell, it is a model that bills nothing and is never budget-checked.
+
+    `small-model` is text, and the registry fixture serves it, so the modality
+    is resolved without reaching for the catalog.
+    """
+    await db.create_tables(db.get_engine())
+    from prometheus_gateway import pricing
+
+    base = pricing.default_price_for("text")
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
+        await c.put(
+            "/admin/api/billing/pricing/small-model",
+            json={"prompt_price_per_1m": 99.0, "completion_price_per_1m": 99.0},
+            headers=admin_write_headers,
+        )
+        r = await c.delete("/admin/api/billing/pricing/small-model", headers=admin_write_headers)
+        assert r.status_code == 204
+
+        listing = await c.get("/admin/api/billing/pricing", headers=admin_write_headers)
+
+    entry = listing.json()["data"]["small-model"]
+    assert entry["prompt_price_per_1m"] == base.prompt_price_per_1m
+    assert entry["completion_price_per_1m"] == base.completion_price_per_1m
+    assert entry["source"] == "default", "and it stops claiming to be somebody's decision"
+
+    # The live table too, or the next request bills at nothing until a restart.
+    assert pricing.get_pricing_table().get_price("small-model") is not None
+
+
+async def test_reset_leaves_a_model_unpriced_only_when_its_modality_is_unknown(
+    app, admin_write_headers
+):
+    """A model the gateway does not serve and no node admits to having. Better
+    unpriced than priced as whatever modality we felt like guessing."""
+    await db.create_tables(db.get_engine())
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
+        await c.put(
+            "/admin/api/billing/pricing/ghost-model",
+            json={"prompt_price_per_1m": 5.0, "completion_price_per_1m": 5.0},
+            headers=admin_write_headers,
+        )
+        await c.delete("/admin/api/billing/pricing/ghost-model", headers=admin_write_headers)
+        listing = await c.get("/admin/api/billing/pricing", headers=admin_write_headers)
+
+    assert "ghost-model" not in listing.json()["data"]

@@ -134,13 +134,12 @@ function ModelPricingRow({
   }
 
   function handleReset() {
+    // PRM-124: no local blanking. Reset means "back to the modality's base
+    // price", and the server decides what that is — clearing the fields here
+    // would show an empty row for a model that does have a price, which is
+    // the state this table is no longer supposed to have.
     deletePrice.mutate(modelId, {
-      onSuccess: () => {
-        showToast(`Override removed for ${modelId}`, "success");
-        setPromptPrice("");
-        setCompletionPrice("");
-        setImagePrice("");
-      },
+      onSuccess: () => showToast(`${modelId} reset to its base price`, "success"),
       onError: (e) => showToast(getErrorMessage(e), "error"),
     });
   }
@@ -222,8 +221,8 @@ function ModelPricingRow({
           {isDbOverride && (
             <button
               type="button"
-              title="Remove override (falls back to pricing.yaml, if any)"
-              aria-label={`Remove price override for ${modelId}`}
+              title="Reset to the base price for this model's modality"
+              aria-label={`Reset ${modelId} to its base price`}
               disabled={isBusy}
               onClick={handleReset}
               className="rounded-md p-1.5 text-text-muted hover:bg-background disabled:cursor-not-allowed disabled:opacity-50"
@@ -307,7 +306,17 @@ export function ModelPricingTable() {
             const nodeInfo = nodeInfoByModel.get(modelId);
             return (
               <ModelPricingRow
-                key={modelId}
+                // PRM-124: keyed on the stored price, not just the id. These
+                // inputs are useState seeded from `entry`, which only runs at
+                // mount — so after a reset replaced the override with the base
+                // price, the row would keep showing whatever was typed. Making
+                // the key change remounts it with the value that is actually
+                // stored.
+                key={`${modelId}:${prices[modelId]?.source ?? "none"}:${
+                  prices[modelId]?.prompt_price_per_1m ?? ""
+                }:${prices[modelId]?.completion_price_per_1m ?? ""}:${
+                  prices[modelId]?.image_price ?? ""
+                }`}
                 modelId={modelId}
                 entry={prices[modelId]}
                 hourlyCostUsd={nodeInfo?.hourlyCostUsd ?? null}
