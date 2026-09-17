@@ -1376,11 +1376,19 @@ def create_router(registry: ModelRegistry, pool: "BackendPool") -> APIRouter:
                         if body.max_tokens is not None
                         else max(0, entry.context_length - estimated_input_tokens)
                     )
-                    # PRM-113: the reserve runs before a replica is chosen, so
-                    # only the slug is in scope. _lookup() tries the slug too,
-                    # so a table written against either name still reserves.
+                    # PRM-118: by BOTH names. The reserve runs before a replica
+                    # is chosen, but the whole group belongs to one catalog
+                    # model, so its id is known here — and that is what
+                    # `model_price_config` is keyed on. Passing only the public
+                    # name found no price for any renamed model, so `est_cost`
+                    # was None, no reservation was made, and the spend cap
+                    # never engaged. Measured on this deployment:
+                    # qwen3-embedding and qwen3-vl-8b were both uncapped.
                     est_cost = pricing.get_pricing_table().estimate_cost_usd(
-                        resolution.model_key, estimated_input_tokens, worst_case_completion
+                        resolution.model_catalog_id or resolution.model_key,
+                        estimated_input_tokens,
+                        worst_case_completion,
+                        model_slug=resolution.model_key,
                     )
                     if est_cost is not None:
                         reservation = await BudgetTracker(budget_redis).reserve(
@@ -1863,7 +1871,10 @@ def create_router(registry: ModelRegistry, pool: "BackendPool") -> APIRouter:
                 )
                 estimated_tokens = _estimate_text_tokens(body.input)
                 est_cost = pricing.get_pricing_table().estimate_cost_usd(
-                    resolution.model_key, estimated_tokens, 0
+                    resolution.model_catalog_id or resolution.model_key,  # PRM-118
+                    estimated_tokens,
+                    0,
+                    model_slug=resolution.model_key,
                 )
                 if est_cost is not None:
                     reservation = await BudgetTracker(budget_redis).reserve(
@@ -2159,7 +2170,10 @@ def create_router(registry: ModelRegistry, pool: "BackendPool") -> APIRouter:
                 )
                 estimated_tokens = _estimate_text_tokens([body.query, *body.documents])
                 est_cost = pricing.get_pricing_table().estimate_cost_usd(
-                    resolution.model_key, estimated_tokens, 0
+                    resolution.model_catalog_id or resolution.model_key,  # PRM-118
+                    estimated_tokens,
+                    0,
+                    model_slug=resolution.model_key,
                 )
                 if est_cost is not None:
                     reservation = await BudgetTracker(budget_redis).reserve(
@@ -2436,7 +2450,11 @@ def create_router(registry: ModelRegistry, pool: "BackendPool") -> APIRouter:
                     default_thresholds,
                 )
                 est_cost = pricing.get_pricing_table().estimate_image_cost_usd(
-                    entry.id, body.n or 1
+                    # PRM-118: was `entry.id` — the *instance* id, a third
+                    # spelling that is not what prices are keyed on either.
+                    resolution.model_catalog_id or resolution.model_key,
+                    body.n or 1,
+                    model_slug=resolution.model_key,
                 )
                 if est_cost is not None:
                     reservation = await BudgetTracker(budget_redis).reserve(
@@ -3041,7 +3059,13 @@ async def _stream_response(
                     and budget_redis is not None
                 ):
                     actual_cost = pricing.get_pricing_table().estimate_cost_usd(
-                        billed_name, prompt_tokens, completion_tokens
+                        # PRM-118: the settle has to resolve the same price the
+                        # reserve did, or it corrects a real reservation down
+                        # to nothing.
+                        billing_id or billed_name,
+                        prompt_tokens,
+                        completion_tokens,
+                        model_slug=billed_name,
                     )
                     if actual_cost is not None:
                         newly_crossed = await BudgetTracker(budget_redis).settle(

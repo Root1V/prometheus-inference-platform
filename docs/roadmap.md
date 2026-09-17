@@ -4356,6 +4356,35 @@ a rebuild would silently zero the history that only lives in the rollup. And it 
 not this tool's business; the test asserts the count does not grow.
 
 
+## PRM-118 — The spend cap finds the price of a model that was renamed
+
+**Why**: found while answering a fair challenge — if billing keys on `model_id` because that id
+never changes, why does the price lookup accept the slug at all? The answer is that the key and
+the lookup are different things: the reserve runs before a replica is chosen, and a model answers
+to two names. But measuring it turned up something worse than the inconsistency being discussed.
+`model_price_config` is keyed on the catalog id, and the reserve passed only the public name, so
+for every renamed model it resolved no price — `est_cost` was `None`, no reservation was made,
+and the cap never engaged. Measured on this deployment: `qwen3-embedding` and `qwen3-vl-8b` were
+both uncapped. Nothing failed and nothing was logged.
+
+RM-69 created `ModelResolution.model_key` to be the catalog id for exactly this reason, and its
+comment predicted the failure in those words — "free and uncapped under one of its names". RM-70
+then put the slug first in that expression and the field stopped being what every comment about
+it still said it was.
+
+**Scope**: `model_key` keeps its current meaning (the public name — 40 call sites read it as such,
+including scope checks and the `model` a response reports); the catalog id gets its own
+`model_catalog_id` rather than a second reinterpretation of one field, which is the mistake
+PRM-115 had just finished cleaning up elsewhere. Four reserves and the streaming settle now name
+the model both ways, as the four settles already did. `record_usage` resolved `price` by both
+names and `cost_usd` by one, two branches apart — fixed with them.
+
+**The actual fix is the test.** The rule is one line long and was still wrong in four places,
+because it lived at nine call sites and nowhere else. `test_every_price_lookup_names_the_model_both_ways`
+reads the source and fails on a lookup that names the model once. Run against the pre-fix tree it
+names all six.
+
+
 Append a new row to the table with the next `RM-NN` id and a new `## RM-NN — ...` section
 below, following the same shape (Why / Scope). Re-sort the table if the new item's
 priority isn't "last."

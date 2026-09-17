@@ -577,7 +577,14 @@ async def record_usage(
             completion_cost_usd = completion_tokens * completion_price_per_1m / 1_000_000
         else:
             prompt_cost_usd = completion_cost_usd = None
-        cost_usd = price_table.estimate_cost_usd(model_id, prompt_tokens, completion_tokens)
+        # PRM-118: by both names, like the `price` two branches up. This line
+        # resolved by one and so could record NULL for a model the line above
+        # had just found a price for — the same defect, one line apart, which
+        # is why PRM-118 stopped repeating the rule at each call site and put
+        # a test on it instead.
+        cost_usd = price_table.estimate_cost_usd(
+            model_id, prompt_tokens, completion_tokens, model_slug=model_slug
+        )
         image_price_each = None
         image_cost_usd = None
 

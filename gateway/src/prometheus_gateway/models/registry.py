@@ -83,12 +83,23 @@ class ModelResolution:
     # validation can happen before a replica is chosen.
     modality: str
     context_length: int
-    # RM-69: the catalog id shared by the group — what pricing, usage and the
-    # spend cap key off. Deliberately NOT `name`: a client addressing a replica
-    # by its own instance id would otherwise miss the price table entirely,
-    # which records the request at NULL cost *and* skips the budget reservation,
-    # so the same model would be free and uncapped under one of its names.
+    # The group's public name — the slug, falling back to the catalog id. This
+    # is what a client sent, what the response reports, and what a `model:`
+    # scope is checked against.
+    #
+    # RM-69 introduced it as the catalog id, for pricing and the spend cap, and
+    # its comment predicted precisely what would go wrong otherwise: the
+    # request "free and uncapped under one of its names". RM-70 then put the
+    # slug first here and the field quietly stopped being a catalog id, while
+    # every comment describing it still said it was. PRM-118 is that prediction
+    # coming true — so the catalog id now has its own field rather than this
+    # one meaning two things depending on whether a model was ever renamed.
     model_key: str = ""
+    # PRM-118: the catalog id shared by every member, which is what
+    # `model_price_config` is keyed on. Known before a replica is chosen —
+    # the whole group belongs to one catalog model — so the spend-cap
+    # reservation can resolve a price rather than silently finding none.
+    model_catalog_id: str = ""
     # Set when members disagree on something that makes the group unroutable
     # (see _resolve_group) — the caller turns this into a 400 rather than
     # silently serving from an arbitrary subset.
@@ -198,6 +209,7 @@ class ModelRegistry:
                 modality=known[0].modality,
                 context_length=known[0].context_length,
                 model_key=known[0].model_slug or known[0].model_id or name,
+                model_catalog_id=known[0].model_id or "",
             )
         # Stable order so "which replica" is deterministic until RM-58 makes
         # it a real decision.
@@ -227,6 +239,7 @@ class ModelRegistry:
             context_length=min(m.context_length for m in members),
             mismatch=mismatch,
             model_key=members[0].model_slug or members[0].model_id or name,
+            model_catalog_id=members[0].model_id or "",
         )
 
     def list_served_names(self) -> list[ModelResolution]:

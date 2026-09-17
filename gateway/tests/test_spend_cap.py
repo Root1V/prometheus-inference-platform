@@ -195,3 +195,115 @@ async def test_unconfigured_client_has_no_cap(app, auth_headers):
             r = await c.post("/v1/chat/completions", json=VALID_BODY, headers=auth_headers)
 
     assert r.status_code == 200
+
+
+# ── PRM-118: the cap has to find the price of a model that was renamed ──────
+
+
+@pytest.fixture
+def renamed_registry():
+    """A model whose public name is not its catalog id — RM-70's rename.
+
+    Built in memory rather than from registry.yaml because the point is the
+    gap between the two identifiers, and the yaml fixture above has only one.
+    """
+    from prometheus_gateway.models.registry import ModelEntry
+
+    registry = ModelRegistry.__new__(ModelRegistry)
+    registry._models = {
+        "inst-1": ModelEntry(
+            id="inst-1",
+            path="/dev/null",
+            context_length=4096,
+            family="llama3",
+            quantization="Q4_0",
+            backend_url="http://127.0.0.1:18081",
+            backend_status="active",
+            node="local",
+            modality="text",
+            model_id="cat-id-0-6b-local-2",  # what prices are keyed on
+            model_slug="pretty-name",  # what the client sends
+        )
+    }
+    return registry
+
+
+@pytest.fixture
+def renamed_app(rsa_keys, tmp_path, renamed_registry, fake_redis):
+    key_file = tmp_path / "public.pem"
+    key_file.write_text(rsa_keys["public"])
+    pricing_file = tmp_path / "pricing.yaml"
+    # Priced under the CATALOG ID, which is how the dashboard writes prices.
+    pricing_file.write_text(
+        "models:\n  - id: cat-id-0-6b-local-2\n    prompt_price_per_1m: 1.0\n"
+        "    completion_price_per_1m: 1.0\n"
+    )
+    settings = Settings(
+        jwt_issuer="https://auth.test",
+        jwt_audience="prometheus-gateway",
+        jwt_public_key_file=str(key_file),
+        jwt_revocation_redis_url=None,
+        rate_limit_strict=False,
+        pricing_file=str(pricing_file),
+    )
+    return create_app(settings=settings, registry=renamed_registry, redis_client=fake_redis)
+
+
+@pytest.fixture
+def renamed_headers(rsa_keys):
+    token = make_token(
+        rsa_keys["private"],
+        scope="inference:read inference:stream model:pretty-name",
+        sub="user-x",
+        azp="client-a",
+    )
+    return {"Authorization": f"Bearer {token}"}
+
+
+async def test_the_cap_engages_for_a_model_that_was_renamed(renamed_app, renamed_headers):
+    """The defect PRM-118 fixes, and the reason it was invisible.
+
+    The reserve resolved the price by the public name only, while prices are
+    keyed on the catalog id. For any renamed model it therefore found no price,
+    `est_cost` was None, no reservation was made — and the request sailed past
+    a cap it should have hit. Nothing failed and nothing was logged: the model
+    was simply free and uncapped, which is exactly what RM-69's own comment
+    warned would happen if this key were ever wrong.
+
+    Measured on the live deployment before the fix: qwen3-embedding and
+    qwen3-vl-8b both reserved nothing.
+    """
+    await _set_cap(0.000001)
+
+    body = {**VALID_BODY, "model": "pretty-name"}
+    async with AsyncClient(transport=ASGITransport(app=renamed_app), base_url="http://test") as c:
+        with respx.mock:
+            respx.post("http://127.0.0.1:18081/v1/chat/completions").mock(
+                return_value=Response(200, json=LLAMA_RESPONSE)
+            )
+            r = await c.post("/v1/chat/completions", json=body, headers=renamed_headers)
+
+    assert r.status_code == 402, "a renamed model must be capped like any other"
+    assert r.json()["type"].endswith("spend-cap-exceeded")
+
+
+async def test_a_renamed_model_under_its_cap_still_bills(renamed_app, renamed_headers):
+    """The other half: finding the price must not start denying legitimate
+    traffic, and the row it writes must carry the cost the reserve used."""
+    await _set_cap(1000.0)
+
+    body = {**VALID_BODY, "model": "pretty-name"}
+    async with AsyncClient(transport=ASGITransport(app=renamed_app), base_url="http://test") as c:
+        with respx.mock:
+            respx.post("http://127.0.0.1:18081/v1/chat/completions").mock(
+                return_value=Response(200, json=LLAMA_RESPONSE)
+            )
+            r = await c.post("/v1/chat/completions", json=body, headers=renamed_headers)
+
+    assert r.status_code == 200
+    events = await db.query_usage_events_range(date(2000, 1, 1), date(2100, 1, 1))
+    assert len(events) == 1
+    # 5 prompt + 3 completion at $1/1M each.
+    assert events[0].cost_usd == pytest.approx(8 / 1_000_000)
+    assert events[0].model_id == "cat-id-0-6b-local-2"
+    assert events[0].model_slug == "pretty-name"

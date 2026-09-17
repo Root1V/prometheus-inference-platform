@@ -164,3 +164,41 @@ def test_list_prices_returns_effective_snapshot(tmp_path):
     prices = table.list_prices()
 
     assert set(prices) == {"file-model", "db-model"}
+
+
+def test_every_price_lookup_names_the_model_both_ways():
+    """PRM-118. A model answers to two names — the catalog id prices are keyed
+    on, and the public slug a client sends — so every lookup has to offer both.
+    The rule is one line long and was still got wrong in four places, including
+    two lines apart inside a single function, because it lived at nine call
+    sites and nowhere else.
+
+    The damage was silent by construction: a lookup that resolves nothing
+    returns None, which the spend cap reads as "unpriced, do not reserve". The
+    request is then free and uncapped, and nothing anywhere says so.
+
+    So the rule lives here now. A new call site that forgets `model_slug`
+    fails this instead of quietly not capping something.
+    """
+    import re
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[2]
+    offenders: list[str] = []
+    found = 0
+    for rel in ("gateway/src/prometheus_gateway/router.py", "gateway/src/prometheus_gateway/db.py"):
+        src = (root / rel).read_text()
+        for match in re.finditer(r"estimate_(?:image_)?cost_usd\(", src):
+            found += 1
+            # Walk to the matching close paren — these calls span lines.
+            depth, i = 1, match.end()
+            while depth and i < len(src):
+                depth += (src[i] == "(") - (src[i] == ")")
+                i += 1
+            if "model_slug" not in src[match.end() : i]:
+                offenders.append(f"{rel}:{src[: match.start()].count(chr(10)) + 1}")
+
+    # Vacuity first: a guard that matches nothing passes forever. Nine call
+    # sites today, and the count only has to stay above zero.
+    assert found >= 9, f"the pattern found only {found} price lookups — it has stopped matching"
+    assert not offenders, f"price lookups that name the model only one way: {offenders}"
