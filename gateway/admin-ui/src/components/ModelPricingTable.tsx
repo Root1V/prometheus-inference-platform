@@ -1,13 +1,13 @@
 import { Calculator, RotateCcw, Save } from "lucide-react";
 import { useState } from "react";
 import type { BackendMetrics } from "../api/metrics";
-import { useDeleteModelPrice, useModelPrices, useUpdateModelPrice } from "../api/billing";
+import { useModelPrices, useUpdateModelPrice } from "../api/billing";
 import { useMetrics } from "../api/metrics";
 import { useModelCatalog } from "../api/models";
 import { useNodeRegistry } from "../api/nodes";
 import { useToast } from "../context/ToastContext";
 import { getErrorMessage } from "../lib/errors";
-import type { ModelPriceEntry } from "../types/billing";
+import type { BaseModelPrice, ModelPriceEntry } from "../types/billing";
 
 const inputClass =
   "w-24 rounded-lg border border-border bg-background px-2 py-1.5 text-sm text-text focus:border-primary focus:outline-none";
@@ -34,19 +34,20 @@ function suggestPricePerUnit(
 function ModelPricingRow({
   modelId,
   entry,
+  basePrice,
   hourlyCostUsd,
   metrics,
   margin,
 }: {
   modelId: string;
   entry: ModelPriceEntry | undefined;
+  basePrice: BaseModelPrice | undefined;
   hourlyCostUsd: number | null;
   metrics: BackendMetrics | undefined;
   margin: number;
 }) {
   const { showToast } = useToast();
   const updatePrice = useUpdateModelPrice();
-  const deletePrice = useDeleteModelPrice();
 
   const [promptPrice, setPromptPrice] = useState(entry?.prompt_price_per_1m?.toString() ?? "");
   const [completionPrice, setCompletionPrice] = useState(
@@ -54,7 +55,7 @@ function ModelPricingRow({
   );
   const [imagePrice, setImagePrice] = useState(entry?.image_price?.toString() ?? "");
 
-  const isBusy = updatePrice.isPending || deletePrice.isPending;
+  const isBusy = updatePrice.isPending;
   const isDbOverride = entry?.source === "db";
   // PRM-120: a seeded base price is not a decision anybody made. Saying so is
   // the whole reason it is stored with a flag instead of looking like one.
@@ -134,14 +135,19 @@ function ModelPricingRow({
   }
 
   function handleReset() {
-    // PRM-124: no local blanking. Reset means "back to the modality's base
-    // price", and the server decides what that is — clearing the fields here
-    // would show an empty row for a model that does have a price, which is
-    // the state this table is no longer supposed to have.
-    deletePrice.mutate(modelId, {
-      onSuccess: () => showToast(`${modelId} reset to its base price`, "success"),
-      onError: (e) => showToast(getErrorMessage(e), "error"),
-    });
+    // PRM-125: fills the inputs and writes nothing, the same as the calculator
+    // beside it. Both buttons propose a price; Save is what commits one. This
+    // used to delete the stored price outright, which made Save meaningless on
+    // half the toolbar and cost a real figure somebody had set — 0.437 became
+    // 0.02 on this deployment, unnoticed, because nothing asked first.
+    if (!basePrice) {
+      showToast(`No base price for ${modelId}'s modality.`, "error");
+      return;
+    }
+    setPromptPrice(basePrice.prompt_price_per_1m?.toString() ?? "");
+    setCompletionPrice(basePrice.completion_price_per_1m?.toString() ?? "");
+    setImagePrice(basePrice.image_price?.toString() ?? "");
+    showToast(`Base price filled in for ${modelId} — review, then Save.`, "success");
   }
 
   return (
@@ -218,11 +224,11 @@ function ModelPricingRow({
           >
             <Save size={16} />
           </button>
-          {isDbOverride && (
+          {basePrice && (
             <button
               type="button"
-              title="Reset to the base price for this model's modality"
-              aria-label={`Reset ${modelId} to its base price`}
+              title="Fill with the base price for this model's modality — then Save"
+              aria-label={`Fill ${modelId} with its base price`}
               disabled={isBusy}
               onClick={handleReset}
               className="rounded-md p-1.5 text-text-muted hover:bg-background disabled:cursor-not-allowed disabled:opacity-50"
@@ -256,6 +262,10 @@ export function ModelPricingTable() {
   const prices = pricesQuery.data?.data ?? {};
   const catalogEntries = catalogQuery.data?.models ?? [];
   const catalogIds = catalogEntries.map((m) => m.id);
+  // PRM-125: modality -> base price, and model -> modality, so the reset
+  // button can propose a figure without the server writing one.
+  const defaultsByModality = pricesQuery.data?.defaults_by_modality ?? {};
+  const modalityByModel = new Map(catalogEntries.map((m) => [m.id, m.modality]));
   // Every priced model (yaml or db) plus every catalog model not yet priced —
   // a model can be priced before it's downloaded, but usually it's the
   // other way around.
@@ -304,6 +314,7 @@ export function ModelPricingTable() {
         <tbody>
           {modelIds.map((modelId) => {
             const nodeInfo = nodeInfoByModel.get(modelId);
+            const modality = modalityByModel.get(modelId);
             return (
               <ModelPricingRow
                 // PRM-124: keyed on the stored price, not just the id. These
@@ -319,6 +330,7 @@ export function ModelPricingTable() {
                 }`}
                 modelId={modelId}
                 entry={prices[modelId]}
+                basePrice={modality ? defaultsByModality[modality] : undefined}
                 hourlyCostUsd={nodeInfo?.hourlyCostUsd ?? null}
                 metrics={backendsById[modelId]}
                 margin={nodeInfo?.margin ?? 1}

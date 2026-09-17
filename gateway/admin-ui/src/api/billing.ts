@@ -123,12 +123,8 @@ export function useUpdateModelPrice() {
   });
 }
 
-export function useDeleteModelPrice() {
-  const queryClient = useQueryClient();
-  return useMutation({
-    mutationFn: async (modelId: string) => {
-      await apiClient.delete(`/billing/pricing/${modelId}`);
-    },
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: MODEL_PRICES_KEY }),
-  });
-}
+// PRM-125 removed useDeleteModelPrice: the reset button fills the inputs now
+// and Save is what writes, so nothing in the dashboard deletes a price. The
+// DELETE endpoint still exists and still restores the modality's base price
+// (PRM-124) — an API caller asking for it explicitly is a different thing from
+// a toolbar button doing it on a click.

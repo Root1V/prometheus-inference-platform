@@ -220,7 +220,22 @@ def create_billing_router(manager_client: "ManagerApiClient | None" = None) -> A
                     else "file"
                 ),
             }
-        return {"object": "list", "data": result}
+        return {
+            "object": "list",
+            "data": result,
+            # PRM-125: the reset button fills the inputs from this and writes
+            # nothing — saving is what Save is for. Sent with the listing rather
+            # than as its own endpoint because the table needs both together and
+            # a second round trip would let them disagree.
+            "defaults_by_modality": {
+                modality: {
+                    "prompt_price_per_1m": base.prompt_price_per_1m,
+                    "completion_price_per_1m": base.completion_price_per_1m,
+                    "image_price": base.image_price,
+                }
+                for modality, base in pricing.default_prices().items()
+            },
+        }
 
     @router.put("/admin/api/billing/pricing/{model_id}")
     async def put_pricing(model_id: str, body: dict[str, Any], request: Request) -> Any:

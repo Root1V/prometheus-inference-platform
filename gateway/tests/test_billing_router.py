@@ -300,7 +300,12 @@ async def test_get_pricing_empty_when_nothing_configured(app, admin_read_headers
         r = await c.get("/admin/api/billing/pricing", headers=admin_read_headers)
 
     assert r.status_code == 200
-    assert r.json() == {"object": "list", "data": {}}
+    body = r.json()
+    assert body["object"] == "list"
+    assert body["data"] == {}
+    # PRM-125 appended defaults_by_modality; the point of this test is that no
+    # model is priced, not that the response has exactly two keys.
+    assert set(body) == {"object", "data", "defaults_by_modality"}
 
 
 async def test_put_pricing_requires_admin_write(app, admin_read_headers):
@@ -567,3 +572,40 @@ async def test_reset_leaves_a_model_unpriced_only_when_its_modality_is_unknown(
         listing = await c.get("/admin/api/billing/pricing", headers=admin_write_headers)
 
     assert "ghost-model" not in listing.json()["data"]
+
+
+async def test_the_listing_carries_the_base_prices_for_the_reset_button(app, admin_read_headers):
+    """PRM-125. Both toolbar buttons propose a price and neither writes one —
+    Save is what commits. The calculator already worked that way; reset did not,
+    and its write cost a real figure somebody had set (0.437 became 0.02 on this
+    deployment, unnoticed, because nothing asked first).
+
+    Filling the inputs needs the base prices client-side, and they ship with the
+    listing rather than from a second endpoint so the two cannot disagree about
+    what a row should be reset to.
+    """
+    from prometheus_gateway import pricing
+
+    await db.create_tables(db.get_engine())
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
+        r = await c.get("/admin/api/billing/pricing", headers=admin_read_headers)
+
+    defaults = r.json()["defaults_by_modality"]
+    for modality in ("text", "vision", "embedding", "rerank", "image"):
+        assert modality in defaults, f"{modality} has a base price but the UI cannot see it"
+        assert defaults[modality] == {
+            "prompt_price_per_1m": pricing.default_price_for(modality).prompt_price_per_1m,
+            "completion_price_per_1m": pricing.default_price_for(modality).completion_price_per_1m,
+            "image_price": pricing.default_price_for(modality).image_price,
+        }
+
+
+async def test_reading_the_prices_never_writes_one(app, admin_read_headers):
+    """The listing is a GET and admin:read only — it must not be the thing that
+    seeds anything, or a page load would become a billing change."""
+    await db.create_tables(db.get_engine())
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
+        await c.get("/admin/api/billing/pricing", headers=admin_read_headers)
+        await c.get("/admin/api/billing/pricing", headers=admin_read_headers)
+
+    assert await db.list_model_price_configs() == []

@@ -70,6 +70,12 @@ def _default_prices() -> dict[str, "ModelPrice"]:
     return DEFAULT_PRICES_BY_MODALITY
 
 
+def default_prices() -> dict[str, "ModelPrice"]:
+    """Every modality's base price — PRM-125 exposes this to the dashboard so
+    its reset button can fill the inputs without writing anything."""
+    return dict(_default_prices())
+
+
 def default_price_for(modality: str) -> "ModelPrice | None":
     """The base price a newly catalogued model starts on, or None for a
     modality we have no published reference for — better no price than an

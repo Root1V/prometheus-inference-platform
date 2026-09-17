@@ -91,9 +91,19 @@ export interface ModelPriceEntry {
 
 export type ModelPrices = Record<string, ModelPriceEntry>;
 
+/** PRM-125: the base price for one modality, for filling the inputs. The same
+ *  shape as a stored price minus the bookkeeping — it is not stored anywhere
+ *  until somebody presses Save. */
+export interface BaseModelPrice {
+  prompt_price_per_1m: number | null;
+  completion_price_per_1m: number | null;
+  image_price: number | null;
+}
+
 export interface ModelPricesResponse {
   object: string;
   data: ModelPrices;
+  defaults_by_modality: Record<string, BaseModelPrice>;
 }
 
 export interface UpdateModelPriceRequest {
