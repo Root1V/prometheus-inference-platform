@@ -4443,6 +4443,32 @@ rather than with any node's own cost. They are a starting point to be checked ag
 rates, not a market quote.
 
 
+## PRM-121 — Rate the whole history, now that nobody has been invoiced
+
+**Why**: PRM-120 gave every model a base price, but only forward. PRM-117's tool refuses to price
+usage older than the price itself — RM-60's rule, and the right default, since changing what a
+past period cost is how a client gets a bill they were never shown. That refusal left 403 rows
+permanently unbillable. The operator's answer settled it: no client has been invoiced from this
+system yet, so the rule was protecting nobody and costing correct data.
+
+**Scope**: `--include-usage-older-than-its-price` on `reprice_unpriced_usage.py`. It switches off
+the age check, falls back to PRM-120's per-modality base price for a model with no price row at
+all (a retired instance still has a `request_kind`, and the kind maps to exactly one modality),
+prints what mode it is in, and re-labels its own plan — the default header says "the price was
+already in force", which under this flag would be a lie. It is a flag rather than a default so
+that using it is recorded as a decision somebody made, and so the next operator, who may well
+have invoiced someone, does not get it by accident.
+
+**Result on this deployment**: 403 events and 15 daily rows, +0.04554608 USD, both tables moving
+by exactly the planned amount with row and token counts unchanged. Every usage event now has a
+cost.
+
+**Left alone deliberately**: five `usage_daily` rows from 2026-09-07 whose per-component costs do
+not add up to their total. That day predates the `usage_events` table, so there is nothing to
+recompute the split from — the total is complete and the breakdown is partial, and inventing the
+difference would be worse than reporting it.
+
+
 Append a new row to the table with the next `RM-NN` id and a new `## RM-NN — ...` section
 below, following the same shape (Why / Scope). Re-sort the table if the new item's
 priority isn't "last."

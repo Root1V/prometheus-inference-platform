@@ -389,9 +389,7 @@ def test_the_export_ends_lines_the_way_its_reader_expects():
         "csv.writer no longer emits CRLF — the note below is now wrong, not the code"
     )
 
-    parser = (
-        Path(__file__).resolve().parents[2] / "gateway/admin-ui/src/api/usage.ts"
-    ).read_text()
+    parser = (Path(__file__).resolve().parents[2] / "gateway/admin-ui/src/api/usage.ts").read_text()
     split = re.search(r"response\.data\.trim\(\)\.split\((.+?)\);", parser)
     assert split, "the export parser's line split moved — re-point this guard"
     assert "\\r?\\n" in split.group(1), (
