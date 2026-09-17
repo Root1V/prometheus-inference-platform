@@ -4385,6 +4385,30 @@ reads the source and fails on a lookup that names the model once. Run against th
 names all six.
 
 
+## PRM-119 — The invoice says what it cannot price, instead of saying zero
+
+**Why**: reported from the dashboard with a screenshot — six requests, every detail row showing
+`—`, and the period total reading `USD 0.00`. The rows were right: those two models have no
+configured price, and RM-60's rule is that "no price" is never "free". The total was wrong.
+`sum(row["cost_usd"] or 0.0 for ...)` collapsed six unknowns into a hard zero, so the one figure
+a client actually reads was the only one in the system telling them they owed nothing.
+
+**Scope**: `subtotal_usd` is None when nothing in the period could be priced, and `apply_tax` and
+`convert_currency` propagate that rather than multiplying an unknown into a fabricated figure in
+the client's own currency. The partly-priced period is the more dangerous case — it looks
+complete — so the summary, each day and each model carry `unpriced_requests`, and the dashboard
+marks a subtotal that does not cover every request. `CapIndicator` stops drawing a cap bar it
+cannot compute: an empty bar reads as "0% used", and an unpriced model is never budget-checked at
+all.
+
+**And the column a person actually reads**: the detail table showed `model_id`, the catalog id.
+The export's own comment beside `model_slug` says it is "what an invoice should show"; the
+invoice was not showing it, because the CSV parser read columns by position and stopped at index
+13, so a column appended later was invisible. It reads by header name now — A-13's appended-column
+contract keeps position-readers working, but it is exactly why position-reading misses anything
+new.
+
+
 Append a new row to the table with the next `RM-NN` id and a new `## RM-NN — ...` section
 below, following the same shape (Why / Scope). Re-sort the table if the new item's
 priority isn't "last."

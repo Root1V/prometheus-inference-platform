@@ -71,6 +71,18 @@ function CapIndicator({ summary }: { summary: BillingPeriodSummary }) {
   if (summary.monthly_spend_cap_usd === null) {
     return <span className="text-xs text-text-muted">No cap configured</span>;
   }
+  // PRM-119: a cap with nothing priced against it cannot be drawn as a
+  // fraction. Showing an empty bar would read as "0% of the cap used", which
+  // is the same false reassurance the 0.00 total gave — and worse here,
+  // because an unpriced model is never budget-checked at all (RM-60).
+  if (summary.total_usd === null) {
+    return (
+      <span className="text-xs text-text-muted">
+        Cap {formatUsdCost(summary.monthly_spend_cap_usd)} · spend unknown — nothing this period
+        had a configured price
+      </span>
+    );
+  }
   const percent = Math.min(100, (summary.total_usd / summary.monthly_spend_cap_usd) * 100);
   const isOver = summary.total_usd >= summary.monthly_spend_cap_usd;
   return (
@@ -126,7 +138,21 @@ function PeriodHistoryRow({
           )}
           {periodSummary.period}
         </td>
-        <td className="px-4 py-3 text-text-muted">{formatUsdCost(periodSummary.subtotal_usd)}</td>
+        <td className="px-4 py-3 text-text-muted">
+          {formatUsdCost(periodSummary.subtotal_usd)}
+          {periodSummary.unpriced_requests > 0 && (
+            <span
+              className="ml-1.5 text-xs text-yellow-800 dark:text-yellow-300"
+              title={
+                `${periodSummary.unpriced_requests} of ${periodSummary.request_count} requests ` +
+                `used a model with no configured price, so they are not in this figure. ` +
+                `Set a price on the Model pricing table below.`
+              }
+            >
+              +{periodSummary.unpriced_requests} unpriced
+            </span>
+          )}
+        </td>
         <td className="px-4 py-3 text-text-muted">
           {formatUsdCost(periodSummary.tax_amount_usd)}
         </td>
@@ -176,7 +202,9 @@ function PeriodHistoryRow({
                         <td className="px-4 py-1.5 text-text-muted">
                           {new Date(row.recorded_at).toLocaleString()}
                         </td>
-                        <td className="px-4 py-1.5 text-text">{row.model_id}</td>
+                        <td className="px-4 py-1.5 text-text" title={row.model_id}>
+                          {row.model_slug}
+                        </td>
                         <td className="px-4 py-1.5 text-text-muted">{row.request_kind}</td>
                         <td className="px-4 py-1.5 text-text-muted">
                           {row.prompt_tokens.toLocaleString()}

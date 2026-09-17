@@ -21,6 +21,7 @@ export interface DailyCostEntry {
   cost_usd: number | null;
   tokens: number;
   request_count: number;
+  unpriced_requests: number;
 }
 
 export interface ModelCostEntry {
@@ -28,6 +29,7 @@ export interface ModelCostEntry {
   cost_usd: number | null;
   tokens: number;
   request_count: number;
+  unpriced_requests: number;
 }
 
 /** GET /admin/api/billing/clients/{client_id}/summary */
@@ -36,15 +38,22 @@ export interface BillingPeriodSummary {
   period: string;
   period_start: string;
   period_end: string;
-  subtotal_usd: number;
+  /** PRM-119: null means "nothing in this period could be priced" — not zero.
+   *  A model with no configured price records no cost, and a total that
+   *  rendered that as 0.00 told a client they owed nothing when the truth was
+   *  that we could not say. */
+  subtotal_usd: number | null;
   tax_rate_percent: number;
-  tax_amount_usd: number;
-  total_usd: number;
+  tax_amount_usd: number | null;
+  total_usd: number | null;
   preferred_currency: CurrencyCode;
-  total_in_preferred_currency: number;
+  total_in_preferred_currency: number | null;
   exchange_rate_used: number;
   total_tokens: number;
   request_count: number;
+  /** How many of `request_count` the subtotal does not account for. Non-zero
+   *  means the figure is a lower bound, not a bill. */
+  unpriced_requests: number;
   monthly_spend_cap_usd: number | null;
   daily: DailyCostEntry[];
   by_model: ModelCostEntry[];

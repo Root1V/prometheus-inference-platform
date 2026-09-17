@@ -11,6 +11,14 @@ PASS=0; FAIL=0
 _pass() { echo "  PASS: $1"; PASS=$((PASS+1)); }
 _fail() { echo "  FAIL: $1"; FAIL=$((FAIL+1)); }
 
+# Invoked through `uv run --script`, not a bare `python3`, because that is what
+# the shebang declares and what an operator actually runs. Calling `python3
+# script.py` bypasses the shebang and uses whatever interpreter happens to be
+# on PATH — here a system 3.9, which cannot run `zip(strict=True)`. This test
+# passed for weeks only because PATH happened to resolve to a newer one; a
+# check that is *almost* what really runs is worse than none, because it goes
+# green while hiding the difference.
+
 python3 - "${TMP}" <<'PY'
 import sqlite3, sys, uuid
 g = sqlite3.connect(f"{sys.argv[1]}/gateway.db")
@@ -55,7 +63,7 @@ g.execute("INSERT INTO usage_daily VALUES (?,'2026-01-05','c','cat-id',1000,500,
 g.commit(); g.close()
 PY
 
-OUT="$(python3 "${ROOT}/scripts/reprice_unpriced_usage.py" --gateway-db "${TMP}/gateway.db" --apply 2>&1)"
+OUT="$(uv run --script "${ROOT}/scripts/reprice_unpriced_usage.py" --gateway-db "${TMP}/gateway.db" --apply 2>&1)"
 q() { sqlite3 "${TMP}/gateway.db" "$1"; }
 
 # 1000 * 1000/1e6 + 500 * 2000/1e6 = 1.0 + 1.0 = 2.0
@@ -83,7 +91,7 @@ q() { sqlite3 "${TMP}/gateway.db" "$1"; }
   && _pass "the refused row's day is left alone" || _fail "the 01-05 rollup was touched"
 
 # and running it twice must not double the money
-python3 "${ROOT}/scripts/reprice_unpriced_usage.py" --gateway-db "${TMP}/gateway.db" --apply >/dev/null 2>&1
+uv run --script "${ROOT}/scripts/reprice_unpriced_usage.py" --gateway-db "${TMP}/gateway.db" --apply >/dev/null 2>&1
 [[ "$(q "SELECT ROUND(cost_usd,6) FROM usage_daily WHERE day='2026-01-20'")" == "2.0" ]] \
   && _pass "idempotent — a second run bills nothing again" || _fail "daily doubled to $(q "SELECT cost_usd FROM usage_daily WHERE day='2026-01-20'")"
 

@@ -665,6 +665,13 @@ async def query_daily_cost_range(
                 func.sum(UsageEvent.cost_usd).label("cost_usd"),
                 func.sum(UsageEvent.prompt_tokens + UsageEvent.completion_tokens).label("tokens"),
                 func.count().label("request_count"),
+                # PRM-119: how many of those requests could not be priced. SUM
+                # skips NULLs, so without this a period of entirely unpriced
+                # usage is indistinguishable from one that genuinely cost
+                # nothing — and the invoice then states a confident zero.
+                func.sum(case((UsageEvent.cost_usd.is_(None), 1), else_=0)).label(
+                    "unpriced_requests"
+                ),
             )
             .where(UsageEvent.day >= start, UsageEvent.day <= end)
             .group_by(UsageEvent.day)
@@ -679,6 +686,7 @@ async def query_daily_cost_range(
                 "cost_usd": row.cost_usd,
                 "tokens": int(row.tokens or 0),
                 "request_count": int(row.request_count or 0),
+                "unpriced_requests": int(row.unpriced_requests or 0),
             }
             for row in result
         ]
@@ -699,6 +707,13 @@ async def query_model_cost_range(
                 func.sum(UsageEvent.cost_usd).label("cost_usd"),
                 func.sum(UsageEvent.prompt_tokens + UsageEvent.completion_tokens).label("tokens"),
                 func.count().label("request_count"),
+                # PRM-119: how many of those requests could not be priced. SUM
+                # skips NULLs, so without this a period of entirely unpriced
+                # usage is indistinguishable from one that genuinely cost
+                # nothing — and the invoice then states a confident zero.
+                func.sum(case((UsageEvent.cost_usd.is_(None), 1), else_=0)).label(
+                    "unpriced_requests"
+                ),
             )
             .where(UsageEvent.day >= start, UsageEvent.day <= end)
             .group_by(UsageEvent.model_id)
@@ -713,6 +728,7 @@ async def query_model_cost_range(
                 "cost_usd": row.cost_usd,
                 "tokens": int(row.tokens or 0),
                 "request_count": int(row.request_count or 0),
+                "unpriced_requests": int(row.unpriced_requests or 0),
             }
             for row in result
         ]

@@ -10,6 +10,14 @@ PASS=0; FAIL=0
 _pass() { echo "  PASS: $1"; PASS=$((PASS+1)); }
 _fail() { echo "  FAIL: $1"; FAIL=$((FAIL+1)); }
 
+# Invoked through `uv run --script`, not a bare `python3`, because that is what
+# the shebang declares and what an operator actually runs. Calling `python3
+# script.py` bypasses the shebang and uses whatever interpreter happens to be
+# on PATH — here a system 3.9, which cannot run `zip(strict=True)`. This test
+# passed for weeks only because PATH happened to resolve to a newer one; a
+# check that is *almost* what really runs is worse than none, because it goes
+# green while hiding the difference.
+
 python3 - "${TMP}" <<'PY'
 import sqlite3, sys, uuid
 tmp = sys.argv[1]
@@ -31,7 +39,7 @@ g.execute("INSERT INTO usage_daily VALUES (?,'2026-01-01','c','cat-id','cat-id',
 g.commit(); g.close()
 PY
 
-python3 "${ROOT}/scripts/reunify_usage_history.py" \
+uv run --script "${ROOT}/scripts/reunify_usage_history.py" \
   --gateway-db "${TMP}/gateway.db" --registry-db "${TMP}/registry.db" --apply >/dev/null 2>&1
 
 RESULT="$(python3 - "${TMP}" <<'PY'
