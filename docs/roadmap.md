@@ -4409,6 +4409,40 @@ contract keeps position-readers working, but it is exactly why position-reading 
 new.
 
 
+## PRM-120 — Every catalogued model starts with a price
+
+**Why**: PRM-119 made the invoice admit what it could not price, which immediately showed how
+much that was: `USD 0.0051 + 79 unpriced`. An unpriced model is worse than a gap in a report — it
+records `cost_usd = NULL` and RM-60 never budget-checks it, so it is unbilled *and* uncapped.
+
+**Scope**: a flat base price per modality, applied to any catalogued model that has no price row,
+on every catalog sync (models are created in the manager; prices live in the gateway's database,
+and doing it on sync makes it self-healing for everything catalogued before this). Stored with
+`is_default = true` and surfaced as `source: "default"`, because RM-89's rule applies hardest to
+money: a default indistinguishable from a choice is a bug, and here the difference is the answer
+to why a client was charged what they were. Saving any price through the admin PUT clears the
+flag — pressing Save on the base figure unchanged still means someone looked at it.
+
+**Why flat, and not derived**: the first design computed a price from the model's file size and
+the node's hourly cost via RM-62's formula. It was measured against this fleet before being built.
+`tokens/s x GB` — the quantity that would have to be roughly constant for size to predict
+throughput — came out:
+
+    qwen3-0.6b   (dense,  0.36 GB)   363 tok/s ->   131
+    qwen3-8b-q6  (dense,  6.26 GB)    63 tok/s ->   396
+    gpt-oss-20b  (MoE,   11.28 GB)   115 tok/s ->  1295
+
+A 10x spread: a MoE model reads only its active experts, and a very small model is bound by
+overhead rather than bandwidth. That price would have been wrong by an order of magnitude on a
+model in this deployment *and* would have looked measured. A flat base price claims nothing it
+cannot support, and the throughput calculator on the pricing page replaces it with the real
+figure once the model has served traffic.
+
+**The figures** are aligned with published per-1M-token rates for hosted small-to-mid open models
+rather than with any node's own cost. They are a starting point to be checked against current
+rates, not a market quote.
+
+
 Append a new row to the table with the next `RM-NN` id and a new `## RM-NN — ...` section
 below, following the same shape (Why / Scope). Re-sort the table if the new item's
 priority isn't "last."

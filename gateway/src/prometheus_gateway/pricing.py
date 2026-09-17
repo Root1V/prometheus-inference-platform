@@ -22,6 +22,61 @@ logger = get_logger(__name__)
 _DEFAULT_PRICING_PATH = Path(__file__).parents[2] / "pricing.yaml"
 
 
+# PRM-120: what a model is worth before anyone has measured it.
+#
+# A base price per modality, deliberately flat. The alternative considered was
+# deriving one from the model's size and the node's cost with RM-62's formula,
+# and it was dropped after measuring it against this fleet: decode throughput
+# does not track file size closely enough to price from it. Three real models,
+# tokens/s x GB — the quantity that would have to be roughly constant:
+#
+#     qwen3-0.6b   (dense, 0.36 GB)    363 tok/s ->   131
+#     qwen3-8b-q6  (dense, 6.26 GB)     63 tok/s ->   396
+#     gpt-oss-20b  (MoE,  11.28 GB)    115 tok/s ->  1295
+#
+# A 10x spread, because a MoE model reads only its active experts and a very
+# small model is bound by overhead rather than bandwidth. A price derived that
+# way would have been wrong by an order of magnitude *and* would have looked
+# measured. A flat base price claims nothing it cannot support: it is a
+# starting point an operator replaces with the real one, using the throughput
+# calculator on the pricing page once the model has served traffic.
+#
+# The figures are aligned with published per-1M-token rates for hosted
+# small-to-mid open models (roughly the gpt-4o-mini / small-open-model tier)
+# rather than with this deployment's own costs, which vary per node. They are
+# a defensible starting point, not a market quote — check them against current
+# rates before invoicing anyone on them.
+DEFAULT_PRICES_BY_MODALITY: dict[str, "ModelPrice"] = {}
+
+
+def _default_prices() -> dict[str, "ModelPrice"]:
+    """Built lazily so ModelPrice is defined before this runs."""
+    if not DEFAULT_PRICES_BY_MODALITY:
+        DEFAULT_PRICES_BY_MODALITY.update(
+            {
+                # Chat and vision bill identically — a vision model charges for
+                # the tokens an image is worth, not for the image.
+                "text": ModelPrice(prompt_price_per_1m=0.20, completion_price_per_1m=0.60),
+                "vision": ModelPrice(prompt_price_per_1m=0.20, completion_price_per_1m=0.60),
+                # Embeddings are prompt-only; the completion side exists so the
+                # price is complete (half a price is treated as unpriced).
+                "embedding": ModelPrice(prompt_price_per_1m=0.02, completion_price_per_1m=0.0),
+                # A reranker generates nothing either: the cost is all prompt.
+                "rerank": ModelPrice(prompt_price_per_1m=0.02, completion_price_per_1m=0.0),
+                # Per image, not per token.
+                "image": ModelPrice(image_price=0.01),
+            }
+        )
+    return DEFAULT_PRICES_BY_MODALITY
+
+
+def default_price_for(modality: str) -> "ModelPrice | None":
+    """The base price a newly catalogued model starts on, or None for a
+    modality we have no published reference for — better no price than an
+    invented one."""
+    return _default_prices().get(modality)
+
+
 @dataclass(frozen=True)
 class ModelPrice:
     prompt_price_per_1m: float | None = None

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import uuid
 import json
+from collections.abc import Iterable
 from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -291,6 +292,11 @@ class ModelPriceConfig(Base):
     prompt_price_per_1m: Mapped[float | None] = mapped_column(Float, nullable=True)
     completion_price_per_1m: Mapped[float | None] = mapped_column(Float, nullable=True)
     image_price: Mapped[float | None] = mapped_column(Float, nullable=True)
+    # PRM-120: True while this is still the per-modality base price the model
+    # was seeded with, False once someone set it deliberately. RM-89's rule
+    # applied to money — a default indistinguishable from a choice is a bug,
+    # and here the difference is why a client was charged what they were.
+    is_default: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         nullable=False,
@@ -809,6 +815,7 @@ async def upsert_model_price_config(
     prompt_price_per_1m: float | None,
     completion_price_per_1m: float | None,
     image_price: float | None,
+    is_default: bool = False,
 ) -> ModelPriceConfig:
     session_factory = get_session_factory()
     async with session_factory() as session:
@@ -819,9 +826,56 @@ async def upsert_model_price_config(
         row.prompt_price_per_1m = prompt_price_per_1m
         row.completion_price_per_1m = completion_price_per_1m
         row.image_price = image_price
+        # PRM-120: writing a price deliberately is what stops it being a
+        # default. An admin PUT never passes is_default, so saving the seeded
+        # figure unchanged still claims it — which is the point: someone
+        # looked at it and decided it was right.
+        row.is_default = is_default
         await session.commit()
         await session.refresh(row)
         return row
+
+
+async def seed_default_prices(models: Iterable[tuple[str, str]]) -> list[str]:
+    """Give every catalogued model a base price if it has none — PRM-120.
+
+    `models` is (model_id, modality). Returns the ids actually seeded.
+
+    Runs on every catalog sync rather than at model creation, because model
+    creation happens in the manager and prices live here. That also makes it
+    self-healing: models catalogued before this existed get their base price
+    on the next sync, with no backfill script.
+
+    Never overwrites an existing row, default or not. A price an operator
+    cleared back to nothing stays nothing until they say otherwise.
+    """
+    from . import pricing
+
+    session_factory = get_session_factory()
+    seeded: list[str] = []
+    async with session_factory() as session:
+        result = await session.execute(select(ModelPriceConfig.model_id))
+        known = set(result.scalars().all())
+        for model_id, modality in models:
+            if model_id in known:
+                continue
+            base = pricing.default_price_for(modality)
+            if base is None:
+                continue
+            session.add(
+                ModelPriceConfig(
+                    model_id=model_id,
+                    prompt_price_per_1m=base.prompt_price_per_1m,
+                    completion_price_per_1m=base.completion_price_per_1m,
+                    image_price=base.image_price,
+                    is_default=True,
+                )
+            )
+            known.add(model_id)
+            seeded.append(model_id)
+        if seeded:
+            await session.commit()
+    return seeded
 
 
 async def delete_model_price_config(model_id: str) -> bool:

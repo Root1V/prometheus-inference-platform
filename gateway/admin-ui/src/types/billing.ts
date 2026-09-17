@@ -84,7 +84,9 @@ export interface ModelPriceEntry {
   completion_price_per_1m: number | null;
   image_price: number | null;
   /** "db" = admin-configured (this dashboard); "file" = from pricing.yaml, read-only until edited. */
-  source: "db" | "file";
+  /** PRM-120: "default" is the per-modality base price the model was seeded
+   *  with — nobody has looked at it yet. "db" means an operator set it. */
+  source: "db" | "file" | "default";
 }
 
 export type ModelPrices = Record<string, ModelPriceEntry>;
