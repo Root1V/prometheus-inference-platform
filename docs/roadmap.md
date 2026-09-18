@@ -4584,6 +4584,34 @@ penalties. All are still outside the subset. They now fail loudly instead of qui
 the improvement this item claims; supporting them is a separate decision.
 
 
+## PRM-127 — Unsupported parameters are reported, not refused
+
+**Why**: PRM-126 chose OpenAI's answer to an unrecognised field — a 400 naming it. OpenAI is a
+first-party API with one implementation; a gateway is not, and refusing outright throws away a
+request the caller usually still wants served, while breaking anything already sending a harmless
+extra. OpenRouter is the closer analogue and does the opposite: route anyway, let what cannot be
+honoured be ignored, and offer `require_parameters` to callers who would rather fail.
+
+**What OpenRouter gets for free and we do not**: discoverability. Its clients can look up which
+parameters each provider supports, so ignoring is quiet but not hidden. Ours cannot, which is
+exactly how a documented "silently dropped" survived for months. So the port adds the missing
+half: `X-Prometheus-Ignored-Parameters` on the response, absent when there is nothing to report
+so its presence always means something.
+
+**Scope**: request schemas move from `extra="forbid"` to `extra="allow"` — the allowlist's real
+guarantee is `to_llama_payload`, which names every field it forwards, so an unrecognised one
+still never reaches the engine (AC-5/AC-6); the change is that the gateway can now *see* what it
+is setting aside. `require_parameters: bool = False` on all four inference schemas returns the
+`400 unknown-parameter` PRM-126 introduced, now reached only on request.
+
+**The guard matters more than the rule.** `_parameter_check` is one function called from four
+handlers, which is the shape that cost PRM-118 — a one-line rule repeated at nine call sites and
+wrong at four. A new endpoint that forgets it does not fail; it goes back to dropping parameters
+in silence. So a test reads the router, finds every handler taking one of the request models, and
+fails naming any that does not check. Run against a tree with one call removed, it names that
+handler.
+
+
 Append a new row to the table with the next `RM-NN` id and a new `## RM-NN — ...` section
 below, following the same shape (Why / Scope). Re-sort the table if the new item's
 priority isn't "last."

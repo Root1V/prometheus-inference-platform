@@ -299,6 +299,12 @@ def create_app(
         request.state.request_id = str(uuid.uuid4())
         response = await call_next(request)
         response.headers["X-Request-ID"] = request.state.request_id
+        # PRM-127: name what we did not act on. Set here rather than at each
+        # response site because there are a dozen of those and PRM-118 was the
+        # cost of a rule that lived at every call site and nowhere else.
+        ignored = getattr(request.state, "ignored_parameters", None)
+        if ignored:
+            response.headers["X-Prometheus-Ignored-Parameters"] = ", ".join(ignored)
         return response
 
     @app.exception_handler(RequestValidationError)
@@ -316,37 +322,6 @@ def create_app(
         request_id = getattr(getattr(request, "state", None), "request_id", "unknown")
         trace_id = getattr(getattr(request, "state", None), "trace_id", "none")
         errors = exc.errors()
-
-        # PRM-126: an unrecognised field is its own answer, not a generic
-        # schema failure. It is the one validation error whose fix is "that
-        # parameter does not exist here" rather than "that value is wrong", and
-        # OpenAI — whose request shape this endpoint claims — says so by name.
-        # A client that sent `response_format` before this used to get silence
-        # and unconstrained prose; now it gets told.
-        unknown = [
-            ".".join(str(p) for p in e.get("loc", []) if p != "body")
-            for e in errors
-            if e.get("type") == "extra_forbidden"
-        ]
-        if unknown:
-            return JSONResponse(
-                status_code=400,
-                content={
-                    "type": "https://prometheus.internal/errors/unknown-parameter",
-                    "title": "Unknown Parameter",
-                    "status": 400,
-                    "detail": (
-                        f"Unrecognized request argument supplied: {', '.join(unknown)}. "
-                        "This endpoint accepts an OpenAI-compatible subset — see the "
-                        "integration guide for the fields it takes."
-                    ),
-                    "instance": str(request.url.path),
-                    "request_id": request_id,
-                    "trace_id": trace_id,
-                    "errors": errors,
-                },
-                media_type="application/problem+json",
-            )
 
         detail = (
             "; ".join(

@@ -128,54 +128,109 @@ async def test_omitting_response_format_sends_no_such_field(gw, rsa_keys):
 
 
 # ── the allowlist stops being silent ───────────────────────────────────────
+#
+# PRM-127 changed the answer here and the change was deliberate. PRM-126 made an
+# unrecognised field a 400 outright, copying OpenAI. That refuses a request the
+# caller usually still wants served, and it breaks anything already sending a
+# harmless extra. OpenRouter — a gateway over providers that differ in what they
+# honour, which is this system's shape — routes anyway and lets the parameter be
+# ignored, with `require_parameters` for callers who would rather fail. What it
+# gets for free is discoverability; we have to supply that ourselves, which is
+# what the header below is for.
 
 
-async def test_an_unknown_parameter_is_a_400_that_names_it(gw, rsa_keys):
-    resp = await gw.post(
-        "/v1/chat/completions", json=_body(defnitely_not_a_field=1), headers=_headers(rsa_keys)
+@respx.mock
+async def test_an_unknown_parameter_is_served_and_named_in_a_header(gw, rsa_keys):
+    respx.post(f"{BACKEND_URL}/v1/chat/completions").mock(
+        return_value=Response(200, json=LLAMA_RESPONSE)
     )
+    resp = await gw.post("/v1/chat/completions", json=_body(seed=1), headers=_headers(rsa_keys))
 
-    assert resp.status_code == 400
-    body = resp.json()
-    assert body["type"].endswith("/unknown-parameter")
-    assert "defnitely_not_a_field" in body["detail"], "naming it is the whole point"
+    assert resp.status_code == 200, "the caller still wanted the completion"
+    assert resp.headers["X-Prometheus-Ignored-Parameters"] == "seed"
 
 
-async def test_every_rejected_parameter_is_named_not_just_the_first(gw, rsa_keys):
-    """A client fixing them one round trip at a time is a client we made wait."""
+@respx.mock
+async def test_an_ignored_parameter_never_reaches_the_engine(gw, rsa_keys):
+    """Accepting a field is not forwarding it. llama.cpp honours `seed`, so
+    passing it through would silently change what the caller gets — and the
+    allowlist exists (AC-5/AC-6) precisely so client-controlled fields do not
+    reach the engine unexamined. Reporting it is the change; forwarding it is a
+    separate decision nobody has made."""
+    route = respx.post(f"{BACKEND_URL}/v1/chat/completions").mock(
+        return_value=Response(200, json=LLAMA_RESPONSE)
+    )
+    await gw.post("/v1/chat/completions", json=_body(seed=1), headers=_headers(rsa_keys))
+
+    assert "seed" not in json.loads(route.calls[0].request.content)
+
+
+@respx.mock
+async def test_every_ignored_parameter_is_named_not_just_the_first(gw, rsa_keys):
+    respx.post(f"{BACKEND_URL}/v1/chat/completions").mock(
+        return_value=Response(200, json=LLAMA_RESPONSE)
+    )
     resp = await gw.post(
         "/v1/chat/completions",
         json=_body(seed=1, logit_bias={"1": 1}, presence_penalty=0.5),
         headers=_headers(rsa_keys),
     )
 
+    assert resp.headers["X-Prometheus-Ignored-Parameters"] == "logit_bias, presence_penalty, seed"
+
+
+@respx.mock
+async def test_a_clean_request_carries_no_such_header(gw, rsa_keys):
+    """An always-present header saying "nothing" is noise a client learns to
+    skip, and then misses the one time it says something."""
+    respx.post(f"{BACKEND_URL}/v1/chat/completions").mock(
+        return_value=Response(200, json=LLAMA_RESPONSE)
+    )
+    resp = await gw.post("/v1/chat/completions", json=_body(), headers=_headers(rsa_keys))
+
+    assert "X-Prometheus-Ignored-Parameters" not in resp.headers
+
+
+async def test_require_parameters_turns_the_same_request_into_a_400(gw, rsa_keys):
+    """OpenRouter's escape hatch: for a caller who would rather fail than be
+    quietly given something else — reproducibility, structured extraction."""
+    resp = await gw.post(
+        "/v1/chat/completions",
+        json=_body(seed=1, require_parameters=True),
+        headers=_headers(rsa_keys),
+    )
+
     assert resp.status_code == 400
-    detail = resp.json()["detail"]
-    for name in ("seed", "logit_bias", "presence_penalty"):
-        assert name in detail
+    body = resp.json()
+    assert body["type"].endswith("/unknown-parameter")
+    assert "seed" in body["detail"]
+    assert resp.headers["content-type"].startswith("application/problem+json")
+    assert set(body) >= {"type", "title", "status", "detail", "instance", "request_id", "trace_id"}
+
+
+@respx.mock
+async def test_require_parameters_alone_is_not_itself_an_extra(gw, rsa_keys):
+    """Asking to be told cannot be one of the things you are told about."""
+    respx.post(f"{BACKEND_URL}/v1/chat/completions").mock(
+        return_value=Response(200, json=LLAMA_RESPONSE)
+    )
+    resp = await gw.post(
+        "/v1/chat/completions", json=_body(require_parameters=True), headers=_headers(rsa_keys)
+    )
+
+    assert resp.status_code == 200
+    assert "X-Prometheus-Ignored-Parameters" not in resp.headers
 
 
 async def test_a_wrong_value_is_still_a_422_not_a_400(gw, rsa_keys):
     """The two failures have different fixes — "that field does not exist" versus
-    "that value is out of range" — so they must stay different errors. RM-65's
-    envelope and the 422 contract are unchanged for the second."""
+    "that value is wrong" — so they must stay different errors."""
     resp = await gw.post(
         "/v1/chat/completions", json=_body(temperature=99.0), headers=_headers(rsa_keys)
     )
 
     assert resp.status_code == 422
     assert resp.json()["type"].endswith("/validation-error")
-
-
-async def test_the_error_keeps_the_problem_envelope(gw, rsa_keys):
-    """RM-65: an SDK types errors by `type` and correlates by `request_id`. A new
-    status code is not a licence to drop the shape everything else uses."""
-    resp = await gw.post("/v1/chat/completions", json=_body(nope=1), headers=_headers(rsa_keys))
-
-    body = resp.json()
-    assert resp.headers["content-type"].startswith("application/problem+json")
-    assert set(body) >= {"type", "title", "status", "detail", "instance", "request_id", "trace_id"}
-    assert body["status"] == 400
 
 
 @respx.mock
@@ -200,3 +255,36 @@ async def test_the_documented_fields_all_still_pass(gw, rsa_keys):
         headers=_headers(rsa_keys),
     )
     assert resp.status_code == 200
+
+
+def test_every_handler_that_takes_a_request_body_checks_its_parameters():
+    """PRM-127's rule lives in `_parameter_check`, but it has to be *called*, and
+    it is called from four handlers.
+
+    That shape is exactly what PRM-118 cost: a one-line rule repeated at nine
+    call sites, wrong at four of them, and silent about it. A new endpoint that
+    forgets this does not fail — it goes back to dropping parameters without
+    saying so, which is the bug this whole item exists to close. So the rule that
+    every body-taking handler checks its parameters lives here.
+    """
+    import re
+    from pathlib import Path
+
+    src = (
+        Path(__file__).resolve().parents[2] / "gateway/src/prometheus_gateway/router.py"
+    ).read_text()
+
+    # Handlers whose signature takes one of the allowlist request models.
+    handlers = re.findall(
+        r"async def (\w+)\(\s*body: (?:ChatCompletionRequest|EmbeddingsRequest|"
+        r"RerankRequest|ImageGenerationRequest)[^)]*\)(.*?)(?=\n    @router\.|\Z)",
+        src,
+        re.DOTALL,
+    )
+    assert len(handlers) >= 4, f"found {len(handlers)} body-taking handlers — pattern has drifted"
+
+    missing = [name for name, body in handlers if "_parameter_check(request, body)" not in body]
+    assert not missing, (
+        f"these handlers take a request body and never check its parameters, so anything "
+        f"outside their allowlist is dropped in silence again: {missing}"
+    )

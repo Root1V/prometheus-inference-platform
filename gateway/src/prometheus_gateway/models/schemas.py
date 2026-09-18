@@ -85,6 +85,20 @@ class ToolDefinition(BaseModel):
     function: FunctionDefinition
 
 
+def ignored_parameters(body: BaseModel) -> list[str]:
+    """Fields the caller sent that this gateway will not act on — PRM-127.
+
+    Every request schema here is an allowlist that now *accepts* extras rather
+    than dropping them unseen, so this is the one place that turns "Pydantic
+    kept it aside" into an answer: the names, sorted, for the response header
+    and for the `require_parameters` refusal.
+
+    `require_parameters` itself is a declared field, so it never appears here —
+    asking to be told is not one of the things you can be told about.
+    """
+    return sorted(body.model_extra or {})
+
+
 class ChatCompletionRequest(BaseModel):
     """Allowlist schema — only these fields are forwarded to llama.cpp.
 
@@ -109,16 +123,27 @@ class ChatCompletionRequest(BaseModel):
     # second, drifting copy of its rules.
     response_format: dict[str, object] | None = None
 
-    # PRM-126: an unknown field is a 400 rather than a shrug. This schema is an
-    # allowlist for a good reason (AC-5/AC-6 — client-controlled fields do not
-    # reach the engine unexamined), but Pydantic's default is to *drop* what it
-    # does not recognise, and llama.cpp accepts unknown fields without
-    # complaint, so a typo or an unsupported parameter reached neither a
-    # validator nor a log. A client asking for `response_format` got prose and
-    # no hint why. OpenAI answers "Unrecognized request argument supplied: x";
-    # this now does the same, which is what "OpenAI-compatible" has to mean for
-    # the half of the contract that is about being told you are wrong.
-    model_config = ConfigDict(extra="forbid")
+    # PRM-127: accepted and reported, not refused — OpenRouter's model rather
+    # than OpenAI's. A gateway in front of engines that differ in what they
+    # honour should not turn an unsupported parameter into a failed request:
+    # the caller usually still wants the completion. But OpenRouter can afford
+    # to ignore quietly because its clients can look up what each provider
+    # supports; ours could not, so ignoring here meant a setting that did
+    # nothing and said nothing.
+    #
+    # `extra="allow"` keeps the allowlist's actual guarantee — `to_llama_payload`
+    # names every field it forwards, so an unknown one still never reaches the
+    # engine (AC-5/AC-6) — while letting the gateway *see* what it is dropping
+    # and name it in `X-Prometheus-Ignored-Parameters`.
+    model_config = ConfigDict(extra="allow")
+
+    # PRM-127: OpenRouter's `provider.require_parameters`, one level flatter.
+    # Off by default, so nothing that works today stops working. On, an
+    # unhonoured parameter is a 400 instead of a silent drop — for the caller
+    # who would rather fail than be quietly given something else, which is the
+    # right default for nobody and the right option for anyone doing
+    # reproducibility or structured extraction.
+    require_parameters: bool = False
 
     def to_llama_payload(self) -> dict[str, object]:
         """Serialise to a dict suitable for forwarding — drops None fields."""
@@ -151,8 +176,11 @@ class EmbeddingsRequest(BaseModel):
     dimensions/encoding_format options some providers add are not supported).
     """
 
+    model_config = ConfigDict(extra="allow")  # PRM-127
+
     model: str
     input: str | list[str]
+    require_parameters: bool = False
 
     def to_llama_payload(self) -> dict[str, object]:
         return {"model": self.model, "input": self.input}
@@ -169,9 +197,12 @@ class RerankRequest(BaseModel):
     document against the rate limit.
     """
 
+    model_config = ConfigDict(extra="allow")  # PRM-127
+
     model: str
     query: str
     documents: list[str]
+    require_parameters: bool = False
     # Cohere calls this top_n; keep the name callers already use. None = all.
     top_n: int | None = None
 
@@ -193,10 +224,13 @@ class ImageGenerationRequest(BaseModel):
     n/size the sd-server backend also accepts).
     """
 
+    model_config = ConfigDict(extra="allow")  # PRM-127
+
     model: str
     prompt: str
     n: int | None = None
     size: str | None = None
+    require_parameters: bool = False
 
     def to_backend_payload(self) -> dict[str, object]:
         payload: dict[str, object] = {"model": self.model, "prompt": self.prompt}
