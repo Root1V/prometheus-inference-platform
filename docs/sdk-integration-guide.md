@@ -1,6 +1,6 @@
 # Prometheus Gateway — SDK Integration Guide
 
-**Revision**: 2026-09-18a · `10bf7fc`
+**Revision**: 2026-09-18b · `2aba2f8`
 <!-- Consumers vendor this file and diff it. The date and commit above are what to quote
      when asking whether a copy is current; they change whenever this document does. -->
 
@@ -345,14 +345,29 @@ engine rather than by prompting:
 `{"type": "json_object"}` and `{"type": "text"}` work too. The content comes back as a JSON
 **string** in `choices[0].message.content` — parse it; it is not a nested object.
 
-**Anything else is a `400 unknown-parameter`, not a shrug.** This endpoint takes an
-OpenAI-compatible *subset*, and until PRM-126 a field outside it was discarded in silence —
-this guide said so in as many words, which made it a decision rather than an oversight, and the
-decision was wrong: a client sending `response_format` got unconstrained prose and no way to
-find out why. Unrecognised fields are now refused by name, the way OpenAI's own API refuses
-them. Still outside the subset: `n`, `presence_penalty`, `frequency_penalty`, `logit_bias`,
-`user`, `seed` — sending any of them is now an error you can see rather than a setting that
-quietly did nothing.
+**Anything else is accepted, ignored, and named back to you (PRM-127).** This endpoint takes an
+OpenAI-compatible *subset*. A field outside it — `n`, `presence_penalty`, `frequency_penalty`,
+`logit_bias`, `user`, `seed` — does not fail your request and does not reach the engine either.
+It comes back listed in a response header:
+
+```
+X-Prometheus-Ignored-Parameters: logit_bias, seed
+```
+
+The header is absent when there is nothing to report, so its presence always means something.
+Until PRM-127 these were dropped in silence, and this guide said so in as many words — which
+made it a decision rather than an oversight, and the decision was wrong: a setting that does
+nothing and says nothing is indistinguishable from one that works.
+
+**`require_parameters: true` turns that into a `400 unknown-parameter` instead.** Set it when
+you would rather fail than be quietly given something else — reproducibility runs, structured
+extraction, anything where a silently-dropped parameter invalidates the result. Off by default,
+because most callers want the completion more than they want the argument.
+
+The shape is [OpenRouter's](https://openrouter.ai/docs/guides/routing/provider-selection): route
+and ignore what cannot be honoured, with an opt-in for callers who need every parameter
+respected. The header is our own addition — OpenRouter's clients can look up what each provider
+supports, and you cannot, so the ignoring has to announce itself.
 
 `messages[].role` must be one of `system`, `user`, `assistant`, `tool`. `content` can be a
 plain string, `null` (e.g. an assistant message that only carries `tool_calls`), or a list of
@@ -588,6 +603,7 @@ X-RateLimit-Limit-Tokens
 X-RateLimit-Remaining-Tokens
 X-RateLimit-Reset-Tokens
 X-Prometheus-Instance              — which replica answered (its per-model label, e.g. "#2")
+X-Prometheus-Ignored-Parameters    — request fields outside the accepted subset (§3.3); absent when none
 X-Prometheus-Instance-Id           — the same replica's instance id
 Idempotent-Replay                  — "true" only on a replayed response
 X-Idempotent-Replay-Of             — on a replay: the request id that was actually billed
@@ -802,7 +818,7 @@ model" as something only the SDK can catch.
 | 400 | `unknown-model` | Model ID not registered. Checked *before* any scope check — an unrecognized model is always 400, never 403, regardless of what the token can access. | No |
 | 400 | `modality-mismatch` | Calling `/v1/rerank` with a non-rerank model, calling `/v1/chat/completions` with a model whose modality isn't `text`/`vision` (e.g. an embedding or image-generation model — fixed in RM-66, see note below), sending an image content part to a non-vision model, or calling `/v1/embeddings`/`/v1/images/generations` with the wrong modality. | No |
 | 400 | `context-exceeded` | Request exceeds the model's context window. | No (shrink the request) |
-| 400 | `unknown-parameter` | A request field outside the accepted subset (§3.3) — every offending name is listed in `detail`. Distinct from `422 validation-error` on purpose: this one means "that field does not exist here", not "that value is wrong". | No (drop the field) |
+| 400 | `unknown-parameter` | **Only when you sent `require_parameters: true`** — a request field outside the accepted subset (§3.3), every offending name listed in `detail`. Without that flag the same request succeeds and the fields come back in `X-Prometheus-Ignored-Parameters`. Distinct from `422 validation-error` on purpose: this means "that field does not exist here", not "that value is wrong". | No (drop the field, or the flag) |
 | 400 | `unknown-instance` | `X-Prometheus-Instance` (§3.7) names something that does not serve this model. A pin never falls back to another replica. | No (fix or drop the header) |
 | 400 | `inconsistent-model-group` | The replicas serving this model disagree about their modality, so the gateway refuses the whole group rather than quietly dropping the odd one — answering a chat request from an embedding backend produces confident nonsense, not an error. The detail names each instance and what it claims. | No — needs operator action |
 | 400 | `invalid-idempotency-key` | `Idempotency-Key` is malformed or over 255 characters. A `400`, not a `409`, on purpose: it never conflicted with anything, and calling it a conflict would tell you that you had repeated a request. | No (fix the key) |

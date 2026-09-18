@@ -36,6 +36,7 @@ from .models.schemas import (
     EmbeddingsRequest,
     ImageGenerationRequest,
     RerankRequest,
+    ignored_parameters,
 )
 from .notifications import send_budget_alert_email
 from .telemetry import get_logger, get_tracer, metrics_store
@@ -1139,6 +1140,8 @@ def create_router(registry: ModelRegistry, pool: "BackendPool") -> APIRouter:
         """
         from opentelemetry.trace import SpanKind, StatusCode
 
+        if (params_err := _parameter_check(request, body)) is not None:
+            return params_err
         claims = getattr(getattr(request, "state", None), "claims", None)
         request_id = getattr(getattr(request, "state", None), "request_id", "unknown")
 
@@ -1750,6 +1753,8 @@ def create_router(registry: ModelRegistry, pool: "BackendPool") -> APIRouter:
         model (400) -> wrong modality (400) -> auth (403) -> backend
         availability (503) -> forward.
         """
+        if (params_err := _parameter_check(request, body)) is not None:
+            return params_err
         claims = getattr(getattr(request, "state", None), "claims", None)
         request_id = getattr(getattr(request, "state", None), "request_id", "unknown")
 
@@ -2052,6 +2057,8 @@ def create_router(registry: ModelRegistry, pool: "BackendPool") -> APIRouter:
     @router.post("/v1/rerank")
     async def rerank(body: RerankRequest, request: Request) -> Any:
         """Score documents against a query on a rerank-capable backend."""
+        if (params_err := _parameter_check(request, body)) is not None:
+            return params_err
         claims = getattr(getattr(request, "state", None), "claims", None)
         request_id = getattr(getattr(request, "state", None), "request_id", "unknown")
 
@@ -2334,6 +2341,8 @@ def create_router(registry: ModelRegistry, pool: "BackendPool") -> APIRouter:
         Mirrors /v1/embeddings: buffered, no streaming. Usage/cost is priced
         per generated image rather than by token count (RM-60).
         """
+        if (params_err := _parameter_check(request, body)) is not None:
+            return params_err
         claims = getattr(getattr(request, "state", None), "claims", None)
         request_id = getattr(getattr(request, "state", None), "request_id", "unknown")
 
@@ -2661,6 +2670,38 @@ async def _record_usage(
         )
     except Exception as exc:
         logger.warning("usage.db_write_error", error=str(exc))
+
+
+def _parameter_check(request: Request, body: Any) -> Response | None:
+    """PRM-127: record what we will not act on, and refuse if asked to.
+
+    Ported from OpenRouter, which routes a request to a provider that cannot
+    honour every parameter and lets it ignore the rest — the caller usually
+    still wants the completion — unless `require_parameters` says otherwise.
+    What OpenRouter gets for free is discoverability: its clients can look up
+    each provider's supported parameters. Ours cannot, so the ignoring has to
+    announce itself, and `X-Prometheus-Ignored-Parameters` is where.
+
+    Returns a 400 only when the caller opted into strictness. Otherwise None,
+    having left the names on request.state for the middleware to stamp.
+    """
+    ignored = ignored_parameters(body)
+    if not ignored:
+        return None
+    request.state.ignored_parameters = ignored
+    if not getattr(body, "require_parameters", False):
+        logger.info("request.parameters_ignored", path=request.url.path, parameters=ignored)
+        return None
+    return _problem(
+        request,
+        400,
+        "unknown-parameter",
+        "Unknown Parameter",
+        f"Unrecognized request argument supplied: {', '.join(ignored)}. This endpoint "
+        "accepts an OpenAI-compatible subset — see the integration guide for the fields "
+        "it takes. You asked to be told with require_parameters; without it these are "
+        "ignored and named in X-Prometheus-Ignored-Parameters.",
+    )
 
 
 def _billing_id(entry: ModelEntry) -> str:
