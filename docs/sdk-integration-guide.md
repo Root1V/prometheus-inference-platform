@@ -1,6 +1,6 @@
 # Prometheus Gateway — SDK Integration Guide
 
-**Revision**: 2026-09-16a · `f8cf34d`
+**Revision**: 2026-09-18a · `10bf7fc`
 <!-- Consumers vendor this file and diff it. The date and commit above are what to quote
      when asking whether a copy is current; they change whenever this document does. -->
 
@@ -317,9 +317,42 @@ instead of always waiting for a `403` from the actual inference call.
 
 Fields: `model`, `messages` required; `stream` (default `false`); `max_tokens` (>0 if set);
 `temperature` (0.0–2.0); `top_p` (0.0 < p ≤ 1.0); `stop` (string or list); `tools` /
-`tool_choice` (forwarded as-is, no gateway-side validation of tool schemas). **Not supported**:
-`n`, `presence_penalty`, `frequency_penalty`, `logit_bias`, `user`, `seed`,
-`response_format` — silently dropped if sent.
+`tool_choice` / `response_format` (forwarded as-is, no gateway-side validation of their
+schemas).
+
+**`response_format` — structured outputs (PRM-126).** Now supported, and constrained by the
+engine rather than by prompting:
+
+```json
+{
+  "model": "qwen3-0.6b",
+  "messages": [{ "role": "user", "content": "Give me the capital of Peru" }],
+  "response_format": {
+    "type": "json_schema",
+    "json_schema": {
+      "name": "capital",
+      "schema": {
+        "type": "object",
+        "properties": { "capital": { "type": "string" } },
+        "required": ["capital"],
+        "additionalProperties": false
+      }
+    }
+  }
+}
+```
+
+`{"type": "json_object"}` and `{"type": "text"}` work too. The content comes back as a JSON
+**string** in `choices[0].message.content` — parse it; it is not a nested object.
+
+**Anything else is a `400 unknown-parameter`, not a shrug.** This endpoint takes an
+OpenAI-compatible *subset*, and until PRM-126 a field outside it was discarded in silence —
+this guide said so in as many words, which made it a decision rather than an oversight, and the
+decision was wrong: a client sending `response_format` got unconstrained prose and no way to
+find out why. Unrecognised fields are now refused by name, the way OpenAI's own API refuses
+them. Still outside the subset: `n`, `presence_penalty`, `frequency_penalty`, `logit_bias`,
+`user`, `seed` — sending any of them is now an error you can see rather than a setting that
+quietly did nothing.
 
 `messages[].role` must be one of `system`, `user`, `assistant`, `tool`. `content` can be a
 plain string, `null` (e.g. an assistant message that only carries `tool_calls`), or a list of
@@ -769,6 +802,7 @@ model" as something only the SDK can catch.
 | 400 | `unknown-model` | Model ID not registered. Checked *before* any scope check — an unrecognized model is always 400, never 403, regardless of what the token can access. | No |
 | 400 | `modality-mismatch` | Calling `/v1/rerank` with a non-rerank model, calling `/v1/chat/completions` with a model whose modality isn't `text`/`vision` (e.g. an embedding or image-generation model — fixed in RM-66, see note below), sending an image content part to a non-vision model, or calling `/v1/embeddings`/`/v1/images/generations` with the wrong modality. | No |
 | 400 | `context-exceeded` | Request exceeds the model's context window. | No (shrink the request) |
+| 400 | `unknown-parameter` | A request field outside the accepted subset (§3.3) — every offending name is listed in `detail`. Distinct from `422 validation-error` on purpose: this one means "that field does not exist here", not "that value is wrong". | No (drop the field) |
 | 400 | `unknown-instance` | `X-Prometheus-Instance` (§3.7) names something that does not serve this model. A pin never falls back to another replica. | No (fix or drop the header) |
 | 400 | `inconsistent-model-group` | The replicas serving this model disagree about their modality, so the gateway refuses the whole group rather than quietly dropping the odd one — answering a chat request from an embedding backend produces confident nonsense, not an error. The detail names each instance and what it claims. | No — needs operator action |
 | 400 | `invalid-idempotency-key` | `Idempotency-Key` is malformed or over 255 characters. A `400`, not a `409`, on purpose: it never conflicted with anything, and calling it a conflict would tell you that you had repeated a request. | No (fix the key) |

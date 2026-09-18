@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from typing import Annotated, Literal, Union
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
 class TextContentPart(BaseModel):
@@ -102,6 +102,23 @@ class ChatCompletionRequest(BaseModel):
     # grammar-constrained generation and tool_calls parsing. The gateway only proxies.
     tools: list[ToolDefinition] | None = None
     tool_choice: str | dict[str, object] | None = None
+    # PRM-126: structured outputs. llama.cpp constrains generation to the schema
+    # — verified against a live backend, which returned {"capital": "Lima"} for a
+    # two-field schema. Forwarded as-is for the same reason `tools` is: the
+    # engine does the grammar work and validating the schema here would be a
+    # second, drifting copy of its rules.
+    response_format: dict[str, object] | None = None
+
+    # PRM-126: an unknown field is a 400 rather than a shrug. This schema is an
+    # allowlist for a good reason (AC-5/AC-6 — client-controlled fields do not
+    # reach the engine unexamined), but Pydantic's default is to *drop* what it
+    # does not recognise, and llama.cpp accepts unknown fields without
+    # complaint, so a typo or an unsupported parameter reached neither a
+    # validator nor a log. A client asking for `response_format` got prose and
+    # no hint why. OpenAI answers "Unrecognized request argument supplied: x";
+    # this now does the same, which is what "OpenAI-compatible" has to mean for
+    # the half of the contract that is about being told you are wrong.
+    model_config = ConfigDict(extra="forbid")
 
     def to_llama_payload(self) -> dict[str, object]:
         """Serialise to a dict suitable for forwarding — drops None fields."""
@@ -122,6 +139,8 @@ class ChatCompletionRequest(BaseModel):
             payload["tools"] = [t.model_dump(exclude_none=True) for t in self.tools]
         if self.tool_choice is not None:
             payload["tool_choice"] = self.tool_choice
+        if self.response_format is not None:
+            payload["response_format"] = self.response_format
         return payload
 
 
