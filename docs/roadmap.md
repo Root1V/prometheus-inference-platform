@@ -4551,6 +4551,39 @@ for it explicitly is a different thing from a toolbar button doing it on a click
 longer calls it, so `useDeleteModelPrice` — orphaned by this change — is removed.
 
 
+## PRM-126 — Structured outputs, and an allowlist that says what it dropped
+
+**Why**: a client reported that structured outputs were unsupported. Measured against the live
+engine first: llama.cpp honours `response_format` with a JSON schema — a two-field schema came
+back as `{"capital": "Lima"}`. The capability was there the whole time and only the gateway
+withheld it, because `ChatCompletionRequest` is an allowlist and `response_format` was not on it.
+
+The allowlist itself is right (AC-5/AC-6: client-controlled fields must not reach the engine
+unexamined). What was wrong was the silence. Pydantic drops an unrecognised field by default and
+llama.cpp accepts unknown fields without complaint, so nothing in the path could tell a caller
+their parameter had been discarded — and this guide documented it as "silently dropped if sent",
+which makes it a decision somebody made rather than an oversight.
+
+**What the industry does** (researched before choosing): OpenAI refuses an unrecognised top-level
+argument with a 400 naming it. OpenRouter — a gateway over heterogeneous providers, the closest
+analogue — routes and lets providers ignore what they cannot honour, *except* for a short list it
+treats as too consequential to drop quietly, and `response_format` is on that list. Both agree on
+the part that matters here: silently discarding this particular parameter is not acceptable
+behaviour for either shape of system.
+
+**Scope**: `response_format` forwarded as-is (same rationale as `tools` — the engine does the
+grammar work, and validating the schema here would be a second, drifting copy of its rules).
+`extra="forbid"` on the request schema, with `extra_forbidden` mapped to a dedicated
+`400 unknown-parameter` that lists every offending name in one response. Kept distinct from
+`422 validation-error` because the two have different fixes: "that field does not exist" versus
+"that value is wrong".
+
+**Found while measuring, not fixed here**: llama.cpp also honours `n` (returned 3 choices),
+`seed` (identical output across two runs — real reproducibility), `logit_bias`, and both
+penalties. All are still outside the subset. They now fail loudly instead of quietly, which is
+the improvement this item claims; supporting them is a separate decision.
+
+
 Append a new row to the table with the next `RM-NN` id and a new `## RM-NN — ...` section
 below, following the same shape (Why / Scope). Re-sort the table if the new item's
 priority isn't "last."
