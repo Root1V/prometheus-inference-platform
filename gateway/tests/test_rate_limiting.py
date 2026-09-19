@@ -749,3 +749,73 @@ async def test_rate_limit_no_redis_no_url_strict(
 
     assert r.status_code == 503
     assert "rate-limiting-unavailable" in r.json()["type"]
+
+
+# ── PRM-128: a machine credential is one identity, not two ─────────────────
+
+
+def _same_identity_headers(rsa_keys, ident: str = "machine-client"):
+    """A client_credentials token: no human behind it, so `sub` and `azp` are
+    both the client — which is what the fix turns on."""
+    token = make_token(
+        rsa_keys["private"],
+        scope="inference:read inference:stream model:small-model",
+        sub=ident,
+        azp=ident,
+    )
+    return {"Authorization": f"Bearer {token}"}
+
+
+async def test_a_client_credentials_token_is_not_charged_twice(rl_app, rsa_keys):
+    """Reported by the Executive Assistant team as two separate problems — a
+    60 RPM ceiling that behaved like 30, and requests "hanging" 42s — which were
+    one bug and its own error handling.
+
+    The middleware counts per client_id (AC-1) and per user_id (AC-9) on
+    purpose: one user of a multi-user client must not eat the whole budget. But
+    with `sub == azp` both checks hit the same Redis key, so every request cost
+    two. Measured against the live deployment before the fix: 30 accepted, 429
+    on the 31st, with `X-RateLimit-Limit-Requests: 60` on every one of them. The
+    "hang" was that 429's own Retry-After (58s) being honoured by their SDK.
+
+    `rl_app` caps RPM at 3, so double-charging shows up as a 429 on the second.
+    """
+    headers = _same_identity_headers(rsa_keys)
+    async with AsyncClient(transport=ASGITransport(app=rl_app), base_url="http://test") as c:
+        with respx.mock:
+            respx.post("http://127.0.0.1:18081/v1/chat/completions").mock(
+                return_value=Response(200, json=LLAMA_RESPONSE)
+            )
+            codes = [
+                (await c.post("/v1/chat/completions", json=VALID_BODY, headers=headers)).status_code
+                for _ in range(3)
+            ]
+            fourth = await c.post("/v1/chat/completions", json=VALID_BODY, headers=headers)
+
+    assert codes == [200, 200, 200], f"a 3 RPM budget must take three requests, got {codes}"
+    assert fourth.status_code == 429, "and stop at the fourth, not the second"
+
+
+async def test_a_real_user_behind_a_client_still_consumes_both_budgets(rl_app, rsa_keys):
+    """The other half: AC-9 has to survive the fix. A token with a distinct
+    `sub` still charges the user bucket as well as the client's — that is what
+    stops one user of a multi-user client from spending everyone else's."""
+    token = make_token(
+        rsa_keys["private"],
+        scope="inference:read inference:stream model:small-model",
+        sub="a-real-person",
+        azp="a-shared-client",
+    )
+    headers = {"Authorization": f"Bearer {token}"}
+
+    async with AsyncClient(transport=ASGITransport(app=rl_app), base_url="http://test") as c:
+        with respx.mock:
+            respx.post("http://127.0.0.1:18081/v1/chat/completions").mock(
+                return_value=Response(200, json=LLAMA_RESPONSE)
+            )
+            for _ in range(3):
+                await c.post("/v1/chat/completions", json=VALID_BODY, headers=headers)
+            fourth = await c.post("/v1/chat/completions", json=VALID_BODY, headers=headers)
+
+    assert fourth.status_code == 429
+    assert "rate-limit-exceeded-requests" in fourth.json()["type"]
