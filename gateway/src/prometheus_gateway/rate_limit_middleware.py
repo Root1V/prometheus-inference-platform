@@ -303,26 +303,31 @@ class RateLimitMiddleware:
         # The per-user limit exists so one user of a multi-user client cannot
         # eat the client's whole budget. With no distinct user there is nobody
         # to protect from anyone, and charging twice buys nothing.
-        if not claims.user_id or claims.user_id == claims.client_id:
-            return None
-        user_rpm = await self._limiter.check_and_increment_rpm(claims.user_id, slug, rpm_limit)
-        if not user_rpm.allowed:
-            retry_after = max(1, user_rpm.reset_at - int(time.time()))
-            logger.warning(
-                "rate_limit.user_rpm_exceeded",
-                user_id=claims.user_id,
-                endpoint=slug,
-                limit=rpm_limit,
-            )
-            return _rl_problem(
-                request,
-                429,
-                "rate-limit-exceeded-requests",
-                "Rate Limit Exceeded",
-                f"User '{claims.user_id}' has exceeded the request rate limit of "
-                f"{rpm_limit} RPM for endpoint '{slug}'. Reset in {retry_after} seconds.",
-                retry_after=retry_after,
-            )
+        # Skipped, not returned from: everything below this block still has to
+        # run. Returning early here dropped the TPM pre-flight — and with it
+        # `_rl_tpm_state`, which is where the X-RateLimit-* headers come from,
+        # so the fix for a wrong limit briefly removed the way to see any limit
+        # at all. Caught by re-measuring against the deployment; the suite was
+        # green because no test on this path asserts the headers.
+        if claims.user_id and claims.user_id != claims.client_id:
+            user_rpm = await self._limiter.check_and_increment_rpm(claims.user_id, slug, rpm_limit)
+            if not user_rpm.allowed:
+                retry_after = max(1, user_rpm.reset_at - int(time.time()))
+                logger.warning(
+                    "rate_limit.user_rpm_exceeded",
+                    user_id=claims.user_id,
+                    endpoint=slug,
+                    limit=rpm_limit,
+                )
+                return _rl_problem(
+                    request,
+                    429,
+                    "rate-limit-exceeded-requests",
+                    "Rate Limit Exceeded",
+                    f"User '{claims.user_id}' has exceeded the request rate limit of "
+                    f"{rpm_limit} RPM for endpoint '{slug}'. Reset in {retry_after} seconds.",
+                    retry_after=retry_after,
+                )
 
         # TPM pre-flight check — read the request body max_tokens hint if present
         # The actual body is parsed by the router; here we do a lightweight check

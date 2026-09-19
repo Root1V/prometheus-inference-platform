@@ -819,3 +819,32 @@ async def test_a_real_user_behind_a_client_still_consumes_both_budgets(rl_app, r
 
     assert fourth.status_code == 429
     assert "rate-limit-exceeded-requests" in fourth.json()["type"]
+
+
+async def test_the_rate_limit_headers_survive_the_machine_credential_path(rl_app, rsa_keys):
+    """PRM-128 regression. The first version of the fix returned early once it
+    saw a single identity, which skipped the TPM pre-flight below it — and that
+    is where `_rl_tpm_state` comes from, so every X-RateLimit-* header vanished
+    on exactly the credentials the fix was for.
+
+    The suite stayed green: no test on this path looked at the headers. It was
+    caught by re-measuring against the deployment, where `remaining` came back
+    empty. A fix for a wrong limit had briefly removed any way to see a limit.
+    """
+    headers = _same_identity_headers(rsa_keys, "header-check-client")
+    async with AsyncClient(transport=ASGITransport(app=rl_app), base_url="http://test") as c:
+        with respx.mock:
+            respx.post("http://127.0.0.1:18081/v1/chat/completions").mock(
+                return_value=Response(200, json=LLAMA_RESPONSE)
+            )
+            r = await c.post("/v1/chat/completions", json=VALID_BODY, headers=headers)
+
+    assert r.status_code == 200
+    for header in (
+        "X-RateLimit-Limit-Requests",
+        "X-RateLimit-Remaining-Requests",
+        "X-RateLimit-Reset-Requests",
+        "X-RateLimit-Limit-Tokens",
+        "X-RateLimit-Remaining-Tokens",
+    ):
+        assert header in r.headers, f"{header} disappeared for a client_credentials token"
