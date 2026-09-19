@@ -4612,6 +4612,33 @@ fails naming any that does not check. Run against a tree with one call removed, 
 handler.
 
 
+## PRM-128 — A machine credential stops paying for itself twice
+
+**Why**: the Executive Assistant team reported two problems — a rerank request that took 42s
+against a 345ms median, and a 60 RPM ceiling that forced them to plan for ~20 suggestions a
+minute. They are one bug and its own error handling.
+
+Rate limits are charged per `client_id` (AC-1) and per `user_id` (AC-9), which is right: one user
+of a multi-user client must not be able to eat the whole budget. But a `client_credentials` token
+has no human behind it, so the JWT's `sub` and `azp` are both the client, both charges hit the
+same Redis key, and every request cost two. Measured against the live deployment before touching
+anything: **30 requests accepted, 429 on the 31st, `X-RateLimit-Limit-Requests: 60` on every one
+of them**. The "hang" was that 429 carrying `Retry-After: 58` and their SDK honouring it — the
+same phenomenon P-16 already explained to Axonium, reaching a second team through a different
+door.
+
+**Scope**: skip the per-user charge when the identity is the same string, for RPM in the
+middleware and for TPM in the router's post-response increment. TPM had it too, so a 40,000
+token/minute budget was really 20,000. AC-9 is unchanged where a distinct `sub` exists, and a
+test pins that half so the fix cannot quietly become "never charge the user".
+
+**Also measured, and not a bug**: `/v1/chat/completions` has its own bucket while `/v1/embeddings`
+and `/v1/rerank` share `default` (`_ENDPOINT_SLUG_MAP`). The team assumed 60 RPM per endpoint and
+divided by three; the real shape is 60 for chat and 60 shared between the other two, so their
+ceiling is 30 suggestions a minute, not 20 — and after this fix, that is 30 real ones rather than
+15. Giving those two endpoints their own slugs is a one-line change each if they need more.
+
+
 Append a new row to the table with the next `RM-NN` id and a new `## RM-NN — ...` section
 below, following the same shape (Why / Scope). Re-sort the table if the new item's
 priority isn't "last."

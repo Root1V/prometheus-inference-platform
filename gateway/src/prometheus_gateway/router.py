@@ -1671,7 +1671,12 @@ def create_router(registry: ModelRegistry, pool: "BackendPool") -> APIRouter:
                             await rl.increment_tpm(
                                 claims.client_id, "chat_completions", total_tokens
                             )
-                            await rl.increment_tpm(claims.user_id, "chat_completions", total_tokens)
+                            # PRM-128: same identity, same key — a machine
+                            # credential was spending its token budget twice.
+                            if claims.user_id and claims.user_id != claims.client_id:
+                                await rl.increment_tpm(
+                                    claims.user_id, "chat_completions", total_tokens
+                                )
                         except Exception as exc:
                             logger.warning("tpm.increment_error", error=str(exc))
 

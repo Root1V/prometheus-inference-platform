@@ -292,7 +292,19 @@ class RateLimitMiddleware:
                 retry_after=retry_after,
             )
 
-        # Check user_id RPM (AC-9) — separate from client_id
+        # Check user_id RPM (AC-9) — separate from client_id.
+        #
+        # PRM-128: unless they are the same string, which is the normal case for
+        # a client_credentials token: there is no human behind it, so the JWT's
+        # `sub` and `azp` are both the client. Both checks then increment the
+        # *same* Redis key and every request costs two — a client advertised 60
+        # RPM was cut off at 30, and the header said 60 the whole way down.
+        #
+        # The per-user limit exists so one user of a multi-user client cannot
+        # eat the client's whole budget. With no distinct user there is nobody
+        # to protect from anyone, and charging twice buys nothing.
+        if not claims.user_id or claims.user_id == claims.client_id:
+            return None
         user_rpm = await self._limiter.check_and_increment_rpm(claims.user_id, slug, rpm_limit)
         if not user_rpm.allowed:
             retry_after = max(1, user_rpm.reset_at - int(time.time()))
