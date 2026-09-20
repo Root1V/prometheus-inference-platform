@@ -67,6 +67,18 @@ wheels = [
 ]
 
 [[package]]
+name = "argus-obs-semconv"
+version = "1.0.0a5"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "opentelemetry-api" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/57/3a/1efd74410455199a6fc3fc7da3d665be29706afc80b917fe88c0f463331a/argus_obs_semconv-1.0.0a5.tar.gz", hash = "sha256:dbb3a70425ea1d1fbaeb3d54c726f84123c2bb5c689af62c01fb34cf29661362", size = 40011, upload-time = "2026-09-20T03:30:34.463Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/cf/9f/0d0e304970243dba9176f97d0d7e7aa1d45f91f25a01a3a849cde53a0b9d/argus_obs_semconv-1.0.0a5-py3-none-any.whl", hash = "sha256:78195f466d6d30a4c00c8352a6a00a4030a5487259c6d98e9c4a41f3670b3537", size = 22512, upload-time = "2026-09-20T03:30:33.167Z" },
+]
+
+[[package]]
 name = "asgiref"
 version = "3.11.1"
 source = { registry = "https://pypi.org/simple" }
@@ -1357,6 +1369,7 @@ source = { editable = "gateway" }
 dependencies = [
     { name = "aiosqlite" },
     { name = "alembic" },
+    { name = "argus-obs-semconv" },
     { name = "fastapi" },
     { name = "httpx" },
     { name = "jinja2" },
@@ -1389,6 +1402,7 @@ dev = [
 requires-dist = [
     { name = "aiosqlite", specifier = ">=0.20" },
     { name = "alembic", specifier = ">=1.13" },
+    { name = "argus-obs-semconv", specifier = "==1.0.0a5" },
     { name = "fastapi", specifier = ">=0.111" },
     { name = "httpx", specifier = ">=0.27" },
     { name = "jinja2", specifier = ">=3.1.6" },

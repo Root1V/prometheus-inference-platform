@@ -261,11 +261,21 @@ def _detach(coro: "Any", *, what: str) -> None:
 _ENGINE_PROVIDERS = {"llama_cpp": "llama.cpp", "sd_cpp": "stable-diffusion.cpp"}
 
 
+def _provider_of(engine: str | None) -> str:
+    """The `gen_ai.provider.name` for a backend engine.
+
+    One function rather than the expression inline, because PRM-131 made the
+    metrics need the same answer the spans already give — and a rule written
+    out at two call sites is the shape that produced PRM-118 and PRM-130.
+    """
+    return _ENGINE_PROVIDERS.get(engine or "", engine or "unknown")
+
+
 def _genai_request_attrs(operation: str, model: str, engine: str) -> dict[str, Any]:
     return {
         "gen_ai.operation.name": operation,
         "gen_ai.request.model": model,
-        "gen_ai.provider.name": _ENGINE_PROVIDERS.get(engine, engine or "unknown"),
+        "gen_ai.provider.name": _provider_of(engine),
     }
 
 
@@ -1469,6 +1479,7 @@ def create_router(registry: ModelRegistry, pool: "BackendPool") -> APIRouter:
                         # PRM-105: what the caller asked for; the response half
                         # carries what was actually served.
                         genai_request_attrs=_genai_request_attrs("chat", body.model, entry.backend),
+                        engine=entry.backend,
                     )
                 else:
                     await metrics_store.inc_requests_active()
@@ -1635,6 +1646,8 @@ def create_router(registry: ModelRegistry, pool: "BackendPool") -> APIRouter:
                         instance_id=entry.id,
                         request_id=request_id,
                         cached_prompt_tokens=cached_prompt_tokens,
+                        duration_s=backend_latency_ms / 1000,
+                        engine=entry.backend,
                     )
 
                     # RM-60: settle the spend-cap reservation with the real cost
@@ -2002,6 +2015,8 @@ def create_router(registry: ModelRegistry, pool: "BackendPool") -> APIRouter:
             model_slug=resolution.model_key,
             instance_id=entry.id,
             request_id=getattr(getattr(request, "state", None), "request_id", None),
+            duration_s=embeddings_latency_ms / 1000,
+            engine=entry.backend,
         )
         if budget_redis is not None and reservation is not None and reservation.allowed:
             actual_cost = pricing.get_pricing_table().estimate_cost_usd(
@@ -2295,6 +2310,8 @@ def create_router(registry: ModelRegistry, pool: "BackendPool") -> APIRouter:
             model_slug=resolution.model_key,
             instance_id=entry.id,
             request_id=getattr(getattr(request, "state", None), "request_id", None),
+            duration_s=rerank_latency_ms / 1000,
+            engine=entry.backend,
         )
         if budget_redis is not None and reservation is not None and reservation.allowed:
             actual_cost = pricing.get_pricing_table().estimate_cost_usd(
@@ -2586,6 +2603,8 @@ def create_router(registry: ModelRegistry, pool: "BackendPool") -> APIRouter:
             model_slug=resolution.model_key,
             instance_id=entry.id,
             request_id=getattr(getattr(request, "state", None), "request_id", None),
+            duration_s=images_latency_ms / 1000,
+            engine=entry.backend,
         )
         if budget_redis is not None and reservation is not None and reservation.allowed:
             actual_cost = pricing.get_pricing_table().estimate_image_cost_usd(
@@ -2632,6 +2651,75 @@ def create_router(registry: ModelRegistry, pool: "BackendPool") -> APIRouter:
     return router
 
 
+# PRM-131: request_kind is ours (it keys the usage row and the price);
+# gen_ai.operation.name is OpenTelemetry's. They are not the same vocabulary,
+# so the translation is a table rather than the string passed straight through.
+# `image_generation` is our own — the registry has no image operation.
+_GENAI_OPERATIONS = {
+    "chat": "chat",
+    "embedding": "embeddings",
+    "rerank": "rerank",
+    "image": "image_generation",
+}
+
+
+def _emit_genai_metrics(
+    *,
+    request_kind: str,
+    model: str,
+    engine: str | None,
+    prompt_tokens: int,
+    completion_tokens: int,
+    duration_s: float | None,
+    ttft_s: float | None,
+    cost_usd: float | None,
+    backend_id: str | None,
+) -> None:
+    """Emit this request's four GenAI metrics through Argus's own instruments.
+
+    Argus's package, not a hand-copy of it: the names, units, instrument kinds
+    and meter scope are theirs, so a dashboard built on their conventions finds
+    our series without a translation layer, and a rename reaches us as a
+    dependency bump instead of a diff nobody remembers to write.
+
+    Imported here rather than at module import time, and that is not style.
+    `argus_semconv.metrics` creates its meter at import; OpenTelemetry's
+    `_ProxyMeterProvider.get_meter()` accepts `attributes` and drops them, so a
+    meter created before `configure_metrics()` runs loses its scope attributes
+    permanently — including `argus.semconv.version`, which A-29 had just added.
+    This module is imported while `main.py` is still building the app, before
+    the provider exists; the first call to this function is not. Measured both
+    ways before choosing (P-30).
+    """
+    from argus_semconv import metrics as genai
+
+    operation = _GENAI_OPERATIONS.get(request_kind, request_kind)
+    provider = _provider_of(engine)
+    if duration_s is not None:
+        genai.record_duration(
+            operation=operation, provider=provider, model=model, seconds=duration_s
+        )
+    genai.record_tokens(
+        operation=operation,
+        provider=provider,
+        model=model,
+        input_tokens=prompt_tokens,
+        output_tokens=completion_tokens,
+    )
+    if ttft_s is not None:
+        genai.record_ttft(
+            provider=provider,
+            model=model,
+            seconds=ttft_s,
+            operation=operation,
+            backend_id=backend_id,
+        )
+    # None is not zero — an unpriced model adds nothing to the counter rather
+    # than adding a confident 0.0, the same rule PRM-119 put on the invoice.
+    if cost_usd is not None:
+        genai.record_cost(cost_usd=cost_usd, model=model)
+
+
 async def _record_usage(
     claims: Any,
     model_id: str,
@@ -2645,12 +2733,21 @@ async def _record_usage(
     request_id: str | None = None,
     cached_prompt_tokens: int = 0,
     model_slug: str | None = None,
+    # PRM-131: what the GenAI metrics need and the usage row does not — how
+    # long it took, how long until the caller saw anything, and which engine
+    # answered. Optional because a caller that does not know them should still
+    # bill; the metric is then simply not recorded, rather than recorded wrong.
+    duration_s: float | None = None,
+    ttft_s: float | None = None,
+    engine: str | None = None,
 ) -> None:
-    """Write an immutable usage_events row + persisted per-day rollup counters.
+    """Write an immutable usage_events row + persisted per-day rollup counters,
+    and emit this request's GenAI metrics.
 
     Implements: docs/roadmap.md — RM-32 (replaces the old Redis daily-TTL counters).
     Implements: docs/roadmap.md — RM-60 (#1, #2, #3 — write-time cost, audit
     trail, and covers embeddings/images which previously never called this).
+    Implements: docs/roadmap.md — PRM-131 (the four GenAI metrics).
     """
     if claims is None:
         return
@@ -2659,8 +2756,9 @@ async def _record_usage(
             return
     elif prompt_tokens + completion_tokens == 0:
         return
+    cost_usd: float | None = None
     try:
-        await db.record_usage(
+        cost_usd = await db.record_usage(
             claims.client_id,
             model_id,
             prompt_tokens,
@@ -2675,6 +2773,17 @@ async def _record_usage(
         )
     except Exception as exc:
         logger.warning("usage.db_write_error", error=str(exc))
+    _emit_genai_metrics(
+        request_kind=request_kind,
+        model=model_slug or model_id,
+        engine=engine,
+        prompt_tokens=prompt_tokens,
+        completion_tokens=completion_tokens,
+        duration_s=duration_s,
+        ttft_s=ttft_s,
+        cost_usd=cost_usd,
+        backend_id=instance_id,
+    )
 
 
 def _parameter_check(request: Request, body: Any) -> Response | None:
@@ -2781,6 +2890,10 @@ async def _stream_response(
     served_by_headers: dict[str, str] | None = None,
     idempotency_claim: "idempotency.Claim | None" = None,
     genai_request_attrs: dict[str, Any] | None = None,
+    # PRM-131: the backend engine, for `gen_ai.provider.name` on the metrics.
+    # Taken raw rather than read back out of `genai_request_attrs`, where it is
+    # already mapped — one mapping, done in `_provider_of`, called once.
+    engine: str | None = None,
 ) -> StreamingResponse:
     """Forward a streaming request using a pooled client.
 
@@ -3095,6 +3208,20 @@ async def _stream_response(
                     termination_reason=termination_reason,
                     request_id=request_id,
                     cached_prompt_tokens=cached_prompt_tokens,
+                    duration_s=backend_latency_ms / 1000,
+                    # PRM-131: `first_token_ms`, not `ttft_ms`. They are our
+                    # two answers to the same question and A-24 measured the
+                    # gap: 63.7% of spans carry the first token of any kind,
+                    # 4.4% the first *visible* one — `qwen3-8b-q6` spent 24
+                    # tokens reasoning and reported zero. `ttft_ms` is
+                    # deliberately the visible one and stays that way; it has
+                    # charts behind it. But the metric is
+                    # `gen_ai.server.time_to_first_token`, whose spec says
+                    # first token, and it has no history to move. Feeding it
+                    # the visible one would ship a standard metric that is
+                    # empty 19 times out of 20 and looks like an outage.
+                    ttft_s=(first_token_ms / 1000) if first_token_ms is not None else None,
+                    engine=engine,
                 )
 
                 # RM-60: settle the spend-cap reservation with the real cost

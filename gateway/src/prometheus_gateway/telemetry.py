@@ -21,6 +21,7 @@ from typing import Any
 from prometheus_telemetry import (  # noqa: F401  (re-exported for callers)
     TraceIDMiddleware,
     configure_logging,
+    configure_metrics,
     configure_tracing,
     get_logger,
     get_tracer,
@@ -31,6 +32,7 @@ from prometheus_telemetry import (  # noqa: F401  (re-exported for callers)
 __all__ = [
     "TraceIDMiddleware",
     "configure_logging",
+    "configure_metrics",
     "configure_tracing",
     "get_logger",
     "get_tracer",

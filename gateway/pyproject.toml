@@ -20,6 +20,12 @@ dependencies = [
     "sqlalchemy>=2.0",
     "aiosqlite>=0.20",
     "alembic>=1.13",
+    # PRM-131: Argus's own GenAI instruments, so our metric names, units,
+    # instrument kinds and scope are theirs rather than a hand-copy that
+    # drifts. Pinned exactly because it is a prerelease — A-29 asks for the
+    # exact version or --pre, and an exact pin is the one that cannot move
+    # under a lockfile refresh.
+    "argus-obs-semconv==1.0.0a5",
 ]
 
 [dependency-groups]
