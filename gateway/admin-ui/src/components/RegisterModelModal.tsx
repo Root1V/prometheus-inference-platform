@@ -5,6 +5,7 @@ import { useRegisterModel, useUpdateModel } from "../api/instances";
 import { useToast } from "../context/ToastContext";
 import { cn } from "../lib/cn";
 import { getErrorMessage } from "../lib/errors";
+import { ENGINE_LABELS, enginesAvailableOn } from "../lib/engines";
 import type {
   Backend,
   InstanceEntry,
@@ -13,10 +14,11 @@ import type {
   UpdateModelRequest,
 } from "../types/instance";
 import type { ModelCatalogEntry } from "../types/models";
+import type { Node } from "../types/node";
 
 interface RegisterModelModalProps {
   open: boolean;
-  nodes: string[];
+  nodes: Node[];
   onClose: () => void;
   /** When set, the modal edits this existing instance (PATCH) instead of
    * registering a new one (POST). Node and ID become read-only — moving a
@@ -32,7 +34,6 @@ interface RegisterModelModalProps {
   downloadedModels?: ModelCatalogEntry[];
 }
 
-const BACKENDS: Backend[] = ["llama_cpp", "mlx", "vllm", "sglang", "sd_cpp"];
 
 interface FormState {
   slug: string;
@@ -136,7 +137,15 @@ export function RegisterModelModal({
   // Nodes load asynchronously after this component mounts — fall back to the
   // first available node until the operator picks one explicitly. Derived
   // during render rather than synced via an effect (no extra render needed).
-  const selectedNode = form.node || nodes[0] || "";
+  const selectedNode = form.node || nodes[0]?.name || "";
+  // PRM-133: same rule as AddInstanceModal — the engines this node declared,
+  // narrowed to the ones this build can launch. Both forms create an instance
+  // on a node, so both have to obey the node's list; leaving one of them
+  // unfiltered would be the "fixed at one call site" shape all over again.
+  const availableEngines = enginesAvailableOn(
+    nodes.find((n) => n.name === selectedNode)?.engines,
+  );
+  const engine = availableEngines.includes(form.backend) ? form.backend : (availableEngines[0] ?? null);
   const isPending = registerModel.isPending || updateModel.isPending;
   // A downloaded model's file only exists on its own node — offering one
   // from a different node would register a path that isn't there.
@@ -179,11 +188,19 @@ export function RegisterModelModal({
       showToast("Select a model", "error");
       return;
     }
+    // PRM-133: `engine`, not `form.backend`. The select renders `engine` — the
+    // node's list may not contain what the form is holding — so submitting
+    // `form.backend` would send an engine the operator was never shown, on a
+    // node that declared it does not have it.
+    if (engine === null) {
+      showToast(`${selectedNode} has no inference engine declared.`, "error");
+      return;
+    }
 
     if (isEditing) {
       const body: UpdateModelRequest = {
         port: Number(form.port),
-        backend: form.backend,
+        backend: engine,
         // PRM-109: not modality — the server refuses it on an instance now.
         discovery: form.discovery,
         path: form.path,
@@ -211,7 +228,7 @@ export function RegisterModelModal({
       id: form.id,
       model_id: selectedSourceId,
       port: Number(form.port),
-      backend: form.backend,
+      backend: engine,
       // PRM-110: not modality — the server takes it from the catalog entry
       // this instance references.
       discovery: form.discovery,
@@ -259,8 +276,8 @@ export function RegisterModelModal({
                   Select node
                 </option>
                 {nodes.map((n) => (
-                  <option key={n} value={n}>
-                    {n}
+                  <option key={n.name} value={n.name}>
+                    {n.name}
                   </option>
                 ))}
               </select>
@@ -337,17 +354,23 @@ export function RegisterModelModal({
               />
             </Field>
             <Field label="Backend">
-              <select
-                value={form.backend}
-                onChange={(e) => update("backend", e.target.value as Backend)}
-                className={inputClass}
-              >
-                {BACKENDS.map((b) => (
-                  <option key={b} value={b}>
-                    {b}
-                  </option>
-                ))}
-              </select>
+              {engine === null ? (
+                <p className="rounded-lg border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-sm text-amber-600">
+                  {selectedNode} declared no inference engines. Add one on the Nodes page.
+                </p>
+              ) : (
+                <select
+                  value={engine}
+                  onChange={(e) => update("backend", e.target.value as Backend)}
+                  className={inputClass}
+                >
+                  {availableEngines.map((b) => (
+                    <option key={b} value={b}>
+                      {ENGINE_LABELS[b]}
+                    </option>
+                  ))}
+                </select>
+              )}
             </Field>
             {/* PRM-110: read-only in both modes. PRM-109 left this editable
                 while "registering", on the belief that the call created the

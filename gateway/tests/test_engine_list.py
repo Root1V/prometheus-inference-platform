@@ -1,0 +1,74 @@
+"""The UI's engine list is the manager's, in another language — PRM-133.
+
+`manager-core` decides what this platform can launch (`registry.BACKENDS`), and
+the admin UI has to render the same set. Two lists in two languages cannot be
+one list, so the next best thing is a test that fails the moment they disagree.
+
+It matters more than the usual duplication: PRM-133 exists because the UI
+offered engines a node cannot run. A UI list that has drifted from the
+manager's offers engines *nothing* can run, which is the same defect one level
+further out.
+"""
+
+from __future__ import annotations
+
+import re
+from pathlib import Path
+
+_UI = Path(__file__).resolve().parents[1] / "admin-ui/src"
+_MANAGER_REGISTRY = (
+    Path(__file__).resolve().parents[2]
+    / "runtime/manager/core/src/prometheus_manager_core/registry.py"
+)
+
+
+def _manager_backends() -> list[str]:
+    src = _MANAGER_REGISTRY.read_text()
+    match = re.search(r"^BACKENDS = \(([^)]*)\)", src, re.MULTILINE)
+    assert match, "manager-core's BACKENDS tuple moved or changed shape"
+    return re.findall(r'"([a-z0-9_]+)"', match.group(1))
+
+
+def _ui_engines() -> list[str]:
+    src = (_UI / "lib/engines.ts").read_text()
+    match = re.search(r"export const ENGINES: Backend\[\] = \[([^\]]*)\]", src)
+    assert match, "lib/engines.ts's ENGINES array moved or changed shape"
+    return re.findall(r'"([a-z0-9_]+)"', match.group(1))
+
+
+def test_the_ui_offers_exactly_what_the_manager_can_launch() -> None:
+    assert _ui_engines() == _manager_backends()
+
+
+def test_every_engine_has_a_display_label() -> None:
+    """A missing label renders `undefined` in a dropdown, not the raw id."""
+    src = (_UI / "lib/engines.ts").read_text()
+    match = re.search(r"export const ENGINE_LABELS[^{]*\{([^}]*)\}", src)
+    assert match, "ENGINE_LABELS moved or changed shape"
+    labelled = set(re.findall(r"^\s*([a-z0-9_]+):", match.group(1), re.MULTILINE))
+    assert labelled == set(_ui_engines())
+
+
+def test_the_backend_type_union_matches_the_list() -> None:
+    """`Backend` is what typechecks; `ENGINES` is what renders. A union wider
+    than the array lets a component hold an engine the picker never offers."""
+    src = (_UI / "types/instance.ts").read_text()
+    match = re.search(r"export type Backend = ([^;]*);", src)
+    assert match, "the Backend union moved or changed shape"
+    assert set(re.findall(r'"([a-z0-9_]+)"', match.group(1))) == set(_ui_engines())
+
+
+def test_no_component_keeps_its_own_copy_of_the_engine_list() -> None:
+    """Both modals used to declare `const BACKENDS = [...]` locally.
+
+    That was harmless while each rendered the whole list unconditionally. It
+    stops being harmless now that the list has to be filtered against a node's
+    declaration, because a list that exists twice gets filtered once — which is
+    the shape that cost PRM-118, PRM-127 and PRM-130.
+    """
+    offenders: list[str] = []
+    for path in sorted(_UI.rglob("*.tsx")):
+        for lineno, line in enumerate(path.read_text().splitlines(), 1):
+            if re.search(r"(const|let)\s+\w*(BACKENDS|ENGINES)\w*\s*(:|=)", line):
+                offenders.append(f"{path.relative_to(_UI)}:{lineno}")
+    assert not offenders, f"engine list declared outside lib/engines.ts: {offenders}"

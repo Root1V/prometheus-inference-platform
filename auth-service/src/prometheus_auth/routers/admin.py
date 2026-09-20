@@ -1,6 +1,7 @@
 # See memory/specs/005-auth-service.md — /admin/clients endpoints
 # Implements: AC-6 (create), AC-7 (revoke), AC-8 (auth), AC-11, AC-12, AC-13, AC-14, AC-15
 # Implements: memory/specs/018-observability-telemetry.md — AC-2, AC-12, AC-13
+import json
 import secrets
 import uuid
 from datetime import datetime, timedelta, timezone
@@ -626,6 +627,23 @@ async def _check_node_reachable(manager_url: str) -> bool:
         return False
 
 
+def _engines_from_column(raw: str | None) -> list[str] | None:
+    """PRM-133: the stored JSON back into a list, preserving "never declared".
+
+    A row written before this column existed reads NULL and must stay None all
+    the way to the client — the instance form decides what to offer from it,
+    and `[]` would tell it the node can launch nothing.
+    """
+    if raw is None:
+        return None
+    try:
+        parsed = json.loads(raw)
+    except json.JSONDecodeError:
+        logger.warning("auth.node_engines_unparseable", raw=raw[:120])
+        return None
+    return [str(x) for x in parsed] if isinstance(parsed, list) else None
+
+
 def _node_to_item(node: Node) -> NodeListItem:
     return NodeListItem(
         id=node.id,
@@ -638,6 +656,7 @@ def _node_to_item(node: Node) -> NodeListItem:
         electricity_usd_per_hour=node.electricity_usd_per_hour,
         price_margin_multiplier=node.price_margin_multiplier,
         hourly_cost_usd=node.hardware_amortization_usd_per_hour + node.electricity_usd_per_hour,
+        engines=_engines_from_column(node.engines),
         created_at=node.created_at,
         updated_at=node.updated_at,
     )
@@ -685,6 +704,11 @@ async def create_node(
             if body.price_margin_multiplier is not None
             else DEFAULT_PRICE_MARGIN_MULTIPLIER
         ),
+        # PRM-133: no default. Every other optional field above falls back to a
+        # platform constant because a node without a cost is unusable; a node
+        # without a declared engine list is merely undeclared, and inventing
+        # one here would make "we don't know" indistinguishable from a claim.
+        engines=json.dumps(body.engines) if body.engines is not None else None,
     )
     db.add(node)
     await db.commit()
@@ -732,6 +756,11 @@ async def update_node(
         node.electricity_usd_per_hour = body.electricity_usd_per_hour
     if body.price_margin_multiplier is not None:
         node.price_margin_multiplier = body.price_margin_multiplier
+    # PRM-133: `model_fields_set`, like `tag` above — `engines: []` is a real
+    # edit ("this node has none"), and an `is not None` check would silently
+    # drop it.
+    if "engines" in body.model_fields_set:
+        node.engines = json.dumps(body.engines) if body.engines is not None else None
 
     node.updated_at = datetime.now(timezone.utc)
     await db.commit()

@@ -5,7 +5,7 @@ import re
 from datetime import datetime
 from typing import Literal
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 from .db import NodeType, PrincipalRole
 
@@ -155,6 +155,27 @@ class RevokeShareLinkResponse(BaseModel):
 
 # ── Node registry (RM-20) ──────────────────────────────────────────────────────
 
+# PRM-133: an engine id, bounded. This is a shape check, not a membership one —
+# auth-service has no list of real engines and should not grow one (see
+# db.py's Node.engines). It exists so the column holds identifiers rather than
+# arbitrary text.
+_ENGINE_ID_RE = re.compile(r"^[a-z][a-z0-9_-]{0,31}$")
+
+
+def _validate_engines(value: list[str] | None) -> list[str] | None:
+    if value is None:
+        return None
+    seen: list[str] = []
+    for item in value:
+        if not _ENGINE_ID_RE.match(item):
+            raise ValueError(
+                f"Invalid engine id {item!r}: lowercase letters, digits, '_' and '-', "
+                "starting with a letter, at most 32 characters."
+            )
+        if item not in seen:
+            seen.append(item)
+    return seen
+
 
 class CreateNodeRequest(BaseModel):
     name: str = Field(..., min_length=1, max_length=64)
@@ -168,6 +189,11 @@ class CreateNodeRequest(BaseModel):
     hardware_amortization_usd_per_hour: float | None = Field(None, ge=0)
     electricity_usd_per_hour: float | None = Field(None, ge=0)
     price_margin_multiplier: float | None = Field(None, gt=0)
+    # PRM-133: the inference engines installed on this node. Omitted means
+    # "not declared", which is not the same as `[]` — see db.py's Node.engines.
+    engines: list[str] | None = Field(None, max_length=32)
+
+    _check_engines = field_validator("engines")(_validate_engines)
 
     model_config = {"use_enum_values": True}
 
@@ -185,6 +211,9 @@ class NodeListItem(BaseModel):
     # Computed = hardware_amortization_usd_per_hour + electricity_usd_per_hour
     # — read-only convenience for callers that just want the total.
     hourly_cost_usd: float
+    # PRM-133: null means the node has never declared its engines; [] means it
+    # declared that it has none. A caller that collapses the two is the bug.
+    engines: list[str] | None = None
     created_at: datetime
     updated_at: datetime | None = None
 
@@ -198,6 +227,12 @@ class UpdateNodeRequest(BaseModel):
     hardware_amortization_usd_per_hour: float | None = Field(None, ge=0)
     electricity_usd_per_hour: float | None = Field(None, ge=0)
     price_margin_multiplier: float | None = Field(None, gt=0)
+    # PRM-133: sending `[]` clears the list to "declared none"; omitting the
+    # field leaves it alone. Both are meaningful, so this one is read through
+    # `model_fields_set` like `tag` above rather than an `is not None` check.
+    engines: list[str] | None = Field(None, max_length=32)
+
+    _check_engines = field_validator("engines")(_validate_engines)
 
     model_config = {"use_enum_values": True}
 

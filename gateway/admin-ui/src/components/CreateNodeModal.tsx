@@ -5,6 +5,7 @@ import { useCreateNode, useUpdateNode } from "../api/nodes";
 import { useToast } from "../context/ToastContext";
 import { cn } from "../lib/cn";
 import { getErrorMessage } from "../lib/errors";
+import { ENGINES, ENGINE_LABELS } from "../lib/engines";
 import type { CreateNodeRequest, Node, NodeType } from "../types/node";
 
 interface CreateNodeModalProps {
@@ -34,6 +35,10 @@ interface FormState {
   hardware_amortization: string;
   electricity: string;
   margin: string;
+  /** PRM-133: `null` means the operator has not touched the list — the node
+   * stays undeclared. Ticking or clearing any box makes it a declaration,
+   * including the empty one. */
+  engines: string[] | null;
 }
 
 function initialState(): FormState {
@@ -45,6 +50,7 @@ function initialState(): FormState {
     hardware_amortization: "",
     electricity: "",
     margin: "",
+    engines: null,
   };
 }
 
@@ -57,6 +63,7 @@ function stateFromNode(node: Node): FormState {
     hardware_amortization: node.hardware_amortization_usd_per_hour.toString(),
     electricity: node.electricity_usd_per_hour.toString(),
     margin: node.price_margin_multiplier.toString(),
+    engines: node.engines,
   };
 }
 
@@ -117,6 +124,10 @@ export function CreateNodeModal({ open, onClose, editing = null }: CreateNodeMod
             hardware_amortization_usd_per_hour: amortization,
             electricity_usd_per_hour: electricity,
             price_margin_multiplier: margin,
+            // PRM-133: only when the operator declared something. Sending
+            // `undefined` leaves the column alone; sending `[]` would turn
+            // "never declared" into "has none" on every unrelated edit.
+            ...(form.engines !== null ? { engines: form.engines } : {}),
           },
         },
         {
@@ -138,6 +149,7 @@ export function CreateNodeModal({ open, onClose, editing = null }: CreateNodeMod
       ...(amortization !== undefined ? { hardware_amortization_usd_per_hour: amortization } : {}),
       ...(electricity !== undefined ? { electricity_usd_per_hour: electricity } : {}),
       ...(margin !== undefined ? { price_margin_multiplier: margin } : {}),
+      ...(form.engines !== null ? { engines: form.engines } : {}),
     };
 
     createNode.mutate(body, {
@@ -224,6 +236,39 @@ export function CreateNodeModal({ open, onClose, editing = null }: CreateNodeMod
             Total: <span className="font-medium text-text">${previewTotal.toFixed(4)}/hour</span> —
             blank fields use the platform default shown above.
           </p>
+          <Field label="Inference engines installed">
+            <div className="space-y-1.5 rounded-lg border border-border bg-background px-3 py-2">
+              {ENGINES.map((engine) => (
+                <label key={engine} className="flex items-center gap-2 text-sm text-text">
+                  <input
+                    type="checkbox"
+                    checked={form.engines?.includes(engine) ?? false}
+                    onChange={(e) =>
+                      update(
+                        "engines",
+                        e.target.checked
+                          ? [...(form.engines ?? []), engine]
+                          : (form.engines ?? []).filter((x) => x !== engine),
+                      )
+                    }
+                    className="accent-primary"
+                  />
+                  {ENGINE_LABELS[engine]}
+                </label>
+              ))}
+            </div>
+          </Field>
+          {form.engines === null ? (
+            <p className="text-xs text-text-muted">
+              Not declared. Creating an instance on this node will offer every engine, including
+              ones it cannot run — which is what this list is for.
+            </p>
+          ) : form.engines.length === 0 ? (
+            <p className="text-xs text-amber-500">
+              Declared as having none. No instance can be created on this node until at least one
+              engine is ticked.
+            </p>
+          ) : null}
           <Field label="Price-suggestion margin (×)">
             <input
               value={form.margin}

@@ -156,6 +156,21 @@ class Node(Base):
     price_margin_multiplier: Mapped[float] = mapped_column(
         Float, nullable=False, default=DEFAULT_PRICE_MARGIN_MULTIPLIER
     )
+    # PRM-133: which inference engines are installed on this node, as a JSON
+    # array of engine ids ("llama_cpp", "mlx", ...). Three states, and the
+    # difference between the last two is the whole point (RM-98):
+    #   NULL  — never declared. Predates this column, or the operator skipped
+    #           it. The instance form must not read this as "everything", which
+    #           is what it did before the column existed.
+    #   '[]'  — declared, and the answer is none. A node that can hold models
+    #           but cannot launch one.
+    #   '[..]'— declared.
+    # Deliberately not validated against a list of known engines here:
+    # auth-service is the identity and node registry, it does not know what an
+    # inference engine is, and a second copy of that list would drift from the
+    # manager's own. The UI offers only real ones and intersects what it reads
+    # with them, so an unrecognised string can never become a selectable option.
+    engines: Mapped[str | None] = mapped_column(Text, nullable=True, default=None)
     # Set by a connectivity check (GET {manager_url}/health) at creation, on
     # manager_url changes, and via /check and /activate (activate can't just
     # flip this to True — it re-probes and only succeeds if reachable, so the
@@ -257,6 +272,7 @@ async def create_tables(engine: AsyncEngine) -> None:
         f"DEFAULT {DEFAULT_ELECTRICITY_USD_PER_HOUR}",
         "ALTER TABLE nodes ADD COLUMN price_margin_multiplier FLOAT NOT NULL "
         f"DEFAULT {DEFAULT_PRICE_MARGIN_MULTIPLIER}",
+        "ALTER TABLE nodes ADD COLUMN engines TEXT",
     ]
     async with engine.begin() as conn:
         for stmt in _ADDITIVE_MIGRATIONS:

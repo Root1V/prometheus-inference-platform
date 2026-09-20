@@ -4756,21 +4756,30 @@ operator can see it — RM-89's rule about defaults, applied to options: an opti
 must not look like one that can. And nodes carry no engine inventory at all, so nothing *could*
 filter the list today.
 
-**Scope**:
-- Node registration/edit (`CreateNodeModal`) gains a checkbox list of the engines present on that
-  node.
-- `AddInstanceModal`'s Engine select is filtered to the selected node's set, single choice. The
-  field already exists and already writes `instances.backend` — this constrains it, it does not
-  add it.
-- **Three states, not two** (RM-98): a node that has never declared its engines is not a node with
-  none. The existing node predates the field; it must not become unusable, and it must not silently
-  claim to have everything either.
-- **Declared or probed** — a decision to make before building. `scanner.py` already knows every
-  engine's process signature and `lifecycle.py` already uses `shutil.which`, so a node's own
-  manager-api could report what it can actually launch instead of asking an operator to remember.
-  Recommended: probe as the default, with the checkboxes as an override — a declared list is a
-  claim, and a claim about software installed on another machine goes stale silently.
-- Out: installing or building an engine from the UI, and per-engine launch-flag editing.
+**Scope**: `nodes.engines`, a nullable JSON column on auth-service's node registry, declared
+through a checkbox list at node registration and read back by both forms that create an instance
+(`AddInstanceModal` and `RegisterModelModal` — both put a model on a node, so filtering one and
+not the other would be the same defect at the other call site).
+
+**Three states, not two** (RM-98), and the column is nullable for exactly that reason: `NULL` is
+"never declared" and offers every engine, which is what the form did before this existed, so the
+node that predates the column does not become unusable. `[]` is "declared none" and offers
+nothing, said out loud rather than shown as an empty dropdown. The operator's checkbox list starts
+in the undeclared state and enters the declared one the moment a box is touched.
+
+auth-service does not validate engine names against a list, on purpose: it is the identity and
+node registry, it has no business knowing what an inference engine is, and a second copy of
+`BACKENDS` would drift from the manager's. It checks the *shape* of an id and nothing more. The UI
+intersects what it reads with the engines this build can launch, so a name it has never heard of
+can never become a selectable option. `gateway/tests/test_engine_list.py` fails if the UI's list
+and manager-core's ever disagree.
+
+**Not built**: probing. `scanner.py` already knows every engine's process signature and
+`lifecycle.py` already uses `shutil.which`, so a node's own manager-api could report what it can
+actually launch rather than trusting a checkbox — a declared list is a claim about software on
+another machine, and those go stale silently. The checkboxes are the right override either way;
+the probe should become the default. Also out: installing an engine from the UI, and per-engine
+launch-flag editing.
 
 **Which engines to offer** — researched 2026-09-20, against what this catalog actually serves
 (text, embedding, rerank, vision, image):
