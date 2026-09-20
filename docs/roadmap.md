@@ -4724,6 +4724,24 @@ Out: the other two services (nothing GenAI to emit), error-path duration with `e
 anywhere beyond these four instruments.
 
 
+## PRM-132 — The budget alert survives a mail server that is down
+
+**Why**: read in Argus's own postmortem (A-28) and it applies to us unchanged. They found their
+telemetry *ingest* had a write-ahead queue on disk good for a weekend without network, while the
+*dispatcher* — the part the whole system exists for — made one attempt over the same network and
+dropped the alert on a TLS error. Six incidents, none delivered.
+
+`notifications.py` is that shape. `send_budget_alert_email()` calls `smtplib` once from
+`asyncio.to_thread`, logs a failure and returns. A client crossing their spend cap while SMTP is
+unreachable produces no email, and nothing anywhere records that one was owed — the in-app banner
+is derived live from `BudgetTracker`, so it is not a fallback for a missed notification, only a
+parallel one.
+
+**Scope**: retry with backoff, and a record of what was attempted so an undelivered alert is
+visible rather than absent. Out: a general outbound queue, and any change to the thresholds
+themselves.
+
+
 Append a new row to the table with the next `RM-NN` id and a new `## RM-NN — ...` section
 below, following the same shape (Why / Scope). Re-sort the table if the new item's
 priority isn't "last."
