@@ -1,6 +1,6 @@
 # Prometheus Gateway — SDK Integration Guide
 
-**Revision**: 2026-09-18b · `2aba2f8`
+**Revision**: 2026-09-19a · `cd6b102`
 <!-- Consumers vendor this file and diff it. The date and commit above are what to quote
      when asking whether a copy is current; they change whenever this document does. -->
 
@@ -596,6 +596,7 @@ rather than a quiet reassignment. Responses carry `X-Prometheus-Instance` and
 ```
 X-Request-ID                       — fresh UUID per request, generated server-side
 X-Trace-ID                         — for log correlation; see the exact adoption rule below
+X-RateLimit-Scope                  — which budget the six numbers below describe (PRM-129)
 X-RateLimit-Limit-Requests
 X-RateLimit-Remaining-Requests
 X-RateLimit-Reset-Requests         — unix timestamp of the next window
@@ -832,7 +833,7 @@ model" as something only the SDK can catch.
 | 401 | `token-revoked` | Token or client was explicitly revoked by an admin. | No — needs new credentials from the operator |
 | 402 | `spend-cap-exceeded` | Client has hit its configured monthly spend cap. | No — needs the cap raised, or wait for next month |
 | 403 | `forbidden` | Missing `inference:read`/`inference:stream`, or missing the specific `model:<id>` scope. | No |
-| 429 | `rate-limit-exceeded-requests` | RPM budget exceeded (per client_id and per user_id, both enforced independently). `Retry-After` header + `retry_after` body field tell you exactly how long to wait. | **Yes**, after `Retry-After` |
+| 429 | `rate-limit-exceeded-requests` | RPM budget exceeded. `Retry-After` header + `retry_after` body field tell you exactly how long to wait, and the `scope` body field says **which** budget ran out. Charged per `client_id` and per `user_id` independently — except where they are the same string, as in a `client_credentials` token, which is charged once (PRM-128; before that fix a 60 RPM budget stopped at 30 while the header still read 60). | **Yes**, after `Retry-After` |
 | 502 | `upstream-error` | Backend returned repeated 502/503/504s and the gateway's own internal retries (3 attempts, exponential backoff) were exhausted. | Cautiously — see §6 |
 | 503 | `model-not-loaded` | Model is registered but not currently deployed/running. | No — needs operator action |
 | 503 | `backend-unavailable` | Two distinct causes share this same `type`, and only one of them sets `Retry-After` — see the note below the table. | See below |
@@ -914,6 +915,26 @@ before hitting the limit, rather than only reacting to `429`. Note the token-bud
 reflect the gateway's own post-hoc accounting for TPM (not a hard pre-flight reservation) — a
 burst of large requests can still occasionally exceed the token budget between header updates;
 treat the TPM headers as a strong signal, not an absolute guarantee against ever seeing a 429.
+
+**There is more than one budget, and the response says which one it is reporting (PRM-129).**
+Endpoints are grouped, and each group has its own RPM/TPM budget:
+
+| Budget | Endpoints |
+|---|---|
+| `chat_completions` | `POST /v1/chat/completions` |
+| `embeddings` | `POST /v1/embeddings` |
+| `rerank` | `POST /v1/rerank` |
+| `default` | everything else (images, usage, token) |
+
+`X-RateLimit-Scope` names the budget the six `X-RateLimit-*` numbers on that response belong to,
+and a `429` carries the same name in its `scope` body field. **Key it before you cache it**: one
+logical operation that calls embeddings, then rerank, then chat, gets three responses describing
+three different budgets, and a single "last seen" slot would end up holding whichever answered
+last while looking entirely plausible.
+
+`embeddings` and `rerank` shared `default` until PRM-129 — not a decision anybody made, just what
+happens when only one route is on the grouping map. A caller spending two of its three requests on
+that pair had half the ceiling it expected.
 
 ### 6.4 Circuit breaker awareness
 

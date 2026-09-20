@@ -25,8 +25,17 @@ _BASE_URL = "https://prometheus.internal/errors"
 _DEFAULT_ENDPOINT = "default"
 
 # Map route path patterns to endpoint slugs for per-endpoint limiting (AC-13)
+#
+# PRM-129 / E-05: embeddings and rerank used to fall through to "default" and
+# therefore shared one budget, while chat had its own. That is not a tuning
+# choice anyone made — it is what happens when only one route is on this map.
+# The Executive Assistant copilot spends 3 requests per suggestion, 2 of them on
+# the shared pair, so nine executives asked for 63/min against a 60 budget and
+# missed by 5%. One line each moves them to 32 of 60 in three separate budgets.
 _ENDPOINT_SLUG_MAP: dict[str, str] = {
     "/v1/chat/completions": "chat_completions",
+    "/v1/embeddings": "embeddings",
+    "/v1/rerank": "rerank",
 }
 
 # RM-51 follow-up: every /admin/api/* route (dynamic path segments like
@@ -220,6 +229,15 @@ class RateLimitMiddleware:
                 headers = list(message.get("headers", []))
                 reset_ts = str(rpm_state.reset_at).encode()
                 headers += [
+                    # PRM-129 / A-02: which budget these six numbers describe.
+                    # Shipped with the split above, deliberately — separating
+                    # the buckets without naming them would leave the SDK's
+                    # single `last_rate_limit` slot describing whichever
+                    # endpoint answered last, and one suggestion touches three
+                    # in a row. A panel drawing "budget remaining" would keep
+                    # drawing a plausible number and it would be another
+                    # budget's. Nothing fails; it is just wrong.
+                    (b"x-ratelimit-scope", slug.encode()),
                     (b"x-ratelimit-limit-requests", str(rpm_state.limit).encode()),
                     (b"x-ratelimit-remaining-requests", str(rpm_state.remaining).encode()),
                     (b"x-ratelimit-reset-requests", reset_ts),
@@ -290,6 +308,7 @@ class RateLimitMiddleware:
                 f"Client '{claims.client_id}' has exceeded the request rate limit of "
                 f"{rpm_limit} RPM for endpoint '{slug}'. Reset in {retry_after} seconds.",
                 retry_after=retry_after,
+                extra={"scope": slug},
             )
 
         # Check user_id RPM (AC-9) — separate from client_id.
@@ -327,6 +346,7 @@ class RateLimitMiddleware:
                     f"User '{claims.user_id}' has exceeded the request rate limit of "
                     f"{rpm_limit} RPM for endpoint '{slug}'. Reset in {retry_after} seconds.",
                     retry_after=retry_after,
+                    extra={"scope": slug},
                 )
 
         # TPM pre-flight check — read the request body max_tokens hint if present
