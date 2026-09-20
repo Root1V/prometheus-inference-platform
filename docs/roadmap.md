@@ -4746,6 +4746,51 @@ visible rather than absent. Out: a general outbound queue, and any change to the
 themselves.
 
 
+## PRM-133 — Each node declares which engines it has, and an instance can only pick one of those
+
+**Why**: `AddInstanceModal` renders the whole of `BACKENDS` as an Engine dropdown on every node,
+unconditionally. Three of those five cannot run on the only node this deployment has: the `vllm`
+and `sglang` command builders both carry the comment *"NOT verified against a real install (needs
+CUDA)"*, and the node is Apple Silicon. The fact exists in a Python docstring and nowhere the
+operator can see it — RM-89's rule about defaults, applied to options: an option that cannot work
+must not look like one that can. And nodes carry no engine inventory at all, so nothing *could*
+filter the list today.
+
+**Scope**:
+- Node registration/edit (`CreateNodeModal`) gains a checkbox list of the engines present on that
+  node.
+- `AddInstanceModal`'s Engine select is filtered to the selected node's set, single choice. The
+  field already exists and already writes `instances.backend` — this constrains it, it does not
+  add it.
+- **Three states, not two** (RM-98): a node that has never declared its engines is not a node with
+  none. The existing node predates the field; it must not become unusable, and it must not silently
+  claim to have everything either.
+- **Declared or probed** — a decision to make before building. `scanner.py` already knows every
+  engine's process signature and `lifecycle.py` already uses `shutil.which`, so a node's own
+  manager-api could report what it can actually launch instead of asking an operator to remember.
+  Recommended: probe as the default, with the checkboxes as an override — a declared list is a
+  claim, and a claim about software installed on another machine goes stale silently.
+- Out: installing or building an engine from the UI, and per-engine launch-flag editing.
+
+**Which engines to offer** — researched 2026-09-20, against what this catalog actually serves
+(text, embedding, rerank, vision, image):
+
+| engine | verdict |
+|---|---|
+| `llama_cpp`, `mlx`, `sd_cpp` | keep — the three that run here today |
+| `vllm`, `sglang` | keep in the list, CUDA-only; they are the two standard production answers |
+| **TGI** | **do not add.** Archived 2026-03-21 and in maintenance mode; its own README now sends users to vLLM, SGLang, llama.cpp and MLX |
+| `hf-serve` | candidate, experimental. The only one spanning Transformers + Diffusers + Sentence Transformers in a single server, which is our three modalities in one process |
+| `tei` / `infinity` | strongest additions for what we actually run. We serve embeddings and rerank on llama.cpp; both of these are purpose-built for it. TEI is one model per process with a Metal build; Infinity serves many models per process and covers rerank and CLIP |
+| `vllm-mlx` | worth watching: continuous batching on Apple Silicon, reported 3.4x throughput at 5 concurrent requests on an M4 Max. That is precisely the ceiling the copilot team hit in E-08 on this hardware |
+| `tensorrt_llm` | only meaningful once there is an NVIDIA node |
+| `ollama`, `lmdeploy`, `mlc-llm` | not now. Ollama wraps llama.cpp and would duplicate a backend we have; the other two earn a place only with hardware we do not have |
+
+Adding an engine to `BACKENDS` is not free — each one needs a command builder in `lifecycle.py`
+and a process signature in `scanner.py`, and `vllm`/`sglang` show what an unverified builder is
+worth. Nothing should join the list without one node that can actually run it.
+
+
 Append a new row to the table with the next `RM-NN` id and a new `## RM-NN — ...` section
 below, following the same shape (Why / Scope). Re-sort the table if the new item's
 priority isn't "last."
