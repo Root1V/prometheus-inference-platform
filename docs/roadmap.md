@@ -4662,6 +4662,25 @@ day the two disagree and had been green until a run crossed 19:00 local. Two oth
 suite already carry a comment warning about exactly this; PRM-120 wrote the trap anyway.
 
 
+## PRM-130 — The rate-limit 429 carries the same envelope as every other error
+
+**Why**: A-04. PRM-129 announced `X-RateLimit-Scope` "on every response" and it was not on the
+429 — Axonium exhausted a budget and read the whole envelope rather than taking the claim. In a
+200 the scope is a convenience; in a 429 it is what decides whether a client backs off one
+endpoint or all three, so it was missing from the one response that needed it.
+
+The cause is the shape, not the omission: there were **two copies** of the `X-RateLimit-*` header
+list, one per response path, and the new header went into the first. Adding the line to the second
+would have fixed this instance and left the next header to go the same way — the same duplication
+that cost PRM-118 and PRM-127.
+
+**Scope**: one `_rl_headers()` builder used by both paths, and a test that fails if the two ever
+send different header names again. Plus `trace_id`, which this envelope had been documented as
+omitting: Axonium cited that omission as evidence of the pattern, so closing one field and leaving
+the other would have kept the pattern and missed the point. The envelope is now a strict superset
+of the standard one instead of a variant of it.
+
+
 Append a new row to the table with the next `RM-NN` id and a new `## RM-NN — ...` section
 below, following the same shape (Why / Scope). Re-sort the table if the new item's
 priority isn't "last."

@@ -889,6 +889,9 @@ async def test_embeddings_and_rerank_no_longer_share_a_budget(rl_app, rsa_keys):
             )
 
     assert exhausted.status_code == 429, "the embeddings budget must still run out"
+    # `!= 429`, not `== 200`: small-model is a text model, so rerank answers 400
+    # modality-mismatch. That is fine and is the point — a 400 means the request
+    # got past the rate limiter, which is the only thing under test here.
     assert other.status_code != 429, (
         "rerank shared embeddings' budget — separating them is the point of PRM-129"
     )
@@ -938,3 +941,64 @@ async def test_the_429_says_which_budget_ran_out(rl_app, rsa_keys):
 
     assert r.status_code == 429
     assert r.json()["scope"] == "embeddings"
+
+
+async def test_the_429_carries_the_same_envelope_as_every_other_error(rl_app, rsa_keys):
+    """A-04, measured by Axonium against the deployment and correct.
+
+    P-04 claimed X-RateLimit-Scope shipped "on every response". It did not ship
+    on the 429 — there were two copies of the header list, one per response
+    path, and the new header went into the first. In a 200 the scope is a
+    convenience; in a 429 it is what decides whether a client backs off one
+    endpoint or all three, so it was missing from the one response that needs
+    it. Their diagnosis named the cause: this middleware writes its own
+    envelope and what it writes is not what the others write.
+
+    So both halves are pinned here — the header set is now built once and used
+    by both paths, and the body carries the trace_id the guide used to document
+    as absent.
+    """
+    headers = _same_identity_headers(rsa_keys, "envelope-client")
+    async with AsyncClient(transport=ASGITransport(app=rl_app), base_url="http://test") as c:
+        with respx.mock:
+            respx.post("http://127.0.0.1:18081/v1/embeddings").mock(
+                return_value=Response(200, json={"data": [], "usage": {"prompt_tokens": 1}})
+            )
+            for _ in range(4):
+                r = await c.post(
+                    "/v1/embeddings", json={"model": "small-model", "input": "x"}, headers=headers
+                )
+
+    assert r.status_code == 429
+    assert r.headers["X-RateLimit-Scope"] == "embeddings", (
+        "the response that needs the scope most was the one without it"
+    )
+    body = r.json()
+    assert body["scope"] == "embeddings"
+    assert body["trace_id"] and body["trace_id"] != "none"
+    assert body["request_id"]
+
+
+async def test_both_response_paths_send_the_same_rate_limit_headers(rl_app, rsa_keys):
+    """The rule, not the instance. Two copies of a header list is how the scope
+    reached one path and not the other; a third header would have gone the same
+    way. This fails if they ever diverge again."""
+    headers = _same_identity_headers(rsa_keys, "both-paths-client")
+    async with AsyncClient(transport=ASGITransport(app=rl_app), base_url="http://test") as c:
+        with respx.mock:
+            respx.post("http://127.0.0.1:18081/v1/chat/completions").mock(
+                return_value=Response(200, json=LLAMA_RESPONSE)
+            )
+            allowed = await c.post("/v1/chat/completions", json=VALID_BODY, headers=headers)
+            for _ in range(3):
+                refused = await c.post("/v1/chat/completions", json=VALID_BODY, headers=headers)
+
+    assert allowed.status_code == 200 and refused.status_code == 429
+
+    def rl(response) -> set[str]:
+        return {k.lower() for k in response.headers if k.lower().startswith("x-ratelimit-")}
+
+    assert rl(allowed) == rl(refused), (
+        f"the two paths disagree: only on 200 {rl(allowed) - rl(refused)}, "
+        f"only on 429 {rl(refused) - rl(allowed)}"
+    )
