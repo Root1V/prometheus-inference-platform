@@ -7,6 +7,7 @@ Public API:
     bind_contextvars        — re-export from structlog.contextvars
     clear_contextvars       — re-export from structlog.contextvars
     configure_tracing       — OTEL SDK setup (BatchSpanProcessor + OTLP/HTTP)
+    configure_metrics       — OTEL MeterProvider setup (periodic reader + OTLP/HTTP)
     instrument_fastapi      — hand the SERVER span to the ASGI instrumentation
     get_tracer              — return a Tracer bound to an instrumentation scope
     trace_id_from_context   — extract the active W3C trace ID (32-char hex) or "none"
@@ -22,6 +23,7 @@ from .core import (
     configure_logging,
     get_logger,
 )
+from .metrics import configure_metrics
 from .tracing import (
     configure_tracing,
     get_tracer,
@@ -36,6 +38,7 @@ __all__ = [
     "bind_contextvars",
     "clear_contextvars",
     "configure_tracing",
+    "configure_metrics",
     "get_tracer",
     "instrument_fastapi",
     "trace_id_from_context",

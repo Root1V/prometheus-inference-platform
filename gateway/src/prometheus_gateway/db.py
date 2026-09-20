@@ -551,10 +551,17 @@ async def record_usage(
     # that has only one identifier still writes something truthful.
     model_slug: str | None = None,
     day: date | None = None,
-) -> None:
+) -> float | None:
     """Record one request's usage: an immutable `usage_events` row (the audit
     trail, priced at the rate in effect right now) plus an atomic upsert into
     `usage_daily`'s rollup counters. Implements: docs/roadmap.md — RM-60 (#1, #2).
+
+    Returns the cost stored for this request, or None when the model is
+    unpriced. PRM-131 emits `argus.cost.usd` from it: re-deriving the number at
+    the call site would be a second answer to a question already answered here,
+    and the two would diverge exactly the way the reserve and the settle did in
+    PRM-118. None stays None — an unpriced request adds nothing to the counter
+    rather than adding a confident zero.
     """
     d = day or datetime.now(tz=timezone.utc).date()
     price_table = pricing.get_pricing_table()
@@ -633,6 +640,7 @@ async def record_usage(
             )
         )
         await session.commit()
+    return cost_usd
 
 
 async def query_usage_day(day: date) -> list[UsageDaily]:

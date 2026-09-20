@@ -4681,6 +4681,49 @@ the other would have kept the pattern and missed the point. The envelope is now 
 of the standard one instead of a variant of it.
 
 
+## PRM-131 — We emit metrics, not only traces
+
+**Why**: found by installing `argus-obs-semconv` to review it (P-29) and looking for where its
+instruments would plug in: nowhere. `configure_tracing()` had no sibling. The platform installed a
+`TracerProvider` and never a `MeterProvider`, so three services emitted **zero** OTLP metric
+points — and two of the numbers that matter most here cannot be carried by a span at all.
+Time-to-first-token and cost per request are per-request facts that only mean anything aggregated;
+a trace holds one of them at a time, and sampling then decides which ones survive.
+
+It looked worse than it was. Argus's silence probe queries metrics, and A-01 itself says it "no
+cubre el caso de un servicio que nunca ha emitido" — so the probe appeared to have been armed on
+nothing since 13/09. A-28 settled it with the numbers: their collector derives metrics from our
+spans with `spanmetrics` before sampling, and the probe fired six real incidents during their own
+two-day outage. The gap is real, the emergency was not.
+
+**Scope**: `configure_metrics()` in the shared telemetry package — the mirror of
+`configure_tracing()`, same idempotency guard, same `OTEL_SDK_DISABLED` handling, same RM-92
+convention that an unset endpoint means export nowhere rather than disable the SDK. Called from
+the gateway's `create_app()`.
+
+The four GenAI instruments come from **Argus's package**, not a copy of it: names, units,
+instrument kinds and the meter scope are theirs, so a dashboard built on their conventions finds
+our series without a translation layer and a rename arrives as a dependency bump. Pinned exactly
+at the prerelease `1.0.0a5`. The earlier reason to wait was that the module was private and three
+attribute names disagreed with ours; A-29 closed both.
+
+Emission lives in `_record_usage()`, the one funnel the five success paths already share, and the
+cost comes back from `db.record_usage()` rather than being re-derived — a second answer to a
+question already answered is how PRM-118's reserve and settle came apart. An unpriced model
+records no cost point at all: a counter incremented by `0.0` makes "no price" and "free" the same
+line on a chart, which is PRM-119's rule moved onto an instrument.
+
+The import of `argus_semconv.metrics` is deliberately inside the function. OpenTelemetry's
+`_ProxyMeterProvider.get_meter()` accepts `attributes` and discards them, so a library imported
+before the provider exists loses its scope attributes for the life of the process — including the
+`argus.semconv.version` A-29 had just added for exactly this purpose. Measured both ways; there is
+a test on it.
+
+Out: the other two services (nothing GenAI to emit), error-path duration with `error.type`
+(the instrument takes it, our error paths do not reach this funnel), and adopting the package
+anywhere beyond these four instruments.
+
+
 Append a new row to the table with the next `RM-NN` id and a new `## RM-NN — ...` section
 below, following the same shape (Why / Scope). Re-sort the table if the new item's
 priority isn't "last."

@@ -423,3 +423,34 @@ async def test_create_tables_adds_missing_cost_columns_to_legacy_table(tmp_path)
     assert rows[0].prompt_cost_usd is None
 
     await legacy_engine.dispose()
+
+
+async def test_record_usage_returns_the_cost_it_stored(tmp_path):
+    """PRM-131: `argus.cost.usd` is emitted from this return value.
+
+    Re-deriving the number at the call site would be a second answer to a
+    question already answered here, and the two would drift the way the spend
+    cap's reserve and settle did in PRM-118 — the metric staying plausible
+    while diverging from the invoice.
+    """
+    pricing_file = tmp_path / "pricing.yaml"
+    pricing_file.write_text(
+        "models:\n  - id: priced-model\n    prompt_price_per_1m: 1.0\n"
+        "    completion_price_per_1m: 2.0\n"
+    )
+    pricing.init_pricing_table(str(pricing_file))
+
+    returned = await db.record_usage("client-a", "priced-model", 1_000_000, 500_000, day=_DAY)
+
+    rows = await db.query_usage_day(_DAY)
+    assert returned == pytest.approx(2.0)
+    assert returned == pytest.approx(rows[0].cost_usd)
+
+
+async def test_record_usage_returns_none_for_an_unpriced_model(tmp_path):
+    """None, not 0.0 — the counter must record nothing rather than a free request."""
+    pricing.init_pricing_table(str(tmp_path / "does-not-exist.yaml"))
+
+    returned = await db.record_usage("client-a", "unpriced-model", 100, 50, day=_DAY)
+
+    assert returned is None
