@@ -4800,6 +4800,51 @@ and a process signature in `scanner.py`, and `vllm`/`sglang` show what an unveri
 worth. Nothing should join the list without one node that can actually run it.
 
 
+## PRM-134 — The node registry leaves auth-service
+
+**Why**: auth-service should own security and nothing else, and it does — except for one table.
+`principals` and `credential_share_tokens` are authentication and authorization. `nodes` is
+hardware inventory: a name, a manager URL, a hardware type, an hourly cost, a margin, and now a
+list of installed inference engines. It touches no principal, no token and no scope; the only
+things it shares with the rest of the service are a SQLAlchemy session and the `X-Admin-Key`
+guard, and its only consumer is the gateway (`admin/nodes_client.py` plus the `/admin/api/nodes`
+pass-through proxy).
+
+RM-20 is where this happened, and its reason was real rather than careless: it moved node topology
+out of the gateway's static `MANAGER_NODES` env var, and auth-service was the only central service
+to move it to. **`manager-api` runs per node** — each one owns its own `registry.db` of models and
+instances — so the manager cannot hold a list *of* nodes without one node being made special.
+
+**Scope**: move the `nodes` table, its six endpoints and its connectivity probe out of
+auth-service, and repoint `nodes_client.fetch_nodes()` and the gateway's proxy. The live row has
+to come with it — there is one, and it is the node everything runs on.
+
+**Where it goes is the decision, and it is not obvious**:
+
+- **The gateway's own DB.** It is the only central service, the only consumer, and it already
+  persists node-scoped operational state — `manager_catalog_snapshot` stores
+  `{node_name: [entries]}`, and `billing_router.py` already reads each node's hourly cost to price
+  a model. No new service to deploy, secure or operate. The cost: the gateway becomes the control
+  plane as well as the data plane, and node CRUD starts sharing a process with the inference hot
+  path.
+- **A new central control-plane service.** Cleanest against the principle — inventory belongs with
+  the thing that manages inventory — and it is where a future fleet manager would live anyway. The
+  cost is a whole service, its deployment, its own auth, for three tables' worth of work today.
+
+Recommended: the gateway, unless a central control plane is coming for other reasons — in which
+case this is its first tenant and building it now is cheaper than moving twice.
+
+**A side effect worth having either way**: `config.py`'s validator requires
+`AUTH_SERVICE_ADMIN_URL` and `AUTH_SERVICE_ADMIN_API_KEY` whenever the dashboard is enabled, and
+its own docstring says the reason is RM-20's node topology. Move the nodes and that requirement
+narrows to what the Users page actually needs.
+
+**Not a reason to hold PRM-133**: the misplacement is RM-20's, and PRM-133 added one nullable
+column to a table that was already in the wrong house. The column moves with the table for free,
+and PRM-133's UI half — the shared engine list, the filtering, the drift guards — does not move at
+all.
+
+
 Append a new row to the table with the next `RM-NN` id and a new `## RM-NN — ...` section
 below, following the same shape (Why / Scope). Re-sort the table if the new item's
 priority isn't "last."
