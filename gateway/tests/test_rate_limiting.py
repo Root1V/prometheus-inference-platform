@@ -524,7 +524,14 @@ def test_endpoint_slug_maps_admin_api_prefix():
     assert _endpoint_slug("/admin/api/nodes/local/models/some-model") == "admin"
     # Non-admin paths are unaffected.
     assert _endpoint_slug("/v1/chat/completions") == "chat_completions"
-    assert _endpoint_slug("/v1/embeddings") == "default"
+    # PRM-129 / E-05: embeddings and rerank were "default" — not a tuning
+    # decision anyone made, just what happens when one route is on the map.
+    # They shared a budget while chat had its own, and a copilot spending two
+    # of its three requests on the pair hit the ceiling 5% short of nine
+    # concurrent users.
+    assert _endpoint_slug("/v1/embeddings") == "embeddings"
+    assert _endpoint_slug("/v1/rerank") == "rerank"
+    assert _endpoint_slug("/v1/images/generations") == "default"
     # The SPA shell itself (/admin, /admin/instances, /admin/assets/...) is
     # exempt from rate limiting entirely (see _is_exempt) and never reaches
     # _endpoint_slug — but confirm it's at least not misclassified as "admin"
@@ -848,3 +855,86 @@ async def test_the_rate_limit_headers_survive_the_machine_credential_path(rl_app
         "X-RateLimit-Remaining-Tokens",
     ):
         assert header in r.headers, f"{header} disappeared for a client_credentials token"
+
+
+# ── PRM-129: three budgets, and each response says which one it is ─────────
+
+
+async def test_embeddings_and_rerank_no_longer_share_a_budget(rl_app, rsa_keys):
+    """E-05, with their number behind it: nine executives at 3.5 suggestions a
+    minute spend 3 requests each, 2 of them on the shared pair — 63/min against
+    a 60 budget, short by 5%. Separated, that is 32 of 60 in each.
+
+    `rl_app` caps RPM at 3, so exhausting one budget and finding the other
+    still open is the whole proof.
+    """
+    headers = _same_identity_headers(rsa_keys, "budget-split-client")
+    async with AsyncClient(transport=ASGITransport(app=rl_app), base_url="http://test") as c:
+        with respx.mock:
+            respx.post("http://127.0.0.1:18081/v1/embeddings").mock(
+                return_value=Response(200, json={"data": [], "usage": {"prompt_tokens": 1}})
+            )
+            for _ in range(3):
+                await c.post(
+                    "/v1/embeddings", json={"model": "small-model", "input": "x"}, headers=headers
+                )
+            exhausted = await c.post(
+                "/v1/embeddings", json={"model": "small-model", "input": "x"}, headers=headers
+            )
+            # rerank used to die with it; now it has its own budget.
+            other = await c.post(
+                "/v1/rerank",
+                json={"model": "small-model", "query": "q", "documents": ["a"]},
+                headers=headers,
+            )
+
+    assert exhausted.status_code == 429, "the embeddings budget must still run out"
+    assert other.status_code != 429, (
+        "rerank shared embeddings' budget — separating them is the point of PRM-129"
+    )
+
+
+async def test_every_response_names_the_budget_it_is_reporting(rl_app, rsa_keys):
+    """A-02, and it had to ship with the split rather than after it.
+
+    The SDK keeps one `last_rate_limit` slot with no field saying which budget
+    the numbers describe. That was correct while there was one; with three, and
+    a suggestion touching all three in a row, the slot would describe whichever
+    endpoint answered last. A dashboard drawing "budget remaining" would keep
+    drawing a plausible number and it would be a different budget's — nothing
+    fails, nothing warns, and it is found when somebody sizes a pilot with it.
+    """
+    headers = _same_identity_headers(rsa_keys, "scope-header-client")
+    async with AsyncClient(transport=ASGITransport(app=rl_app), base_url="http://test") as c:
+        with respx.mock:
+            respx.post("http://127.0.0.1:18081/v1/chat/completions").mock(
+                return_value=Response(200, json=LLAMA_RESPONSE)
+            )
+            respx.post("http://127.0.0.1:18081/v1/embeddings").mock(
+                return_value=Response(200, json={"data": [], "usage": {"prompt_tokens": 1}})
+            )
+            chat = await c.post("/v1/chat/completions", json=VALID_BODY, headers=headers)
+            emb = await c.post(
+                "/v1/embeddings", json={"model": "small-model", "input": "x"}, headers=headers
+            )
+
+    assert chat.headers["X-RateLimit-Scope"] == "chat_completions"
+    assert emb.headers["X-RateLimit-Scope"] == "embeddings"
+
+
+async def test_the_429_says_which_budget_ran_out(rl_app, rsa_keys):
+    """E-02 saw half of this: the 429 identified itself as `default`, so it did
+    not say which endpoint was exhausted. Machine-readable now, not just prose."""
+    headers = _same_identity_headers(rsa_keys, "scope-429-client")
+    async with AsyncClient(transport=ASGITransport(app=rl_app), base_url="http://test") as c:
+        with respx.mock:
+            respx.post("http://127.0.0.1:18081/v1/embeddings").mock(
+                return_value=Response(200, json={"data": [], "usage": {"prompt_tokens": 1}})
+            )
+            for _ in range(4):
+                r = await c.post(
+                    "/v1/embeddings", json={"model": "small-model", "input": "x"}, headers=headers
+                )
+
+    assert r.status_code == 429
+    assert r.json()["scope"] == "embeddings"

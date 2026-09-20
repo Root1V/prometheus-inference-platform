@@ -4639,6 +4639,29 @@ ceiling is 30 suggestions a minute, not 20 — and after this fix, that is 30 re
 15. Giving those two endpoints their own slugs is a one-line change each if they need more.
 
 
+## PRM-129 — Three rate-limit budgets, and every response names its own
+
+**Why**: two requests from the new tripartite channel, which had to ship together.
+
+*E-05 (Executive Assistant)*: `/v1/embeddings` and `/v1/rerank` fell through to the `default`
+budget while `/v1/chat/completions` had its own. Nobody chose that — it is what happens when one
+route is on `_ENDPOINT_SLUG_MAP`. Their copilot spends 3 requests per suggestion, 2 on the shared
+pair, so nine concurrent executives asked for 63/min against a 60 budget and missed by 5%. One
+line each moves them to 32 of 60 in three separate budgets, at 52%.
+
+*A-02 (Axonium)*: separating the budgets without naming them would have made things worse where
+nobody looks. Their `RateLimitSnapshot` holds one slot with no field saying which budget the
+numbers describe — correct while there was one budget, wrong the moment there are three and a
+single suggestion touches all of them in sequence. A dashboard would keep drawing a plausible
+number belonging to a different budget. So `X-RateLimit-Scope` on every response and `scope` in
+the 429 body, in the same deploy as the split rather than after it.
+
+**Found while running this**: `test_a_seeded_model_actually_bills`, written in PRM-120, compared
+`date.today()` (local) against a row `record_usage` stamps in UTC. It fails for the five hours a
+day the two disagree and had been green until a run crossed 19:00 local. Two other tests in the
+suite already carry a comment warning about exactly this; PRM-120 wrote the trap anyway.
+
+
 Append a new row to the table with the next `RM-NN` id and a new `## RM-NN — ...` section
 below, following the same shape (Why / Scope). Re-sort the table if the new item's
 priority isn't "last."

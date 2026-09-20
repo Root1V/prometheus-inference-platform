@@ -134,9 +134,14 @@ async def test_a_seeded_model_actually_bills():
 
     await db.record_usage("client-z", "fresh-model", 1_000_000, 1_000_000)
 
-    from datetime import date
+    # UTC, not date.today(): record_usage stamps the day in UTC, so a local
+    # date disagrees with it for five hours every evening here. Two other
+    # tests in this suite already carry this note — PRM-120 wrote the trap
+    # anyway, and it lay green until a run happened to cross 19:00 local.
+    from datetime import datetime, timezone
 
-    events = await db.query_usage_events_range(date.today(), date.today())
+    utc_today = datetime.now(tz=timezone.utc).date()
+    events = await db.query_usage_events_range(utc_today, utc_today)
     assert len(events) == 1
     assert events[0].cost_usd == pytest.approx(
         base.prompt_price_per_1m + base.completion_price_per_1m
