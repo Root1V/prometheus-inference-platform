@@ -7,8 +7,10 @@ already-shipped, security-critical work. Backlog items below are implemented dir
 **one branch per item**, to move faster and spend fewer tokens per change.
 
 **The only non-negotiable rule carried over from SDD**: every branch that closes an item
-must update `README.md` and the relevant page(s) under `memory/wiki/` in the same PR/commit
-set — this file is not a substitute for real docs, it's a queue.
+must update `README.md` and the relevant docs under `docs/` in the same PR/commit set —
+this file is not a substitute for real docs, it's a queue. (It used to say `memory/wiki/`.
+That directory was deleted as unneeded; the rule outlived it by pointing at nothing, which
+is the one thing a non-negotiable rule must not do.)
 
 Branch naming: `feat/RM-<id>-<slug>` (e.g. `feat/RM-05-manager-tui-api-split`).
 
@@ -163,8 +165,8 @@ missing annotations in the old `cli/main.py`, plus a handful in `config.py`/`dow
 packages, and the hook enforces it going forward.
 
 Updated: `runtime/manager/AGENTS.md`, `AGENTS.md`, `README.md` (repo layout diagrams +
-test commands), `memory/wiki/deployment.md` and `memory/wiki/model-registry.md`
-(`pmgr serve` → `pmgr-api`), `podman-compose.yml` / `podman-compose-ubuntu-dgx.yml`
+test commands), the deployment and model-registry wiki pages (`pmgr serve` → `pmgr-api`;
+those pages have since been deleted), `podman-compose.yml` / `podman-compose-ubuntu-dgx.yml`
 (Dockerfile path), `scripts/install-rhel.sh` / `scripts/install-ubuntu-dgx.sh` /
 `scripts/validate-ubuntu-dgx.sh` (`pmgr serve` → `pmgr-api`), and the
 `scripts/tests/test_scripts_024.sh` assertions that checked the old command/path.
@@ -174,17 +176,21 @@ test commands), `memory/wiki/deployment.md` and `memory/wiki/model-registry.md`
 **Why**: `llama-server` is the only backend today. It may not be the best fit for every
 hardware target (Apple Silicon vs NVIDIA DGX) or every future modality (RM-09).
 
-**Done**: [memory/wiki/inference-engines.md](wiki/inference-engines.md) — full comparison
-of llama.cpp, vLLM, MLX, and SGLang across Mac (M4 Max) / DGX Spark / generic Linux-NVIDIA,
+**Done**: a full comparison of llama.cpp, vLLM, MLX and SGLang across Mac (M4 Max) /
+DGX Spark / generic Linux-NVIDIA,
 covering throughput, quantization format support, modality coverage, and operational
 complexity for a process-spawning manager. Bottom line: **mixed strategy, not a single
 engine** — MLX on Mac, vLLM (or SGLang) on DGX Spark and generic Linux servers, llama.cpp
 kept everywhere as the simple/single-user fallback. No engine covers every target modality
 on every piece of hardware; the real design axis for RM-08/RM-09 is per-hardware backend
-selection, not per-modality. The page also spells out concretely what this adds to the
-manager's job — a second "heavy Python server" launch shape alongside the current
-"spawn a binary" one, and new `registry.yaml` fields (`backend`, `quant_format`) — which
-RM-08 and RM-09 should treat as their starting brief rather than re-deriving.
+selection, not per-modality. What it added to the manager's job: a second "heavy Python
+server" launch shape alongside the current "spawn a binary" one, and new `registry.yaml`
+fields (`backend`, `quant_format`).
+
+The comparison itself lived in `memory/wiki/inference-engines.md` and was deleted with the
+rest of that directory. **The conclusion above is now the whole of it** — the per-hardware
+numbers behind it are gone, which is worth knowing before citing RM-06 as evidence. PRM-133
+redoes the part that still matters: which engines are worth offering, and on which node.
 
 ## RM-07 — Fine-grained per-model authorization scopes (item 2) — `done`
 
@@ -216,9 +222,8 @@ backward-compatible.
   `chat_completions` — unaffected by this change.
 
 **⚠ Deployment/migration impact**: deny-by-default means **every client registered before
-this shipped has zero model access** until an admin adds `model:<id>` scopes to it — see
-[memory/wiki/auth-model.md](wiki/auth-model.md#per-model-scopes-rm-07) for the grant
-command. Roll this out with that in mind; it will look like a total inference outage for
+this shipped has zero model access** until an admin adds `model:<id>` scopes to it — the
+grant command lived in the auth-model wiki page, since deleted. Roll this out with that in mind; it will look like a total inference outage for
 existing clients if deployed without a follow-up grant pass.
 
 19 new tests (auth-service: scope validation, registration, token issuance; gateway:
@@ -275,8 +280,8 @@ component aware of the whole fleet, and only as a *reader*:
   (observability only, not used for routing).
 - Each node's own `pmgr-api` must set `PMGR_PROXY_HOST` to its real reachable
   hostname/IP (not loopback) so its `/v1/backends` response reports a `backend_url` the
-  gateway can actually route to. Full details and the operational setup: see
-  `memory/wiki/model-registry.md` → "Distributed nodes (RM-08 phase 2)".
+  gateway can actually route to. The operational setup was written up in the model-registry
+  wiki page, since deleted; `manager_sync.py`'s own comments are what remains.
 
 10 new tests (`gateway/tests/test_manager_sync.py`): node-config parsing (empty, single,
 multi, priority-over-`MANAGER_URL`, malformed), dynamic allowlist computation, multi-node
@@ -329,8 +334,7 @@ a real `/v1/embeddings` response; `--mmproj` launched `ggml-org/SmolVLM-256M-Ins
 and correctly answered a real image content-part chat request (both via direct curl against
 the manager-launched command, not through the full gateway auth stack — that stack is
 already covered by existing JWT/scope tests). 22 new tests (10 manager-core, 13 gateway
-minus 1 that's schema-only) — full details in `memory/wiki/model-registry.md` "Modalities
-(RM-09)".
+minus 1 that's schema-only).
 
 **What's not covered** (follow-up items, not RM-09): audio (whisper.cpp), image/video
 generation (diffusers/ComfyUI), and modality-specific dispatch for `mlx`/`vllm`/`sglang`

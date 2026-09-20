@@ -142,7 +142,7 @@ def _build_mlx_cmd(binary: str, entry: RegistryEntry, port: int, bind_host: str)
 
 def _build_vllm_cmd(binary: str, entry: RegistryEntry, port: int, bind_host: str) -> list[str]:
     """vllm serve — NOT verified against a real vllm install (needs CUDA; see
-    memory/wiki/inference-engines.md RM-06). Flags per vLLM's documented CLI:
+    docs/roadmap.md RM-06). Flags per vLLM's documented CLI:
     model is a positional arg to the `serve` subcommand, --served-model-name
     registers entry.id as the OpenAI-API model name (llama.cpp's --alias
     equivalent), --max-model-len caps context length.
@@ -164,7 +164,7 @@ def _build_vllm_cmd(binary: str, entry: RegistryEntry, port: int, bind_host: str
 
 def _build_sglang_cmd(binary: str, entry: RegistryEntry, port: int, bind_host: str) -> list[str]:
     """python3 -m sglang.launch_server — NOT verified against a real sglang
-    install (needs CUDA; see memory/wiki/inference-engines.md RM-06). Flags
+    install (needs CUDA; see docs/roadmap.md RM-06). Flags
     per SGLang's documented CLI: --model-path (not --model), --served-model-name
     for the OpenAI-API name, --context-length for max context.
     """
@@ -249,7 +249,7 @@ def start_instance(
     """Spawn a new inference server instance for the given model.
 
     Dispatches to the launch command for entry.backend (llama_cpp/mlx/vllm/
-    sglang) — see memory/wiki/inference-engines.md (RM-06).
+    sglang) — see docs/roadmap.md RM-06.
 
     Implements: memory/specs/008-llama-server-manager.md — AC-4, AC-5, AC-9, AC-10, AC-19
     """

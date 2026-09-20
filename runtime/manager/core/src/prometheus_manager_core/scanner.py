@@ -66,7 +66,7 @@ class _BackendSignature:
 
     port/host use --port/--host for llama.cpp, mlx_lm.server, sglang, and
     vLLM (verified for llama.cpp/mlx_lm.server; documented convention for
-    vllm/sglang — see memory/wiki/inference-engines.md RM-06). sd-server
+    vllm/sglang — see docs/roadmap.md RM-06). sd-server
     (RM-38) is the exception — its own flags are --listen-port/--listen-ip —
     hence port_flag/host_flag being per-signature rather than hardcoded in
     scan() itself.

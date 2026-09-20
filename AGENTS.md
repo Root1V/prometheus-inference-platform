@@ -140,7 +140,6 @@ Each spec frontmatter carries:
 | `security-reviewer-agent` | Review changed files for security findings |
 | `docs-agent` | Reconcile spec and update AGENTS.md / README after human approval |
 | `release-agent` | Commit · push · PR feat→develop · merge · PR develop→main · merge · tag · GitHub release |
-| `wiki-sync-agent` | Periodically scan all closed specs and update `memory/wiki/` + `memory/decisions/` with any missing cross-cutting knowledge. Run after a batch of specs close or on a scheduled basis |
 | `validation-triage-agent` | Diagnose errors from deployment validation runs (`scripts/validate.sh`, E2E tests, manual checks on RHEL). Classifies root cause (code bug / spec gap / environment / security) and routes to the correct agent. Invoke with 'triage this error', 'validation failed', or paste the error output |
 | `spec-writer-agent` includes OpenAPI design | When spec touches API endpoints, step 3 generates `gateway/api/NNN-feature.yaml` |
 
@@ -161,7 +160,7 @@ feat/NNN-*    ← one branch per spec, branched from develop
 | `feat/NNN-title` | New feature — tied to a spec number |
 | `fix/NNN-title` | Bug fix — tied to a spec number |
 | `chore/` | Dependency updates, tooling, workflow improvements |
-| `docs/` | Documentation-only (memory/wiki/, memory/decisions/, AGENTS.md, README) |
+| `docs/` | Documentation-only (docs/, AGENTS.md, README) |
 
 ## Build & Test
 

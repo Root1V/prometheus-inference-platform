@@ -81,7 +81,7 @@ class TestConfigAC19:
 
 
 class TestBackendsConfig:
-    """RM-08: per-backend launch command config — see memory/wiki/inference-engines.md."""
+    """RM-08: per-backend launch command config — see docs/roadmap.md RM-06."""
 
     def test_default_binaries(self):
         cfg = load_config(path=None)

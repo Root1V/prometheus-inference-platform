@@ -25,6 +25,6 @@ class Claims:
         """RM-07: per-model access grant, additive to inference:read/inference:stream.
 
         Deny-by-default: a token with no `model:*` scope at all has no model
-        access, even with inference:read. See memory/wiki/auth-model.md.
+        access, even with inference:read. See docs/roadmap.md RM-07.
         """
         return self.has_scope(f"model:{model_id}")

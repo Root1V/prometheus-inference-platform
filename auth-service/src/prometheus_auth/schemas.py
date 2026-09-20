@@ -30,7 +30,7 @@ VALID_SCOPES: frozenset[str] = frozenset(
 # "model:<id>" grants access to one model_id (the same identifiers used in
 # runtime/manager registry.yaml). Deny-by-default: a client with NO model:*
 # scope cannot call ANY model — see docs/roadmap.md RM-07 and
-# memory/wiki/auth-model.md for the enforcement details and migration note.
+# docs/roadmap.md RM-07 for the enforcement details and migration note.
 # Not part of VALID_SCOPES (that set is a fixed enum) — matched by pattern
 # instead, since the set of model ids is open-ended and lives in the
 # manager's registry, not in auth-service. Case-insensitive with dots allowed

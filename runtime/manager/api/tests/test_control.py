@@ -1,7 +1,7 @@
 """Tests for RM-10 write endpoints: register/deregister/start/stop/restart.
 
 See docs/roadmap.md RM-10 (gateway admin dashboard, phase 1) and
-memory/wiki/model-registry.md.
+docs/roadmap.md RM-09.
 """
 
 from __future__ import annotations

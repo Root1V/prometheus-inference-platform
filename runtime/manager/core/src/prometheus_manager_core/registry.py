@@ -42,7 +42,7 @@ _ID_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{1,62}[a-z0-9]$")
 # model nobody could ever be granted.
 _SLUG_RE = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9._-]{1,62}[a-zA-Z0-9]$")
 
-# See memory/wiki/inference-engines.md (RM-06) for the comparison behind this list.
+# See docs/roadmap.md RM-06 for the comparison behind this list.
 # RM-38: sd_cpp (stable-diffusion.cpp's sd-server) is the odd one out — it
 # generates images rather than serving LLM completions, so it deviates from
 # the other four in lifecycle.py's command-building and scanner.py's
@@ -53,7 +53,7 @@ BACKENDS = ("llama_cpp", "mlx", "vllm", "sglang", "sd_cpp")
 # RM-09: what kind of requests this model serves. Determines which flags
 # lifecycle.py adds to the launch command and how the gateway routes requests
 # (text -> /v1/chat/completions, embedding -> /v1/embeddings, vision -> chat
-# completions with image content parts). See memory/wiki/model-registry.md.
+# completions with image content parts). See docs/roadmap.md RM-09.
 # RM-38: "image" -> POST /v1/images/generations (sd_cpp only).
 # PRM-106: "rerank" is a cross-encoder scoring a query against documents. It
 # is not text generation with a different prompt — llama-server refuses /rerank
@@ -258,7 +258,7 @@ class RegistryEntry:
     backend: str = "llama_cpp"
     # One of MODALITIES. Only "llama_cpp" acts on this today (--embedding /
     # --mmproj flags in lifecycle.py); other backends accept it but don't yet
-    # dispatch on it — see memory/wiki/model-registry.md RM-09 section.
+    # dispatch on it — see docs/roadmap.md RM-09.
     modality: str = "text"
     # Vision projector file (.gguf), required when modality="vision" on
     # llama_cpp — llama-server's --mmproj flag.

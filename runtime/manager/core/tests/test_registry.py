@@ -69,7 +69,7 @@ class TestBackendField:
 
 
 class TestModalityField:
-    """RM-09: modality routes VLM/embedding requests — see memory/wiki/model-registry.md."""
+    """RM-09: modality routes VLM/embedding requests — see docs/roadmap.md RM-09."""
 
     def test_defaults_to_text(self):
         assert RegistryEntry(id="m", port=8080, context_length=4096).modality == "text"
