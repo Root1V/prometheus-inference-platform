@@ -51,6 +51,36 @@ def _endpoint_slug(path: str) -> str:
     return _ENDPOINT_SLUG_MAP.get(path, _DEFAULT_ENDPOINT)
 
 
+def _rl_headers(
+    slug: str, rpm_state: Any, tpm_state: Any, tpm_limit: int
+) -> list[tuple[bytes, bytes]]:
+    """The X-RateLimit-* set, built once — PRM-129 follow-up.
+
+    There were two copies of this list, one for the pass-through path and one
+    for the 429, and `X-RateLimit-Scope` went into the first only. Axonium
+    found it by exhausting a budget: the header was missing from the one
+    response that needs it most, because in a 200 the scope is a convenience
+    and in a 429 it decides whether you back off one endpoint or all three.
+
+    Adding the line to the second copy would have fixed this instance and left
+    the next header to go the same way. One list.
+    """
+    reset_ts = str(rpm_state.reset_at).encode()
+    # RPM can block before the TPM check runs, so fall back to the configured
+    # ceiling rather than reporting nothing.
+    tl = str(tpm_state.limit if tpm_state else tpm_limit).encode()
+    tr = str(tpm_state.remaining if tpm_state else tpm_limit).encode()
+    return [
+        (b"x-ratelimit-scope", slug.encode()),
+        (b"x-ratelimit-limit-requests", str(rpm_state.limit).encode()),
+        (b"x-ratelimit-remaining-requests", str(max(0, rpm_state.remaining)).encode()),
+        (b"x-ratelimit-reset-requests", reset_ts),
+        (b"x-ratelimit-limit-tokens", tl),
+        (b"x-ratelimit-remaining-tokens", tr),
+        (b"x-ratelimit-reset-tokens", reset_ts),
+    ]
+
+
 def _rl_problem(
     request: Request,
     status: int,
@@ -69,6 +99,13 @@ def _rl_problem(
         "detail": detail,
         "instance": str(request.url.path),
         "request_id": request_id,
+        # PRM-129 follow-up: this envelope used to omit trace_id, and the guide
+        # documented the omission rather than closing it. Axonium cited it as
+        # the pattern behind the missing scope header — "the rate-limit
+        # middleware writes its own envelope, and what it writes is not what
+        # the others write" — so fixing one field and leaving the other would
+        # have kept the pattern and lost the point.
+        "trace_id": getattr(getattr(request, "state", None), "trace_id", "none"),
     }
     if retry_after is not None:
         body["retry_after"] = retry_after
@@ -198,21 +235,7 @@ class RateLimitMiddleware:
             async def send_429_with_headers(message: Any) -> None:
                 if message["type"] == "http.response.start" and rpm_state:
                     headers = list(message.get("headers", []))
-                    reset_ts = str(rpm_state.reset_at).encode()
-                    # Use tpm_state if available; fall back to configured limits (RPM blocked before TPM check)
-                    tl = str(tpm_state.limit if tpm_state else tpm_limit).encode()
-                    tr = str(tpm_state.remaining if tpm_state else tpm_limit).encode()
-                    headers += [
-                        (b"x-ratelimit-limit-requests", str(rpm_state.limit).encode()),
-                        (
-                            b"x-ratelimit-remaining-requests",
-                            str(max(0, rpm_state.remaining)).encode(),
-                        ),
-                        (b"x-ratelimit-reset-requests", reset_ts),
-                        (b"x-ratelimit-limit-tokens", tl),
-                        (b"x-ratelimit-remaining-tokens", tr),
-                        (b"x-ratelimit-reset-tokens", reset_ts),
-                    ]
+                    headers += _rl_headers(slug, rpm_state, tpm_state, tpm_limit)
                     message = {**message, "headers": headers}
                 await send(message)
 
@@ -227,24 +250,7 @@ class RateLimitMiddleware:
         async def send_with_rl_headers(message: Any) -> None:
             if message["type"] == "http.response.start" and rpm_state and tpm_state:
                 headers = list(message.get("headers", []))
-                reset_ts = str(rpm_state.reset_at).encode()
-                headers += [
-                    # PRM-129 / A-02: which budget these six numbers describe.
-                    # Shipped with the split above, deliberately — separating
-                    # the buckets without naming them would leave the SDK's
-                    # single `last_rate_limit` slot describing whichever
-                    # endpoint answered last, and one suggestion touches three
-                    # in a row. A panel drawing "budget remaining" would keep
-                    # drawing a plausible number and it would be another
-                    # budget's. Nothing fails; it is just wrong.
-                    (b"x-ratelimit-scope", slug.encode()),
-                    (b"x-ratelimit-limit-requests", str(rpm_state.limit).encode()),
-                    (b"x-ratelimit-remaining-requests", str(rpm_state.remaining).encode()),
-                    (b"x-ratelimit-reset-requests", reset_ts),
-                    (b"x-ratelimit-limit-tokens", str(tpm_state.limit).encode()),
-                    (b"x-ratelimit-remaining-tokens", str(tpm_state.remaining).encode()),
-                    (b"x-ratelimit-reset-tokens", reset_ts),
-                ]
+                headers += _rl_headers(slug, rpm_state, tpm_state, tpm_limit)
                 message = {**message, "headers": headers}
             await send(message)
 

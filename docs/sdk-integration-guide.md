@@ -1,6 +1,6 @@
 # Prometheus Gateway — SDK Integration Guide
 
-**Revision**: 2026-09-19a · `cd6b102`
+**Revision**: 2026-09-19b · `18dfa97`
 <!-- Consumers vendor this file and diff it. The date and commit above are what to quote
      when asking whether a copy is current; they change whenever this document does. -->
 
@@ -761,8 +761,12 @@ from §2.1) is RFC 9457 "Problem Details", `Content-Type: application/problem+js
 Parse `type`'s last path segment as the machine-readable error code (e.g. `forbidden`,
 `unknown-model`, `spend-cap-exceeded`) — that's the stable field to branch logic on, not
 `detail` (human-readable, may change wording). Rate-limit errors from the rate-limiting
-middleware specifically use a slightly different envelope: no `trace_id`, plus an optional
-`retry_after` (int seconds) field alongside the standard fields.
+middleware add an optional `retry_after` (int seconds) and a `scope` (the budget that ran out —
+§6.3) alongside the standard fields. They used to omit `trace_id`; **as of `2026-09-19b` they no
+longer do**, so this envelope is now a strict superset of the standard one rather than a variant
+of it. Axonium found the `scope` header missing from these same responses and named the cause —
+this middleware writing its own envelope — which is why the omission was closed rather than
+documented again.
 
 **`Retry-After` header vs. body `retry_after`, confirmed — they cannot disagree.** Both are
 written from the exact same computed value inside the same function call that builds the
