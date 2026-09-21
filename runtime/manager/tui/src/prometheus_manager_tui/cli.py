@@ -328,7 +328,7 @@ def cmd_restart(ctx: click.Context, model_id: str) -> None:
     type=click.Choice(list(BACKENDS)),
     default="llama_cpp",
     prompt="Backend",
-    help="Inference engine — see memory/wiki/inference-engines.md (RM-06).",
+    help="Inference engine — see docs/roadmap.md RM-06.",
 )
 @click.option(
     "--path",
@@ -344,7 +344,7 @@ def cmd_restart(ctx: click.Context, model_id: str) -> None:
     "--modality",
     type=click.Choice(list(MODALITIES)),
     default="text",
-    help="What this model serves — see memory/wiki/model-registry.md (RM-09).",
+    help="What this model serves — see docs/roadmap.md RM-09.",
 )
 @click.option(
     "--mmproj-path",
@@ -396,8 +396,8 @@ def cmd_register(
     """Register a model in the registry.
 
     Implements: memory/specs/008-llama-server-manager.md — AC-3, AC-16, AC-17
-    Implements: memory/wiki/inference-engines.md — RM-08 (backend selection)
-    Implements: memory/wiki/model-registry.md — RM-09 (modality)
+    Implements: docs/roadmap.md — RM-08 (backend selection)
+    Implements: docs/roadmap.md — RM-09 (modality)
     """
     cfg = _load(ctx.obj["config_path"])
     reg = _registry(cfg)

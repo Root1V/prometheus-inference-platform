@@ -1,4 +1,6 @@
 import { Pencil, Power, RefreshCw, Trash2 } from "lucide-react";
+import { ENGINE_LABELS } from "../lib/engines";
+import type { Backend } from "../types/instance";
 import { useState } from "react";
 import { useActivateNode, useCheckNode, useDeactivateNode, useDeleteNode } from "../api/nodes";
 import { useToast } from "../context/ToastContext";
@@ -28,6 +30,17 @@ export function NodeRow({ node, onEdit }: { node: Node; onEdit: (node: Node) => 
         <td className="px-4 py-3 text-text-muted">{node.manager_url}</td>
         <td className="px-4 py-3 text-text-muted capitalize">{node.node_type}</td>
         <td className="px-4 py-3 text-text-muted">{node.tag ?? "—"}</td>
+        {/* PRM-133: "—" would read as "none", and this column's whole job is
+            the difference. An undeclared node says so. */}
+        <td className="px-4 py-3 text-text-muted">
+          {node.engines === null ? (
+            <span className="italic">not declared</span>
+          ) : node.engines.length === 0 ? (
+            <span className="text-amber-500">none</span>
+          ) : (
+            node.engines.map((e) => ENGINE_LABELS[e as Backend] ?? e).join(", ")
+          )}
+        </td>
         <td className="px-4 py-3 text-text-muted">${node.hourly_cost_usd.toFixed(4)}</td>
         <td className="px-4 py-3 text-text-muted">{node.price_margin_multiplier}×</td>
         <td className="px-4 py-3">

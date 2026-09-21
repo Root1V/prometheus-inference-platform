@@ -31,7 +31,7 @@ start_timeout_s = 60
 log_dir = "runtime/logs"
 pid_dir = "runtime/run"
 
-# Per-backend launch command overrides. See memory/wiki/inference-engines.md (RM-06).
+# Per-backend launch command overrides. See docs/roadmap.md RM-06.
 # llama_cpp uses [server].binary above, unchanged from before this section existed.
 [backends.mlx]
 binary = "mlx_lm.server"

@@ -15,7 +15,7 @@
 # ── Stage 0: admin-ui builder (RM-10) ───────────────────────────────────────
 # Built unconditionally so the image works whether or not the operator sets
 # ADMIN_DASHBOARD_ENABLED — the flag (config.py) gates whether main.py serves
-# these files, not whether they're present. See memory/wiki/model-registry.md
+# these files, not whether they're present. See docs/roadmap.md RM-09
 # "Admin dashboard (RM-10)".
 FROM node:22-slim AS admin-ui-builder
 

@@ -11,11 +11,15 @@ import { StatCard } from "../components/StatCard";
 import { WarningBanner } from "../components/WarningBanner";
 import type { InstanceEntry } from "../types/instance";
 import type { ModelCatalogEntry } from "../types/models";
+import type { Node } from "../types/node";
 
 // Stable references so they don't retrigger the useMemo below on every poll
 // while data is still loading.
 const EMPTY_INSTANCES: InstanceEntry[] = [];
 const EMPTY_NODES: string[] = [];
+// PRM-133: useNodes() returns the records now, not just the names — the engine
+// picker reads each node's declared engine list off them.
+const EMPTY_NODE_RECORDS: Node[] = [];
 const EMPTY_CATALOG: ModelCatalogEntry[] = [];
 
 type ModalState =
@@ -33,7 +37,7 @@ export default function Dashboard() {
 
   const instances = instancesQuery.data?.instances ?? EMPTY_INSTANCES;
   const unreachableNodes = instancesQuery.data?.unreachable_nodes ?? EMPTY_NODES;
-  const nodes = nodesQuery.data ?? EMPTY_NODES;
+  const nodes = nodesQuery.data ?? EMPTY_NODE_RECORDS;
   // RM-51: the "Model" picker in RegisterModelModal sources from the catalog
   // now, not from instances.filter(downloaded) — a downloaded model with no
   // instance yet must still be pickable.

@@ -2,7 +2,7 @@
 
 Covers the gateway-side enforcement in router.py's chat_completions handler
 and Claims.has_model_scope(). See docs/roadmap.md RM-07 and
-memory/wiki/auth-model.md. Uses the multi_model_registry fixture from
+docs/roadmap.md RM-07. Uses the multi_model_registry fixture from
 conftest.py: llama3-8b-q4, small-model, inactive-model (no backend_url),
 invalid-backend-model (non-loopback backend_url).
 """

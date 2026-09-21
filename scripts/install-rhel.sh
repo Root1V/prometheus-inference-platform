@@ -252,7 +252,7 @@ if [[ "${DEPLOY_MODE}" == "true" ]]; then
 
     # Normalize service script permissions after pull (mirrors install-mode STEP 6).
     # Prevents "Permission denied" on .sh files when git preserves non-executable bits.
-    # See memory/wiki/deployment.md — service scripts must be executable.
+    # Service scripts must be executable.
     find "${PROJECT_DIR}/gateway" "${PROJECT_DIR}/auth-service" "${PROJECT_DIR}/runtime" \
         -type f -name '*.sh' -exec chmod 0755 {} + 2>/dev/null || true
 

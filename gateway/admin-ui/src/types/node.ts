@@ -16,6 +16,10 @@ export interface Node {
   price_margin_multiplier: number;
   /** Computed = hardware_amortization_usd_per_hour + electricity_usd_per_hour. */
   hourly_cost_usd: number;
+  /** PRM-133: the inference engines installed on this node.
+   * `null` means never declared — NOT "none". Read it through
+   * `enginesAvailableOn()` in lib/engines.ts rather than testing it here. */
+  engines: string[] | null;
   created_at: string;
   updated_at: string | null;
 }
@@ -28,6 +32,7 @@ export interface CreateNodeRequest {
   hardware_amortization_usd_per_hour?: number;
   electricity_usd_per_hour?: number;
   price_margin_multiplier?: number;
+  engines?: string[];
 }
 
 /** PATCH /admin/api/nodes/{id} — `name` is immutable. */
@@ -38,4 +43,6 @@ export interface UpdateNodeRequest {
   hardware_amortization_usd_per_hour?: number;
   electricity_usd_per_hour?: number;
   price_margin_multiplier?: number;
+  /** PRM-133: `[]` is a real edit (declared none); omit to leave alone. */
+  engines?: string[];
 }

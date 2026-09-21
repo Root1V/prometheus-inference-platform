@@ -21,12 +21,16 @@ export function useInstances() {
   });
 }
 
-/** Just the node names, for the instance-creation node picker (RM-20 full CRUD
- * lives in api/nodes.ts's useNodeRegistry, used by the Nodes admin page). */
+/** The nodes, for the instance-creation pickers (RM-20 full CRUD lives in
+ * api/nodes.ts's useNodeRegistry, used by the Nodes admin page).
+ *
+ * PRM-133: was `.map((n) => n.name)`. The engine picker needs the node's
+ * declared engine list, and that list is already in this response — throwing
+ * the rest away here meant a second request for data we had. */
 export function useNodes() {
   return useQuery({
     queryKey: NODE_NAMES_KEY,
-    queryFn: async () => (await apiClient.get<Node[]>("/nodes")).data.map((n) => n.name),
+    queryFn: async () => (await apiClient.get<Node[]>("/nodes")).data,
     refetchInterval: POLL_INTERVAL_MS,
   });
 }

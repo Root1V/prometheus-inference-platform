@@ -1192,7 +1192,7 @@ def create_router(registry: ModelRegistry, pool: "BackendPool") -> APIRouter:
 
             # RM-07: inference:read/inference:stream were documented scopes but never
             # actually enforced here — any valid JWT could call any model.
-            # See memory/wiki/auth-model.md.
+            # See docs/roadmap.md RM-07.
             # RM-14: admin:write holders (the admin dashboard's own session, used by
             # the model playground) bypass both scope checks below — admin:write
             # already implies full model management control (admin:models), so

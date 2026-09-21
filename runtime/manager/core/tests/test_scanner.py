@@ -23,7 +23,7 @@ class TestMatchBackend:
     """_match_backend recognizes llama.cpp/mlx/vllm/sglang cmdlines.
 
     vllm/sglang matching is unverified against real processes — see
-    memory/wiki/inference-engines.md (RM-06); these tests cover the parsing
+    docs/roadmap.md RM-06); these tests cover the parsing
     logic against documented CLI shapes only.
     """
 

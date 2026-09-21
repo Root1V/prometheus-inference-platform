@@ -195,3 +195,127 @@ async def test_nodes_deactivate_not_found(client):
 async def test_nodes_activate_not_found(client):
     resp = await client.post("/admin/nodes/does-not-exist/activate", headers=ADMIN_HEADERS)
     assert resp.status_code == 404
+
+
+# ── PRM-133: declared engines, and the three states ──────────────────────────
+
+
+async def test_a_node_created_without_engines_is_undeclared_not_empty(client):
+    """null, not []. The instance form reads this and must not be told the node
+    can launch nothing when nobody has said anything about it yet.
+    """
+    node = await _create_node(client, name="undeclared-1")
+    assert node["engines"] is None
+
+
+async def test_engines_round_trip(client):
+    resp = await client.post(
+        "/admin/nodes",
+        json={
+            "name": "declared-1",
+            "manager_url": "http://127.0.0.1:8090",
+            "node_type": "mac",
+            "engines": ["llama_cpp", "mlx"],
+        },
+        headers=ADMIN_HEADERS,
+    )
+    assert resp.status_code == 201, resp.text
+    assert resp.json()["engines"] == ["llama_cpp", "mlx"]
+
+    listed = await client.get("/admin/nodes", headers=ADMIN_HEADERS)
+    row = next(n for n in listed.json() if n["name"] == "declared-1")
+    assert row["engines"] == ["llama_cpp", "mlx"]
+
+
+async def test_a_node_can_declare_it_has_none(client):
+    """`[]` is an answer, and a different one from never having been asked."""
+    resp = await client.post(
+        "/admin/nodes",
+        json={
+            "name": "empty-1",
+            "manager_url": "http://127.0.0.1:8090",
+            "node_type": "other",
+            "engines": [],
+        },
+        headers=ADMIN_HEADERS,
+    )
+    assert resp.status_code == 201, resp.text
+    assert resp.json()["engines"] == []
+
+
+async def test_an_unrelated_edit_does_not_declare_engines(client):
+    """The trap `tag` already had: an `is not None` check on a field whose None
+    is meaningful turns "leave it alone" into "set it to nothing".
+    """
+    node = await _create_node(client, name="untouched-1")
+    assert node["engines"] is None
+
+    resp = await client.patch(
+        f"/admin/nodes/{node['id']}", json={"tag": "edited"}, headers=ADMIN_HEADERS
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["tag"] == "edited"
+    assert resp.json()["engines"] is None
+
+
+async def test_engines_can_be_cleared_to_none_explicitly(client):
+    node = await _create_node(client, name="clearable-1")
+    await client.patch(
+        f"/admin/nodes/{node['id']}", json={"engines": ["vllm"]}, headers=ADMIN_HEADERS
+    )
+    resp = await client.patch(
+        f"/admin/nodes/{node['id']}", json={"engines": []}, headers=ADMIN_HEADERS
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["engines"] == []
+
+
+async def test_engines_are_deduplicated_preserving_order(client):
+    resp = await client.post(
+        "/admin/nodes",
+        json={
+            "name": "dupes-1",
+            "manager_url": "http://127.0.0.1:8090",
+            "node_type": "mac",
+            "engines": ["mlx", "llama_cpp", "mlx"],
+        },
+        headers=ADMIN_HEADERS,
+    )
+    assert resp.status_code == 201, resp.text
+    assert resp.json()["engines"] == ["mlx", "llama_cpp"]
+
+
+async def test_an_engine_id_that_is_not_an_identifier_is_refused(client):
+    """A shape check, not a membership one — this service has no list of real
+    engines and must not grow one. It exists so the column holds identifiers.
+    """
+    resp = await client.post(
+        "/admin/nodes",
+        json={
+            "name": "bad-1",
+            "manager_url": "http://127.0.0.1:8090",
+            "node_type": "mac",
+            "engines": ["llama cpp; drop table nodes"],
+        },
+        headers=ADMIN_HEADERS,
+    )
+    assert resp.status_code == 422, resp.text
+
+
+async def test_an_unknown_but_well_formed_engine_is_stored(client):
+    """Deliberate: auth-service is not the authority on what an engine is. The
+    UI intersects what it reads with the engines this build can launch, so a
+    name nobody recognises never becomes a selectable option.
+    """
+    resp = await client.post(
+        "/admin/nodes",
+        json={
+            "name": "future-1",
+            "manager_url": "http://127.0.0.1:8090",
+            "node_type": "mac",
+            "engines": ["some_engine_from_2027"],
+        },
+        headers=ADMIN_HEADERS,
+    )
+    assert resp.status_code == 201, resp.text
+    assert resp.json()["engines"] == ["some_engine_from_2027"]

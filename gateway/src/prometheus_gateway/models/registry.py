@@ -44,7 +44,7 @@ class ModelEntry:
     node: str = ""
     # RM-09: "text" (default, /v1/chat/completions), "vision" (chat completions
     # with image content parts), or "embedding" (/v1/embeddings). Determines
-    # request routing/validation — see memory/wiki/model-registry.md.
+    # request routing/validation — see docs/roadmap.md RM-09.
     modality: str = "text"
     # RM-95: which engine serves this instance (llama_cpp, sd_cpp). The manager
     # has always sent it and the gateway threw it away, which is why health

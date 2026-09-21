@@ -7,8 +7,10 @@ already-shipped, security-critical work. Backlog items below are implemented dir
 **one branch per item**, to move faster and spend fewer tokens per change.
 
 **The only non-negotiable rule carried over from SDD**: every branch that closes an item
-must update `README.md` and the relevant page(s) under `memory/wiki/` in the same PR/commit
-set — this file is not a substitute for real docs, it's a queue.
+must update `README.md` and the relevant docs under `docs/` in the same PR/commit set —
+this file is not a substitute for real docs, it's a queue. (It used to say `memory/wiki/`.
+That directory was deleted as unneeded; the rule outlived it by pointing at nothing, which
+is the one thing a non-negotiable rule must not do.)
 
 Branch naming: `feat/RM-<id>-<slug>` (e.g. `feat/RM-05-manager-tui-api-split`).
 
@@ -163,8 +165,8 @@ missing annotations in the old `cli/main.py`, plus a handful in `config.py`/`dow
 packages, and the hook enforces it going forward.
 
 Updated: `runtime/manager/AGENTS.md`, `AGENTS.md`, `README.md` (repo layout diagrams +
-test commands), `memory/wiki/deployment.md` and `memory/wiki/model-registry.md`
-(`pmgr serve` → `pmgr-api`), `podman-compose.yml` / `podman-compose-ubuntu-dgx.yml`
+test commands), the deployment and model-registry wiki pages (`pmgr serve` → `pmgr-api`;
+those pages have since been deleted), `podman-compose.yml` / `podman-compose-ubuntu-dgx.yml`
 (Dockerfile path), `scripts/install-rhel.sh` / `scripts/install-ubuntu-dgx.sh` /
 `scripts/validate-ubuntu-dgx.sh` (`pmgr serve` → `pmgr-api`), and the
 `scripts/tests/test_scripts_024.sh` assertions that checked the old command/path.
@@ -174,17 +176,21 @@ test commands), `memory/wiki/deployment.md` and `memory/wiki/model-registry.md`
 **Why**: `llama-server` is the only backend today. It may not be the best fit for every
 hardware target (Apple Silicon vs NVIDIA DGX) or every future modality (RM-09).
 
-**Done**: [memory/wiki/inference-engines.md](wiki/inference-engines.md) — full comparison
-of llama.cpp, vLLM, MLX, and SGLang across Mac (M4 Max) / DGX Spark / generic Linux-NVIDIA,
+**Done**: a full comparison of llama.cpp, vLLM, MLX and SGLang across Mac (M4 Max) /
+DGX Spark / generic Linux-NVIDIA,
 covering throughput, quantization format support, modality coverage, and operational
 complexity for a process-spawning manager. Bottom line: **mixed strategy, not a single
 engine** — MLX on Mac, vLLM (or SGLang) on DGX Spark and generic Linux servers, llama.cpp
 kept everywhere as the simple/single-user fallback. No engine covers every target modality
 on every piece of hardware; the real design axis for RM-08/RM-09 is per-hardware backend
-selection, not per-modality. The page also spells out concretely what this adds to the
-manager's job — a second "heavy Python server" launch shape alongside the current
-"spawn a binary" one, and new `registry.yaml` fields (`backend`, `quant_format`) — which
-RM-08 and RM-09 should treat as their starting brief rather than re-deriving.
+selection, not per-modality. What it added to the manager's job: a second "heavy Python
+server" launch shape alongside the current "spawn a binary" one, and new `registry.yaml`
+fields (`backend`, `quant_format`).
+
+The comparison itself lived in `memory/wiki/inference-engines.md` and was deleted with the
+rest of that directory. **The conclusion above is now the whole of it** — the per-hardware
+numbers behind it are gone, which is worth knowing before citing RM-06 as evidence. PRM-133
+redoes the part that still matters: which engines are worth offering, and on which node.
 
 ## RM-07 — Fine-grained per-model authorization scopes (item 2) — `done`
 
@@ -216,9 +222,8 @@ backward-compatible.
   `chat_completions` — unaffected by this change.
 
 **⚠ Deployment/migration impact**: deny-by-default means **every client registered before
-this shipped has zero model access** until an admin adds `model:<id>` scopes to it — see
-[memory/wiki/auth-model.md](wiki/auth-model.md#per-model-scopes-rm-07) for the grant
-command. Roll this out with that in mind; it will look like a total inference outage for
+this shipped has zero model access** until an admin adds `model:<id>` scopes to it — the
+grant command lived in the auth-model wiki page, since deleted. Roll this out with that in mind; it will look like a total inference outage for
 existing clients if deployed without a follow-up grant pass.
 
 19 new tests (auth-service: scope validation, registration, token issuance; gateway:
@@ -275,8 +280,8 @@ component aware of the whole fleet, and only as a *reader*:
   (observability only, not used for routing).
 - Each node's own `pmgr-api` must set `PMGR_PROXY_HOST` to its real reachable
   hostname/IP (not loopback) so its `/v1/backends` response reports a `backend_url` the
-  gateway can actually route to. Full details and the operational setup: see
-  `memory/wiki/model-registry.md` → "Distributed nodes (RM-08 phase 2)".
+  gateway can actually route to. The operational setup was written up in the model-registry
+  wiki page, since deleted; `manager_sync.py`'s own comments are what remains.
 
 10 new tests (`gateway/tests/test_manager_sync.py`): node-config parsing (empty, single,
 multi, priority-over-`MANAGER_URL`, malformed), dynamic allowlist computation, multi-node
@@ -329,8 +334,7 @@ a real `/v1/embeddings` response; `--mmproj` launched `ggml-org/SmolVLM-256M-Ins
 and correctly answered a real image content-part chat request (both via direct curl against
 the manager-launched command, not through the full gateway auth stack — that stack is
 already covered by existing JWT/scope tests). 22 new tests (10 manager-core, 13 gateway
-minus 1 that's schema-only) — full details in `memory/wiki/model-registry.md` "Modalities
-(RM-09)".
+minus 1 that's schema-only).
 
 **What's not covered** (follow-up items, not RM-09): audio (whisper.cpp), image/video
 generation (diffusers/ComfyUI), and modality-specific dispatch for `mlx`/`vllm`/`sglang`
@@ -4740,6 +4744,105 @@ parallel one.
 **Scope**: retry with backoff, and a record of what was attempted so an undelivered alert is
 visible rather than absent. Out: a general outbound queue, and any change to the thresholds
 themselves.
+
+
+## PRM-133 — Each node declares which engines it has, and an instance can only pick one of those
+
+**Why**: `AddInstanceModal` renders the whole of `BACKENDS` as an Engine dropdown on every node,
+unconditionally. Three of those five cannot run on the only node this deployment has: the `vllm`
+and `sglang` command builders both carry the comment *"NOT verified against a real install (needs
+CUDA)"*, and the node is Apple Silicon. The fact exists in a Python docstring and nowhere the
+operator can see it — RM-89's rule about defaults, applied to options: an option that cannot work
+must not look like one that can. And nodes carry no engine inventory at all, so nothing *could*
+filter the list today.
+
+**Scope**: `nodes.engines`, a nullable JSON column on auth-service's node registry, declared
+through a checkbox list at node registration and read back by both forms that create an instance
+(`AddInstanceModal` and `RegisterModelModal` — both put a model on a node, so filtering one and
+not the other would be the same defect at the other call site).
+
+**Three states, not two** (RM-98), and the column is nullable for exactly that reason: `NULL` is
+"never declared" and offers every engine, which is what the form did before this existed, so the
+node that predates the column does not become unusable. `[]` is "declared none" and offers
+nothing, said out loud rather than shown as an empty dropdown. The operator's checkbox list starts
+in the undeclared state and enters the declared one the moment a box is touched.
+
+auth-service does not validate engine names against a list, on purpose: it is the identity and
+node registry, it has no business knowing what an inference engine is, and a second copy of
+`BACKENDS` would drift from the manager's. It checks the *shape* of an id and nothing more. The UI
+intersects what it reads with the engines this build can launch, so a name it has never heard of
+can never become a selectable option. `gateway/tests/test_engine_list.py` fails if the UI's list
+and manager-core's ever disagree.
+
+**Not built**: probing. `scanner.py` already knows every engine's process signature and
+`lifecycle.py` already uses `shutil.which`, so a node's own manager-api could report what it can
+actually launch rather than trusting a checkbox — a declared list is a claim about software on
+another machine, and those go stale silently. The checkboxes are the right override either way;
+the probe should become the default. Also out: installing an engine from the UI, and per-engine
+launch-flag editing.
+
+**Which engines to offer** — researched 2026-09-20, against what this catalog actually serves
+(text, embedding, rerank, vision, image):
+
+| engine | verdict |
+|---|---|
+| `llama_cpp`, `mlx`, `sd_cpp` | keep — the three that run here today |
+| `vllm`, `sglang` | keep in the list, CUDA-only; they are the two standard production answers |
+| **TGI** | **do not add.** Archived 2026-03-21 and in maintenance mode; its own README now sends users to vLLM, SGLang, llama.cpp and MLX |
+| `hf-serve` | candidate, experimental. The only one spanning Transformers + Diffusers + Sentence Transformers in a single server, which is our three modalities in one process |
+| `tei` / `infinity` | strongest additions for what we actually run. We serve embeddings and rerank on llama.cpp; both of these are purpose-built for it. TEI is one model per process with a Metal build; Infinity serves many models per process and covers rerank and CLIP |
+| `vllm-mlx` | worth watching: continuous batching on Apple Silicon, reported 3.4x throughput at 5 concurrent requests on an M4 Max. That is precisely the ceiling the copilot team hit in E-08 on this hardware |
+| `tensorrt_llm` | only meaningful once there is an NVIDIA node |
+| `ollama`, `lmdeploy`, `mlc-llm` | not now. Ollama wraps llama.cpp and would duplicate a backend we have; the other two earn a place only with hardware we do not have |
+
+Adding an engine to `BACKENDS` is not free — each one needs a command builder in `lifecycle.py`
+and a process signature in `scanner.py`, and `vllm`/`sglang` show what an unverified builder is
+worth. Nothing should join the list without one node that can actually run it.
+
+
+## PRM-134 — The node registry leaves auth-service
+
+**Why**: auth-service should own security and nothing else, and it does — except for one table.
+`principals` and `credential_share_tokens` are authentication and authorization. `nodes` is
+hardware inventory: a name, a manager URL, a hardware type, an hourly cost, a margin, and now a
+list of installed inference engines. It touches no principal, no token and no scope; the only
+things it shares with the rest of the service are a SQLAlchemy session and the `X-Admin-Key`
+guard, and its only consumer is the gateway (`admin/nodes_client.py` plus the `/admin/api/nodes`
+pass-through proxy).
+
+RM-20 is where this happened, and its reason was real rather than careless: it moved node topology
+out of the gateway's static `MANAGER_NODES` env var, and auth-service was the only central service
+to move it to. **`manager-api` runs per node** — each one owns its own `registry.db` of models and
+instances — so the manager cannot hold a list *of* nodes without one node being made special.
+
+**Scope**: move the `nodes` table, its six endpoints and its connectivity probe out of
+auth-service, and repoint `nodes_client.fetch_nodes()` and the gateway's proxy. The live row has
+to come with it — there is one, and it is the node everything runs on.
+
+**Where it goes is the decision, and it is not obvious**:
+
+- **The gateway's own DB.** It is the only central service, the only consumer, and it already
+  persists node-scoped operational state — `manager_catalog_snapshot` stores
+  `{node_name: [entries]}`, and `billing_router.py` already reads each node's hourly cost to price
+  a model. No new service to deploy, secure or operate. The cost: the gateway becomes the control
+  plane as well as the data plane, and node CRUD starts sharing a process with the inference hot
+  path.
+- **A new central control-plane service.** Cleanest against the principle — inventory belongs with
+  the thing that manages inventory — and it is where a future fleet manager would live anyway. The
+  cost is a whole service, its deployment, its own auth, for three tables' worth of work today.
+
+Recommended: the gateway, unless a central control plane is coming for other reasons — in which
+case this is its first tenant and building it now is cheaper than moving twice.
+
+**A side effect worth having either way**: `config.py`'s validator requires
+`AUTH_SERVICE_ADMIN_URL` and `AUTH_SERVICE_ADMIN_API_KEY` whenever the dashboard is enabled, and
+its own docstring says the reason is RM-20's node topology. Move the nodes and that requirement
+narrows to what the Users page actually needs.
+
+**Not a reason to hold PRM-133**: the misplacement is RM-20's, and PRM-133 added one nullable
+column to a table that was already in the wrong house. The column moves with the table for free,
+and PRM-133's UI half — the shared engine list, the filtering, the drift guards — does not move at
+all.
 
 
 Append a new row to the table with the next `RM-NN` id and a new `## RM-NN — ...` section

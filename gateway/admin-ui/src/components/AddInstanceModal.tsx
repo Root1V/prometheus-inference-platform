@@ -3,9 +3,9 @@ import { useRegisterModel } from "../api/instances";
 import { useToast } from "../context/ToastContext";
 import { getErrorMessage } from "../lib/errors";
 import { cn } from "../lib/cn";
-import type { Backend, InstanceEntry } from "../types/instance";
-
-const BACKENDS: Backend[] = ["llama_cpp", "mlx", "vllm", "sglang", "sd_cpp"];
+import { ENGINE_LABELS, enginesAvailableOn } from "../lib/engines";
+import type { InstanceEntry } from "../types/instance";
+import type { Node } from "../types/node";
 
 const inputClass =
   "w-full rounded-lg border border-border bg-surface px-3 py-2 text-sm text-text " +
@@ -41,13 +41,13 @@ export function AddInstanceModal({
   open: boolean;
   /** The instance being replicated — only its model and node defaults are used. */
   source: InstanceEntry | null;
-  nodes: string[];
+  nodes: Node[];
   onClose: () => void;
 }) {
   const register = useRegisterModel();
   const { showToast } = useToast();
   const [node, setNode] = useState("");
-  const [backend, setBackend] = useState<Backend>("llama_cpp");
+  const [backendChoice, setBackendChoice] = useState<string>("");
   const [port, setPort] = useState("");
   const [contextLength, setContextLength] = useState("");
 
@@ -57,8 +57,23 @@ export function AddInstanceModal({
   const modelName = source.model_slug || modelId;
   const chosenNode = node || source.node;
 
+  // PRM-133: what this node said it has, narrowed to what this build knows how
+  // to launch. A node that never declared gets the whole list, which is what
+  // this form did for every node before the declaration existed.
+  const available = enginesAvailableOn(nodes.find((n) => n.name === chosenNode)?.engines);
+  // Never a pre-selected value that isn't on offer: switching nodes can pull
+  // the current choice out from under it, and a select whose value is absent
+  // from its options renders blank while still submitting the old one.
+  const backend = available.includes(backendChoice as (typeof available)[number])
+    ? (backendChoice as (typeof available)[number])
+    : (available[0] ?? null);
+
   const submit = async (event: React.FormEvent) => {
     event.preventDefault();
+    if (backend === null) {
+      showToast(`${chosenNode} has no inference engine declared.`, "error");
+      return;
+    }
     try {
       const created = await register.mutateAsync({
         node: chosenNode,
@@ -101,25 +116,39 @@ export function AddInstanceModal({
             className={inputClass}
           >
             {nodes.map((n) => (
-              <option key={n} value={n}>
-                {n}
+              <option key={n.name} value={n.name}>
+                {n.name}
               </option>
             ))}
           </select>
         </Field>
 
-        <Field label="Engine">
-          <select
-            value={backend}
-            onChange={(e) => setBackend(e.target.value as Backend)}
-            className={inputClass}
-          >
-            {BACKENDS.map((b) => (
-              <option key={b} value={b}>
-                {b}
-              </option>
-            ))}
-          </select>
+        <Field
+          label="Engine"
+          hint={
+            backend === null
+              ? undefined
+              : `Only what ${chosenNode} declared it has installed — set that list on the Nodes page.`
+          }
+        >
+          {backend === null ? (
+            <p className="rounded-lg border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-sm text-amber-600">
+              {chosenNode} declared no inference engines, so there is nothing to run this on. Add
+              one on the Nodes page.
+            </p>
+          ) : (
+            <select
+              value={backend}
+              onChange={(e) => setBackendChoice(e.target.value)}
+              className={inputClass}
+            >
+              {available.map((b) => (
+                <option key={b} value={b}>
+                  {ENGINE_LABELS[b]}
+                </option>
+              ))}
+            </select>
+          )}
         </Field>
 
         <Field label="Port" hint="Must be free on the selected node.">
@@ -157,7 +186,7 @@ export function AddInstanceModal({
           </button>
           <button
             type="submit"
-            disabled={register.isPending}
+            disabled={register.isPending || backend === null}
             className={cn(
               "rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground",
               register.isPending ? "opacity-60" : "hover:opacity-90",

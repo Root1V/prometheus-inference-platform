@@ -32,7 +32,7 @@ from prometheus_manager_core.registry import RegistryEntry
 
 
 class TestBackendCommandBuilders:
-    """One builder per backend — see memory/wiki/inference-engines.md (RM-06)."""
+    """One builder per backend — see docs/roadmap.md RM-06."""
 
     def _entry(self, **overrides):
         defaults = dict(
