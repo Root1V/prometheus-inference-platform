@@ -89,6 +89,9 @@ _BACKEND_SIGNATURES: tuple[_BackendSignature, ...] = (
     _BackendSignature(
         "sd_cpp", ("sd-server",), "--model", port_flag="--listen-port", host_flag="--listen-ip"
     ),
+    # PRM-135: `--model-id` (a Hub id), not `--model` — hf-serve loads Hugging
+    # Face format weights, so there is no path on its command line to match.
+    _BackendSignature("hf_serve", ("hf-serve",), "--model-id"),
 )
 
 # RM-38: sd-server has no /health endpoint at all (confirmed against its

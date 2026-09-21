@@ -13,6 +13,7 @@ import pytest
 
 from prometheus_manager_core.lifecycle import (
     LifecycleError,
+    _build_hf_serve_cmd,
     _build_llama_cpp_cmd,
     _build_mlx_cmd,
     _build_sd_cpp_cmd,
@@ -115,6 +116,78 @@ class TestBackendCommandBuilders:
         assert "--embedding" not in _build_mlx_cmd("mlx_lm.server", entry, 9090, "127.0.0.1")
         assert "--embedding" not in _build_vllm_cmd("vllm", entry, 9090, "127.0.0.1")
         assert "--embedding" not in _build_sglang_cmd("python3", entry, 9090, "127.0.0.1")
+
+    # ── PRM-135: hf_serve ───────────────────────────────────────────────────
+
+    def test_hf_serve_cmd_sends_the_hub_id_not_the_path(self):
+        """Every other backend gets `entry.path`. This one cannot: the paths in
+        this catalog are `.gguf`, which Transformers has no way to read.
+        """
+        entry = self._entry(
+            backend="hf_serve",
+            modality="embedding",
+            path="/models/thing-Q4_K_M.gguf",
+            hf_repo="sentence-transformers/all-MiniLM-L6-v2",
+        )
+        cmd = _build_hf_serve_cmd("hf-serve", entry, 9090, "127.0.0.1")
+        assert "--model-id" in cmd
+        assert cmd[cmd.index("--model-id") + 1] == "sentence-transformers/all-MiniLM-L6-v2"
+        assert "/models/thing-Q4_K_M.gguf" not in cmd
+        assert "--model" not in cmd
+
+    def test_hf_serve_cmd_refuses_a_model_with_no_hub_repo(self):
+        """Refused at launch, with the reason. Passing a `.gguf` to `--model-id`
+        would start the process and fail inside it, where the operator sees a
+        torch traceback instead of a sentence.
+        """
+        entry = self._entry(backend="hf_serve", modality="text", hf_repo="")
+        with pytest.raises(LifecycleError, match="hf_repo"):
+            _build_hf_serve_cmd("hf-serve", entry, 9090, "127.0.0.1")
+
+    @pytest.mark.parametrize(
+        ("modality", "task"),
+        [
+            ("text", "text-generation"),
+            ("embedding", "embeddings"),
+            ("rerank", "text-ranking"),
+            ("image", "text-to-image"),
+            ("vision", "image-text-to-text"),
+        ],
+    )
+    def test_hf_serve_cmd_maps_every_modality_to_a_task(self, modality, task):
+        """All five, which is the reason this backend earns its place: it is the
+        only one in BACKENDS that covers the whole catalog in one server.
+        """
+        entry = self._entry(backend="hf_serve", modality=modality, hf_repo="org/model")
+        cmd = _build_hf_serve_cmd("hf-serve", entry, 9090, "127.0.0.1")
+        assert cmd[cmd.index("--task") + 1] == task
+
+    def test_hf_serve_cmd_covers_every_modality_the_registry_allows(self):
+        """A modality with no task mapped is refused rather than launched.
+
+        MODALITIES and the task map are two lists; adding to the first and
+        forgetting the second would start a server with no `--task`, which
+        hf-serve resolves by guessing from the model card.
+        """
+        from prometheus_manager_core.lifecycle import _HF_SERVE_TASKS
+        from prometheus_manager_core.registry import MODALITIES
+
+        assert set(_HF_SERVE_TASKS) == set(MODALITIES)
+
+    def test_hf_serve_cmd_picks_mps_on_apple_silicon(self):
+        entry = self._entry(backend="hf_serve", modality="text", hf_repo="org/model")
+        with patch("prometheus_manager_core.lifecycle.platform.system", return_value="Darwin"):
+            cmd = _build_hf_serve_cmd("hf-serve", entry, 9090, "127.0.0.1")
+        assert cmd[cmd.index("--device") + 1] == "mps"
+
+    def test_hf_serve_cmd_falls_back_to_cpu_without_an_accelerator(self):
+        entry = self._entry(backend="hf_serve", modality="text", hf_repo="org/model")
+        with (
+            patch("prometheus_manager_core.lifecycle.platform.system", return_value="Linux"),
+            patch("prometheus_manager_core.lifecycle.shutil.which", return_value=None),
+        ):
+            cmd = _build_hf_serve_cmd("hf-serve", entry, 9090, "127.0.0.1")
+        assert cmd[cmd.index("--device") + 1] == "cpu"
 
     def test_sd_cpp_cmd_uses_listen_ip_and_listen_port_flags(self):
         """sd-server (verified via --help) uses --listen-ip/--listen-port, not --host/--port."""

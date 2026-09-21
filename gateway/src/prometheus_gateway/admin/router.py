@@ -74,7 +74,7 @@ from .. import db, pricing, rate_limits
 from ..config import Settings
 from ..router import _problem
 from ..telemetry import activity_tracker, get_logger
-from .client import ManagerApiClient
+from .client import _CONTROL_TIMEOUT_S, ManagerApiClient
 from .nodes_client import fetch_nodes
 
 logger = get_logger(__name__)
@@ -716,7 +716,12 @@ def create_admin_router(manager_client: ManagerApiClient) -> APIRouter:
             )
 
         try:
-            resp = await manager_client.post(node_url, f"/v1/backends/{model_id}/{action}")
+            # PRM-135: the one call that waits for a model to load. The manager
+            # decides how long that may take (`start_timeout_s`, per backend);
+            # this side only has to not give up first.
+            resp = await manager_client.post(
+                node_url, f"/v1/backends/{model_id}/{action}", timeout=_CONTROL_TIMEOUT_S
+            )
         except Exception as exc:
             return _proxy_error_response(request, exc)
         return _passthrough(resp)

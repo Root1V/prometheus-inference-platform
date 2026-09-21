@@ -45,6 +45,13 @@ start_timeout_s = 300
 binary = "python3"
 start_timeout_s = 300
 
+# PRM-135: hf-serve — Hugging Face format weights via Transformers/Diffusers/
+# Sentence Transformers. Heavy Python start (Hub resolve + torch load), so the
+# timeout matches mlx's rather than llama.cpp's.
+[backends.hf_serve]
+binary = "hf-serve"
+start_timeout_s = 300
+
 # RM-38: stable-diffusion.cpp's sd-server — image generation, not LLM
 # completions. Model load + Metal shader compile is quick (a few seconds for
 # a ~2GB model in local testing); 60s matches llama_cpp's own default.
@@ -127,6 +134,9 @@ class BackendsConfig:
     )
     sd_cpp: BackendConfig = field(
         default_factory=lambda: BackendConfig(binary="sd-server", start_timeout_s=60)
+    )
+    hf_serve: BackendConfig = field(
+        default_factory=lambda: BackendConfig(binary="hf-serve", start_timeout_s=300)
     )
 
 
@@ -242,6 +252,7 @@ class ManagerConfig:
             "vllm": self.backends.vllm,
             "sglang": self.backends.sglang,
             "sd_cpp": self.backends.sd_cpp,
+            "hf_serve": self.backends.hf_serve,
         }
         cfg = by_name.get(backend)
         if cfg is None:
@@ -285,6 +296,7 @@ def load_config(path: Path | None = None) -> ManagerConfig:
             vllm=BackendConfig(**backends_raw.get("vllm", {})),
             sglang=BackendConfig(**backends_raw.get("sglang", {})),
             sd_cpp=BackendConfig(**backends_raw.get("sd_cpp", {})),
+            hf_serve=BackendConfig(**backends_raw.get("hf_serve", {})),
         ),
         registry=RegistryConfig(**raw.get("registry", {})),
         downloads=DownloadsConfig(**raw.get("downloads", {})),

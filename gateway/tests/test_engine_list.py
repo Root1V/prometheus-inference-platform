@@ -72,3 +72,25 @@ def test_no_component_keeps_its_own_copy_of_the_engine_list() -> None:
             if re.search(r"(const|let)\s+\w*(BACKENDS|ENGINES)\w*\s*(:|=)", line):
                 offenders.append(f"{path.relative_to(_UI)}:{lineno}")
     assert not offenders, f"engine list declared outside lib/engines.ts: {offenders}"
+
+
+def test_no_backend_leaks_its_internal_id_as_a_provider_name() -> None:
+    """`gen_ai.provider.name` is the product's name, not ours.
+
+    `llama_cpp` is a directory name; `llama.cpp` is what the thing is called,
+    and it is what a dashboard grouped by provider expects to find. An
+    underscore in this value is our id leaking through — and correcting it
+    later splits the series it has been accumulating.
+    """
+    import re
+    import sys
+
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+    from prometheus_gateway.router import _provider_of  # noqa: PLC0415
+
+    manager_backends = re.findall(
+        r'"([a-z0-9_]+)"',
+        re.search(r"^BACKENDS = \(([^)]*)\)", _MANAGER_REGISTRY.read_text(), re.MULTILINE).group(1),
+    )
+    offenders = {b: _provider_of(b) for b in manager_backends if "_" in _provider_of(b)}
+    assert not offenders, f"backends whose provider name is still our id: {offenders}"
