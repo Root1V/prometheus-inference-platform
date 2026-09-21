@@ -1,0 +1,51 @@
+# Prometheus Manager configuration — the `lab` node (PRM-135).
+#
+# A second manager-api on this same machine, so the new inference engines can
+# be added and exercised one at a time without touching the node everything
+# already runs on. Same hardware, separate process, separate registry, separate
+# ports — which is what makes it a node rather than a second view of `local`.
+#
+# Start it with:
+#   uv run --project runtime/manager/api pmgr-api --config runtime/manager/manager-lab.toml
+
+[api]
+host = "0.0.0.0"
+# `local` holds 8090. Anything reachable is fine; the gateway learns it from
+# the node registry, not from a constant.
+port = 8091
+jwks_url = "http://127.0.0.1:9000/.well-known/jwks.json"
+proxy_host = ""
+
+[server]
+binary = "~/.local/bin/llama-server"
+host = "127.0.0.1"
+start_timeout_s = 60
+stop_timeout_s = 10
+# Separate from `local`'s. Two managers writing PID files into one directory
+# would each find the other's and believe it owned the process.
+log_dir = "runtime/logs/lab"
+pid_dir = "runtime/run/lab"
+
+[registry]
+# Its own catalog. A model registered on `lab` is not registered on `local`,
+# which is the point: this is where an engine gets tried before it is offered
+# anywhere that matters.
+path = "runtime/manager/registry-lab.db"
+
+[downloads]
+# Shared with `local` on purpose — same disk, same weights. There is no reason
+# to download a second copy of a file that is already here.
+dir = "runtime/models/downloads"
+hf_token_env = "HF_TOKEN"
+ca_bundle = ""
+
+[dashboard]
+refresh_interval_s = 2
+
+[tui]
+theme = "catppuccin-latte"
+log_file_path = "runtime/logs/lab/manager.log"
+
+[tracing]
+otlp_endpoint = "http://localhost:4318"
+disabled = false

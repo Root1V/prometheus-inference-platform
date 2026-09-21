@@ -4845,6 +4845,50 @@ and PRM-133's UI half — the shared engine list, the filtering, the drift guard
 all.
 
 
+## PRM-135 — hf-serve, and a `lab` node to try engines on
+
+**Why**: first of the three engines being added one at a time (hf-serve, TEI, vLLM-MLX). hf-serve
+earns the first slot because it is the only entry in `BACKENDS` that covers all five modalities
+in one server — its `--task` vocabulary has a name for every one of ours.
+
+**Scope**: `hf_serve` in `BACKENDS`, a command builder, a scanner signature, config defaults, and
+the engine in the admin UI's list. Plus `manager-lab.toml`: a second manager-api on this same
+machine, port 8091, its own registry, its own PID and log directories — the same hardware, but a
+node where an engine can be exercised before it is offered where it matters. Registered as `lab`
+with its engines declared (PRM-133).
+
+Two things make its builder unlike the other five, and both are in the code as comments:
+`--model-id` takes the Hub repo, not `entry.path`, because this catalog's paths are `.gguf` and
+Transformers cannot read them — a model with no `hf_repo` is refused at launch with the reason
+rather than handed a path to fail on. And `--task` is `modality` translated; this is the first
+backend that acts on modality beyond llama_cpp's `--embedding`/`--mmproj`, which RM-09 predicted.
+
+**Two defects, both found by launching it rather than by testing it**:
+
+- Adding a backend is five coordinated edits — the tuple, the default TOML, `BackendsConfig`,
+  `load_config`, and `_backend_config`'s dict. Missing the last three imported cleanly, typechecked
+  cleanly and passed the whole suite; it failed at `start_instance` on a real request with
+  `No [backends.hf_serve] config found`. Three tests now assert that every entry in `BACKENDS`
+  resolves a binary, has a command builder, and has a scanner signature.
+- The gateway's manager client waited **10s** for a start the manager was willing to wait **300s**
+  for. A backend that loads slowly came back as a 502 with an empty message while the process was
+  loading correctly — and httpx closing the connection cancelled the manager's handler, so the
+  start that "failed" was aborted by the thing reporting the failure. The three lifecycle actions
+  now use a ceiling above every backend's own timeout; everything else stays at 10s.
+
+**Verified live**: `hf-serve --model-id sentence-transformers/all-MiniLM-L6-v2 --task embeddings
+--device mps` launched by the manager on `lab`, ~2 minutes to load, then 384-dimension embeddings
+with usage accounting. The gateway discovered it through `manager_sync` and routes to it.
+
+**Not exercised**: an inference call all the way through the gateway. It returns 403 — RM-07's
+deny-by-default, working exactly as designed, because the test client holds no
+`model:minilm-hfserve` scope. Granting one is an operator decision, not a verification step.
+
+**Also installed on this machine**: `libmagic` (Homebrew). `pip install hf-serve` produces a
+binary that cannot start without it, and nothing in the Python metadata says so — worth knowing
+before this engine is declared on a node that does not have it.
+
+
 Append a new row to the table with the next `RM-NN` id and a new `## RM-NN — ...` section
 below, following the same shape (Why / Scope). Re-sort the table if the new item's
 priority isn't "last."

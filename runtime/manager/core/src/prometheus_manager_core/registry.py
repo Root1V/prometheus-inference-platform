@@ -48,7 +48,7 @@ _SLUG_RE = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9._-]{1,62}[a-zA-Z0-9]$")
 # the other four in lifecycle.py's command-building and scanner.py's
 # process-recognition (its own --listen-ip/--listen-port flags, no /health
 # endpoint). See lifecycle.py's _build_sd_cpp_cmd for specifics.
-BACKENDS = ("llama_cpp", "mlx", "vllm", "sglang", "sd_cpp")
+BACKENDS = ("llama_cpp", "mlx", "vllm", "sglang", "sd_cpp", "hf_serve")
 
 # RM-09: what kind of requests this model serves. Determines which flags
 # lifecycle.py adds to the launch command and how the gateway routes requests

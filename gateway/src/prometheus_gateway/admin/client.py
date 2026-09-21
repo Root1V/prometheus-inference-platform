@@ -22,6 +22,18 @@ logger = get_logger(__name__)
 
 _TOKEN_RENEW_BEFORE_S = 60
 _REQUEST_TIMEOUT_S = 10.0
+# PRM-135: starting a backend is not a request, it is a model load, and the
+# manager waits `start_timeout_s` for it — 60s for llama.cpp, 300s for the
+# Python servers. This client waited 10s for all of them, so a slow backend
+# came back as a 502 with an empty message while the process was still loading
+# correctly. Worse than the wrong answer: httpx closing the connection
+# cancelled the manager's handler and the half-loaded process was killed, so
+# the start that "failed" had really been aborted by the thing reporting it.
+#
+# A ceiling above every backend's own timeout, so the manager's limit is the
+# one that decides. It is not a general timeout — only the three lifecycle
+# actions use it, and everything else stays at 10s.
+_CONTROL_TIMEOUT_S = 330.0
 
 
 class ManagerApiClient:
@@ -91,10 +103,15 @@ class ManagerApiClient:
             return await client.get(f"{node_url.rstrip('/')}{path}", headers=headers, params=params)
 
     async def post(
-        self, node_url: str, path: str, json: dict[str, Any] | None = None
+        self,
+        node_url: str,
+        path: str,
+        json: dict[str, Any] | None = None,
+        *,
+        timeout: float = _REQUEST_TIMEOUT_S,
     ) -> httpx.Response:
         headers = await self._headers()
-        async with httpx.AsyncClient(timeout=_REQUEST_TIMEOUT_S) as client:
+        async with httpx.AsyncClient(timeout=timeout) as client:
             return await client.post(f"{node_url.rstrip('/')}{path}", headers=headers, json=json)
 
     async def patch(

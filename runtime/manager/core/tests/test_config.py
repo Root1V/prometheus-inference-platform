@@ -191,3 +191,60 @@ class TestRegistryPathResolution:
         """PMGR_REGISTRY_PATH=/data/registry.db is honoured verbatim (container path)."""
         monkeypatch.setenv("PMGR_REGISTRY_PATH", "/data/registry.db")
         assert load_config(path=None).resolved_registry_path == Path("/data/registry.db")
+
+
+# ── PRM-135: adding a backend is four coordinated edits, and nothing checked ──
+
+
+def test_every_backend_resolves_a_binary_and_a_timeout():
+    """`BACKENDS` is the list; `_backend_config` is a second, hand-kept copy.
+
+    Adding `hf_serve` meant editing four places — the tuple, the default TOML,
+    `BackendsConfig`, `load_config` — and `_backend_config`'s dict a fifth.
+    Missing the last three imported, typechecked and passed every test; it
+    failed at `start_instance`, on a real request, with
+    `No [backends.hf_serve] config found`.
+
+    This is the assertion that would have caught it before the launch did.
+    """
+    from prometheus_manager_core.config import ManagerConfig
+    from prometheus_manager_core.registry import BACKENDS
+
+    cfg = ManagerConfig()
+    missing: list[str] = []
+    for backend in BACKENDS:
+        try:
+            binary = cfg.resolved_backend_binary(backend)
+            timeout = cfg.resolved_backend_start_timeout_s(backend)
+        except ValueError as exc:
+            missing.append(f"{backend}: {exc}")
+            continue
+        if not binary:
+            missing.append(f"{backend}: empty binary")
+        if timeout <= 0:
+            missing.append(f"{backend}: non-positive start timeout")
+    assert not missing, f"backends in BACKENDS that cannot be launched: {missing}"
+
+
+def test_every_backend_has_a_command_builder():
+    """The other half of the same trap: a backend the registry accepts and
+    `lifecycle` has no way to launch. `start_instance` raises for it, but only
+    once someone tries.
+    """
+    from prometheus_manager_core.lifecycle import _COMMAND_BUILDERS
+    from prometheus_manager_core.registry import BACKENDS
+
+    assert set(_COMMAND_BUILDERS) == set(BACKENDS)
+
+
+def test_every_backend_is_recognisable_by_the_scanner():
+    """And the third: a process the manager started and cannot find again.
+
+    RM-86: the scanner is how a restarted manager re-adopts running instances.
+    A backend with no signature leaves its processes orphaned — running, billed
+    for, and invisible.
+    """
+    from prometheus_manager_core.registry import BACKENDS
+    from prometheus_manager_core.scanner import _BACKEND_SIGNATURES
+
+    assert {sig.backend for sig in _BACKEND_SIGNATURES} == set(BACKENDS)

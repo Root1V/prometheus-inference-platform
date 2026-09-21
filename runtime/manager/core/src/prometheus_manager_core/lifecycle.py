@@ -232,12 +232,83 @@ def _build_sd_cpp_cmd(binary: str, entry: RegistryEntry, port: int, bind_host: s
     return cmd
 
 
+# PRM-135: our MODALITIES -> hf-serve's `--task`. Every one of the five has a
+# mapping, which is the reason this backend is worth having: it is the only one
+# in BACKENDS that covers the whole catalog in a single server. The names are
+# not the same on both sides, so this is a translation and not a pass-through.
+_HF_SERVE_TASKS = {
+    "text": "text-generation",
+    "embedding": "embeddings",
+    "rerank": "text-ranking",
+    "image": "text-to-image",
+    "vision": "image-text-to-text",
+}
+
+
+def _build_hf_serve_cmd(binary: str, entry: RegistryEntry, port: int, bind_host: str) -> list[str]:
+    """hf-serve — verified against `hf-serve --help` (hf-serve 0.1.4 on PyPI) and
+    against a running server: `/health` answers 200 and `/v1/embeddings` returns
+    a real vector, so the manager's existing start probe needs no special case.
+
+    PRM-135. Two things make it unlike the other four:
+
+    `--model-id`, not a path. Every other backend here is handed `entry.path`,
+    which in this catalog is a `.gguf` — llama.cpp weights, which Transformers
+    cannot load. hf-serve wants a Hub id or a directory of Hugging Face format
+    weights, so it is given `entry.hf_repo`. A model with no `hf_repo` cannot
+    be served by this backend, and saying so at launch is better than handing
+    it a path it will fail to parse.
+
+    `--task` is mandatory in practice, and it is `modality` under another name.
+    This is the first backend that actually acts on `modality` beyond
+    llama_cpp's `--embedding`/`--mmproj` flags (RM-09 predicted the rest would
+    have to eventually). The map below is ours; hf-serve's own vocabulary is
+    larger and the names do not coincide.
+
+    No alias flag, like `mlx` — identity is tracked by the PID file, not by
+    anything the process reports about itself (see scanner.py).
+    """
+    if not entry.hf_repo:
+        raise LifecycleError(
+            f"Model '{entry.id}' has no hf_repo, and hf_serve loads Hugging Face format "
+            "weights by Hub id — a .gguf path is not something Transformers can read. "
+            "Register the model with its Hub repository, or serve it with llama_cpp."
+        )
+    task = _HF_SERVE_TASKS.get(entry.modality)
+    if task is None:
+        raise LifecycleError(
+            f"Model '{entry.id}' has modality {entry.modality!r}, which has no hf-serve "
+            f"task mapped to it. Known: {', '.join(sorted(_HF_SERVE_TASKS))}."
+        )
+    system = platform.system()
+    if system == "Darwin":
+        device = "mps"
+    elif shutil.which("nvidia-smi") is not None:
+        device = "cuda"
+    else:
+        device = "cpu"
+    return [
+        binary,
+        "--model-id",
+        entry.hf_repo,
+        "--task",
+        task,
+        "--device",
+        device,
+        "--host",
+        bind_host,
+        "--port",
+        str(port),
+    ]
+
+
 _COMMAND_BUILDERS = {
     "llama_cpp": _build_llama_cpp_cmd,
     "mlx": _build_mlx_cmd,
     "vllm": _build_vllm_cmd,
     "sglang": _build_sglang_cmd,
     "sd_cpp": _build_sd_cpp_cmd,
+    "hf_serve": _build_hf_serve_cmd,
 }
 
 
