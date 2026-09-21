@@ -242,6 +242,7 @@ _HF_SERVE_TASKS = {
     "rerank": "text-ranking",
     "image": "text-to-image",
     "vision": "image-text-to-text",
+    "classification": "text-classification",
 }
 
 

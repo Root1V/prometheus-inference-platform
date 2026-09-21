@@ -284,5 +284,8 @@ def test_the_ast_guard_can_actually_see_the_call_sites() -> None:
         for n in ast.walk(tree)
         if isinstance(n, ast.Call) and isinstance(n.func, ast.Name) and n.func.id == "_record_usage"
     ]
-    # chat non-streaming, chat streamed, embeddings, rerank, images.
-    assert len(calls) == 5, f"expected 5 _record_usage call sites, found {len(calls)}"
+    # chat non-streaming, chat streamed, embeddings, rerank, images, and
+    # PRM-136's pass-through. The count is deliberately exact: a new route that
+    # bills is a new place for the metric inputs to be forgotten, and this line
+    # is what makes adding one a decision rather than an omission.
+    assert len(calls) == 6, f"expected 6 _record_usage call sites, found {len(calls)}"

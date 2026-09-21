@@ -94,3 +94,39 @@ def test_no_backend_leaks_its_internal_id_as_a_provider_name() -> None:
     )
     offenders = {b: _provider_of(b) for b in manager_backends if "_" in _provider_of(b)}
     assert not offenders, f"backends whose provider name is still our id: {offenders}"
+
+
+def test_the_ui_offers_exactly_the_modalities_the_registry_accepts() -> None:
+    """Same trap as the engine list, one field over.
+
+    PRM-136 added `classification` to MODALITIES. A UI that does not offer it
+    cannot register the models the gateway now has a route for; a UI that
+    offers one the registry rejects fails at save with a validation error.
+    """
+    manager_modalities = set(
+        re.findall(
+            r'"([a-z_]+)"',
+            re.search(
+                r"^MODALITIES = \(([^)]*)\)", _MANAGER_REGISTRY.read_text(), re.MULTILINE
+            ).group(1),
+        )
+    )
+    ui_union = set(
+        re.findall(
+            r'"([a-z_]+)"',
+            re.search(
+                r"export type Modality = ([^;]*);", (_UI / "types/instance.ts").read_text()
+            ).group(1),
+        )
+    )
+    ui_list = set(
+        re.findall(
+            r'"([a-z_]+)"',
+            re.search(
+                r"const MODALITIES: Modality\[\] = \[([^\]]*)\]",
+                (_UI / "components/EditModelModal.tsx").read_text(),
+            ).group(1),
+        )
+    )
+    assert ui_union == manager_modalities
+    assert ui_list == manager_modalities

@@ -44,10 +44,19 @@ _ENDPOINT_SLUG_MAP: dict[str, str] = {
 # Settings.rate_limit_rpm_admin.
 _ADMIN_API_PREFIX = "/admin/api/"
 
+# PRM-136: the pass-through route's path carries the model, so the exact-match
+# map above cannot see it — and PRM-129 is the record of what happens when a
+# route is not on that map: it silently shares `default` with everything else
+# and nobody notices until a pilot misses its capacity by 5%.
+_PREDICT_PREFIX = "/v1/models/"
+_PREDICT_SUFFIX = "/predict"
+
 
 def _endpoint_slug(path: str) -> str:
     if path.startswith(_ADMIN_API_PREFIX):
         return "admin"
+    if path.startswith(_PREDICT_PREFIX) and path.endswith(_PREDICT_SUFFIX):
+        return "predict"
     return _ENDPOINT_SLUG_MAP.get(path, _DEFAULT_ENDPOINT)
 
 

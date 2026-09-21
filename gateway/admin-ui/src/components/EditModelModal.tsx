@@ -18,7 +18,7 @@ interface EditModelModalProps {
 const inputClass =
   "w-full rounded-lg border border-border bg-background px-3 py-2 text-sm text-text focus:border-primary focus:outline-none";
 
-const MODALITIES: Modality[] = ["text", "vision", "embedding", "image", "rerank"];
+const MODALITIES: Modality[] = ["text", "vision", "embedding", "image", "rerank", "classification"];
 
 function Field({ label, hint, children }: { label: string; hint?: string; children: ReactNode }) {
   return (

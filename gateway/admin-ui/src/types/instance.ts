@@ -1,5 +1,5 @@
 export type Backend = "llama_cpp" | "mlx" | "vllm" | "sglang" | "sd_cpp" | "hf_serve";
-export type Modality = "text" | "vision" | "embedding" | "image" | "rerank";
+export type Modality = "text" | "vision" | "embedding" | "image" | "rerank" | "classification";
 export type InstanceState = "ready" | "loading" | "paused" | "stopped" | "error";
 
 export interface InstanceEntry {
