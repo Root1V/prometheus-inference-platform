@@ -258,7 +258,16 @@ def _detach(coro: "Any", *, what: str) -> None:
 # with no index. Their own words were that the table is the contract and hand
 # emission is equally fine. When there is an index, the package is the better
 # home — the conventions are still experimental and will move.
-_ENGINE_PROVIDERS = {"llama_cpp": "llama.cpp", "sd_cpp": "stable-diffusion.cpp"}
+# PRM-135: `gen_ai.provider.name` carries the product's name, not our internal
+# backend id. Only the ids that differ need an entry — `mlx`, `vllm` and
+# `sglang` are already what the products are called. `hf_serve` is not: an
+# underscore here would reach Argus's dashboards as a provider nobody can find,
+# and split the series the day it is corrected.
+_ENGINE_PROVIDERS = {
+    "llama_cpp": "llama.cpp",
+    "sd_cpp": "stable-diffusion.cpp",
+    "hf_serve": "hf-serve",
+}
 
 
 def _provider_of(engine: str | None) -> str:

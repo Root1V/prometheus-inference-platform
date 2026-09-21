@@ -4884,6 +4884,12 @@ with usage accounting. The gateway discovered it through `manager_sync` and rout
 deny-by-default, working exactly as designed, because the test client holds no
 `model:minilm-hfserve` scope. Granting one is an operator decision, not a verification step.
 
+**Found by the end-to-end call, once the model scope was granted**: `gen_ai.provider.name` came
+out as `hf_serve` — our backend id, not the product's name, while `llama_cpp` and `sd_cpp` both
+map to theirs. It would have reached Argus as a provider nobody could find, and correcting it
+later would have split the series it had been accumulating. Mapped, with a test asserting no
+backend's provider name still contains an underscore.
+
 **Also installed on this machine**: `libmagic` (Homebrew). `pip install hf-serve` produces a
 binary that cannot start without it, and nothing in the Python metadata says so — worth knowing
 before this engine is declared on a node that does not have it.
