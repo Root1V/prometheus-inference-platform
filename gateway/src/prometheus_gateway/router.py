@@ -270,6 +270,22 @@ _ENGINE_PROVIDERS = {
 }
 
 
+# PRM-136: the modalities routed through the pass-through, and the path they
+# are forwarded to. `/predict` is hf-serve's, and it is the only engine in
+# BACKENDS that serves one of these today — when a second one arrives with a
+# different path, this becomes a per-engine lookup rather than a constant.
+_PASS_THROUGH_MODALITIES = frozenset({"classification"})
+_PASS_THROUGH_PATH = "/predict"
+
+
+def _trace_id_for(request: Request) -> str:
+    """The id this request is logged under, wherever it was set."""
+    trace_id = getattr(getattr(request, "state", None), "trace_id", None)
+    if trace_id is None:
+        trace_id = structlog.contextvars.get_contextvars().get("trace_id", "none")
+    return str(trace_id)
+
+
 def _provider_of(engine: str | None) -> str:
     """The `gen_ai.provider.name` for a backend engine.
 
@@ -2362,6 +2378,164 @@ def create_router(registry: ModelRegistry, pool: "BackendPool") -> APIRouter:
             media_type="application/json",
             headers=_served_by_headers(entry),
         )
+
+    # ── POST /v1/models/{model}/predict ─────────────────────────────────────
+    # PRM-136: the pass-through. Every other route on this gateway is
+    # OpenAI-shaped, because every task it serves has an OpenAI endpoint to be
+    # shaped like. Classification does not, and neither does the class of
+    # "System 1" decision models (Laya, Jev) that answer typed questions with
+    # calibrated probabilities — there is no OpenAI request body for that, and
+    # inventing one would be this platform deciding what an engine's API should
+    # look like on the engine's behalf.
+    #
+    # So the body is forwarded verbatim and the answer comes back verbatim.
+    # What is NOT passed through is everything that makes this a gateway: the
+    # model still has to resolve, the caller still needs `inference:read` and a
+    # `model:<slug>` grant, a dead replica is still skipped, the request is
+    # still metered and still counts against a budget. The shape is the
+    # backend's; the policy is ours.
+    @router.post("/v1/models/{model}/predict")
+    async def model_predict(model: str, request: Request) -> Any:
+        """Forward a request to a model whose task has no OpenAI equivalent."""
+        claims = getattr(getattr(request, "state", None), "claims", None)
+        request_id = getattr(getattr(request, "state", None), "request_id", "unknown")
+
+        resolution = registry.resolve(model)
+        if resolution is None:
+            return _problem(
+                request,
+                400,
+                "unknown-model",
+                "Unknown Model",
+                f"Model {model!r} is not registered. Use GET /v1/models to list them.",
+            )
+        if resolution.mismatch:
+            return _problem(
+                request,
+                400,
+                "inconsistent-model-group",
+                "Inconsistent Model Group",
+                resolution.mismatch,
+            )
+        # The inverse of every other handler's modality check, and deliberately
+        # so: a model that HAS an OpenAI endpoint must be sent there, or the
+        # same model becomes reachable two ways with two different billing
+        # paths and two different rate-limit buckets.
+        if resolution.modality not in _PASS_THROUGH_MODALITIES:
+            return _problem(
+                request,
+                400,
+                "modality-mismatch",
+                "Modality Mismatch",
+                f"Model {model!r} has modality {resolution.modality!r}, which has its own "
+                "endpoint — this route is only for tasks OpenAI has no shape for. "
+                "See GET /v1/models.",
+            )
+
+        is_admin_bypass = claims is not None and claims.has_scope("admin:write")
+        if claims is None or not (claims.has_scope("inference:read") or is_admin_bypass):
+            return _problem(
+                request,
+                403,
+                "forbidden",
+                "Forbidden",
+                "This endpoint requires inference:read scope.",
+            )
+        if not (_may_use(claims, model, resolution) or is_admin_bypass):
+            return _problem(
+                request,
+                403,
+                "forbidden",
+                "Forbidden",
+                f"This client is not authorized to use model {model!r}. "
+                "Contact the platform operator to request access.",
+            )
+
+        try:
+            body = await request.json()
+        except Exception:
+            return _problem(
+                request,
+                400,
+                "validation-error",
+                "Validation Error",
+                "Request body must be valid JSON.",
+            )
+
+        if not resolution.members:
+            return _problem(
+                request,
+                503,
+                "model-not-loaded",
+                "Model Not Loaded",
+                f"Model {model!r} is registered but has no active backend. "
+                "Contact the platform operator.",
+            )
+        health = await _healthy_members(pool, request, resolution.members)
+        if not health.usable:
+            return _no_replica_available(request, model, health)
+        entry = health.usable[0]
+        assert entry.backend_url is not None
+
+        trace_id = _trace_id_for(request)
+        backend_start = time.monotonic()
+        try:
+            resp, served_id = await pool.forward_with_failover(
+                _candidates(health.usable),
+                _PASS_THROUGH_PATH,
+                body,
+                extra_headers={"X-Trace-ID": trace_id},
+            )
+            entry = _served_by(health.usable, served_id, entry)
+        except (httpx.ConnectError, httpx.ConnectTimeout, httpx.RemoteProtocolError) as exc:
+            logger.error("predict.unreachable", model=model, error=str(exc))
+            return _problem(
+                request,
+                503,
+                "backend-unavailable",
+                "Backend Unavailable",
+                "The inference backend is currently unreachable. Please try again later.",
+            )
+        except Exception as exc:
+            logger.error("predict.upstream_error", model=model, error=str(exc))
+            return _problem(
+                request,
+                502,
+                "upstream-error",
+                "Upstream Error",
+                "The inference backend returned an unrecoverable error.",
+            )
+
+        latency_ms = int((time.monotonic() - backend_start) * 1000)
+        try:
+            resp_body: Any = resp.json()
+        except Exception:
+            resp_body = {}
+
+        # The backend reports no usage for these tasks, so the input is
+        # measured here. Estimated, and named as such in the row rather than
+        # written as if it were counted.
+        prompt_tokens = _estimate_text_tokens(json.dumps(body, ensure_ascii=False))
+        await metrics_store.record_inference(
+            prompt_tokens=prompt_tokens,
+            completion_tokens=0,
+            latency_ms=latency_ms,
+            backend_id=entry.id,
+            model_id=resolution.model_key,
+        )
+        await _record_usage(
+            claims,
+            _billing_id(entry),
+            prompt_tokens,
+            0,
+            request_kind="predict",
+            model_slug=resolution.model_key,
+            instance_id=entry.id,
+            request_id=request_id,
+            duration_s=latency_ms / 1000,
+            engine=entry.backend,
+        )
+        return JSONResponse(status_code=resp.status_code, content=resp_body)
 
     # ── POST /v1/images/generations ─────────────────────────────────────────
     # Implements: docs/roadmap.md — RM-38 (image generation)

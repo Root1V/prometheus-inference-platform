@@ -59,7 +59,12 @@ BACKENDS = ("llama_cpp", "mlx", "vllm", "sglang", "sd_cpp", "hf_serve")
 # is not text generation with a different prompt — llama-server refuses /rerank
 # unless started with --reranking, and a reranker started without it answers
 # chat requests with confident nonsense instead of an error.
-MODALITIES = ("text", "embedding", "vision", "image", "rerank")
+# PRM-136: "classification" has no OpenAI endpoint, and that is the point of
+# it being here. It routes to the pass-through `/v1/models/{model}/predict`,
+# which forwards the body to the backend in the backend's own shape. The list
+# grows one verified engine-task at a time — the route is general, the
+# modalities are not guesses.
+MODALITIES = ("text", "embedding", "vision", "image", "rerank", "classification")
 
 _SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS models (

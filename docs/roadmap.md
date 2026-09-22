@@ -4895,6 +4895,51 @@ binary that cannot start without it, and nothing in the Python metadata says so 
 before this engine is declared on a node that does not have it.
 
 
+## PRM-136 — A pass-through for tasks OpenAI has no shape for
+
+**Why**: found by trying to serve `convaiinnovations/laya` on hf-serve. Laya does not load — it has
+no root `config.json` and its entry point is its own `laya.Router`, not a Transformers `Auto`
+class, despite a model card that says `library_name: transformers` and tags it
+`endpoints_compatible`. But the attempt exposed two real gaps, and both were ours.
+
+`text-classification` was not one of our modalities, so even a well-formed classifier could not be
+registered. And measured against a running hf-serve: for classification it exposes **no `/v1/*`
+surface at all** — `/v1/models` 404s, the OpenAI-compatible routes only exist for the tasks OpenAI
+has. Classification is served at `/predict`, in hf-serve's own shape.
+
+That is not a quirk of one engine. Laya and TypeSafe's Jev are a model class — non-autoregressive
+"System 1" decision models that take a state plus typed questions and return calibrated
+probability distributions in one forward pass. There is no OpenAI request body for that, and
+inventing one would be this platform deciding what an engine's API should look like on the
+engine's behalf.
+
+**Scope**: `POST /v1/models/{model}/predict`. The body is forwarded verbatim and the answer comes
+back verbatim, including the backend's status code — a 422 from the engine is the engine's answer.
+What does **not** pass through is everything that makes this a gateway: the model still resolves,
+the caller still needs `inference:read` and a `model:<slug>` grant, a dead replica is still
+skipped, the call is still metered. The shape is the backend's; the policy is ours.
+
+The modality check is the inverse of every other handler's: a model that *has* an OpenAI endpoint
+is refused here, or the same model becomes reachable two ways with two billing paths and two
+rate-limit buckets — and the one that bills correctly is whichever the caller did not use.
+
+Its own rate-limit bucket, via a prefix/suffix rule rather than the exact-match map, because the
+path carries the model name. PRM-129 is the record of what an unmapped route costs: `/v1/embeddings`
+and `/v1/rerank` shared `default` for months and a copilot missed its pilot capacity by 5%.
+
+**`MODALITIES` grows one verified engine-task at a time.** The route is general; the modality list
+is not a guess. Today it is `classification` → hf-serve's `text-classification`, and nothing else
+until something is launched and measured.
+
+**Verified live**: `distilbert-base-uncased-finetuned-sst-2-english` on hf-serve, registered on
+the `lab` node, launched by the manager, discovered by `manager_sync`. Through the gateway:
+`POSITIVE 0.991` in 54ms, `NEGATIVE 0.965` in 165ms, `x-ratelimit-scope: predict`, a text model
+refused with `Modality Mismatch` in 4ms, and three `request_kind='predict'` rows in `usage_events`.
+
+**Not built**: a backend for Laya. It would be a sixth engine wrapping `laya.Router`, and this
+route is what would make that engine reachable without inventing an API for it.
+
+
 Append a new row to the table with the next `RM-NN` id and a new `## RM-NN — ...` section
 below, following the same shape (Why / Scope). Re-sort the table if the new item's
 priority isn't "last."
