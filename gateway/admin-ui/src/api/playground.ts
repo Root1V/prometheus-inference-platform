@@ -139,6 +139,49 @@ export function useZeroShot() {
   });
 }
 
+/**
+ * PRM-137 follow-up: a fixed-label classifier, through the same pass-through.
+ *
+ * No `candidate_labels` — that is the whole difference from `useZeroShot`:
+ * the labels are baked into the checkpoint, so the request carries only the
+ * text. hf-serve answers with the pipeline's own list.
+ */
+export function useClassify() {
+  return useMutation({
+    mutationFn: async ({ model, input }: { model: string; input: string }) => {
+      const raw = (
+        await rootClient.post<{ label: string; score: number }[] | { label: string; score: number }>(
+          `/v1/models/${encodeURIComponent(model)}/predict`,
+          { inputs: input },
+        )
+      ).data;
+      return Array.isArray(raw) ? raw : [raw];
+    },
+  });
+}
+
+interface RerankResponse {
+  results: { index: number; relevance_score: number }[];
+}
+
+/** PRM-106's endpoint, finally reachable from the Playground. Unlike the two
+ * above this one is OpenAI-shaped and has its own route — it is here because
+ * the picker now offers rerank models, and an option that cannot be used is
+ * the defect PRM-133 exists to prevent. */
+export function useRerank() {
+  return useMutation({
+    mutationFn: async ({
+      model,
+      query,
+      documents,
+    }: {
+      model: string;
+      query: string;
+      documents: string[];
+    }) => (await rootClient.post<RerankResponse>("/v1/rerank", { model, query, documents })).data,
+  });
+}
+
 interface ImageGenerationResponse {
   created: number;
   data: { b64_json: string }[];

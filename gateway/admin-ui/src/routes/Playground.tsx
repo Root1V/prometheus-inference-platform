@@ -12,6 +12,8 @@ import {
   streamPlaygroundChat,
   useEmbeddings,
   useZeroShot,
+  useClassify,
+  useRerank,
   useImageGenerations,
   usePlaygroundChat,
   type ChatMessage,
@@ -236,6 +238,8 @@ export default function Playground() {
   const chat = usePlaygroundChat();
   const embeddings = useEmbeddings();
   const zeroShot = useZeroShot();
+  const classify = useClassify();
+  const rerank = useRerank();
   const imageGenerations = useImageGenerations();
   const composerHistory = usePromptHistory();
 
@@ -300,10 +304,24 @@ export default function Playground() {
   const isTextLike = modality === "text" || modality === "vision";
   const isVisionModel = modality === "vision";
   const isZeroShot = modality === "zero_shot";
+  const isClassification = modality === "classification";
+  const isRerank = modality === "rerank";
+  // PRM-137 follow-up: the three that answer with a ranked distribution rather
+  // than text. They share one log entry shape and one renderer — what differs
+  // is only what the request carries.
+  const isRanked = isZeroShot || isClassification || isRerank;
 
-  const isBusy = isSending || embeddings.isPending || imageGenerations.isPending;
+  // PRM-137 follow-up: every non-chat modality counts. Leaving the new ones
+  // out let a second request go while the first was still in flight.
+  const isBusy =
+    isSending ||
+    embeddings.isPending ||
+    imageGenerations.isPending ||
+    zeroShot.isPending ||
+    classify.isPending ||
+    rerank.isPending;
   const canSendDraft =
-    modality === "embedding" || modality === "image"
+    modality === "embedding" || modality === "image" || isRanked
       ? draft.trim().length > 0
       : draft.trim().length > 0 || attachedImage !== null;
 
@@ -367,6 +385,67 @@ export default function Playground() {
           input,
           labels: data.labels,
           scores: data.scores,
+          latencyMs: Math.round(performance.now() - startedAt),
+          model: selectedModel,
+        },
+      ]);
+    } catch (error) {
+      setEmbedError(getErrorMessage(error));
+    }
+  }
+
+  async function handleClassify() {
+    if (!selectedModel || !draft.trim() || classify.isPending) return;
+    setEmbedError(null);
+    const input = draft;
+    composerHistory.record(input);
+    setDraft("");
+    const startedAt = performance.now();
+    try {
+      const data = await classify.mutateAsync({ model: selectedModel, input });
+      setEntries((prev) => [
+        ...prev,
+        {
+          kind: "zero_shot",
+          input,
+          labels: data.map((d) => d.label),
+          scores: data.map((d) => d.score),
+          latencyMs: Math.round(performance.now() - startedAt),
+          model: selectedModel,
+        },
+      ]);
+    } catch (error) {
+      setEmbedError(getErrorMessage(error));
+    }
+  }
+
+  async function handleRerank() {
+    const documents = candidateLabels
+      .split("\n")
+      .map((d) => d.trim())
+      .filter(Boolean);
+    if (!selectedModel || !draft.trim() || rerank.isPending) return;
+    if (documents.length === 0) {
+      setEmbedError("Add at least one document to score, one per line.");
+      return;
+    }
+    setEmbedError(null);
+    const query = draft;
+    composerHistory.record(query);
+    setDraft("");
+    const startedAt = performance.now();
+    try {
+      const data = await rerank.mutateAsync({ model: selectedModel, query, documents });
+      // Sorted by score, like the other two — the endpoint returns original
+      // indices, and a ranking shown in input order is not a ranking.
+      const ranked = [...data.results].sort((a, b) => b.relevance_score - a.relevance_score);
+      setEntries((prev) => [
+        ...prev,
+        {
+          kind: "zero_shot",
+          input: query,
+          labels: ranked.map((r) => documents[r.index] ?? `#${r.index}`),
+          scores: ranked.map((r) => r.relevance_score),
           latencyMs: Math.round(performance.now() - startedAt),
           model: selectedModel,
         },
@@ -579,6 +658,8 @@ export default function Playground() {
     if (modality === "embedding") return void handleGetEmbedding();
     if (modality === "image") return void handleGenerateImage();
     if (isZeroShot) return void handleZeroShot();
+    if (isClassification) return void handleClassify();
+    if (isRerank) return void handleRerank();
     if (!draft.trim() && !attachedImage) return;
     const userMessage: ChatMessage = {
       role: "user",
@@ -673,6 +754,8 @@ export default function Playground() {
     if (modality === "image")
       return "Describe the image to generate… (Enter to send, Shift+Enter for a new line)";
     if (isZeroShot) return "Text to decide about… (Enter to send, Shift+Enter for a new line)";
+    if (isClassification) return "Text to classify… (Enter to send, Shift+Enter for a new line)";
+    if (isRerank) return "The query to score documents against… (Enter to send)";
     return "Ask something… (Enter to send, Shift+Enter for a new line)";
   }
 
@@ -680,6 +763,8 @@ export default function Playground() {
     if (modality === "embedding") return "Get embedding";
     if (modality === "image") return "Generate";
     if (isZeroShot) return "Decide";
+    if (isClassification) return "Classify";
+    if (isRerank) return "Rank";
     return "Send";
   }
 
@@ -1058,6 +1143,31 @@ export default function Playground() {
                 label set, which is what makes the options yours to choose.
               </p>
             </div>
+          )}
+
+          {isRerank && (
+            <div className="mt-3">
+              <label className="block text-xs font-medium text-text-muted">
+                Documents to score, one per line
+              </label>
+              <textarea
+                value={candidateLabels}
+                onChange={(e) => setCandidateLabels(e.target.value)}
+                rows={4}
+                placeholder={"La membresía anual de la Tarjeta Oro cuesta S/ 45.00.\nEl horario de atención es de 9 a 18h.\nPara bloquear una tarjeta, llame al 0800-1234."}
+                className="mt-1 w-full rounded-lg border border-border bg-surface px-3 py-2 text-sm text-text focus:border-primary focus:outline-none"
+              />
+              <p className="mt-1 text-xs text-text-muted">
+                The box above is the query; these are the candidates it scores against.
+              </p>
+            </div>
+          )}
+
+          {isClassification && (
+            <p className="mt-3 text-xs text-text-muted">
+              This model's labels come from the checkpoint, not from the request — nothing to
+              choose. For labels you set per call, pick a model under “Decision (zero-shot)”.
+            </p>
           )}
 
           {attachedImage && (

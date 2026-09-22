@@ -4982,6 +4982,14 @@ unselectable in the Playground since PRM-106 and nobody noticed, because a model
 dropdown reads as a model nobody started. The groups are derived now, with the raw modality as the
 fallback label: the failure mode is an ugly name, never a hidden model.
 
+**And the two it had been hiding now work, not just show.** Making the picker complete exposed
+that `classification` and `rerank` fell through to the chat path: selecting `sst2-clf` sent a chat
+completion and got `Modality Mismatch` back. A visible option that cannot be used is the same
+defect as a hidden one, so both got composers — classification sends only the text (its labels are
+in the checkpoint, and the UI says so), rerank sends the query plus documents one per line, sorted
+by score because a ranking shown in input order is not a ranking. All three share one renderer:
+what differs is only what the request carries.
+
 **Verified live**: Von registered on `lab`, started by the manager in 7s, driven from the
 Playground — `facturación 0.7433 · cancelación 0.2418 · ventas 0.0091 · soporte técnico 0.0058`,
 166 ms, and a `request_kind='predict'` row in `usage_events`.
