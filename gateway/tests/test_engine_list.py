@@ -130,3 +130,35 @@ def test_the_ui_offers_exactly_the_modalities_the_registry_accepts() -> None:
     )
     assert ui_union == manager_modalities
     assert ui_list == manager_modalities
+
+
+def test_the_playground_picker_can_show_every_modality() -> None:
+    """It used to hard-code three groups, so `rerank` had been invisible in the
+    Playground since PRM-106 and nobody noticed — a model missing from a
+    dropdown reads as a model nobody started, not as a bug.
+
+    The picker now falls back to the raw modality rather than dropping the
+    entry, so this asserts the labels exist for the modalities we have: a
+    missing one shows as `zero_shot` instead of `Decision (zero-shot)`, which
+    is ugly but still selectable.
+    """
+    src = (_UI / "components/PlaygroundModelPicker.tsx").read_text()
+    labelled = set(
+        re.findall(
+            r"^\s*([a-z_]+):",
+            re.search(r"GROUP_LABELS[^{]*\{([^}]*)\}", src).group(1),
+            re.MULTILINE,
+        )
+    )
+    manager_modalities = set(
+        re.findall(
+            r'"([a-z_]+)"',
+            re.search(
+                r"^MODALITIES = \(([^)]*)\)", _MANAGER_REGISTRY.read_text(), re.MULTILINE
+            ).group(1),
+        )
+    )
+    assert manager_modalities - labelled == set(), (
+        f"modalities with no group label in the Playground picker: "
+        f"{sorted(manager_modalities - labelled)}"
+    )

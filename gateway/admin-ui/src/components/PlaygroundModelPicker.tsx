@@ -1,7 +1,37 @@
-import type { InstanceEntry } from "../types/instance";
+import type { InstanceEntry, Modality } from "../types/instance";
 
 const inputClass =
   "w-full rounded-lg border border-border bg-background px-3 py-2 text-sm text-text focus:border-primary focus:outline-none";
+
+/** PRM-137: the groups, and the order they appear in.
+ *
+ * This used to be three hard-coded `.filter()` calls — Text & Vision,
+ * Embedding, Image — which meant every modality added since was silently
+ * dropped from the picker. `rerank` had been missing since PRM-106 and nobody
+ * noticed, because a model that is absent from a dropdown does not look like a
+ * bug, it looks like a model nobody started.
+ *
+ * Anything not named here still appears, under its own raw modality: the
+ * fallback is "show it with an ugly label", never "hide it".
+ */
+const GROUP_LABELS: Partial<Record<Modality, string>> = {
+  text: "Text & Vision",
+  vision: "Text & Vision",
+  embedding: "Embedding",
+  rerank: "Rerank",
+  classification: "Classification",
+  zero_shot: "Decision (zero-shot)",
+  image: "Image",
+};
+
+const GROUP_ORDER = [
+  "Text & Vision",
+  "Embedding",
+  "Rerank",
+  "Classification",
+  "Decision (zero-shot)",
+  "Image",
+];
 
 /** RM-53: one Model selector spanning every modality, replacing three
  * separately-filtered <select> blocks (Chat/Embeddings/Images) — grouped by
@@ -26,9 +56,18 @@ export function PlaygroundModelPicker({
     );
   }
 
-  const textVision = instances.filter((i) => i.modality === "text" || i.modality === "vision");
-  const embedding = instances.filter((i) => i.modality === "embedding");
-  const image = instances.filter((i) => i.modality === "image");
+  const grouped = new Map<string, InstanceEntry[]>();
+  for (const instance of instances) {
+    const label = GROUP_LABELS[instance.modality] ?? instance.modality;
+    const bucket = grouped.get(label);
+    if (bucket) bucket.push(instance);
+    else grouped.set(label, [instance]);
+  }
+  const groups = [...grouped.entries()].sort(
+    (a, b) =>
+      (GROUP_ORDER.indexOf(a[0]) + 1 || GROUP_ORDER.length + 1) -
+      (GROUP_ORDER.indexOf(b[0]) + 1 || GROUP_ORDER.length + 1),
+  );
 
   return (
     <select
@@ -37,33 +76,15 @@ export function PlaygroundModelPicker({
       onChange={(e) => onChange(e.target.value)}
       className={inputClass}
     >
-      {textVision.length > 0 && (
-        <optgroup label="Text & Vision">
-          {textVision.map((i) => (
+      {groups.map(([label, members]) => (
+        <optgroup key={label} label={label}>
+          {members.map((i) => (
             <option key={i.id} value={i.id}>
               {i.id}
             </option>
           ))}
         </optgroup>
-      )}
-      {embedding.length > 0 && (
-        <optgroup label="Embedding">
-          {embedding.map((i) => (
-            <option key={i.id} value={i.id}>
-              {i.id}
-            </option>
-          ))}
-        </optgroup>
-      )}
-      {image.length > 0 && (
-        <optgroup label="Image">
-          {image.map((i) => (
-            <option key={i.id} value={i.id}>
-              {i.id}
-            </option>
-          ))}
-        </optgroup>
-      )}
+      ))}
     </select>
   );
 }

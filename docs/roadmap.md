@@ -4940,6 +4940,53 @@ refused with `Modality Mismatch` in 4ms, and three `request_kind='predict'` rows
 route is what would make that engine reachable without inventing an API for it.
 
 
+## PRM-137 — Zero-shot decisions, and the Playground can drive them
+
+**Why**: PRM-136 built the pass-through and left `MODALITIES` with one entry, on the rule that it
+grows one verified engine-task at a time. This is that verification, plus the benchmark that
+decided which model to bring in.
+
+`zero_shot` differs from `classification` in where the labels come from: a classifier has them
+baked into the checkpoint, a zero-shot model is given them in the request. That is the whole point
+of this class — the options are the caller's, decided per call, which is what "typed decision"
+means for Jev and its kin.
+
+**The model, chosen by measurement.** Of the "System One" open reproductions, only `wfzyx/von-1.0`
+loads — it declares `ModernBertForSequenceClassification`, a standard class. NanoJev has no
+`model_type`, mini-Jev ships a custom `ODMMiniModel`, OpenDecision and Laya have no root
+`config.json`. Measured here, zero-shot, N=100, 10-bin ECE:
+
+| | SST-2 (2 labels) | emotion (6 labels) | ECE (emotion) | p50 |
+|---|---|---|---|---|
+| `wfzyx/von-1.0` | 0.96 | **0.80** | **0.058** | 26–72 ms |
+| `mDeBERTa-v3-base-mnli-xnli` | 0.81 | 0.40 | 0.088 | 31–57 ms |
+| Laya (its own published zero-shot) | — | 0.583 | 0.318 | 38 ms |
+
+Von beats Laya's published number on its own task family, and is five times better calibrated —
+which matters because calibration is what this class sells. The generic NLI family is *not* a
+substitute: mDeBERTa is worse than Laya at 6 labels. Caveats, stated rather than buried: different
+dataset instances, N=100, Laya's column is self-published because it cannot be run here at all,
+and Jev is a paid API so it was never measured.
+
+**Scope**: the modality, its hf-serve task (`zero-shot-classification`), the pass-through set, and
+the Playground. `useZeroShot()` posts to `/v1/models/{model}/predict`; the composer grows an
+options field, because the labels belong to the request and not to the model picker.
+
+**The result renders as a distribution, not a winner.** A decision model's answer is the shape of
+its uncertainty — a single label would hide a 0.51/0.49 and that is precisely the case an operator
+needs to see before wiring it to an automated action.
+
+**Found while wiring it**: `PlaygroundModelPicker` built three hard-coded groups — Text & Vision,
+Embedding, Image — so every modality added since was silently dropped. `rerank` had been
+unselectable in the Playground since PRM-106 and nobody noticed, because a model missing from a
+dropdown reads as a model nobody started. The groups are derived now, with the raw modality as the
+fallback label: the failure mode is an ugly name, never a hidden model.
+
+**Verified live**: Von registered on `lab`, started by the manager in 7s, driven from the
+Playground — `facturación 0.7433 · cancelación 0.2418 · ventas 0.0091 · soporte técnico 0.0058`,
+166 ms, and a `request_kind='predict'` row in `usage_events`.
+
+
 Append a new row to the table with the next `RM-NN` id and a new `## RM-NN — ...` section
 below, following the same shape (Why / Scope). Re-sort the table if the new item's
 priority isn't "last."

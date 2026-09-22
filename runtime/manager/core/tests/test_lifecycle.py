@@ -152,6 +152,8 @@ class TestBackendCommandBuilders:
             ("rerank", "text-ranking"),
             ("image", "text-to-image"),
             ("vision", "image-text-to-text"),
+            ("classification", "text-classification"),
+            ("zero_shot", "zero-shot-classification"),
         ],
     )
     def test_hf_serve_cmd_maps_every_modality_to_a_task(self, modality, task):

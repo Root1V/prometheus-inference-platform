@@ -11,6 +11,7 @@ import { useInstances } from "../api/instances";
 import {
   streamPlaygroundChat,
   useEmbeddings,
+  useZeroShot,
   useImageGenerations,
   usePlaygroundChat,
   type ChatMessage,
@@ -201,6 +202,16 @@ interface EmbeddingLogEntry {
   model: string;
 }
 
+interface ZeroShotLogEntry {
+  kind: "zero_shot";
+  input: string;
+  /** Sorted by score, highest first — as the engine returns them. */
+  labels: string[];
+  scores: number[];
+  latencyMs: number;
+  model: string;
+}
+
 interface ImageLogEntry {
   kind: "image";
   prompt: string;
@@ -209,7 +220,7 @@ interface ImageLogEntry {
   model: string;
 }
 
-type LogEntry = ChatLogEntry | EmbeddingLogEntry | ImageLogEntry;
+type LogEntry = ChatLogEntry | EmbeddingLogEntry | ZeroShotLogEntry | ImageLogEntry;
 
 interface InProgress {
   leading: ChatMessage[];
@@ -224,6 +235,7 @@ export default function Playground() {
   const instancesQuery = useInstances();
   const chat = usePlaygroundChat();
   const embeddings = useEmbeddings();
+  const zeroShot = useZeroShot();
   const imageGenerations = useImageGenerations();
   const composerHistory = usePromptHistory();
 
@@ -233,6 +245,10 @@ export default function Playground() {
 
   const [sendError, setSendError] = useState<string | null>(null);
   const [embedError, setEmbedError] = useState<string | null>(null);
+  // PRM-137: the options this model is asked to choose between. They belong
+  // to the request, not the checkpoint, so they live beside the prompt
+  // rather than in the model picker.
+  const [candidateLabels, setCandidateLabels] = useState("");
   const [imageError, setImageError] = useState<string | null>(null);
   const [expandedImage, setExpandedImage] = useState<ImageLogEntry | null>(null);
 
@@ -283,6 +299,7 @@ export default function Playground() {
   const modality = selectedInstance?.modality;
   const isTextLike = modality === "text" || modality === "vision";
   const isVisionModel = modality === "vision";
+  const isZeroShot = modality === "zero_shot";
 
   const isBusy = isSending || embeddings.isPending || imageGenerations.isPending;
   const canSendDraft =
@@ -317,6 +334,39 @@ export default function Playground() {
           input,
           embedding: data.data[0]?.embedding ?? [],
           usage: data.usage,
+          latencyMs: Math.round(performance.now() - startedAt),
+          model: selectedModel,
+        },
+      ]);
+    } catch (error) {
+      setEmbedError(getErrorMessage(error));
+    }
+  }
+
+  async function handleZeroShot() {
+    const labels = candidateLabels
+      .split(",")
+      .map((l) => l.trim())
+      .filter(Boolean);
+    if (!selectedModel || !draft.trim() || zeroShot.isPending) return;
+    if (labels.length < 2) {
+      setEmbedError("Give at least two options, comma-separated — a choice needs something to choose between.");
+      return;
+    }
+    setEmbedError(null);
+    const input = draft;
+    composerHistory.record(input);
+    setDraft("");
+    const startedAt = performance.now();
+    try {
+      const data = await zeroShot.mutateAsync({ model: selectedModel, input, labels });
+      setEntries((prev) => [
+        ...prev,
+        {
+          kind: "zero_shot",
+          input,
+          labels: data.labels,
+          scores: data.scores,
           latencyMs: Math.round(performance.now() - startedAt),
           model: selectedModel,
         },
@@ -528,6 +578,7 @@ export default function Playground() {
     if (!selectedModel || isBusy) return;
     if (modality === "embedding") return void handleGetEmbedding();
     if (modality === "image") return void handleGenerateImage();
+    if (isZeroShot) return void handleZeroShot();
     if (!draft.trim() && !attachedImage) return;
     const userMessage: ChatMessage = {
       role: "user",
@@ -621,12 +672,14 @@ export default function Playground() {
     if (modality === "embedding") return "Text to embed… (Enter to send, Shift+Enter for a new line)";
     if (modality === "image")
       return "Describe the image to generate… (Enter to send, Shift+Enter for a new line)";
+    if (isZeroShot) return "Text to decide about… (Enter to send, Shift+Enter for a new line)";
     return "Ask something… (Enter to send, Shift+Enter for a new line)";
   }
 
   function sendLabel(): string {
     if (modality === "embedding") return "Get embedding";
     if (modality === "image") return "Generate";
+    if (isZeroShot) return "Decide";
     return "Send";
   }
 
@@ -833,6 +886,64 @@ export default function Playground() {
                   );
                 }
 
+                if (entry.kind === "zero_shot") {
+                  const top = entry.scores[0] ?? 0;
+                  return (
+                    <div key={i} className="space-y-3">
+                      <div className="ml-auto w-fit max-w-[80%] rounded-xl bg-primary px-4 py-2 text-sm text-primary-foreground">
+                        {entry.input}
+                      </div>
+                      <div className="rounded-xl border border-border bg-background px-4 py-3 text-sm text-text">
+                        <div className="space-y-1.5">
+                          {entry.labels.map((label, li) => {
+                            const score = entry.scores[li] ?? 0;
+                            return (
+                              <div key={label} className="flex items-center gap-3">
+                                <span
+                                  className={cn(
+                                    "w-40 shrink-0 truncate text-xs",
+                                    li === 0 ? "font-medium text-text" : "text-text-muted",
+                                  )}
+                                  title={label}
+                                >
+                                  {label}
+                                </span>
+                                {/* The bar is the point: a decision model's
+                                    answer is the distribution, not the winner.
+                                    A single label would hide a 0.51/0.49. */}
+                                <div className="h-2 flex-1 overflow-hidden rounded-full bg-border">
+                                  <div
+                                    className={cn(
+                                      "h-full rounded-full",
+                                      li === 0 ? "bg-primary" : "bg-text-muted/40",
+                                    )}
+                                    style={{ width: `${Math.max(score * 100, 0.5)}%` }}
+                                  />
+                                </div>
+                                <span className="w-14 shrink-0 text-right font-mono text-xs tabular-nums text-text-muted">
+                                  {score.toFixed(4)}
+                                </span>
+                              </div>
+                            );
+                          })}
+                        </div>
+                        <div className="mt-3 flex items-center gap-3 border-t border-border pt-2 text-xs text-text-muted">
+                          <span>
+                            {entry.labels.length} options · top {(top * 100).toFixed(1)}%
+                          </span>
+                          <span>{entry.latencyMs} ms</span>
+                          <span
+                            className="ml-auto font-mono"
+                            title="Model that produced this decision"
+                          >
+                            {entry.model}
+                          </span>
+                        </div>
+                      </div>
+                    </div>
+                  );
+                }
+
                 const imageIndex = imageEntries.indexOf(entry);
                 return (
                   <div key={i} className="space-y-3">
@@ -930,6 +1041,24 @@ export default function Playground() {
           <ErrorBanner message={attachError} />
           <ErrorBanner message={embedError} />
           <ErrorBanner message={imageError} />
+
+          {isZeroShot && (
+            <div className="mt-3">
+              <label className="block text-xs font-medium text-text-muted">
+                Options to choose between
+              </label>
+              <input
+                value={candidateLabels}
+                onChange={(e) => setCandidateLabels(e.target.value)}
+                placeholder="facturación, soporte técnico, ventas, cancelación"
+                className="mt-1 w-full rounded-lg border border-border bg-surface px-3 py-2 text-sm text-text focus:border-primary focus:outline-none"
+              />
+              <p className="mt-1 text-xs text-text-muted">
+                Comma-separated, and set per request — this model is not trained on a fixed
+                label set, which is what makes the options yours to choose.
+              </p>
+            </div>
+          )}
 
           {attachedImage && (
             <div className="mt-3 flex items-center gap-2 rounded-lg border border-border bg-surface p-2">

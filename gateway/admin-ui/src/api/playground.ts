@@ -108,6 +108,37 @@ export function useEmbeddings() {
   });
 }
 
+/** What hf-serve's zero-shot pipeline returns, captured from a live server:
+ * labels sorted by score, scores aligned by index. Some builds wrap it in a
+ * one-element array — normalised in the hook rather than at three call sites. */
+interface ZeroShotResponse {
+  sequence?: string;
+  labels: string[];
+  scores: number[];
+}
+
+/**
+ * PRM-137: POST /v1/models/{model}/predict — the pass-through (PRM-136).
+ *
+ * The body is the engine's, not OpenAI's, because there is no OpenAI request
+ * for "decide between these options": the labels travel with the call, which
+ * is the whole point of this class of model. The gateway still authorises,
+ * meters and rate-limits it like every other route.
+ */
+export function useZeroShot() {
+  return useMutation({
+    mutationFn: async ({ model, input, labels }: { model: string; input: string; labels: string[] }) => {
+      const raw = (
+        await rootClient.post<ZeroShotResponse | ZeroShotResponse[]>(
+          `/v1/models/${encodeURIComponent(model)}/predict`,
+          { inputs: input, parameters: { candidate_labels: labels } },
+        )
+      ).data;
+      return Array.isArray(raw) ? raw[0] : raw;
+    },
+  });
+}
+
 interface ImageGenerationResponse {
   created: number;
   data: { b64_json: string }[];

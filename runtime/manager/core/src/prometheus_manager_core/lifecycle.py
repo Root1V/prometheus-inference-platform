@@ -243,6 +243,7 @@ _HF_SERVE_TASKS = {
     "image": "text-to-image",
     "vision": "image-text-to-text",
     "classification": "text-classification",
+    "zero_shot": "zero-shot-classification",
 }
 
 

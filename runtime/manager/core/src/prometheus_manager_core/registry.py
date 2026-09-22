@@ -60,11 +60,25 @@ BACKENDS = ("llama_cpp", "mlx", "vllm", "sglang", "sd_cpp", "hf_serve")
 # unless started with --reranking, and a reranker started without it answers
 # chat requests with confident nonsense instead of an error.
 # PRM-136: "classification" has no OpenAI endpoint, and that is the point of
-# it being here. It routes to the pass-through `/v1/models/{model}/predict`,
+# it being here. PRM-137 adds "zero_shot", which differs from it in where the
+# labels come from: a classifier has them baked into the checkpoint, a
+# zero-shot model is given them in the request. That is the whole reason this
+# class of model is interesting — the options are the caller's, decided per
+# call, which is what "typed decision" means for Jev and its kin.
+#
+# Both route to the pass-through `/v1/models/{model}/predict`,
 # which forwards the body to the backend in the backend's own shape. The list
 # grows one verified engine-task at a time — the route is general, the
 # modalities are not guesses.
-MODALITIES = ("text", "embedding", "vision", "image", "rerank", "classification")
+MODALITIES = (
+    "text",
+    "embedding",
+    "vision",
+    "image",
+    "rerank",
+    "classification",
+    "zero_shot",
+)
 
 _SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS models (
