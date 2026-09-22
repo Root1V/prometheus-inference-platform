@@ -216,3 +216,51 @@ async def test_the_predict_route_has_its_own_rate_limit_bucket():
     assert _endpoint_slug("/v1/models/some-other-model/predict") == "predict"
     # Not everything under /v1/models/ — the catalog listing is not inference.
     assert _endpoint_slug("/v1/models") != "predict"
+
+
+# ── PRM-137: zero-shot, where the labels are the caller's ────────────────────
+
+
+@respx.mock
+async def test_a_zero_shot_model_routes_through_the_same_pass_through(gw, rsa_keys, app):
+    """`zero_shot` differs from `classification` in where the labels come from:
+    baked into the checkpoint, or supplied per call. Both have no OpenAI shape,
+    so both take the same route — and the labels ride in the body untouched.
+    """
+    from prometheus_gateway.models.registry import ModelEntry
+
+    app.state.registry._models["zs"] = ModelEntry(
+        id="zs",
+        path="/m/zs",
+        context_length=512,
+        family="modernbert",
+        quantization="",
+        backend_url=BACKEND_URL,
+        backend_status="active",
+        node="lab",
+        modality="zero_shot",
+        model_id="zs",
+        model_slug="zs",
+    )
+    route = respx.post(f"{BACKEND_URL}/predict").mock(
+        return_value=Response(
+            200, json={"labels": ["facturacion", "ventas"], "scores": [0.84, 0.16]}
+        )
+    )
+
+    r = await gw.post(
+        "/v1/models/zs/predict",
+        json={
+            "inputs": "nos cobraron dos veces",
+            "parameters": {"candidate_labels": ["facturacion", "ventas"]},
+        },
+        headers={
+            "Authorization": f"Bearer {make_token(rsa_keys['private'], scope='inference:read model:zs')}"
+        },
+    )
+
+    assert r.status_code == 200
+    assert r.json()["labels"] == ["facturacion", "ventas"]
+    forwarded = route.calls[0].request.content.decode()
+    assert "candidate_labels" in forwarded, "the options must reach the engine"
+    assert "facturacion" in forwarded

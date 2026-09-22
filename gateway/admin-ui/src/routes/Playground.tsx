@@ -11,6 +11,9 @@ import { useInstances } from "../api/instances";
 import {
   streamPlaygroundChat,
   useEmbeddings,
+  useZeroShot,
+  useClassify,
+  useRerank,
   useImageGenerations,
   usePlaygroundChat,
   type ChatMessage,
@@ -201,6 +204,16 @@ interface EmbeddingLogEntry {
   model: string;
 }
 
+interface ZeroShotLogEntry {
+  kind: "zero_shot";
+  input: string;
+  /** Sorted by score, highest first — as the engine returns them. */
+  labels: string[];
+  scores: number[];
+  latencyMs: number;
+  model: string;
+}
+
 interface ImageLogEntry {
   kind: "image";
   prompt: string;
@@ -209,7 +222,7 @@ interface ImageLogEntry {
   model: string;
 }
 
-type LogEntry = ChatLogEntry | EmbeddingLogEntry | ImageLogEntry;
+type LogEntry = ChatLogEntry | EmbeddingLogEntry | ZeroShotLogEntry | ImageLogEntry;
 
 interface InProgress {
   leading: ChatMessage[];
@@ -224,6 +237,9 @@ export default function Playground() {
   const instancesQuery = useInstances();
   const chat = usePlaygroundChat();
   const embeddings = useEmbeddings();
+  const zeroShot = useZeroShot();
+  const classify = useClassify();
+  const rerank = useRerank();
   const imageGenerations = useImageGenerations();
   const composerHistory = usePromptHistory();
 
@@ -233,6 +249,10 @@ export default function Playground() {
 
   const [sendError, setSendError] = useState<string | null>(null);
   const [embedError, setEmbedError] = useState<string | null>(null);
+  // PRM-137: the options this model is asked to choose between. They belong
+  // to the request, not the checkpoint, so they live beside the prompt
+  // rather than in the model picker.
+  const [candidateLabels, setCandidateLabels] = useState("");
   const [imageError, setImageError] = useState<string | null>(null);
   const [expandedImage, setExpandedImage] = useState<ImageLogEntry | null>(null);
 
@@ -283,10 +303,25 @@ export default function Playground() {
   const modality = selectedInstance?.modality;
   const isTextLike = modality === "text" || modality === "vision";
   const isVisionModel = modality === "vision";
+  const isZeroShot = modality === "zero_shot";
+  const isClassification = modality === "classification";
+  const isRerank = modality === "rerank";
+  // PRM-137 follow-up: the three that answer with a ranked distribution rather
+  // than text. They share one log entry shape and one renderer — what differs
+  // is only what the request carries.
+  const isRanked = isZeroShot || isClassification || isRerank;
 
-  const isBusy = isSending || embeddings.isPending || imageGenerations.isPending;
+  // PRM-137 follow-up: every non-chat modality counts. Leaving the new ones
+  // out let a second request go while the first was still in flight.
+  const isBusy =
+    isSending ||
+    embeddings.isPending ||
+    imageGenerations.isPending ||
+    zeroShot.isPending ||
+    classify.isPending ||
+    rerank.isPending;
   const canSendDraft =
-    modality === "embedding" || modality === "image"
+    modality === "embedding" || modality === "image" || isRanked
       ? draft.trim().length > 0
       : draft.trim().length > 0 || attachedImage !== null;
 
@@ -317,6 +352,107 @@ export default function Playground() {
           input,
           embedding: data.data[0]?.embedding ?? [],
           usage: data.usage,
+          latencyMs: Math.round(performance.now() - startedAt),
+          model: selectedModel,
+        },
+      ]);
+    } catch (error) {
+      setEmbedError(getErrorMessage(error));
+    }
+  }
+
+  async function handleZeroShot() {
+    const labels = candidateLabels
+      .split(",")
+      .map((l) => l.trim())
+      .filter(Boolean);
+    if (!selectedModel || !draft.trim() || zeroShot.isPending) return;
+    if (labels.length < 2) {
+      setEmbedError("Give at least two options, comma-separated — a choice needs something to choose between.");
+      return;
+    }
+    setEmbedError(null);
+    const input = draft;
+    composerHistory.record(input);
+    setDraft("");
+    const startedAt = performance.now();
+    try {
+      const data = await zeroShot.mutateAsync({ model: selectedModel, input, labels });
+      setEntries((prev) => [
+        ...prev,
+        {
+          kind: "zero_shot",
+          input,
+          labels: data.labels,
+          scores: data.scores,
+          latencyMs: Math.round(performance.now() - startedAt),
+          model: selectedModel,
+        },
+      ]);
+    } catch (error) {
+      setEmbedError(getErrorMessage(error));
+    }
+  }
+
+  async function handleClassify() {
+    if (!selectedModel || !draft.trim() || classify.isPending) return;
+    setEmbedError(null);
+    const input = draft;
+    composerHistory.record(input);
+    setDraft("");
+    const startedAt = performance.now();
+    try {
+      const data = await classify.mutateAsync({ model: selectedModel, input });
+      setEntries((prev) => [
+        ...prev,
+        {
+          kind: "zero_shot",
+          input,
+          labels: data.map((d) => d.label),
+          scores: data.map((d) => d.score),
+          latencyMs: Math.round(performance.now() - startedAt),
+          model: selectedModel,
+        },
+      ]);
+    } catch (error) {
+      setEmbedError(getErrorMessage(error));
+    }
+  }
+
+  async function handleRerank() {
+    const documents = candidateLabels
+      .split("\n")
+      .map((d) => d.trim())
+      .filter(Boolean);
+    if (!selectedModel || !draft.trim() || rerank.isPending) return;
+    if (documents.length === 0) {
+      setEmbedError("Add at least one document to score, one per line.");
+      return;
+    }
+    setEmbedError(null);
+    const query = draft;
+    composerHistory.record(query);
+    setDraft("");
+    // Cleared, unlike the zero-shot options box above, and the difference is
+    // what each box holds. Options are the schema of a decision — the same
+    // four categories get asked about a hundred texts, so keeping them is the
+    // point. Documents are the data being scored: they belong to this request
+    // the way the query does, and leaving them behind makes the next query
+    // silently reuse a corpus the operator already sent.
+    setCandidateLabels("");
+    const startedAt = performance.now();
+    try {
+      const data = await rerank.mutateAsync({ model: selectedModel, query, documents });
+      // Sorted by score, like the other two — the endpoint returns original
+      // indices, and a ranking shown in input order is not a ranking.
+      const ranked = [...data.results].sort((a, b) => b.relevance_score - a.relevance_score);
+      setEntries((prev) => [
+        ...prev,
+        {
+          kind: "zero_shot",
+          input: query,
+          labels: ranked.map((r) => documents[r.index] ?? `#${r.index}`),
+          scores: ranked.map((r) => r.relevance_score),
           latencyMs: Math.round(performance.now() - startedAt),
           model: selectedModel,
         },
@@ -528,6 +664,9 @@ export default function Playground() {
     if (!selectedModel || isBusy) return;
     if (modality === "embedding") return void handleGetEmbedding();
     if (modality === "image") return void handleGenerateImage();
+    if (isZeroShot) return void handleZeroShot();
+    if (isClassification) return void handleClassify();
+    if (isRerank) return void handleRerank();
     if (!draft.trim() && !attachedImage) return;
     const userMessage: ChatMessage = {
       role: "user",
@@ -621,12 +760,18 @@ export default function Playground() {
     if (modality === "embedding") return "Text to embed… (Enter to send, Shift+Enter for a new line)";
     if (modality === "image")
       return "Describe the image to generate… (Enter to send, Shift+Enter for a new line)";
+    if (isZeroShot) return "Text to decide about… (Enter to send, Shift+Enter for a new line)";
+    if (isClassification) return "Text to classify… (Enter to send, Shift+Enter for a new line)";
+    if (isRerank) return "The query to score documents against… (Enter to send)";
     return "Ask something… (Enter to send, Shift+Enter for a new line)";
   }
 
   function sendLabel(): string {
     if (modality === "embedding") return "Get embedding";
     if (modality === "image") return "Generate";
+    if (isZeroShot) return "Decide";
+    if (isClassification) return "Classify";
+    if (isRerank) return "Rank";
     return "Send";
   }
 
@@ -833,6 +978,64 @@ export default function Playground() {
                   );
                 }
 
+                if (entry.kind === "zero_shot") {
+                  const top = entry.scores[0] ?? 0;
+                  return (
+                    <div key={i} className="space-y-3">
+                      <div className="ml-auto w-fit max-w-[80%] rounded-xl bg-primary px-4 py-2 text-sm text-primary-foreground">
+                        {entry.input}
+                      </div>
+                      <div className="rounded-xl border border-border bg-background px-4 py-3 text-sm text-text">
+                        <div className="space-y-1.5">
+                          {entry.labels.map((label, li) => {
+                            const score = entry.scores[li] ?? 0;
+                            return (
+                              <div key={label} className="flex items-center gap-3">
+                                <span
+                                  className={cn(
+                                    "w-40 shrink-0 truncate text-xs",
+                                    li === 0 ? "font-medium text-text" : "text-text-muted",
+                                  )}
+                                  title={label}
+                                >
+                                  {label}
+                                </span>
+                                {/* The bar is the point: a decision model's
+                                    answer is the distribution, not the winner.
+                                    A single label would hide a 0.51/0.49. */}
+                                <div className="h-2 flex-1 overflow-hidden rounded-full bg-border">
+                                  <div
+                                    className={cn(
+                                      "h-full rounded-full",
+                                      li === 0 ? "bg-primary" : "bg-text-muted/40",
+                                    )}
+                                    style={{ width: `${Math.max(score * 100, 0.5)}%` }}
+                                  />
+                                </div>
+                                <span className="w-14 shrink-0 text-right font-mono text-xs tabular-nums text-text-muted">
+                                  {score.toFixed(4)}
+                                </span>
+                              </div>
+                            );
+                          })}
+                        </div>
+                        <div className="mt-3 flex items-center gap-3 border-t border-border pt-2 text-xs text-text-muted">
+                          <span>
+                            {entry.labels.length} options · top {(top * 100).toFixed(1)}%
+                          </span>
+                          <span>{entry.latencyMs} ms</span>
+                          <span
+                            className="ml-auto font-mono"
+                            title="Model that produced this decision"
+                          >
+                            {entry.model}
+                          </span>
+                        </div>
+                      </div>
+                    </div>
+                  );
+                }
+
                 const imageIndex = imageEntries.indexOf(entry);
                 return (
                   <div key={i} className="space-y-3">
@@ -930,6 +1133,49 @@ export default function Playground() {
           <ErrorBanner message={attachError} />
           <ErrorBanner message={embedError} />
           <ErrorBanner message={imageError} />
+
+          {isZeroShot && (
+            <div className="mt-3">
+              <label className="block text-xs font-medium text-text-muted">
+                Options to choose between
+              </label>
+              <input
+                value={candidateLabels}
+                onChange={(e) => setCandidateLabels(e.target.value)}
+                placeholder="facturación, soporte técnico, ventas, cancelación"
+                className="mt-1 w-full rounded-lg border border-border bg-surface px-3 py-2 text-sm text-text focus:border-primary focus:outline-none"
+              />
+              <p className="mt-1 text-xs text-text-muted">
+                Comma-separated, and set per request — this model is not trained on a fixed
+                label set, which is what makes the options yours to choose.
+              </p>
+            </div>
+          )}
+
+          {isRerank && (
+            <div className="mt-3">
+              <label className="block text-xs font-medium text-text-muted">
+                Documents to score, one per line
+              </label>
+              <textarea
+                value={candidateLabels}
+                onChange={(e) => setCandidateLabels(e.target.value)}
+                rows={4}
+                placeholder={"La membresía anual de la Tarjeta Oro cuesta S/ 45.00.\nEl horario de atención es de 9 a 18h.\nPara bloquear una tarjeta, llame al 0800-1234."}
+                className="mt-1 w-full rounded-lg border border-border bg-surface px-3 py-2 text-sm text-text focus:border-primary focus:outline-none"
+              />
+              <p className="mt-1 text-xs text-text-muted">
+                The box above is the query; these are the candidates it scores against.
+              </p>
+            </div>
+          )}
+
+          {isClassification && (
+            <p className="mt-3 text-xs text-text-muted">
+              This model's labels come from the checkpoint, not from the request — nothing to
+              choose. For labels you set per call, pick a model under “Decision (zero-shot)”.
+            </p>
+          )}
 
           {attachedImage && (
             <div className="mt-3 flex items-center gap-2 rounded-lg border border-border bg-surface p-2">

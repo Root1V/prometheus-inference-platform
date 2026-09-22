@@ -274,7 +274,7 @@ _ENGINE_PROVIDERS = {
 # are forwarded to. `/predict` is hf-serve's, and it is the only engine in
 # BACKENDS that serves one of these today — when a second one arrives with a
 # different path, this becomes a per-engine lookup rather than a constant.
-_PASS_THROUGH_MODALITIES = frozenset({"classification"})
+_PASS_THROUGH_MODALITIES = frozenset({"classification", "zero_shot"})
 _PASS_THROUGH_PATH = "/predict"
 
 
