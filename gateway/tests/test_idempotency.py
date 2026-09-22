@@ -1019,3 +1019,63 @@ async def test_first_token_ms_is_set_even_when_nothing_visible_is_streamed(gw, r
     finally:
         trace._TRACER_PROVIDER = previous  # type: ignore[attr-defined]
         router_module._tracer = trace.get_tracer("prometheus_gateway")
+
+
+# ── A-23: what happens to a key whose request ended in error ─────────────────
+
+CLIENT = "client-abc"  # what make_token() puts in `azp`, which is the key's owner
+
+
+async def _record(key: str):
+    async with db.get_session_factory()() as session:
+        return await session.get(db.IdempotencyRecord, (CLIENT, key))
+
+
+@respx.mock
+async def test_a_key_is_released_when_the_backend_fails(gw, rsa_keys):
+    """The handled error path: the backend answers, badly.
+
+    A failed request must hand its key back — the client's retry is exactly
+    what the key exists to make safe, and there is nothing stored to replay.
+    """
+    respx.post(f"{BACKEND_URL}/v1/chat/completions").mock(
+        return_value=Response(500, json={"error": "engine exploded"})
+    )
+
+    first = await gw.post("/v1/chat/completions", json=_chat(), headers=_headers(rsa_keys, "k-502"))
+
+    assert first.status_code >= 400
+    row = await _record("k-502")
+    assert row is None, (
+        "the key is still held after a failed request: "
+        f"state={getattr(row, 'state', None)!r} status={getattr(row, 'status_code', None)!r}. "
+        "A stored 5xx replays for 24h, instantly, without ever reaching the model again."
+    )
+
+
+async def test_a_key_is_released_when_the_handler_raises(gw, rsa_keys, monkeypatch):
+    """The unhandled 500 — the case Synaptum reported (A-23).
+
+    The settle runs in a middleware precisely so that none of the handlers'
+    dozen exit paths can forget it. But `await call_next(request)` *raises*
+    when an exception escapes the route, because Starlette's
+    ServerErrorMiddleware sits outside this one. If the settle is skipped the
+    record stays IN_PROGRESS for the full 24h window, and every later call with
+    that key is refused in milliseconds without reaching a backend — which from
+    outside is indistinguishable from the platform being down.
+    """
+    from prometheus_gateway import router
+
+    async def _boom(*args, **kwargs):
+        raise RuntimeError("something nobody caught")
+
+    monkeypatch.setattr(router, "_healthy_members", _boom)
+
+    with pytest.raises(RuntimeError):
+        await gw.post("/v1/chat/completions", json=_chat(), headers=_headers(rsa_keys, "k-500"))
+
+    row = await _record("k-500")
+    assert row is None, (
+        f"a 500 left the key held: state={getattr(row, 'state', None)!r}. "
+        "Every retry for the next 24h is refused without reaching the model."
+    )
