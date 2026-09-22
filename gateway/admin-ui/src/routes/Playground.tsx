@@ -433,6 +433,13 @@ export default function Playground() {
     const query = draft;
     composerHistory.record(query);
     setDraft("");
+    // Cleared, unlike the zero-shot options box above, and the difference is
+    // what each box holds. Options are the schema of a decision — the same
+    // four categories get asked about a hundred texts, so keeping them is the
+    // point. Documents are the data being scored: they belong to this request
+    // the way the query does, and leaving them behind makes the next query
+    // silently reuse a corpus the operator already sent.
+    setCandidateLabels("");
     const startedAt = performance.now();
     try {
       const data = await rerank.mutateAsync({ model: selectedModel, query, documents });

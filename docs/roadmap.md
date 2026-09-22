@@ -4990,6 +4990,18 @@ in the checkpoint, and the UI says so), rerank sends the query plus documents on
 by score because a ranking shown in input order is not a ranking. All three share one renderer:
 what differs is only what the request carries.
 
+**Can a zero-shot model replace the reranker?** Measured, because the shapes look identical —
+both are cross-encoders scoring N candidates against one input. On accuracy they are
+indistinguishable here: over three hard retrieval cases Von and `qwen3-reranker` picked the same
+document every time, including picking the same *wrong* one. The answer is still no, and the
+reason is arithmetic rather than quality. A zero-shot model returns a **softmax over the
+candidates**, so the scores sum to 1: with 20 passages the correct one scored 0.2095 where the
+reranker gave 0.9999, and on a query with no answer in the corpus Von still had to hand 0.4951 to
+something while the reranker returned 0.0033 / 0.0002 / 0.0001. That last one is the whole
+difference — "nothing here answers this" is the signal that stops a RAG pipeline inventing an
+answer, and a distribution that must sum to 1 cannot express it. It also means no fixed threshold
+is possible, because every score moves when the candidate count does.
+
 **Verified live**: Von registered on `lab`, started by the manager in 7s, driven from the
 Playground — `facturación 0.7433 · cancelación 0.2418 · ventas 0.0091 · soporte técnico 0.0058`,
 166 ms, and a `request_kind='predict'` row in `usage_events`.
