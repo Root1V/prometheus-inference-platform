@@ -5123,6 +5123,52 @@ tokens at 2.34e-06.
 action. The renderer shows both rather than the label alone.
 
 
+## PRM-141 — Laya's question ids are a contract, and `noul` is not usable
+
+**Why**: reported from the Playground on the first real try — `department: facturación` correct,
+`urgency: baja` and `churn_risk: 1.5%` both wrong on an email that demanded a refund today or the
+contract ends. Three separate causes, none of them the obvious one.
+
+**1 · The question ids are a contract, not labels.** `router.match_typed_decisions_workflow()`
+matches the *exact set* of question ids against four named workflows —
+`customer_service = {action, category, churn_risk, needs_human, urgency}` is one — and only a
+match selects the checkpoint trained for that job. Ids of our own invention matched nothing.
+Measured on the same email: `departamento/urgencia/fuga` scored urgency **baja**; renaming them to
+the five above scored **alta**, changing nothing else. The Playground example now ships the exact
+five, with a comment saying that renaming a key silently changes the answer.
+
+**2 · The specialised checkpoint is worse, and its own library says why.** `LAYA_AUTO_TASK=1`
+routes a matched workflow to the `typed-decisions` checkpoint. Loading it prints:
+
+> `RuntimeWarning: laya: this checkpoint ships invalid temperatures or values outside [0.5, 5]
+> ... Treat confidence from the affected entries as uncalibrated.`
+
+And it shows: every answer collapsed toward the middle — `category` confidence 0.998 → **0.162**,
+`action` 0.777 → **0.037**, `churn_risk` to a 49.8% coin flip. Calibration is this model class's
+entire pitch, and the checkpoint built for typed decisions ships calibration constants out of
+range. **We do not set that variable, and should not.**
+
+**3 · `noul` is not usable for anything that matters.** The same sentence, the same question, two
+primitives:
+
+```
+noul    -> 4.2% yes   confidence 0.958      <- confidently wrong
+choice  -> yes 0.98   confidence 0.860      <- correct
+```
+
+It is not the phrasing: with an unambiguous, repeated threat `noul` does reach 76.6%. It
+underreads a *conditional* threat — "refund today or we cancel" — which is how a customer actually
+writes one. A two-option `choice` read the same sentence correctly and more confidently.
+
+**Scope**: documentation, in the one place someone will read it — the Playground's fillable
+example now uses the `customer_service` ids and a yes/no `choice` where it used `noul`, and the
+hint under the box says why, with the numbers.
+
+**What this does not change**: the integration works. The engine, the manager, the metering and
+the pass-through are all fine — what these findings are about is how to ask, and they belong in
+front of whoever asks.
+
+
 Append a new row to the table with the next `RM-NN` id and a new `## RM-NN — ...` section
 below, following the same shape (Why / Scope). Re-sort the table if the new item's
 priority isn't "last."

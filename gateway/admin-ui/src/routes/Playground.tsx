@@ -219,12 +219,23 @@ interface ZeroShotLogEntry {
 // README suggests — `criteria` carries the options, not `options`, and
 // `instructions` is required. Wrong guesses come back as a 422 naming the
 // field, which is good of it, but an operator should not have to iterate.
+//
+// PRM-141: the question *ids* are a contract, not labels. Laya matches the
+// exact id set against four named workflows and only then uses the checkpoint
+// trained for it; these five are `customer_service`. Measured: the same email
+// with ids of our own invention scored urgency "baja", and with these it
+// scores "alta". Renaming a key here silently changes the answer.
 const TYPED_DECISION_EXAMPLE = `{
-  "department": {"type": "choice", "instructions": "Which team should handle this?",
-                 "criteria": ["billing", "support", "sales", "retention"]},
-  "urgency":    {"type": "score", "instructions": "How urgent is this?",
-                 "criteria": ["low", "medium", "high", "critical"]},
-  "churn_risk": {"type": "noul", "instructions": "Is the customer threatening to leave?"}
+  "category":    {"type": "choice", "instructions": "Which team should handle this?",
+                  "criteria": ["billing", "support", "sales", "retention"]},
+  "urgency":     {"type": "score", "instructions": "How urgent is this?",
+                  "criteria": ["low", "medium", "high", "critical"]},
+  "churn_risk":  {"type": "choice", "instructions": "Is the customer threatening to cancel?",
+                  "criteria": ["yes", "no"]},
+  "needs_human": {"type": "choice", "instructions": "Does this need a human?",
+                  "criteria": ["yes", "no"]},
+  "action":      {"type": "choice", "instructions": "What should we do?",
+                  "criteria": ["refund", "escalate", "reply", "close"]}
 }`;
 
 interface TypedDecisionLogEntry {
@@ -1331,11 +1342,15 @@ export default function Playground() {
                 className="mt-1 w-full rounded-lg border border-border bg-surface px-3 py-2 font-mono text-xs text-text focus:border-primary focus:outline-none"
               />
               <p className="mt-1 text-xs text-text-muted">
-                One forward pass answers all of them. Three kinds:{" "}
-                <span className="font-mono">choice</span> picks from{" "}
+                One forward pass answers all of them, and the keys are part of the question:
+                this engine recognises a few fixed id sets and uses a checkpoint trained for
+                them. <span className="font-mono">choice</span> picks from{" "}
                 <span className="font-mono">criteria</span>,{" "}
                 <span className="font-mono">score</span> places it on that ordered scale, and{" "}
-                <span className="font-mono">noul</span> returns P(true) and takes no criteria.
+                <span className="font-mono">noul</span> returns P(true) with no criteria — but
+                measured here, a yes/no <span className="font-mono">choice</span> beat{" "}
+                <span className="font-mono">noul</span> on the same question (0.98 against 0.04
+                on an email that threatened to cancel), so the example uses one.
               </p>
               {!candidateLabels && (
                 <button
