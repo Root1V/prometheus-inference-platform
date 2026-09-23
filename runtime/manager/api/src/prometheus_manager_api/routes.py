@@ -122,6 +122,9 @@ async def list_backends(
             registry.entries if include_hidden else [e for e in registry.entries if e.discovery]
         )
         entry_ids = {e.id for e in entries}
+        # PRM-140: a flagless backend (laya-serve) carries no --port to read
+        # back, so the scanner needs the port the manager assigned it.
+        entry_ports = {e.id: e.port for e in entries}
         use_batch = len(entries) > _BACKEND_PROBE_THRESHOLD
 
         if proxy_host:
@@ -129,7 +132,7 @@ async def list_backends(
             # host PID namespace (e.g. podman `pid: "host"`). Fall back to HTTP
             # health probing if no live processes are found.
             pid_dir: Path = request.app.state.pid_dir
-            live_procs = await asyncio.to_thread(scan, pid_dir, entry_ids)
+            live_procs = await asyncio.to_thread(scan, pid_dir, entry_ids, "", entry_ports)
             live = {proc.model_id: proc for proc in live_procs if proc.model_id}
 
             if live:
@@ -165,6 +168,9 @@ async def list_backends(
             # Bare-metal mode: psutil-based process scanning.
             pid_dir = request.app.state.pid_dir
             entry_ids = {e.id for e in entries}
+            # PRM-140: a flagless backend (laya-serve) carries no --port to
+            # read back, so the scanner needs the port the manager assigned.
+            entry_ports = {e.id: e.port for e in entries}
             if use_batch:
                 with _tracer.start_as_current_span(
                     "backend.probe.batch", kind=SpanKind.INTERNAL
@@ -172,11 +178,13 @@ async def list_backends(
                     probe_span.set_attribute("model_count", len(entries))
                     live = {
                         proc.model_id: proc
-                        for proc in await asyncio.to_thread(scan, pid_dir, entry_ids)
+                        for proc in await asyncio.to_thread(
+                            scan, pid_dir, entry_ids, "", entry_ports
+                        )
                         if proc.model_id
                     }
             else:
-                proc_list = await asyncio.to_thread(scan, pid_dir, entry_ids)
+                proc_list = await asyncio.to_thread(scan, pid_dir, entry_ids, "", entry_ports)
                 live = {proc.model_id: proc for proc in proc_list if proc.model_id}
                 for entry in entries:
                     proc = live.get(entry.id)

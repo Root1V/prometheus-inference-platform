@@ -5071,6 +5071,58 @@ count while the billed input does not. Priced per input token like the rest unti
 solving.
 
 
+## PRM-140 — Laya: a backend configured by environment, not by flags
+
+**Why**: PRM-136 recorded that Laya ships no server and that integrating it would mean writing one.
+That was true of `laya` 0.3.4. They publish almost daily — 0.3.2 to 0.3.7 in four days — and 0.3.7
+ships `laya-serve`: FastAPI, `/health`, `POST /v1/systemone`. The premise the earlier analysis
+rested on had expired.
+
+Laya is a "System One" decision model: a *state* plus a dict of typed questions (`choice`, `score`,
+`noul`), answered in one forward pass, each with a probability distribution **and** a separate
+confidence. Measured here: three questions in 367 ms end to end, 24 ms warm against the engine.
+
+**Scope**: `laya` in `BACKENDS`, the `typed_decision` modality, its base price, the pass-through
+path, and the Playground composer that can drive it.
+
+**Two assumptions every other engine shared, and this one does not**:
+
+- **It takes no arguments at all.** Host, port, device and which checkpoints to preload are every
+  one of them environment variables, so `start_instance` grew the ability to pass an environment —
+  inherited and extended, never replaced, because the child still needs `PATH` and `HF_TOKEN`. A
+  second map rather than making all six builders return a pair: five take flags and one does not,
+  and an asymmetry in the data is honest where one hidden behind a uniform signature is not.
+- **The scanner read the port off the command line.** With no `--port` to find it scanned as 0,
+  `_probe_health` returned `unknown` without probing, and a server answering perfectly well never
+  reached `ready`. The port now comes from the registry, which is where the manager assigned it;
+  reading it back off the process was only ever a convenience.
+
+And the per-engine pass-through path that PRM-136 predicted in a comment — *"when a second one
+arrives with a different path, this becomes a per-engine lookup"* — arrived.
+
+**Found while integrating**:
+
+- `pip install laya` gives you the `laya-serve` entry point and neither fastapi nor uvicorn; it
+  starts and dies on `ModuleNotFoundError`. The server dependencies are behind a `[serve]` extra
+  that the console script's own metadata never mentions. The third package this week whose
+  metadata does not sustain what it ships.
+- The request schema is not the one the README shows: options go in `criteria`, not `options`, and
+  `instructions` is required. The Playground ships the schema that works as a fillable example,
+  because an operator should not have to iterate against 422s to find it.
+- A guard test's own parser broke on a parenthesis inside a comment. Fixed, because a guard that
+  fails for a reason unrelated to what it guards teaches people to edit the guard.
+
+**Verified live**: registered on `lab`, launched by the manager (all five `LAYA_*` variables
+confirmed on the child process), scanned to `ready`, discovered by `manager_sync`, driven from the
+Playground — `department: billing` at 0.968 with confidence 0.875, `urgency: medium` with
+confidence **0.286** rendered in amber, `churn_risk: 29.1% yes` — and a priced usage row, 117
+tokens at 2.34e-06.
+
+**The amber is the point.** Laya reports confidence separately from the winning probability, and a
+0.97 choice at 0.29 confidence is exactly the verdict an operator must not wire to an automated
+action. The renderer shows both rather than the label alone.
+
+
 Append a new row to the table with the next `RM-NN` id and a new `## RM-NN — ...` section
 below, following the same shape (Why / Scope). Re-sort the table if the new item's
 priority isn't "last."

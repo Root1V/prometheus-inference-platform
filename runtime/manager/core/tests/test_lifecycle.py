@@ -164,17 +164,33 @@ class TestBackendCommandBuilders:
         cmd = _build_hf_serve_cmd("hf-serve", entry, 9090, "127.0.0.1")
         assert cmd[cmd.index("--task") + 1] == task
 
-    def test_hf_serve_cmd_covers_every_modality_the_registry_allows(self):
-        """A modality with no task mapped is refused rather than launched.
+    def test_hf_serve_maps_only_modalities_that_exist(self):
+        """PRM-140 loosened this, and the reason is worth keeping.
 
-        MODALITIES and the task map are two lists; adding to the first and
-        forgetting the second would start a server with no `--task`, which
-        hf-serve resolves by guessing from the model card.
+        It used to assert equality with MODALITIES, which was right while
+        hf-serve was the only engine that spanned them. `typed_decision` broke
+        that: Laya serves it and hf-serve has no task for it, so equality would
+        force a mapping to a task that does not exist.
+
+        What still has to hold is the half that catches mistakes — every task
+        mapped is for a real modality, so a typo cannot sit here unnoticed —
+        and the other half is enforced where it belongs, at launch: the builder
+        refuses an unmapped modality with the reason rather than starting a
+        server with no `--task` for hf-serve to guess from.
         """
         from prometheus_manager_core.lifecycle import _HF_SERVE_TASKS
         from prometheus_manager_core.registry import MODALITIES
 
-        assert set(_HF_SERVE_TASKS) == set(MODALITIES)
+        assert set(_HF_SERVE_TASKS) <= set(MODALITIES), (
+            f"hf-serve maps modalities the registry does not accept: "
+            f"{sorted(set(_HF_SERVE_TASKS) - set(MODALITIES))}"
+        )
+
+    def test_hf_serve_refuses_a_modality_it_has_no_task_for(self):
+        """The half the equality assertion used to cover, where it belongs."""
+        entry = self._entry(backend="hf_serve", modality="typed_decision", hf_repo="org/model")
+        with pytest.raises(LifecycleError, match="no hf-serve task"):
+            _build_hf_serve_cmd("hf-serve", entry, 9090, "127.0.0.1")
 
     def test_hf_serve_cmd_picks_mps_on_apple_silicon(self):
         entry = self._entry(backend="hf_serve", modality="text", hf_repo="org/model")

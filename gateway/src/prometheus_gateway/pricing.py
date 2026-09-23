@@ -77,6 +77,10 @@ def _default_prices() -> dict[str, "ModelPrice"]:
                 # solving; flagged here rather than left to be rediscovered.
                 "classification": ModelPrice(prompt_price_per_1m=0.02, completion_price_per_1m=0.0),
                 "zero_shot": ModelPrice(prompt_price_per_1m=0.02, completion_price_per_1m=0.0),
+                # PRM-140: Laya answers several typed questions from one
+                # forward pass and reports its own `usage.input_tokens`,
+                # so unlike zero-shot the billed input does track the work.
+                "typed_decision": ModelPrice(prompt_price_per_1m=0.02, completion_price_per_1m=0.0),
                 # Per image, not per token.
                 "image": ModelPrice(image_price=0.01),
             }

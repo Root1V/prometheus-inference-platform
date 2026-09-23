@@ -160,6 +160,49 @@ export function useClassify() {
   });
 }
 
+/** What `laya-serve` returns from POST /v1/systemone, captured from a live
+ * server (laya 0.3.7). One forward pass answers every question at once, and
+ * each answer carries its distribution *and* a separate confidence — the two
+ * are not the same number, which is the reason this shape exists. */
+export interface TypedDecisionAnswer {
+  type: "choice" | "score" | "noul";
+  choice?: string;
+  score?: number;
+  noul?: number;
+  legend?: Record<string, string>;
+  probabilities?: Record<string, number>;
+  confidence: number;
+}
+
+export interface TypedDecisionResponse {
+  model: string;
+  answers: Record<string, TypedDecisionAnswer>;
+  usage?: { input_tokens: number; output_tokens: number };
+  routing?: { model?: string; reason?: string };
+}
+
+/** PRM-140: Laya, through the same pass-through. Its path is /v1/systemone
+ * rather than /predict — the gateway resolves that per engine. */
+export function useTypedDecision() {
+  return useMutation({
+    mutationFn: async ({
+      model,
+      state,
+      questions,
+    }: {
+      model: string;
+      state: unknown;
+      questions: unknown;
+    }) =>
+      (
+        await rootClient.post<TypedDecisionResponse>(
+          `/v1/models/${encodeURIComponent(model)}/predict`,
+          { state, questions },
+        )
+      ).data,
+  });
+}
+
 interface RerankResponse {
   results: { index: number; relevance_score: number }[];
 }

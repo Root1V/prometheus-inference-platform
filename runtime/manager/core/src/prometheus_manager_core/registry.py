@@ -48,7 +48,7 @@ _SLUG_RE = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9._-]{1,62}[a-zA-Z0-9]$")
 # the other four in lifecycle.py's command-building and scanner.py's
 # process-recognition (its own --listen-ip/--listen-port flags, no /health
 # endpoint). See lifecycle.py's _build_sd_cpp_cmd for specifics.
-BACKENDS = ("llama_cpp", "mlx", "vllm", "sglang", "sd_cpp", "hf_serve")
+BACKENDS = ("llama_cpp", "mlx", "vllm", "sglang", "sd_cpp", "hf_serve", "laya")
 
 # RM-09: what kind of requests this model serves. Determines which flags
 # lifecycle.py adds to the launch command and how the gateway routes requests
@@ -78,6 +78,12 @@ MODALITIES = (
     "rerank",
     "classification",
     "zero_shot",
+    # PRM-140: a "System One" decision model — Laya. Not zero_shot: the request
+    # is a *state* plus a dict of typed questions (choice / score / noul), and
+    # the answer carries a probability distribution AND a separate confidence
+    # per question. Several decisions come back from one forward pass, which is
+    # the whole reason the shape is its own.
+    "typed_decision",
 )
 
 _SCHEMA_SQL = """
