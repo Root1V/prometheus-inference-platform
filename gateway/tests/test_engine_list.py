@@ -162,3 +162,36 @@ def test_the_playground_picker_can_show_every_modality() -> None:
         f"modalities with no group label in the Playground picker: "
         f"{sorted(manager_modalities - labelled)}"
     )
+
+
+def test_every_modality_has_a_base_price() -> None:
+    """A modality with no default price bills every call at nothing.
+
+    PRM-120 gives each newly catalogued model a base price by modality, so a
+    modality missing from that table produces models with no price at all —
+    and an unpriced request records `cost_usd = NULL`, which is correct and
+    also invisible: it looks like a request that cost nothing.
+
+    That is how PRM-136 and PRM-137 shipped `classification` and `zero_shot`
+    with 11 rows of live usage billed at nothing. `default_price_for()` returns
+    None for a modality with no published reference on purpose — but that has
+    to be a decision someone took, not a line nobody wrote.
+    """
+    import sys
+
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+    from prometheus_gateway.pricing import default_prices  # noqa: PLC0415
+
+    manager_modalities = set(
+        re.findall(
+            r'"([a-z_]+)"',
+            re.search(
+                r"^MODALITIES = \(([^)]*)\)", _MANAGER_REGISTRY.read_text(), re.MULTILINE
+            ).group(1),
+        )
+    )
+    priced = set(default_prices())
+    assert manager_modalities - priced == set(), (
+        f"modalities whose models would be created with no price: "
+        f"{sorted(manager_modalities - priced)}"
+    )

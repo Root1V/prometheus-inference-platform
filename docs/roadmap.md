@@ -5042,6 +5042,35 @@ missing `Idempotent-Replay` on a stored error, goes the same way: there are no s
 replay.
 
 
+## PRM-139 — The two new modalities had no price, so they billed nothing
+
+**Why**: found while verifying A-22 rather than answering it from memory. Axonium asked when
+`cost_usd` is `null` and said they could not produce one in this deployment. The live database had
+**11** of them, all `request_kind='predict'` — every classification and zero-shot call made since
+PRM-136 shipped.
+
+PRM-120 gives each newly catalogued model a base price by modality. PRM-136 and PRM-137 added
+`classification` and `zero_shot` to `MODALITIES` and not to that table, so those models were
+catalogued with no price at all, and an unpriced request records `cost_usd = NULL` — correct, and
+invisible: it reads as a request that cost nothing.
+
+**Scope**: both at the rerank rate (0.02 / 0.00 per 1M), for the reason rerank has it — a
+classifier and a zero-shot decider are prompt-only encoder passes that generate nothing. A test now
+fails when a modality the registry accepts has no base price: `default_price_for()` returning None
+for a modality with no published reference is a legitimate decision, but it has to be one somebody
+took rather than a line nobody wrote.
+
+**The 11 rows stay NULL, deliberately.** RM-60 prices a row at the rate in force when it was used,
+and there was none — so `NULL` is the accurate record of an unpriced period, not bad data. The
+repricing script refuses them on exactly that rule. Rewriting them would be falsifying history to
+hide the mistake, and they are also the live example A-22 asked for.
+
+**One caveat the token count does not capture**, flagged here rather than left to be rediscovered:
+a zero-shot call runs the text once per candidate label, so its real compute scales with the option
+count while the billed input does not. Priced per input token like the rest until that is worth
+solving.
+
+
 Append a new row to the table with the next `RM-NN` id and a new `## RM-NN — ...` section
 below, following the same shape (Why / Scope). Re-sort the table if the new item's
 priority isn't "last."
