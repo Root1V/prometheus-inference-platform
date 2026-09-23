@@ -63,6 +63,20 @@ def _default_prices() -> dict[str, "ModelPrice"]:
                 "embedding": ModelPrice(prompt_price_per_1m=0.02, completion_price_per_1m=0.0),
                 # A reranker generates nothing either: the cost is all prompt.
                 "rerank": ModelPrice(prompt_price_per_1m=0.02, completion_price_per_1m=0.0),
+                # PRM-139: the two PRM-136/137 added, at the rerank rate for the
+                # reason rerank has it — a classifier and a zero-shot decider
+                # are prompt-only encoder passes, generating nothing. Shipping
+                # the modalities without this billed every one of those calls
+                # at nothing: 11 rows of live usage with a NULL cost before it
+                # was noticed, which is the exact case A-22 was asking about.
+                #
+                # One caveat the token count does not capture: a zero-shot call
+                # runs the text once per candidate label, so its real compute
+                # scales with the option count while the billed input does not.
+                # Priced per input token like the rest until that is worth
+                # solving; flagged here rather than left to be rediscovered.
+                "classification": ModelPrice(prompt_price_per_1m=0.02, completion_price_per_1m=0.0),
+                "zero_shot": ModelPrice(prompt_price_per_1m=0.02, completion_price_per_1m=0.0),
                 # Per image, not per token.
                 "image": ModelPrice(image_price=0.01),
             }
