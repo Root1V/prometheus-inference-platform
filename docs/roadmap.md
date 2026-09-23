@@ -5123,50 +5123,52 @@ tokens at 2.34e-06.
 action. The renderer shows both rather than the label alone.
 
 
-## PRM-141 — Laya's question ids are a contract, and `noul` is not usable
+## PRM-141 — Laya reads the words, not the meaning
 
-**Why**: reported from the Playground on the first real try — `department: facturación` correct,
-`urgency: baja` and `churn_risk: 1.5%` both wrong on an email that demanded a refund today or the
-contract ends. Three separate causes, none of them the obvious one.
+**Why**: reported from the Playground on the first real try — `category` correct, `urgency` and
+`churn_risk` wrong on an email that demanded a refund today or the contract ends.
 
-**1 · The question ids are a contract, not labels.** `router.match_typed_decisions_workflow()`
-matches the *exact set* of question ids against four named workflows —
-`customer_service = {action, category, churn_risk, needs_human, urgency}` is one — and only a
-match selects the checkpoint trained for that job. Ids of our own invention matched nothing.
-Measured on the same email: `departamento/urgencia/fuga` scored urgency **baja**; renaming them to
-the five above scored **alta**, changing nothing else. The Playground example now ships the exact
-five, with a comment saying that renaming a key silently changes the answer.
-
-**2 · The specialised checkpoint is worse, and its own library says why.** `LAYA_AUTO_TASK=1`
-routes a matched workflow to the `typed-decisions` checkpoint. Loading it prints:
-
-> `RuntimeWarning: laya: this checkpoint ships invalid temperatures or values outside [0.5, 5]
-> ... Treat confidence from the affected entries as uncalibrated.`
-
-And it shows: every answer collapsed toward the middle — `category` confidence 0.998 → **0.162**,
-`action` 0.777 → **0.037**, `churn_risk` to a 49.8% coin flip. Calibration is this model class's
-entire pitch, and the checkpoint built for typed decisions ships calibration constants out of
-range. **We do not set that variable, and should not.**
-
-**3 · `noul` is not usable for anything that matters.** The same sentence, the same question, two
-primitives:
+**The cause is one thing.** Holding everything else fixed and changing only the wording of the
+question, on the same email (`"...o cancelamos el plan"`):
 
 ```
-noul    -> 4.2% yes   confidence 0.958      <- confidently wrong
-choice  -> yes 0.98   confidence 0.860      <- correct
+"¿El cliente amenaza con cancelar?"          -> sí   0.980
+"¿El cliente dice que cancelará el plan?"    -> sí   0.960
+"¿El cliente amenaza con cancelar el servicio?" -> sí 0.861
+"¿El cliente amenaza con irse?"              -> no   0.166
 ```
 
-It is not the phrasing: with an unambiguous, repeated threat `noul` does reach 76.6%. It
-underreads a *conditional* threat — "refund today or we cancel" — which is how a customer actually
-writes one. A two-option `choice` read the same sentence correctly and more confidently.
+The email contains the word *cancelar*. Ask with it and the answer is right and confident; ask
+with a synonym and it is wrong. **This model matches vocabulary far more than meaning**, which is
+the single most useful thing to know before writing questions for it — and it is not in their
+documentation.
 
-**Scope**: documentation, in the one place someone will read it — the Playground's fillable
-example now uses the `customer_service` ids and a yes/no `choice` where it used `noul`, and the
-hint under the box says why, with the numbers.
+**Two earlier claims here were wrong, and both failed the same way: the comparison moved two
+variables at once.**
 
-**What this does not change**: the integration works. The engine, the manager, the metering and
-the pass-through are all fine — what these findings are about is how to ask, and they belong in
-front of whoever asks.
+- *"The question ids are a contract and change the answer."* They do select a named workflow
+  (`customer_service` is an exact id-set match), but the answer is identical: three runs each of
+  `departamento/urgencia/fuga` and of the five official ids returned `alta(0.06)` every time. The
+  first comparison changed the ids *and* added `from`/`subject` to the state *and* reworded the
+  instructions. The official ids are kept in the example because a matched workflow is the
+  documented path, not because they were measured to help.
+- *"`noul` is not usable."* `noul` with the right wording returns **94.5%**. The original
+  comparison changed the question type *and* the wording; with the wording held fixed, `noul` and
+  `choice` agree.
+
+**What still holds**, because that test was controlled — the same request sent to two servers:
+`LAYA_AUTO_TASK=1` routes to the `typed-decisions` checkpoint, and everything collapses toward the
+middle: `category` confidence 0.998 → 0.162, `action` 0.777 → 0.037, `churn_risk` a 49.8% coin
+flip. The library says why on load — *"this checkpoint ships invalid temperatures or values
+outside [0.5, 5] ... Treat confidence from the affected entries as uncalibrated"*. Calibration is
+this model class's entire pitch. We do not set that variable and should not.
+
+**Scope**: the Playground's example and the hint under it now carry the wording finding with its
+numbers, and the incorrect claims are gone from the code comment.
+
+**The lesson is mine, not Laya's.** Axonium wrote in A-23 that they nearly sent us chasing a
+finding that did not exist, and caught it with a control. This investigation made that mistake
+twice in an hour, in the same shape, after quoting them approvingly for avoiding it.
 
 
 Append a new row to the table with the next `RM-NN` id and a new `## RM-NN — ...` section
