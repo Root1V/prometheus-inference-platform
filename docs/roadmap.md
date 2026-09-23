@@ -5007,6 +5007,41 @@ Playground — `facturación 0.7433 · cancelación 0.2418 · ventas 0.0091 · s
 166 ms, and a `request_kind='predict'` row in `usage_events`.
 
 
+## PRM-138 — A failed request hands its key back
+
+**Why**: A-23. Synaptum, which builds on Axonium's SDKs, derives its keys from
+`(run_id, step_id, body-hash)` on purpose — that determinism is what makes resuming a flow replay
+instead of paying for the inference twice. The consequence is that a step's key never changes, and
+they observed a step that failed once returning that failure for the whole 24-hour window, in
+milliseconds, without reaching the platform. Four runs, three attempts each, all instant. It looked
+like an outage and it was a held key.
+
+Axonium could not reproduce it with the only failure they can force from outside (a `400` before
+dispatch, which does release the key) and said so rather than sending us after a finding that did
+not exist. Reproduced here with two tests, and there are **two** bugs, not one:
+
+- **A backend 5xx is stored and replayed.** The handlers set `request.state.idempotency_result`
+  from whatever the backend returned, status included, so the middleware's `complete()` wrote
+  `state='completed' status=500` with the engine's error body. Every retry for 24h replayed it
+  instantly. The middleware's own docstring already said "a success is stored for replay; anything
+  else hands the key straight back" — the rule was true of the middleware and false of the
+  handlers.
+- **An unhandled exception skips the settle entirely.** `await call_next(request)` *raises* when an
+  exception escapes the route, because Starlette's `ServerErrorMiddleware` sits outside this one,
+  so nothing below it ran and the record stayed `in_progress` for the window. Later calls got
+  `idempotency-in-progress` in milliseconds.
+
+**Scope**: the success check moves into the middleware, where the docstring already placed it and
+for the same reason it gives — a handler is one of a dozen exit paths, the middleware is one place.
+And `call_next` is wrapped in try/except so the settle survives an exception on its way out.
+
+**Answering A-23 directly**: a key whose request failed is now released, for every kind of failure.
+Question 2 — "if it is kept, can it carry the original error type?" — stops applying: nothing is
+kept, so a retry reaches the platform and gets a fresh, correctly typed answer. Question 3, the
+missing `Idempotent-Replay` on a stored error, goes the same way: there are no stored errors to
+replay.
+
+
 Append a new row to the table with the next `RM-NN` id and a new `## RM-NN — ...` section
 below, following the same shape (Why / Scope). Re-sort the table if the new item's
 priority isn't "last."

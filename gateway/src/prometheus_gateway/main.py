@@ -270,10 +270,24 @@ def create_app(
         stored for replay; anything else hands the key straight back, because a
         failed request is precisely what a client should be able to retry.
         """
-        response: Response = await call_next(request)
+        # PRM-138: try/finally, because `call_next` *raises* when an exception
+        # escapes the route — Starlette's ServerErrorMiddleware sits outside
+        # this one, so on an unhandled 500 everything below simply never ran
+        # and the record stayed IN_PROGRESS for the full 24h window. Every
+        # later call with that key was then refused in milliseconds without
+        # reaching a backend, which from outside is a platform outage.
+        try:
+            response: Response = await call_next(request)
+        except BaseException:
+            await _settle_idempotency(request, stored_status=None)
+            raise
+        await _settle_idempotency(request, stored_status=getattr(response, "status_code", None))
+        return response
+
+    async def _settle_idempotency(request: Request, stored_status: int | None) -> None:
         claim = getattr(request.state, "idempotency_claim", None)
         if claim is None:
-            return response
+            return
         # The handler leaves the body here rather than the middleware reading
         # it back: call_next returns Starlette's streaming wrapper, not the
         # JSONResponse the handler built, so the body is only reachable by
@@ -281,8 +295,18 @@ def create_app(
         # result worth replaying — which is every error path, and exactly what
         # a client should be allowed to retry.
         result = getattr(request.state, "idempotency_result", None)
+        # PRM-138: and it has to be a *success*. The handlers set
+        # `idempotency_result` from whatever the backend returned, status
+        # included, so a 500 from the engine was stored and replayed for 24h —
+        # instantly, without ever reaching the model again. The rule this
+        # docstring has always stated was true of the middleware and false of
+        # the handlers; checking it here is the same reasoning as settling here.
+        #
+        # A stored error is worse than a slow one. A 503 is retryable later and
+        # a 400 never is, and once replayed they are indistinguishable from the
+        # real thing — so the caller's retry policy has nothing to decide on.
         try:
-            if result is not None:
+            if result is not None and 200 <= result[0] < 300:
                 await idempotency.complete(
                     claim,
                     result[0],
@@ -294,8 +318,7 @@ def create_app(
         except Exception as exc:
             # Never fail a request that already succeeded because bookkeeping
             # didn't. The key expires on its own.
-            logger.warning("idempotency.settle_error", error=str(exc))
-        return response
+            logger.warning("idempotency.settle_error", error=str(exc), stored_status=stored_status)
 
     @app.middleware("http")
     async def request_id_middleware(
