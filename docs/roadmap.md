@@ -5166,6 +5166,28 @@ this model class's entire pitch. We do not set that variable and should not.
 **Scope**: the Playground's example and the hint under it now carry the wording finding with its
 numbers, and the incorrect claims are gone from the code comment.
 
+**Von does not have this problem, and that decides which model routes real tickets.** The same
+question asked three ways, against the same text, on both engines:
+
+```
+text: "...me cobraron dos veces..."          LAYA     VON
+  "¿le cobraron dos veces?"                  0.988    0.999
+  "¿hubo un cargo duplicado?"                0.945    0.999
+  "¿se produjo una facturación errónea?"     0.700    0.998
+
+text: "...o cancelamos el plan"               LAYA     VON
+  "¿amenaza con cancelar?"                   0.830    0.927
+  "¿amenaza con irse?"                       0.024    0.613
+```
+
+Von is an NLI model: judging whether one sentence entails another *written differently* is the
+task it was trained on, so a paraphrase costs it a thousandth. Laya degrades on every synonym and
+on the harder pair inverts — 0.830 to 0.024 is not doubt, it is the opposite answer held
+confidently. With Laya the quality of the output depends on guessing the customer's vocabulary,
+and "dar de baja" / "cerrar la cuenta" / "me voy a otro banco" are one intention with four
+spellings. **Von for routing real traffic; Laya where the several-decisions-in-one-pass shape and
+the separate confidence are worth the wording discipline.**
+
 **The lesson is mine, not Laya's.** Axonium wrote in A-23 that they nearly sent us chasing a
 finding that did not exist, and caught it with a control. This investigation made that mistake
 twice in an hour, in the same shape, after quoting them approvingly for avoiding it.
