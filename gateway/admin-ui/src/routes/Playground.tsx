@@ -14,6 +14,7 @@ import {
   useZeroShot,
   useClassify,
   useRerank,
+  useTypedDecision,
   useImageGenerations,
   usePlaygroundChat,
   type ChatMessage,
@@ -214,6 +215,41 @@ interface ZeroShotLogEntry {
   model: string;
 }
 
+// PRM-140: the schema laya-serve actually accepts, which is not the one its
+// README suggests — `criteria` carries the options, not `options`, and
+// `instructions` is required. Wrong guesses come back as a 422 naming the
+// field, which is good of it, but an operator should not have to iterate.
+//
+// PRM-141: the ids are the `customer_service` set Laya recognises, which is
+// worth keeping — but it does NOT change the answers. That claim was made from
+// a comparison that moved two things at once and is corrected in the roadmap.
+//
+// What does change the answer is the WORDING. This model matches the words in
+// the text, not their meaning: on an email saying "cancelamos el plan", asking
+// "amenaza con cancelar" answers yes at 0.98 and asking "amenaza con irse"
+// answers no at 0.17. Write the question with the words a customer would use.
+const TYPED_DECISION_EXAMPLE = `{
+  "category":    {"type": "choice", "instructions": "Which team should handle this?",
+                  "criteria": ["billing", "support", "sales", "retention"]},
+  "urgency":     {"type": "score", "instructions": "How urgent is this?",
+                  "criteria": ["low", "medium", "high", "critical"]},
+  "churn_risk":  {"type": "choice", "instructions": "Is the customer threatening to cancel?",
+                  "criteria": ["yes", "no"]},
+  "needs_human": {"type": "choice", "instructions": "Does this need a human?",
+                  "criteria": ["yes", "no"]},
+  "action":      {"type": "choice", "instructions": "What should we do?",
+                  "criteria": ["refund", "escalate", "reply", "close"]}
+}`;
+
+interface TypedDecisionLogEntry {
+  kind: "typed_decision";
+  input: string;
+  /** One row per question, because one forward pass answered all of them. */
+  answers: { name: string; verdict: string; confidence: number; bars: [string, number][] }[];
+  latencyMs: number;
+  model: string;
+}
+
 interface ImageLogEntry {
   kind: "image";
   prompt: string;
@@ -222,7 +258,12 @@ interface ImageLogEntry {
   model: string;
 }
 
-type LogEntry = ChatLogEntry | EmbeddingLogEntry | ZeroShotLogEntry | ImageLogEntry;
+type LogEntry =
+  | ChatLogEntry
+  | EmbeddingLogEntry
+  | ZeroShotLogEntry
+  | TypedDecisionLogEntry
+  | ImageLogEntry;
 
 interface InProgress {
   leading: ChatMessage[];
@@ -240,6 +281,7 @@ export default function Playground() {
   const zeroShot = useZeroShot();
   const classify = useClassify();
   const rerank = useRerank();
+  const typedDecision = useTypedDecision();
   const imageGenerations = useImageGenerations();
   const composerHistory = usePromptHistory();
 
@@ -306,6 +348,7 @@ export default function Playground() {
   const isZeroShot = modality === "zero_shot";
   const isClassification = modality === "classification";
   const isRerank = modality === "rerank";
+  const isTypedDecision = modality === "typed_decision";
   // PRM-137 follow-up: the three that answer with a ranked distribution rather
   // than text. They share one log entry shape and one renderer — what differs
   // is only what the request carries.
@@ -319,9 +362,10 @@ export default function Playground() {
     imageGenerations.isPending ||
     zeroShot.isPending ||
     classify.isPending ||
-    rerank.isPending;
+    rerank.isPending ||
+    typedDecision.isPending;
   const canSendDraft =
-    modality === "embedding" || modality === "image" || isRanked
+    modality === "embedding" || modality === "image" || isRanked || isTypedDecision
       ? draft.trim().length > 0
       : draft.trim().length > 0 || attachedImage !== null;
 
@@ -453,6 +497,57 @@ export default function Playground() {
           input: query,
           labels: ranked.map((r) => documents[r.index] ?? `#${r.index}`),
           scores: ranked.map((r) => r.relevance_score),
+          latencyMs: Math.round(performance.now() - startedAt),
+          model: selectedModel,
+        },
+      ]);
+    } catch (error) {
+      setEmbedError(getErrorMessage(error));
+    }
+  }
+
+  async function handleTypedDecision() {
+    if (!selectedModel || !draft.trim() || typedDecision.isPending) return;
+    let questions: unknown;
+    try {
+      questions = JSON.parse(candidateLabels);
+    } catch {
+      setEmbedError("The questions must be valid JSON — see the example below the box.");
+      return;
+    }
+    setEmbedError(null);
+    const input = draft;
+    composerHistory.record(input);
+    setDraft("");
+    const startedAt = performance.now();
+    try {
+      const data = await typedDecision.mutateAsync({
+        model: selectedModel,
+        state: { body: input },
+        questions,
+      });
+      setEntries((prev) => [
+        ...prev,
+        {
+          kind: "typed_decision",
+          input,
+          answers: Object.entries(data.answers ?? {}).map(([name, a]) => ({
+            name,
+            // A score is an index into its own legend; a noul is already a
+            // probability. Rendering the raw number for either would show
+            // "1.2283" where the model means "medium".
+            verdict:
+              a.type === "choice"
+                ? (a.choice ?? "—")
+                : a.type === "score"
+                  ? (a.legend?.[String(Math.round(a.score ?? 0))] ?? String(a.score ?? "—"))
+                  : `${((a.noul ?? 0) * 100).toFixed(1)}% yes`,
+            confidence: a.confidence,
+            bars: Object.entries(a.probabilities ?? {}).map(([k, v]) => [
+              a.legend?.[k] ?? k,
+              v,
+            ]) as [string, number][],
+          })),
           latencyMs: Math.round(performance.now() - startedAt),
           model: selectedModel,
         },
@@ -667,6 +762,7 @@ export default function Playground() {
     if (isZeroShot) return void handleZeroShot();
     if (isClassification) return void handleClassify();
     if (isRerank) return void handleRerank();
+    if (isTypedDecision) return void handleTypedDecision();
     if (!draft.trim() && !attachedImage) return;
     const userMessage: ChatMessage = {
       role: "user",
@@ -763,6 +859,7 @@ export default function Playground() {
     if (isZeroShot) return "Text to decide about… (Enter to send, Shift+Enter for a new line)";
     if (isClassification) return "Text to classify… (Enter to send, Shift+Enter for a new line)";
     if (isRerank) return "The query to score documents against… (Enter to send)";
+    if (isTypedDecision) return "The state to decide about — an email, a ticket… (Enter to send)";
     return "Ask something… (Enter to send, Shift+Enter for a new line)";
   }
 
@@ -772,6 +869,7 @@ export default function Playground() {
     if (isZeroShot) return "Decide";
     if (isClassification) return "Classify";
     if (isRerank) return "Rank";
+    if (isTypedDecision) return "Decide";
     return "Send";
   }
 
@@ -1036,6 +1134,69 @@ export default function Playground() {
                   );
                 }
 
+                if (entry.kind === "typed_decision") {
+                  return (
+                    <div key={i} className="space-y-3">
+                      <div className="ml-auto w-fit max-w-[80%] rounded-xl bg-primary px-4 py-2 text-sm text-primary-foreground">
+                        {entry.input}
+                      </div>
+                      <div className="space-y-3 rounded-xl border border-border bg-background px-4 py-3 text-sm text-text">
+                        {entry.answers.map((a) => (
+                          <div key={a.name}>
+                            <div className="flex items-baseline gap-2">
+                              <span className="text-xs uppercase tracking-wide text-text-muted">
+                                {a.name}
+                              </span>
+                              <span className="font-medium text-text">{a.verdict}</span>
+                              {/* Confidence is not the winning probability —
+                                  the model reports them separately, and a 0.95
+                                  choice at 0.22 confidence is exactly the case
+                                  an operator must not automate. */}
+                              <span
+                                className={cn(
+                                  "ml-auto font-mono text-xs tabular-nums",
+                                  a.confidence < 0.5 ? "text-amber-500" : "text-text-muted",
+                                )}
+                                title="Confidence, reported separately from the distribution"
+                              >
+                                conf {a.confidence.toFixed(3)}
+                              </span>
+                            </div>
+                            {a.bars.length > 0 && (
+                              <div className="mt-1 space-y-1">
+                                {a.bars.map(([label, p]) => (
+                                  <div key={label} className="flex items-center gap-2">
+                                    <span className="w-28 shrink-0 truncate text-xs text-text-muted">
+                                      {label}
+                                    </span>
+                                    <div className="h-1.5 flex-1 overflow-hidden rounded-full bg-border">
+                                      <div
+                                        className="h-full rounded-full bg-primary"
+                                        style={{ width: `${Math.max(p * 100, 0.5)}%` }}
+                                      />
+                                    </div>
+                                    <span className="w-12 shrink-0 text-right font-mono text-xs tabular-nums text-text-muted">
+                                      {p.toFixed(3)}
+                                    </span>
+                                  </div>
+                                ))}
+                              </div>
+                            )}
+                          </div>
+                        ))}
+                        <div className="flex items-center gap-3 border-t border-border pt-2 text-xs text-text-muted">
+                          <span>
+                            {entry.answers.length} question
+                            {entry.answers.length === 1 ? "" : "s"}, one pass
+                          </span>
+                          <span>{entry.latencyMs} ms</span>
+                          <span className="ml-auto font-mono">{entry.model}</span>
+                        </div>
+                      </div>
+                    </div>
+                  );
+                }
+
                 const imageIndex = imageEntries.indexOf(entry);
                 return (
                   <div key={i} className="space-y-3">
@@ -1167,6 +1328,43 @@ export default function Playground() {
               <p className="mt-1 text-xs text-text-muted">
                 The box above is the query; these are the candidates it scores against.
               </p>
+            </div>
+          )}
+
+          {isTypedDecision && (
+            <div className="mt-3">
+              <label className="block text-xs font-medium text-text-muted">
+                Questions to answer, as JSON
+              </label>
+              <textarea
+                value={candidateLabels}
+                onChange={(e) => setCandidateLabels(e.target.value)}
+                rows={6}
+                spellCheck={false}
+                placeholder={TYPED_DECISION_EXAMPLE}
+                className="mt-1 w-full rounded-lg border border-border bg-surface px-3 py-2 font-mono text-xs text-text focus:border-primary focus:outline-none"
+              />
+              <p className="mt-1 text-xs text-text-muted">
+                One forward pass answers all of them.{" "}
+                <span className="font-mono">choice</span> picks from{" "}
+                <span className="font-mono">criteria</span>,{" "}
+                <span className="font-mono">score</span> places it on that ordered scale, and{" "}
+                <span className="font-mono">noul</span> returns P(true) with no criteria.
+                <br />
+                <strong>Word the question the way the text does.</strong> This model matches
+                vocabulary more than meaning: on an email saying “cancelamos el plan”, asking
+                “amenaza con cancelar” answers yes at 0.98 and asking “amenaza con irse” —
+                the same question in synonyms — answers no at 0.17.
+              </p>
+              {!candidateLabels && (
+                <button
+                  type="button"
+                  onClick={() => setCandidateLabels(TYPED_DECISION_EXAMPLE)}
+                  className="mt-1 text-xs text-primary hover:underline"
+                >
+                  Fill the example
+                </button>
+              )}
             </div>
           )}
 

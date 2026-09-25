@@ -22,6 +22,22 @@ _MANAGER_REGISTRY = (
 )
 
 
+def _tuple_literal(name: str, source: str) -> set[str]:
+    """The string members of a module-level tuple, parsed robustly.
+
+    PRM-140: this was `\(([^)]*)\)`, which stops at the first closing paren —
+    including one inside a comment. Adding a modality whose comment mentioned
+    "(choice / score / noul)" silently truncated the parse, and the guard
+    reported the new entry as missing from the UI when it was present in both.
+    A guard that fails for a reason unrelated to what it guards teaches people
+    to edit the guard.
+    """
+    block = re.search(rf"^{name} = \((.*?)^\)", source, re.MULTILINE | re.DOTALL)
+    assert block, f"{name} moved or changed shape"
+    body = re.sub(r"#[^\n]*", "", block.group(1))  # comments are not members
+    return set(re.findall(r'"([a-z0-9_]+)"', body))
+
+
 def _manager_backends() -> list[str]:
     src = _MANAGER_REGISTRY.read_text()
     match = re.search(r"^BACKENDS = \(([^)]*)\)", src, re.MULTILINE)
@@ -103,14 +119,7 @@ def test_the_ui_offers_exactly_the_modalities_the_registry_accepts() -> None:
     cannot register the models the gateway now has a route for; a UI that
     offers one the registry rejects fails at save with a validation error.
     """
-    manager_modalities = set(
-        re.findall(
-            r'"([a-z_]+)"',
-            re.search(
-                r"^MODALITIES = \(([^)]*)\)", _MANAGER_REGISTRY.read_text(), re.MULTILINE
-            ).group(1),
-        )
-    )
+    manager_modalities = _tuple_literal("MODALITIES", _MANAGER_REGISTRY.read_text())
     ui_union = set(
         re.findall(
             r'"([a-z_]+)"',
@@ -150,14 +159,7 @@ def test_the_playground_picker_can_show_every_modality() -> None:
             re.MULTILINE,
         )
     )
-    manager_modalities = set(
-        re.findall(
-            r'"([a-z_]+)"',
-            re.search(
-                r"^MODALITIES = \(([^)]*)\)", _MANAGER_REGISTRY.read_text(), re.MULTILINE
-            ).group(1),
-        )
-    )
+    manager_modalities = _tuple_literal("MODALITIES", _MANAGER_REGISTRY.read_text())
     assert manager_modalities - labelled == set(), (
         f"modalities with no group label in the Playground picker: "
         f"{sorted(manager_modalities - labelled)}"
@@ -182,14 +184,7 @@ def test_every_modality_has_a_base_price() -> None:
     sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
     from prometheus_gateway.pricing import default_prices  # noqa: PLC0415
 
-    manager_modalities = set(
-        re.findall(
-            r'"([a-z_]+)"',
-            re.search(
-                r"^MODALITIES = \(([^)]*)\)", _MANAGER_REGISTRY.read_text(), re.MULTILINE
-            ).group(1),
-        )
-    )
+    manager_modalities = _tuple_literal("MODALITIES", _MANAGER_REGISTRY.read_text())
     priced = set(default_prices())
     assert manager_modalities - priced == set(), (
         f"modalities whose models would be created with no price: "

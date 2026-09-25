@@ -304,6 +304,55 @@ def _build_hf_serve_cmd(binary: str, entry: RegistryEntry, port: int, bind_host:
     ]
 
 
+def _build_laya_cmd(binary: str, entry: RegistryEntry, port: int, bind_host: str) -> list[str]:
+    """laya-serve — verified against a running server (laya 0.3.7).
+
+    PRM-140. The command is the binary and nothing else, because this engine
+    takes no flags at all: host, port, device and which checkpoints to load are
+    every one of them environment variables. See `_laya_env` below — it is the
+    first backend here that needs one, which is why `start_instance` grew the
+    ability to pass an environment at all.
+
+    Install it as `laya[serve]`, not `laya`: the plain package installs the
+    `laya-serve` entry point and neither fastapi nor uvicorn, so it starts and
+    dies on `ModuleNotFoundError`. The server dependencies live behind an
+    extra that nothing in the console-script's own metadata mentions.
+    """
+    return [binary]
+
+
+def _laya_env(entry: RegistryEntry, port: int, bind_host: str) -> dict[str, str]:
+    """What `laya-serve` reads instead of flags.
+
+    `LAYA_MODELS=english` rather than the default: left unset it preloads all
+    three checkpoints, and one alone is already 1.2 GB resident. A node that
+    wants the multilingual router asks for it.
+    """
+    system = platform.system()
+    if system == "Darwin":
+        device = "mps"
+    elif shutil.which("nvidia-smi") is not None:
+        device = "cuda"
+    else:
+        device = "cpu"
+    return {
+        "LAYA_HOST": bind_host,
+        "LAYA_PORT": str(port),
+        "LAYA_DEVICE": device,
+        "LAYA_MODELS": "english",
+        "LAYA_PRELOAD": "1",
+    }
+
+
+# PRM-140: extra environment for the backends that are configured that way.
+# Deliberately a second map rather than making every builder return a pair:
+# five of the six engines here take flags, and one does not. An asymmetry in
+# the data is honest; an asymmetry hidden behind a uniform signature is not.
+_ENV_BUILDERS = {
+    "laya": _laya_env,
+}
+
+
 _COMMAND_BUILDERS = {
     "llama_cpp": _build_llama_cpp_cmd,
     "mlx": _build_mlx_cmd,
@@ -311,6 +360,7 @@ _COMMAND_BUILDERS = {
     "sglang": _build_sglang_cmd,
     "sd_cpp": _build_sd_cpp_cmd,
     "hf_serve": _build_hf_serve_cmd,
+    "laya": _build_laya_cmd,
 }
 
 
@@ -377,13 +427,22 @@ def start_instance(
     log_path = log_dir / f"{model_id}.log"
     pid_path = pid_dir / f"{model_id}.pid"
 
-    logger.info("lifecycle.start", model_id=model_id, cmd=cmd)
+    # PRM-140: the first backend configured by environment rather than flags.
+    # Inherit and extend, never replace: the child needs PATH, HOME and the
+    # proxy variables this machine was started with, and a bare env would break
+    # every engine that reads HF_TOKEN to fetch its weights.
+    env_builder = _ENV_BUILDERS.get(entry.backend)
+    extra_env = env_builder(entry, port, bind_host) if env_builder else {}
+    child_env = {**os.environ, **extra_env} if extra_env else None
+
+    logger.info("lifecycle.start", model_id=model_id, cmd=cmd, env=sorted(extra_env))
     with open(log_path, "a") as log_fh:
         proc = subprocess.Popen(
             cmd,
             stdout=log_fh,
             stderr=subprocess.STDOUT,
             start_new_session=True,
+            env=child_env,
         )
 
     # Write PID file
@@ -417,7 +476,7 @@ def start_instance(
                 registry.update(model_id, discovery=True)
                 _clear_error_marker(pid_dir, model_id)
                 # Return the live state
-                states = scan(pid_dir, {model_id}, config.api.proxy_host)
+                states = scan(pid_dir, {model_id}, config.api.proxy_host, {model_id: port})
                 for s in states:
                     if s.pid == proc.pid:
                         return s

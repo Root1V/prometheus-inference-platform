@@ -274,8 +274,16 @@ _ENGINE_PROVIDERS = {
 # are forwarded to. `/predict` is hf-serve's, and it is the only engine in
 # BACKENDS that serves one of these today — when a second one arrives with a
 # different path, this becomes a per-engine lookup rather than a constant.
-_PASS_THROUGH_MODALITIES = frozenset({"classification", "zero_shot"})
-_PASS_THROUGH_PATH = "/predict"
+_PASS_THROUGH_MODALITIES = frozenset({"classification", "zero_shot", "typed_decision"})
+# PRM-140: per engine now. PRM-136 shipped this as a constant and said so —
+# "when a second one arrives with a different path, this becomes a per-engine
+# lookup rather than a constant". `laya-serve` answers on /v1/systemone.
+_PASS_THROUGH_PATHS = {"laya": "/v1/systemone"}
+_DEFAULT_PASS_THROUGH_PATH = "/predict"
+
+
+def _pass_through_path(engine: str | None) -> str:
+    return _PASS_THROUGH_PATHS.get(engine or "", _DEFAULT_PASS_THROUGH_PATH)
 
 
 def _trace_id_for(request: Request) -> str:
@@ -2482,7 +2490,7 @@ def create_router(registry: ModelRegistry, pool: "BackendPool") -> APIRouter:
         try:
             resp, served_id = await pool.forward_with_failover(
                 _candidates(health.usable),
-                _PASS_THROUGH_PATH,
+                _pass_through_path(entry.backend),
                 body,
                 extra_headers={"X-Trace-ID": trace_id},
             )

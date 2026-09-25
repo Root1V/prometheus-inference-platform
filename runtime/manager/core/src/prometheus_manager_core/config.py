@@ -52,6 +52,14 @@ start_timeout_s = 300
 binary = "hf-serve"
 start_timeout_s = 300
 
+# PRM-140: laya-serve — a System One decision model. Takes no flags at all;
+# everything is environment (see lifecycle._laya_env). Install as `laya[serve]`,
+# never plain `laya`: the bare package ships the entry point without fastapi or
+# uvicorn. Preloads its checkpoints at startup like the other Python servers.
+[backends.laya]
+binary = "laya-serve"
+start_timeout_s = 300
+
 # RM-38: stable-diffusion.cpp's sd-server — image generation, not LLM
 # completions. Model load + Metal shader compile is quick (a few seconds for
 # a ~2GB model in local testing); 60s matches llama_cpp's own default.
@@ -137,6 +145,9 @@ class BackendsConfig:
     )
     hf_serve: BackendConfig = field(
         default_factory=lambda: BackendConfig(binary="hf-serve", start_timeout_s=300)
+    )
+    laya: BackendConfig = field(
+        default_factory=lambda: BackendConfig(binary="laya-serve", start_timeout_s=300)
     )
 
 
@@ -253,6 +264,7 @@ class ManagerConfig:
             "sglang": self.backends.sglang,
             "sd_cpp": self.backends.sd_cpp,
             "hf_serve": self.backends.hf_serve,
+            "laya": self.backends.laya,
         }
         cfg = by_name.get(backend)
         if cfg is None:
@@ -297,6 +309,7 @@ def load_config(path: Path | None = None) -> ManagerConfig:
             sglang=BackendConfig(**backends_raw.get("sglang", {})),
             sd_cpp=BackendConfig(**backends_raw.get("sd_cpp", {})),
             hf_serve=BackendConfig(**backends_raw.get("hf_serve", {})),
+            laya=BackendConfig(**backends_raw.get("laya", {})),
         ),
         registry=RegistryConfig(**raw.get("registry", {})),
         downloads=DownloadsConfig(**raw.get("downloads", {})),

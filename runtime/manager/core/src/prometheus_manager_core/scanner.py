@@ -75,8 +75,12 @@ class _BackendSignature:
     backend: str
     name_hints: tuple[str, ...]
     model_flag: str | None  # None means positional (vLLM: `vllm serve <model>`)
-    port_flag: str = "--port"
-    host_flag: str = "--host"
+    # PRM-140: None when the engine has no such flag, because it is
+    # configured by environment. The port is then the registry's, which is
+    # where the manager assigned it — reading it back off a command line that
+    # never carried it was only ever a convenience.
+    port_flag: str | None = "--port"
+    host_flag: str | None = "--host"
 
 
 _BACKEND_SIGNATURES: tuple[_BackendSignature, ...] = (
@@ -92,6 +96,12 @@ _BACKEND_SIGNATURES: tuple[_BackendSignature, ...] = (
     # PRM-135: `--model-id` (a Hub id), not `--model` — hf-serve loads Hugging
     # Face format weights, so there is no path on its command line to match.
     _BackendSignature("hf_serve", ("hf-serve",), "--model-id"),
+    # PRM-140: `laya-serve` takes no arguments whatsoever — host, port, device
+    # and checkpoints are all environment. There is no model flag to match and
+    # no port flag to read back, so identity comes from the PID file (as it
+    # always did) and the port from the registry row (which is where the
+    # manager assigned it in the first place).
+    _BackendSignature("laya", ("laya-serve",), None, port_flag=None),
 )
 
 # RM-38: sd-server has no /health endpoint at all (confirmed against its
@@ -176,6 +186,7 @@ def scan(
     pid_dir: Path,
     registry_ids: set[str] | None = None,
     proxy_host: str = "",
+    known_ports: dict[str, int] | None = None,
 ) -> list[ProcessState]:
     """Return ProcessState for every running inference server process
     (llama.cpp, mlx, vllm, or sglang — see RM-06/RM-08).
@@ -183,6 +194,14 @@ def scan(
     proxy_host — pass config.api.proxy_host so the health probe uses the
     correct address when Manager runs inside a container.
     Comes from manager.toml [api] proxy_host, overrideable via PMGR_PROXY_HOST.
+
+    known_ports — PRM-140: {model_id: port} from the registry, used only for a
+    backend whose signature has no port flag because it is configured by
+    environment. Reading the port back off the command line was always a
+    convenience; the manager assigned it and the registry has had it all along.
+    Without this a flagless engine scans as port 0, `_probe_health` returns
+    "unknown" without probing, and a server that is answering perfectly well
+    never reaches "ready".
 
     Implements: memory/specs/008-llama-server-manager.md — AC-1, AC-2, AC-14
     """
@@ -212,10 +231,12 @@ def scan(
                 or _extract_arg(cmdline, "--alias")
                 or _extract_arg(cmdline, "--served-model-name")
             )
-            port_str = _extract_arg(cmdline, sig.port_flag)
+            port_str = _extract_arg(cmdline, sig.port_flag) if sig.port_flag else ""
             port = int(port_str) if port_str.isdigit() else 0
+            if port == 0 and known_ports:
+                port = known_ports.get(pid_to_model_id.get(pid, ""), 0)
             model_path = _extract_model_path(cmdline, sig)
-            host = _extract_arg(cmdline, sig.host_flag) or "127.0.0.1"
+            host = (_extract_arg(cmdline, sig.host_flag) if sig.host_flag else "") or "127.0.0.1"
 
             # cpu_percent(interval=None) returns 0.0 on the first call for a
             # Process object (it only stores the baseline).  Subsequent calls

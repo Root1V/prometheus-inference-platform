@@ -9,7 +9,7 @@ import type { Backend } from "../types/instance";
  * declaration has to be checked against it, because a list that exists twice
  * gets filtered once.
  */
-export const ENGINES: Backend[] = ["llama_cpp", "mlx", "vllm", "sglang", "sd_cpp", "hf_serve"];
+export const ENGINES: Backend[] = ["llama_cpp", "mlx", "vllm", "sglang", "sd_cpp", "hf_serve", "laya"];
 
 /** Display labels — the stored ids are snake_case and the products are not. */
 export const ENGINE_LABELS: Record<Backend, string> = {
@@ -19,6 +19,7 @@ export const ENGINE_LABELS: Record<Backend, string> = {
   sglang: "SGLang",
   sd_cpp: "stable-diffusion.cpp",
   hf_serve: "hf-serve",
+  laya: "Laya",
 };
 
 /**

@@ -5071,6 +5071,128 @@ count while the billed input does not. Priced per input token like the rest unti
 solving.
 
 
+## PRM-140 — Laya: a backend configured by environment, not by flags
+
+**Why**: PRM-136 recorded that Laya ships no server and that integrating it would mean writing one.
+That was true of `laya` 0.3.4. They publish almost daily — 0.3.2 to 0.3.7 in four days — and 0.3.7
+ships `laya-serve`: FastAPI, `/health`, `POST /v1/systemone`. The premise the earlier analysis
+rested on had expired.
+
+Laya is a "System One" decision model: a *state* plus a dict of typed questions (`choice`, `score`,
+`noul`), answered in one forward pass, each with a probability distribution **and** a separate
+confidence. Measured here: three questions in 367 ms end to end, 24 ms warm against the engine.
+
+**Scope**: `laya` in `BACKENDS`, the `typed_decision` modality, its base price, the pass-through
+path, and the Playground composer that can drive it.
+
+**Two assumptions every other engine shared, and this one does not**:
+
+- **It takes no arguments at all.** Host, port, device and which checkpoints to preload are every
+  one of them environment variables, so `start_instance` grew the ability to pass an environment —
+  inherited and extended, never replaced, because the child still needs `PATH` and `HF_TOKEN`. A
+  second map rather than making all six builders return a pair: five take flags and one does not,
+  and an asymmetry in the data is honest where one hidden behind a uniform signature is not.
+- **The scanner read the port off the command line.** With no `--port` to find it scanned as 0,
+  `_probe_health` returned `unknown` without probing, and a server answering perfectly well never
+  reached `ready`. The port now comes from the registry, which is where the manager assigned it;
+  reading it back off the process was only ever a convenience.
+
+And the per-engine pass-through path that PRM-136 predicted in a comment — *"when a second one
+arrives with a different path, this becomes a per-engine lookup"* — arrived.
+
+**Found while integrating**:
+
+- `pip install laya` gives you the `laya-serve` entry point and neither fastapi nor uvicorn; it
+  starts and dies on `ModuleNotFoundError`. The server dependencies are behind a `[serve]` extra
+  that the console script's own metadata never mentions. The third package this week whose
+  metadata does not sustain what it ships.
+- The request schema is not the one the README shows: options go in `criteria`, not `options`, and
+  `instructions` is required. The Playground ships the schema that works as a fillable example,
+  because an operator should not have to iterate against 422s to find it.
+- A guard test's own parser broke on a parenthesis inside a comment. Fixed, because a guard that
+  fails for a reason unrelated to what it guards teaches people to edit the guard.
+
+**Verified live**: registered on `lab`, launched by the manager (all five `LAYA_*` variables
+confirmed on the child process), scanned to `ready`, discovered by `manager_sync`, driven from the
+Playground — `department: billing` at 0.968 with confidence 0.875, `urgency: medium` with
+confidence **0.286** rendered in amber, `churn_risk: 29.1% yes` — and a priced usage row, 117
+tokens at 2.34e-06.
+
+**The amber is the point.** Laya reports confidence separately from the winning probability, and a
+0.97 choice at 0.29 confidence is exactly the verdict an operator must not wire to an automated
+action. The renderer shows both rather than the label alone.
+
+
+## PRM-141 — Laya reads the words, not the meaning
+
+**Why**: reported from the Playground on the first real try — `category` correct, `urgency` and
+`churn_risk` wrong on an email that demanded a refund today or the contract ends.
+
+**The cause is one thing.** Holding everything else fixed and changing only the wording of the
+question, on the same email (`"...o cancelamos el plan"`):
+
+```
+"¿El cliente amenaza con cancelar?"          -> sí   0.980
+"¿El cliente dice que cancelará el plan?"    -> sí   0.960
+"¿El cliente amenaza con cancelar el servicio?" -> sí 0.861
+"¿El cliente amenaza con irse?"              -> no   0.166
+```
+
+The email contains the word *cancelar*. Ask with it and the answer is right and confident; ask
+with a synonym and it is wrong. **This model matches vocabulary far more than meaning**, which is
+the single most useful thing to know before writing questions for it — and it is not in their
+documentation.
+
+**Two earlier claims here were wrong, and both failed the same way: the comparison moved two
+variables at once.**
+
+- *"The question ids are a contract and change the answer."* They do select a named workflow
+  (`customer_service` is an exact id-set match), but the answer is identical: three runs each of
+  `departamento/urgencia/fuga` and of the five official ids returned `alta(0.06)` every time. The
+  first comparison changed the ids *and* added `from`/`subject` to the state *and* reworded the
+  instructions. The official ids are kept in the example because a matched workflow is the
+  documented path, not because they were measured to help.
+- *"`noul` is not usable."* `noul` with the right wording returns **94.5%**. The original
+  comparison changed the question type *and* the wording; with the wording held fixed, `noul` and
+  `choice` agree.
+
+**What still holds**, because that test was controlled — the same request sent to two servers:
+`LAYA_AUTO_TASK=1` routes to the `typed-decisions` checkpoint, and everything collapses toward the
+middle: `category` confidence 0.998 → 0.162, `action` 0.777 → 0.037, `churn_risk` a 49.8% coin
+flip. The library says why on load — *"this checkpoint ships invalid temperatures or values
+outside [0.5, 5] ... Treat confidence from the affected entries as uncalibrated"*. Calibration is
+this model class's entire pitch. We do not set that variable and should not.
+
+**Scope**: the Playground's example and the hint under it now carry the wording finding with its
+numbers, and the incorrect claims are gone from the code comment.
+
+**Von does not have this problem, and that decides which model routes real tickets.** The same
+question asked three ways, against the same text, on both engines:
+
+```
+text: "...me cobraron dos veces..."          LAYA     VON
+  "¿le cobraron dos veces?"                  0.988    0.999
+  "¿hubo un cargo duplicado?"                0.945    0.999
+  "¿se produjo una facturación errónea?"     0.700    0.998
+
+text: "...o cancelamos el plan"               LAYA     VON
+  "¿amenaza con cancelar?"                   0.830    0.927
+  "¿amenaza con irse?"                       0.024    0.613
+```
+
+Von is an NLI model: judging whether one sentence entails another *written differently* is the
+task it was trained on, so a paraphrase costs it a thousandth. Laya degrades on every synonym and
+on the harder pair inverts — 0.830 to 0.024 is not doubt, it is the opposite answer held
+confidently. With Laya the quality of the output depends on guessing the customer's vocabulary,
+and "dar de baja" / "cerrar la cuenta" / "me voy a otro banco" are one intention with four
+spellings. **Von for routing real traffic; Laya where the several-decisions-in-one-pass shape and
+the separate confidence are worth the wording discipline.**
+
+**The lesson is mine, not Laya's.** Axonium wrote in A-23 that they nearly sent us chasing a
+finding that did not exist, and caught it with a control. This investigation made that mistake
+twice in an hour, in the same shape, after quoting them approvingly for avoiding it.
+
+
 Append a new row to the table with the next `RM-NN` id and a new `## RM-NN — ...` section
 below, following the same shape (Why / Scope). Re-sort the table if the new item's
 priority isn't "last."
