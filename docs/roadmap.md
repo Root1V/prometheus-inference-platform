@@ -5357,6 +5357,55 @@ its 10 snapshot models across polls and inference keeps working, with
 `manager_sync.node_registry_never_reached` in the log instead of silence.
 
 
+
+## PRM-147 — The stack's configuration stops living in a shell
+
+**Why**: restarting the gateway to load a code change took the entire stack down for two hours.
+Not one line of application code was at fault. `gateway/.env` held the Podman values —
+`https://auth-service:9000`, `http://manager:8090`, `redis://redis:6379` — none of which resolve
+on this machine, and the operator's terminal had been overriding all of them for months.
+`auth-service/.env` did not exist at all, so that service was running entirely on shell state
+too.
+
+**Five variables failed at once and each one masked the next**, which is why it read as "the
+dashboard is broken" rather than as a config problem:
+
+| variable | symptom | why it misled |
+|---|---|---|
+| `AUTH_SERVICE_TOKEN_URL` | the login could not proxy | — |
+| `JWT_JWKS_URL` | *every* authenticated call 500s | login is exempt from JWT validation, so login kept working |
+| `JWT_ISSUER` | 401 after the above was fixed | reported as `Token signature validation failed`, pointing at the key |
+| `MANAGER_URL` | no manager | — |
+| `AUTH_SERVICE_ADMIN_API_KEY` | node registry 403 | and PRM-146 turned that into an empty catalog |
+
+**And the documentation was wrong in the two places someone would rebuild from.**
+`auth-service/.env.example` said the issuer had to match a value in the repo-root `.env` — a file
+this service never reads, so the instruction sends you to verify against something that can
+differ from what is actually minted while looking authoritative. It cost hours here, because it
+is what produced the wrong conclusion that the issuer was already correct. The README named
+`AUTH_DATABASE_URL` (no such setting), listed `AUTH_JWT_ISSUER` as optional when the service will
+not start without it, gave a single `AUTH_TOKEN_TTL_SECONDS` where there are four per-role ones,
+and omitted `SHARE_TOKEN_ENCRYPTION_KEY`, which is required and validated for length. The file
+could not have been reconstructed from either document.
+
+**Scope**: `docs/local-stack.md` — bare-metal and Podman values side by side, what each generated
+secret costs if lost, the two trust boundaries that explain why the gateway needs an admin key at
+all, and a symptom-to-cause table. Both `.env.example` files corrected and told which reader they
+belong to. The README's auth-service table rebuilt against the actual field list. Nothing about
+the secrets' values is written down anywhere.
+
+**And a guard, because a runbook rots**: `test_settings_are_documented.py` fails when a setting
+the service refuses to start without is missing from the README or the example, when the README
+documents a name the service does not read, and when the example again tells the reader to match
+the repo-root `.env`. The first two had three offenders each when written.
+
+**What made this expensive, and it is the session's own lesson**: the process that could not be
+replaced was holding its RSA signing keys from a path that no longer exists, and nothing said so
+until it was killed. Checking `lsof` for what a process actually opened — before killing it — is
+now in the runbook, because "it restarted fine before" only meant it had always been restarted
+from the one terminal that could.
+
+
 Append a new row to the table with the next `RM-NN` id and a new `## RM-NN — ...` section
 below, following the same shape (Why / Scope). Re-sort the table if the new item's
 priority isn't "last."

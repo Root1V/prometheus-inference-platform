@@ -382,12 +382,28 @@ See `gateway/.env.podman.example` and `auth-service/.env.example` for full confi
 
 | Variable | Required | Description |
 |----------|----------|-------------|
-| `AUTH_ADMIN_API_KEY` | Yes | Secret key for `/admin/clients` endpoints |
 | `AUTH_PRIVATE_KEY_FILE` | Yes | RS256 private key PEM for signing JWTs |
 | `AUTH_PUBLIC_KEY_FILE` | Yes | RS256 public key PEM for JWKS endpoint |
-| `AUTH_DATABASE_URL` | No | SQLite path (default: `/data/auth.db`) |
-| `AUTH_JWT_ISSUER` | No | `iss` claim in issued JWTs (default: `https://auth.example.com`) |
-| `AUTH_TOKEN_TTL_SECONDS` | No | JWT lifetime (default: `300`) |
+| `AUTH_ADMIN_API_KEY` | Yes | Guards every `/admin/*` endpoint here. The gateway must carry the same value as `AUTH_SERVICE_ADMIN_API_KEY` — it is the gateway's service credential, not a login. |
+| `AUTH_JWT_ISSUER` | **Yes** | `iss` claim in issued JWTs. **No default** — the service will not start without it, and it must equal `JWT_ISSUER` in `gateway/.env`. |
+| `SHARE_TOKEN_ENCRYPTION_KEY` | **Yes** | 64 hex characters (`openssl rand -hex 32`). Encrypts stored credential-share secrets; validated for length and hex at startup. |
+| `AUTH_ACTIVE_KID` | No | `kid` published in JWKS and stamped on tokens (default: `default`) |
+| `AUTH_JWT_AUDIENCE` | No | `aud` claim; must match the gateway's `JWT_AUDIENCE` (default: `prometheus-gateway`) |
+| `AUTH_DB_URL` | No | SQLAlchemy URL (default: `sqlite+aiosqlite:///./auth.db`, relative to the working directory — prefer an absolute path) |
+| `AUTH_TTL_ADMIN_SECONDS` | No | Token lifetime per role; also `_COGNITIVE_` (3600), `_AGENT_` (600), `_APP_` (300). Default: `10800` |
+| `AUTH_REVOCATION_REDIS_URL` | No | Redis URL for the revocation blocklist (omit to disable) |
+| `SHARE_TOKEN_TTL_SECONDS` | No | Credential-share link lifetime, max 24 h (default: `3600`) |
+| `AUTH_TLS_CERT_FILE` / `AUTH_TLS_KEY_FILE` | No | Set both to serve HTTPS; unset means plain HTTP |
+
+> **Running this stack on a laptop rather than in containers**: the tables above give
+> container hostnames and paths. Bare metal needs a different value for *every* URL, and they are
+> one decision rather than a dozen. `docs/local-stack.md` has both columns side by side, what each
+> generated secret costs if lost, and the symptom each wrong line produces — including the two that
+> mislead: a broken `JWT_JWKS_URL` leaves the dashboard login working while every other call `500`s,
+> and a wrong issuer is reported as `Token signature validation failed`.
+>
+> Nothing either service needs to start should live only in a shell. Both read their own `.env` by
+> absolute path, so putting every value in the file is enough.
 
 > **Root `.env` is required for Podman Compose**: Compose reads the root `.env` to interpolate
 > `${JWT_PUBLIC_KEY_HOST_PATH}` in `podman-compose.yml`. Without it, Compose creates a directory
