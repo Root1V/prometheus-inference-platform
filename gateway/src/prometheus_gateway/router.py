@@ -1218,6 +1218,31 @@ def create_router(registry: ModelRegistry, pool: "BackendPool") -> APIRouter:
             "interrupted": event.interrupted,
             "termination_reason": event.termination_reason,
             "cost_usd": event.cost_usd,
+            # PRM-145: the rates that produced `cost_usd`, so this row can be
+            # *checked* and not only copied — A-25.
+            #
+            # P-21 told the SDK team the number is `tokens × rate` and that the
+            # export carries the rate on every line, which is better than what
+            # Aeon's ledger asked for: it can verify our figure instead of
+            # trusting it. Then they measured the asymmetry — the export needs
+            # `admin:read`, and this row, the one path a non-admin consumer can
+            # actually walk, carried the cost without the rate. So the only
+            # reachable path could only copy.
+            #
+            # Nothing is computed here. These have been stored on the row since
+            # PRM-115, frozen at the moment it was billed, which is what keeps
+            # a price change from re-rating history on read (RM-60). They were
+            # simply never returned.
+            #
+            # Grouped under `rates` rather than flattened so that a `null`
+            # reads as "no price was configured for this model" — the platform's
+            # standing distinction from a silent zero — instead of looking like
+            # a field this endpoint forgot.
+            "rates": {
+                "prompt_price_per_1m": event.prompt_price_per_1m,
+                "completion_price_per_1m": event.completion_price_per_1m,
+                "image_price_each": event.image_price_each,
+            },
             "instance_id": event.instance_id,
             "created_at": event.recorded_at.isoformat(),
         }
@@ -2628,8 +2653,7 @@ def create_router(registry: ModelRegistry, pool: "BackendPool") -> APIRouter:
                     502,
                     "upstream-error",
                     "Upstream Error",
-                    f"The backend serving model {model!r} failed while processing "
-                    "this request.",
+                    f"The backend serving model {model!r} failed while processing this request.",
                     extensions={"backend_error": resp_body, "backend_status": resp.status_code},
                 )
             # Named for what we know — the backend refused — and not

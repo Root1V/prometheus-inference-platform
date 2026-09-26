@@ -396,3 +396,108 @@ def test_the_export_ends_lines_the_way_its_reader_expects():
         f"the parser splits lines on {split.group(1)} and will glue \\r onto the last "
         "column of every row, which is where new columns are appended"
     )
+
+
+# ── The rates that priced the row — PRM-145 ──────────────────────────────────
+#
+# A-25. P-21 told the SDK team the number is `tokens × rate`, and that the
+# export carries the rate on every line so a ledger can *check* our figure
+# rather than copy it — better than what Aeon's ledger had asked for. Then they
+# measured the asymmetry: the export needs `admin:read`, and this row, the one
+# path a non-admin consumer can walk, carried `cost_usd` and no rate. So the
+# only reachable path could only copy.
+
+
+async def test_the_row_carries_the_rates_that_priced_it(app, client_headers, tmp_path):
+    """`cost_usd` and the arithmetic that produced it, on the same row."""
+    from prometheus_gateway import pricing
+
+    pricing_file = tmp_path / "pricing.yaml"
+    pricing_file.write_text(
+        "models:\n  - id: qwen3-0.6b\n    prompt_price_per_1m: 1.0\n"
+        "    completion_price_per_1m: 2.0\n"
+    )
+    pricing.init_pricing_table(str(pricing_file))
+
+    await db.create_tables(db.get_engine())
+    await db.record_usage("client-a", "qwen3-0.6b", 1_000_000, 500_000, request_id="req-rates")
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
+        resp = await c.get("/v1/usage/req-rates", headers=client_headers)
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["rates"]["prompt_price_per_1m"] == pytest.approx(1.0)
+    assert body["rates"]["completion_price_per_1m"] == pytest.approx(2.0)
+    assert body["rates"]["image_price_each"] is None
+
+    # The property the whole entry is about: the consumer can reproduce the
+    # charge from the row alone, without asking us what a price was.
+    recomputed = (
+        body["usage"]["prompt_tokens"] * body["rates"]["prompt_price_per_1m"] / 1_000_000
+        + body["usage"]["completion_tokens"] * body["rates"]["completion_price_per_1m"] / 1_000_000
+    )
+    assert body["cost_usd"] == pytest.approx(recomputed)
+
+
+async def test_the_rates_stay_frozen_when_the_price_changes(app, client_headers, tmp_path):
+    """RM-60, from the consumer's side.
+
+    A row is priced at the rate in force when it was used and never re-rated.
+    That guarantee is only *verifiable* if the rate it was priced at comes back
+    with it — otherwise a consumer checking an old row against today's price
+    list finds a mismatch it cannot explain.
+    """
+    from prometheus_gateway import pricing
+
+    pricing_file = tmp_path / "pricing.yaml"
+    pricing_file.write_text(
+        "models:\n  - id: qwen3-0.6b\n    prompt_price_per_1m: 1.0\n"
+        "    completion_price_per_1m: 2.0\n"
+    )
+    pricing.init_pricing_table(str(pricing_file))
+
+    await db.create_tables(db.get_engine())
+    await db.record_usage("client-a", "qwen3-0.6b", 1_000_000, 0, request_id="req-frozen")
+
+    pricing_file.write_text(
+        "models:\n  - id: qwen3-0.6b\n    prompt_price_per_1m: 100.0\n"
+        "    completion_price_per_1m: 100.0\n"
+    )
+    pricing.init_pricing_table(str(pricing_file))
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
+        resp = await c.get("/v1/usage/req-frozen", headers=client_headers)
+
+    body = resp.json()
+    assert body["rates"]["prompt_price_per_1m"] == pytest.approx(1.0), (
+        "the row was re-rated on read, which is the RM-60 bug"
+    )
+    assert body["cost_usd"] == pytest.approx(1.0)
+
+
+async def test_an_unpriced_model_reports_null_rates_not_zero(app, client_headers, tmp_path):
+    """The platform's standing distinction: no price configured is not free.
+
+    `rates` is an object so a `null` inside it reads as "no price was
+    configured" rather than as a field this endpoint forgot to send.
+    """
+    from prometheus_gateway import pricing
+
+    pricing_file = tmp_path / "pricing.yaml"
+    pricing_file.write_text("models: []\n")
+    pricing.init_pricing_table(str(pricing_file))
+
+    await db.create_tables(db.get_engine())
+    await db.record_usage("client-a", "unpriced-model", 500, 100, request_id="req-unpriced")
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
+        resp = await c.get("/v1/usage/req-unpriced", headers=client_headers)
+
+    body = resp.json()
+    assert body["cost_usd"] is None
+    assert body["rates"] == {
+        "prompt_price_per_1m": None,
+        "completion_price_per_1m": None,
+        "image_price_each": None,
+    }

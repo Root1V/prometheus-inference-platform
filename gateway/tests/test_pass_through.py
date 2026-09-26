@@ -359,9 +359,7 @@ async def test_a_backend_failure_is_an_upstream_error_not_a_rejection(gw, rsa_ke
         return_value=Response(500, json={"detail": "CUDA out of memory"})
     )
 
-    r = await gw.post(
-        "/v1/models/clf/predict", json={"inputs": "hola"}, headers=_headers(rsa_keys)
-    )
+    r = await gw.post("/v1/models/clf/predict", json={"inputs": "hola"}, headers=_headers(rsa_keys))
 
     assert r.status_code == 502, "an engine failure is not a 500 the caller caused"
     body = r.json()
