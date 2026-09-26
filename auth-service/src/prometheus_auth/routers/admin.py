@@ -1,14 +1,12 @@
 # See memory/specs/005-auth-service.md — /admin/clients endpoints
 # Implements: AC-6 (create), AC-7 (revoke), AC-8 (auth), AC-11, AC-12, AC-13, AC-14, AC-15
 # Implements: memory/specs/018-observability-telemetry.md — AC-2, AC-12, AC-13
-import json
 import secrets
 import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
 import bcrypt
-import httpx
 import redis.asyncio as aioredis
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.security import APIKeyHeader
@@ -16,29 +14,21 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..db import (
-    DEFAULT_ELECTRICITY_USD_PER_HOUR,
-    DEFAULT_HARDWARE_AMORTIZATION_USD_PER_HOUR,
-    DEFAULT_PRICE_MARGIN_MULTIPLIER,
     CredentialShareToken,
-    Node,
-    NodeType,
     Principal,
     PrincipalRole,
     get_session_factory,
 )
 from ..schemas import (
-    CreateNodeRequest,
     CreatePrincipalRequest,
     CreatePrincipalResponse,
     GenerateShareLinkRequest,
-    NodeListItem,
     PrincipalListItem,
     ReactivateResponse,
     ResetPasswordResponse,
     RevokeShareLinkResponse,
     RotateSecretResponse,
     ShareLinkResponse,
-    UpdateNodeRequest,
     UpdatePrincipalRequest,
     invalid_scopes,
 )
@@ -614,257 +604,26 @@ async def revoke_share_link(
         return RevokeShareLinkResponse(token_id=token_id, revoked=True)
 
 
-# ── Node registry (RM-20 — replaces the gateway's static MANAGER_NODES) ───────
-
-
-async def _check_node_reachable(manager_url: str) -> bool:
-    """GET {manager_url}/health — manager-api's liveness probe, no auth required."""
-    try:
-        async with httpx.AsyncClient(timeout=3.0) as client:
-            resp = await client.get(f"{manager_url.rstrip('/')}/health")
-        return resp.status_code == 200
-    except Exception:
-        return False
-
-
-def _engines_from_column(raw: str | None) -> list[str] | None:
-    """PRM-133: the stored JSON back into a list, preserving "never declared".
-
-    A row written before this column existed reads NULL and must stay None all
-    the way to the client — the instance form decides what to offer from it,
-    and `[]` would tell it the node can launch nothing.
-    """
-    if raw is None:
-        return None
-    try:
-        parsed = json.loads(raw)
-    except json.JSONDecodeError:
-        logger.warning("auth.node_engines_unparseable", raw=raw[:120])
-        return None
-    return [str(x) for x in parsed] if isinstance(parsed, list) else None
-
-
-def _node_to_item(node: Node) -> NodeListItem:
-    return NodeListItem(
-        id=node.id,
-        name=node.name,
-        manager_url=node.manager_url,
-        node_type=node.node_type.value,
-        tag=node.tag,
-        is_active=node.is_active,
-        hardware_amortization_usd_per_hour=node.hardware_amortization_usd_per_hour,
-        electricity_usd_per_hour=node.electricity_usd_per_hour,
-        price_margin_multiplier=node.price_margin_multiplier,
-        hourly_cost_usd=node.hardware_amortization_usd_per_hour + node.electricity_usd_per_hour,
-        engines=_engines_from_column(node.engines),
-        created_at=node.created_at,
-        updated_at=node.updated_at,
-    )
-
-
-@router.post(
-    "/nodes", response_model=NodeListItem, status_code=201, dependencies=[Depends(_require_admin)]
-)
-async def create_node(
-    body: CreateNodeRequest,
-    db: AsyncSession = Depends(_get_db),
-) -> Any:
-    """Register a new manager node.
-
-    Implements: docs/roadmap.md — RM-20. A connectivity check against the
-    node's manager-api runs immediately — an unreachable node is still
-    registered (so the operator doesn't lose the entry they just typed), but
-    created inactive rather than rejected outright.
-    """
-    existing = await db.execute(select(Node).where(Node.name == body.name))
-    if existing.scalar_one_or_none() is not None:
-        raise HTTPException(status_code=409, detail=f"Node {body.name!r} already exists.")
-
-    reachable = await _check_node_reachable(body.manager_url)
-
-    node = Node(
-        id=str(uuid.uuid4()),
-        name=body.name,
-        manager_url=body.manager_url,
-        node_type=NodeType(body.node_type),
-        tag=body.tag,
-        is_active=reachable,
-        hardware_amortization_usd_per_hour=(
-            body.hardware_amortization_usd_per_hour
-            if body.hardware_amortization_usd_per_hour is not None
-            else DEFAULT_HARDWARE_AMORTIZATION_USD_PER_HOUR
-        ),
-        electricity_usd_per_hour=(
-            body.electricity_usd_per_hour
-            if body.electricity_usd_per_hour is not None
-            else DEFAULT_ELECTRICITY_USD_PER_HOUR
-        ),
-        price_margin_multiplier=(
-            body.price_margin_multiplier
-            if body.price_margin_multiplier is not None
-            else DEFAULT_PRICE_MARGIN_MULTIPLIER
-        ),
-        # PRM-133: no default. Every other optional field above falls back to a
-        # platform constant because a node without a cost is unusable; a node
-        # without a declared engine list is merely undeclared, and inventing
-        # one here would make "we don't know" indistinguishable from a claim.
-        engines=json.dumps(body.engines) if body.engines is not None else None,
-    )
-    db.add(node)
-    await db.commit()
-    await db.refresh(node)
-
-    logger.info("auth.node_created", node_id=node.id, name=node.name, is_active=reachable)
-    return _node_to_item(node)
-
-
-@router.get("/nodes", response_model=list[NodeListItem], dependencies=[Depends(_require_admin)])
-async def list_nodes(db: AsyncSession = Depends(_get_db)) -> Any:
-    """List all registered nodes. Implements: docs/roadmap.md — RM-20."""
-    result = await db.execute(select(Node).order_by(Node.created_at.desc()))
-    return [_node_to_item(n) for n in result.scalars().all()]
-
-
-@router.patch(
-    "/nodes/{node_id}", response_model=NodeListItem, dependencies=[Depends(_require_admin)]
-)
-async def update_node(
-    node_id: str,
-    body: UpdateNodeRequest,
-    db: AsyncSession = Depends(_get_db),
-) -> Any:
-    """Partially update a node's manager_url / node_type / tag.
-
-    Implements: docs/roadmap.md — RM-20. Changing manager_url re-runs the
-    connectivity check (a URL change invalidates whatever was last observed).
-    """
-    result = await db.execute(select(Node).where(Node.id == node_id))
-    node = result.scalar_one_or_none()
-    if node is None:
-        raise HTTPException(status_code=404, detail="Node not found.")
-
-    if body.manager_url is not None and body.manager_url != node.manager_url:
-        node.manager_url = body.manager_url
-        node.is_active = await _check_node_reachable(body.manager_url)
-    if body.node_type is not None:
-        node.node_type = NodeType(body.node_type)
-    if "tag" in body.model_fields_set:
-        node.tag = body.tag
-    if body.hardware_amortization_usd_per_hour is not None:
-        node.hardware_amortization_usd_per_hour = body.hardware_amortization_usd_per_hour
-    if body.electricity_usd_per_hour is not None:
-        node.electricity_usd_per_hour = body.electricity_usd_per_hour
-    if body.price_margin_multiplier is not None:
-        node.price_margin_multiplier = body.price_margin_multiplier
-    # PRM-133: `model_fields_set`, like `tag` above — `engines: []` is a real
-    # edit ("this node has none"), and an `is not None` check would silently
-    # drop it.
-    if "engines" in body.model_fields_set:
-        node.engines = json.dumps(body.engines) if body.engines is not None else None
-
-    node.updated_at = datetime.now(timezone.utc)
-    await db.commit()
-    await db.refresh(node)
-
-    logger.info("auth.node_updated", node_id=node.id)
-    return _node_to_item(node)
-
-
-@router.post(
-    "/nodes/{node_id}/check", response_model=NodeListItem, dependencies=[Depends(_require_admin)]
-)
-async def check_node(
-    node_id: str,
-    db: AsyncSession = Depends(_get_db),
-) -> Any:
-    """Re-run the connectivity check and update is_active accordingly.
-
-    Implements: docs/roadmap.md — RM-20. The way a node marked inactive
-    (unreachable at creation, or since) comes back once it's actually up.
-    """
-    result = await db.execute(select(Node).where(Node.id == node_id))
-    node = result.scalar_one_or_none()
-    if node is None:
-        raise HTTPException(status_code=404, detail="Node not found.")
-
-    node.is_active = await _check_node_reachable(node.manager_url)
-    node.updated_at = datetime.now(timezone.utc)
-    await db.commit()
-    await db.refresh(node)
-
-    logger.info("auth.node_checked", node_id=node.id, is_active=node.is_active)
-    return _node_to_item(node)
-
-
-@router.post(
-    "/nodes/{node_id}/activate", response_model=NodeListItem, dependencies=[Depends(_require_admin)]
-)
-async def activate_node(
-    node_id: str,
-    db: AsyncSession = Depends(_get_db),
-) -> Any:
-    """Try to bring a node back into rotation — gated on an actual connectivity check.
-
-    Implements: docs/roadmap.md — RM-20. Unlike /deactivate, this can't just flip
-    the flag: showing "Active" for a node that still can't be reached would be a
-    lie the operator would trust. So this re-probes the node and only marks it
-    active if the probe succeeds; otherwise it stays inactive. Functionally the
-    same probe as /check — kept as a separate route because "I want this node
-    back in service" and "just tell me the current status" are different intents
-    worth distinct responses/messaging on the frontend.
-    """
-    result = await db.execute(select(Node).where(Node.id == node_id))
-    node = result.scalar_one_or_none()
-    if node is None:
-        raise HTTPException(status_code=404, detail="Node not found.")
-
-    node.is_active = await _check_node_reachable(node.manager_url)
-    node.updated_at = datetime.now(timezone.utc)
-    await db.commit()
-    await db.refresh(node)
-
-    logger.info("auth.node_activate_attempted", node_id=node.id, is_active=node.is_active)
-    return _node_to_item(node)
-
-
-@router.post(
-    "/nodes/{node_id}/deactivate",
-    response_model=NodeListItem,
-    dependencies=[Depends(_require_admin)],
-)
-async def deactivate_node(
-    node_id: str,
-    db: AsyncSession = Depends(_get_db),
-) -> Any:
-    """Manually mark a node inactive — an on-demand override, e.g. for maintenance.
-
-    Implements: docs/roadmap.md — RM-20.
-    """
-    result = await db.execute(select(Node).where(Node.id == node_id))
-    node = result.scalar_one_or_none()
-    if node is None:
-        raise HTTPException(status_code=404, detail="Node not found.")
-
-    node.is_active = False
-    node.updated_at = datetime.now(timezone.utc)
-    await db.commit()
-    await db.refresh(node)
-
-    logger.info("auth.node_deactivated", node_id=node.id)
-    return _node_to_item(node)
-
-
-@router.delete("/nodes/{node_id}", status_code=204, dependencies=[Depends(_require_admin)])
-async def delete_node(
-    node_id: str,
-    db: AsyncSession = Depends(_get_db),
-) -> None:
-    """Remove a node. Implements: docs/roadmap.md — RM-20."""
-    result = await db.execute(select(Node).where(Node.id == node_id))
-    node = result.scalar_one_or_none()
-    if node is None:
-        raise HTTPException(status_code=404, detail="Node not found.")
-
-    await db.delete(node)
-    await db.commit()
-    logger.info("auth.node_deleted", node_id=node_id)
+# ── Node registry — moved out in PRM-134 ──────────────────────────────────────
+#
+# The seven endpoints that stood here (create / list / patch / check / activate /
+# deactivate / delete) are gone. The fleet's node list is now owned by the
+# manager-api whose manager.toml sets `[fleet] coordinator = true`, and served
+# from `prometheus_manager_api.fleet_routes` on `/v1/fleet/nodes/*`.
+#
+# RM-20 put fleet inventory here because auth-service was the only central
+# service that existed, and the constraint behind that was real: `manager-api`
+# runs per node, so no manager could hold the list *of* nodes without one
+# becoming special. PRM-134 accepts exactly that — one manager is designated the
+# coordinator, which is Nomad's server/client split and Kubernetes'
+# control-plane/node split.
+#
+# What made the old placement wrong is that a node row touches no principal, no
+# token and no scope: it is topology, a hardware class, cost figures and a list
+# of installed engines. This service owns security and now owns only security.
+#
+# The `Node` model, the `nodes` table and its additive migrations stay in db.py
+# on purpose. The rows are still there, so reverting restores a working registry,
+# and this codebase's additive-only convention does not drop tables. Nothing
+# writes to them any more. `scripts/migrate_node_registry.py` is what copied the
+# rows to the coordinator; it never deletes from here.

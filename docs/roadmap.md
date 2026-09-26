@@ -4800,50 +4800,64 @@ and a process signature in `scanner.py`, and `vllm`/`sglang` show what an unveri
 worth. Nothing should join the list without one node that can actually run it.
 
 
-## PRM-134 — The node registry leaves auth-service
+## PRM-134 — The node registry moves to a coordinator manager
 
-**Why**: auth-service should own security and nothing else, and it does — except for one table.
-`principals` and `credential_share_tokens` are authentication and authorization. `nodes` is
-hardware inventory: a name, a manager URL, a hardware type, an hourly cost, a margin, and now a
-list of installed inference engines. It touches no principal, no token and no scope; the only
-things it shares with the rest of the service are a SQLAlchemy session and the `X-Admin-Key`
-guard, and its only consumer is the gateway (`admin/nodes_client.py` plus the `/admin/api/nodes`
-pass-through proxy).
+**Why**: auth-service held three tables and one of them was not security. `principals` and
+`credential_share_tokens` are authentication; `nodes` is fleet inventory — a name, a manager URL,
+a hardware class, two cost components, a margin, and a list of installed engines. It touches no
+principal, no token and no scope, and its only consumer is the gateway.
 
-RM-20 is where this happened, and its reason was real rather than careless: it moved node topology
-out of the gateway's static `MANAGER_NODES` env var, and auth-service was the only central service
-to move it to. **`manager-api` runs per node** — each one owns its own `registry.db` of models and
-instances — so the manager cannot hold a list *of* nodes without one node being made special.
+RM-20 put it there for a real reason: auth-service was the only central service, and
+**`manager-api` runs per node** — each with its own `registry.db` — so no manager could hold the
+list *of* nodes without one becoming special.
 
-**Scope**: move the `nodes` table, its six endpoints and its connectivity probe out of
-auth-service, and repoint `nodes_client.fetch_nodes()` and the gateway's proxy. The live row has
-to come with it — there is one, and it is the node everything runs on.
+**The decision is to accept exactly that.** One `manager-api` is designated the coordinator in
+its `manager.toml` (`[fleet] coordinator = true`); it owns the registry and serves
+`/v1/fleet/nodes/*`, and every other node leaves the flag false and behaves as before. That is
+Nomad's server/client split and Kubernetes' control-plane/node split: identical software, one
+configured role. A flag rather than an election, because two nodes and a laptop do not need
+consensus and a leader nobody chose is harder to reason about than one written in a file.
 
-**Where it goes is the decision, and it is not obvious**:
+**Its own database, not `registry.db`.** `registry.db` is per-node — the models and instances on
+*this* host. The node list is fleet-level and there is one of it. Every system with this shape
+keeps the two apart — etcd versus the kubelet's own state, Nomad's server store versus
+`client/state.db` — and the reason is that node-local state is **disposable by design**: wiping
+it and letting the node re-sync is routine. Sharing one file would mean the coordinator, which is
+also a node, could not have its local state wiped without destroying the fleet.
 
-- **The gateway's own DB.** It is the only central service, the only consumer, and it already
-  persists node-scoped operational state — `manager_catalog_snapshot` stores
-  `{node_name: [entries]}`, and `billing_router.py` already reads each node's hourly cost to price
-  a model. No new service to deploy, secure or operate. The cost: the gateway becomes the control
-  plane as well as the data plane, and node CRUD starts sharing a process with the inference hot
-  path.
-- **A new central control-plane service.** Cleanest against the principle — inventory belongs with
-  the thing that manages inventory — and it is where a future fleet manager would live anyway. The
-  cost is a whole service, its deployment, its own auth, for three tables' worth of work today.
+**An earlier draft put this in the gateway's database and that was wrong on the user's
+challenge.** It also leaned on `manager-owns-registry`'s rejection of a shared SQLite registry as
+a live constraint, which PRM-149 then found had been overtaken — the manager itself uses SQLite
+now. The argument for the coordinator stands on the industry pattern and on the per-node
+constraint, not on that document.
 
-Recommended: the gateway, unless a central control plane is coming for other reasons — in which
-case this is its first tenant and building it now is cheaper than moving twice.
+**What this buys, stated precisely**: the node list no longer needs auth-service's admin API or
+the shared admin key. It is **not** full independence — the manager token is still issued by
+auth-service — but that token is cached with a 300 s TTL and renewed early, where the old
+admin-key call failed on every poll. Measured on 2026-09-26: an auth-service the gateway could
+not authenticate to emptied the entire model catalog.
 
-**A side effect worth having either way**: `config.py`'s validator requires
-`AUTH_SERVICE_ADMIN_URL` and `AUTH_SERVICE_ADMIN_API_KEY` whenever the dashboard is enabled, and
-its own docstring says the reason is RM-20's node topology. Move the nodes and that requirement
-narrows to what the Users page actually needs.
+**Scope**: `prometheus_manager_core.fleet` (registry + `Node`), `[fleet]` config with
+`PMGR_FLEET_*` env overrides, `fleet_routes.py` with the seven endpoints under the existing
+`backend-registry:*` scopes, the gateway's seven dashboard proxies repointed, `fetch_nodes`
+reading the coordinator, `MANAGER_FLEET_URL` required when the dashboard is on, and
+`scripts/migrate_node_registry.py` — idempotent, verifying, and deleting nothing.
 
-**Not a reason to hold PRM-133**: the misplacement is RM-20's, and PRM-133 added one nullable
-column to a table that was already in the wrong house. The column moves with the table for free,
-and PRM-133's UI half — the shared engine list, the filtering, the drift guards — does not move at
-all.
+**auth-service keeps its table and rows.** That is the rollback path, and this codebase's
+additive-only convention does not drop tables. Nothing writes to them.
 
+**Verified**: 28 tests in `runtime/manager/api/tests/test_fleet.py` — the 25 ported from
+auth-service verbatim, because what they pin is the contract the dashboard depends on and the
+contract did not change, plus three for the 409. A guard replaced auth-service's file: the seven
+routes must 404, no route there may mention nodes under any path, and the table must still exist.
+Live: `local` restarted as coordinator, two nodes migrated with their engines intact, the
+dashboard's Nodes, Instances and Users all 200, ten models in the catalog, inference working, and
+`manager_sync` logging only `refreshed` and `token_renewed`.
+
+**One self-inflicted repair worth recording**: the abandoned draft had applied an Alembic
+migration to `gateway.db`, so the stamp pointed at a revision that no longer existed on this
+branch and the gateway refused to start. Reset to the real head and the orphaned table dropped,
+after confirming its two rows were already in `fleet.db`.
 
 ## PRM-135 — hf-serve, and a `lab` node to try engines on
 
@@ -5481,6 +5495,47 @@ grew a second check: an architecture decision with no `Reviewed <date>` line fai
 The reasoning is that an unreviewed ADR reads exactly like a true one — five of these were
 wrong and not one of them said so — so the absence of a review date is the only available
 signal that nobody has looked. Verified by adding an unreviewed record and confirming exit 1.
+
+
+
+## PRM-150 — `ready` means a model answered, not that a port is open
+
+**Why**: `scanner._probe_health` returns `ready` when a health endpoint answers 200. That is
+**liveness reported as readiness**, and there are two measured cases where it lies:
+
+- `hf-serve` started and died on `ModuleNotFoundError`; caught only because nothing answered.
+- `laya` answered 200 perfectly while the loaded checkpoint was miscalibrated — its own library
+  logged that the confidences were unusable.
+
+The industry separates these precisely. Kubernetes has `livenessProbe`, `readinessProbe` and
+`startupProbe`; the Open Inference Protocol (KServe v2, Triton) serves `/v2/health/live`,
+`/v2/health/ready` **and `/v2/models/{name}/ready`**. This platform has the first and calls it the
+third.
+
+**Scope**: a startup state distinct from `error` and `unknown`, since a model that takes minutes
+to load is neither; a one-shot smoke inference matched to the modality at launch — an embedding of
+one word, a 1-token completion, a two-document rerank — because that is what catches "loaded but
+broken" and a health check cannot; and the result recorded on the instance so the dashboard can
+say *why* something is not ready. It belongs on the node: the node launched the process, knows the
+command that produced it, and is the cheapest place to find out.
+
+The smoke request is excluded from usage. It serves no caller, and PRM-142 already established
+that a request nobody was served is not billed.
+
+
+## PRM-151 — Node liveness by heartbeat, not by a probe from the centre
+
+**Why**: `is_active` is decided by the coordinator probing each node's `/health`. So a coordinator
+that cannot reach a node and a node that is genuinely down produce the same answer — the shape of
+PRM-146, which was patched at one level and remains at this one.
+
+Kubernetes, Nomad and Consul all invert the direction: the node registers itself and renews a
+lease, and the absence of a heartbeat within a TTL is unambiguous. It also removes the step where
+an operator types a URL into a form for a machine that could announce itself.
+
+**Scope**: node self-registration against the coordinator plus a renewed lease with a TTL, with
+the central probe kept as the manual `check` action an operator can still invoke. Superseding the
+probe is what makes `is_active` a fact rather than an inference.
 
 
 Append a new row to the table with the next `RM-NN` id and a new `## RM-NN — ...` section

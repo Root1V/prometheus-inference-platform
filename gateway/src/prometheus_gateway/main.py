@@ -185,6 +185,7 @@ def create_app(
             _manager_sync = ManagerRegistrySync(
                 auth_service_admin_url=settings.auth_service_admin_url,  # type: ignore[arg-type]
                 auth_service_admin_api_key=settings.auth_service_admin_api_key,  # type: ignore[arg-type]
+                fleet_url=settings.resolved_fleet_url,  # PRM-134
                 registry=registry,
                 poll_interval_s=settings.manager_poll_interval_s,
                 manager_client_id=settings.manager_client_id,
@@ -471,6 +472,11 @@ def create_app(
         # /admin/api/* registered before the static mount below so its routes
         # are matched first — a StaticFiles Mount at /admin would otherwise
         # shadow sub-paths like /admin/api/instances.
+        # PRM-134: `_resolve_node` is module-level in admin/router.py and needs
+        # the manager token to ask the coordinator for the node list, so the
+        # client goes on app.state beside settings rather than being threaded
+        # through every caller.
+        app.state.manager_client = manager_client
         app.include_router(create_admin_router(manager_client))
         # RM-60: billing config CRUD — the enforcement hooks in router.py are
         # always active regardless of this flag; only the admin UI to

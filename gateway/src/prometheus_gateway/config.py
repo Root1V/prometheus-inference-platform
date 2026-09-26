@@ -119,6 +119,16 @@ class Settings(BaseSettings):
     # Manager REST API using the same manager_client_id/secret credentials as
     # ManagerRegistrySync — that service account needs backend-registry:write
     # in addition to its existing backend-registry:read grant.
+    # PRM-134: the manager-api that holds the fleet's node registry — the one
+    # whose manager.toml sets `[fleet] coordinator = true`.
+    #
+    # No default and no fallback. The obvious fallback would be MANAGER_URL, and
+    # it does not exist: that name appears in gateway/.env and is **not a setting
+    # on this class**, so `extra="ignore"` has been silently discarding it. A
+    # fallback to a value nobody reads is worse than a required field, so the
+    # validator below demands this one whenever manager_sync runs.
+    manager_fleet_url: str = ""
+
     admin_dashboard_enabled: bool = False
 
     # ── Users section — docs/roadmap.md RM-11 ─────────────────────────────────
@@ -135,18 +145,35 @@ class Settings(BaseSettings):
     # close. Full endpoint URL like the two above, e.g. http://auth:9000/share
     auth_service_share_url: str | None = None
 
+    @property
+    def resolved_fleet_url(self) -> str:
+        """The fleet coordinator's base URL, trailing slash removed — PRM-134."""
+        return (self.manager_fleet_url or "").rstrip("/")
+
     @model_validator(mode="after")
     def validate_admin_dashboard_requirements(self) -> "Settings":
-        """RM-20: node topology now lives in auth-service's registry, fetched via
-        this same admin credential — so it's required whenever the dashboard
-        (and therefore manager-node integration) is enabled, not just for Users.
+        """PRM-134: node topology moved from auth-service to the fleet coordinator,
+        so MANAGER_FLEET_URL is what manager_sync needs and the admin credential is
+        now required only for the Users page.
+
+        RM-20 had required the admin credential for both, because the node
+        registry was reached with it. Keeping that requirement after the move
+        would mean an unreachable identity service still stopped the gateway from
+        serving inference, which is exactly what PRM-134 set out to end.
         """
+        if self.admin_dashboard_enabled and not self.manager_fleet_url:
+            raise ValueError(
+                "MANAGER_FLEET_URL is required when ADMIN_DASHBOARD_ENABLED=true — "
+                "the base URL of the manager-api whose manager.toml sets "
+                "[fleet] coordinator = true."
+            )
         if self.admin_dashboard_enabled and not (
             self.auth_service_admin_url and self.auth_service_admin_api_key
         ):
             raise ValueError(
                 "AUTH_SERVICE_ADMIN_URL and AUTH_SERVICE_ADMIN_API_KEY are required "
-                "when ADMIN_DASHBOARD_ENABLED=true."
+                "when ADMIN_DASHBOARD_ENABLED=true (the Users page proxies to "
+                "auth-service's admin API)."
             )
         # PRM-102: the dashboard can hand an operator a credential share link,
         # and that link now points here. Without this the button still works and

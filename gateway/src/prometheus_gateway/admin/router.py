@@ -96,15 +96,21 @@ def _require_scope(request: Request, scope: str) -> JSONResponse | None:
 async def _resolve_node(request: Request, node: str) -> str | None:
     """Return the registered manager_url for *node*, or None if unknown.
 
-    RM-20: node topology lives in auth-service's node registry, fetched fresh on
-    every call (admin-only, low-QPS path — not the hot inference request path).
+    RM-20: node topology is fetched fresh on every call (admin-only, low-QPS
+    path — not the hot inference request path).
+
+    PRM-134: from the fleet coordinator rather than auth-service. This function
+    is module-level, so it takes the manager client off `app.state` the same way
+    it already takes settings — main.py puts it there for exactly this.
     """
     settings: Settings = request.app.state.settings
-    nodes = await fetch_nodes(
-        settings.auth_service_admin_url,  # type: ignore[arg-type]
-        settings.auth_service_admin_api_key,  # type: ignore[arg-type]
-        tls_verify=settings.auth_service_tls_verify,
-    )
+    client = getattr(request.app.state, "manager_client", None)
+    if client is None:
+        raise RuntimeError(
+            "No manager client on app.state — the admin router was mounted without "
+            "one, so the fleet coordinator cannot be asked for the node list."
+        )
+    nodes = await fetch_nodes(settings.resolved_fleet_url, await client._headers())
     for name, url in nodes:
         if name == node:
             return url
@@ -252,9 +258,8 @@ def create_admin_router(manager_client: ManagerApiClient) -> APIRouter:
         unreachable_nodes: list[str] = []
 
         nodes = await fetch_nodes(
-            settings.auth_service_admin_url,  # type: ignore[arg-type]
-            settings.auth_service_admin_api_key,  # type: ignore[arg-type]
-            tls_verify=settings.auth_service_tls_verify,
+            settings.resolved_fleet_url,
+            await manager_client._headers(),  # PRM-134: the coordinator, not auth-service
         )
         for name, url in nodes:
             try:
@@ -287,9 +292,8 @@ def create_admin_router(manager_client: ManagerApiClient) -> APIRouter:
         unreachable_nodes: list[str] = []
 
         nodes = await fetch_nodes(
-            settings.auth_service_admin_url,  # type: ignore[arg-type]
-            settings.auth_service_admin_api_key,  # type: ignore[arg-type]
-            tls_verify=settings.auth_service_tls_verify,
+            settings.resolved_fleet_url,
+            await manager_client._headers(),  # PRM-134: the coordinator, not auth-service
         )
         for name, url in nodes:
             try:
@@ -839,50 +843,94 @@ def create_admin_router(manager_client: ManagerApiClient) -> APIRouter:
         resp = await _auth_admin_request(request, "POST", f"/clients/{client_id}/share", json=body)
         return _rewrite_share_url(resp, request)
 
-    # ── Nodes — docs/roadmap.md RM-20 ─────────────────────────────────────────
-    # Proxies to auth-service's /admin/nodes/* — same X-Admin-Key pattern as Users.
+    # ── Nodes — RM-20, moved to the coordinator in PRM-134 ────────────────────
+    #
+    # These seven proxied to auth-service's /admin/nodes/* with a shared admin
+    # key, because RM-20 had put fleet inventory in the identity service. They
+    # now proxy to the manager-api whose manager.toml sets
+    # `[fleet] coordinator = true`, with the same manager token everything else
+    # in this file uses.
+    #
+    # The dashboard's paths do not change, so the SPA is untouched. What changes
+    # is that listing nodes no longer requires auth-service to be reachable —
+    # which is what emptied the catalog on 2026-09-26.
+    #
+    # Everything under /admin/api/nodes/{node}/... stays a per-node proxy to that
+    # node's own manager-api: models, instances, catalog, downloads, search. Those
+    # are node-local state and PRM-134 does not touch them.
+
+    async def _fleet_request(
+        request: Request, method: str, path: str, json: Any = None
+    ) -> Response:
+        """Proxy to the fleet coordinator, mirroring _auth_admin_request's shape."""
+        settings: Settings = request.app.state.settings
+        url = settings.resolved_fleet_url
+        if not url:
+            return _problem(
+                request,
+                503,
+                "not-configured",
+                "Not Configured",
+                "No fleet coordinator is configured on this gateway — set "
+                "MANAGER_FLEET_URL to the manager-api whose manager.toml has "
+                "[fleet] coordinator = true.",
+            )
+        try:
+            if method == "GET":
+                resp = await manager_client.get(url, path)
+            elif method == "POST":
+                resp = await manager_client.post(url, path, json=json)
+            elif method == "PATCH":
+                resp = await manager_client.patch(url, path, json=json)
+            elif method == "DELETE":
+                resp = await manager_client.delete(url, path)
+            else:  # pragma: no cover — every caller below is one of the four
+                raise ValueError(f"unsupported method {method!r}")
+        except Exception as exc:
+            return _proxy_error_response(request, exc)
+        return _passthrough(resp)
 
     @router.get("/admin/api/nodes")
     async def list_nodes(request: Request) -> Response:
         if (forbidden := _require_scope(request, "admin:read")) is not None:
             return forbidden
-        return await _auth_admin_request(request, "GET", "/nodes")
+        return await _fleet_request(request, "GET", "/v1/fleet/nodes")
 
     @router.post("/admin/api/nodes")
     async def create_node(body: dict[str, Any], request: Request) -> Response:
         if (forbidden := _require_scope(request, "admin:write")) is not None:
             return forbidden
-        return await _auth_admin_request(request, "POST", "/nodes", json=body)
+        return await _fleet_request(request, "POST", "/v1/fleet/nodes", json=body)
 
     @router.patch("/admin/api/nodes/{node_id}")
     async def update_node(node_id: str, body: dict[str, Any], request: Request) -> Response:
         if (forbidden := _require_scope(request, "admin:write")) is not None:
             return forbidden
-        return await _auth_admin_request(request, "PATCH", f"/nodes/{node_id}", json=body)
+        return await _fleet_request(request, "PATCH", f"/v1/fleet/nodes/{node_id}", json=body)
 
     @router.delete("/admin/api/nodes/{node_id}")
     async def delete_node(node_id: str, request: Request) -> Response:
         if (forbidden := _require_scope(request, "admin:write")) is not None:
             return forbidden
-        return await _auth_admin_request(request, "DELETE", f"/nodes/{node_id}")
+        return await _fleet_request(request, "DELETE", f"/v1/fleet/nodes/{node_id}")
 
     @router.post("/admin/api/nodes/{node_id}/check")
     async def check_node(node_id: str, request: Request) -> Response:
         if (forbidden := _require_scope(request, "admin:write")) is not None:
             return forbidden
-        return await _auth_admin_request(request, "POST", f"/nodes/{node_id}/check")
+        return await _fleet_request(request, "POST", f"/v1/fleet/nodes/{node_id}/check")
 
     @router.post("/admin/api/nodes/{node_id}/activate")
     async def activate_node(node_id: str, request: Request) -> Response:
         if (forbidden := _require_scope(request, "admin:write")) is not None:
             return forbidden
-        return await _auth_admin_request(request, "POST", f"/nodes/{node_id}/activate")
+        return await _fleet_request(request, "POST", f"/v1/fleet/nodes/{node_id}/activate")
 
     @router.post("/admin/api/nodes/{node_id}/deactivate")
     async def deactivate_node(node_id: str, request: Request) -> Response:
         if (forbidden := _require_scope(request, "admin:write")) is not None:
             return forbidden
-        return await _auth_admin_request(request, "POST", f"/nodes/{node_id}/deactivate")
+        return await _fleet_request(request, "POST", f"/v1/fleet/nodes/{node_id}/deactivate")
 
     @router.post("/admin/api/users/share/{token_id}/revoke")
     async def revoke_user_share(token_id: str, request: Request) -> Response:

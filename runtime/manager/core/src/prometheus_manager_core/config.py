@@ -70,6 +70,14 @@ start_timeout_s = 60
 [registry]
 path = "runtime/manager/registry.db"
 
+# PRM-134: the list *of* nodes. Exactly one manager-api in the fleet sets
+# coordinator = true; it opens fleet.db and serves /v1/fleet/nodes, and every
+# other node leaves this false and behaves as before. Separate from registry.db
+# above, which is per-node.
+[fleet]
+coordinator = false
+path = "runtime/manager/fleet.db"
+
 [downloads]
 dir = "runtime/models"
 hf_token_env = "HF_TOKEN"
@@ -157,6 +165,29 @@ class RegistryConfig:
 
 
 @dataclass
+class FleetConfig:
+    """Who owns the list *of* nodes — PRM-134.
+
+    `manager-api` runs on every node, so "the manager owns the fleet" needs an
+    answer to *which* manager. Exactly one is designated the coordinator here;
+    it opens `path` and serves the fleet endpoints, and every other node runs
+    with `coordinator = false` and behaves as it always did.
+
+    That is Nomad's server/client split and Kubernetes' control-plane/node
+    split: identical software, one configured role. A flag rather than an
+    election because two nodes and a laptop do not need consensus, and a leader
+    nobody chose is harder to reason about than one written in a file.
+
+    `path` is a database of its own, never `registry.path`: that one is
+    per-node — the models and instances on *this* host — and the node list is
+    fleet-level with exactly one of it.
+    """
+
+    coordinator: bool = False
+    path: str = "runtime/manager/fleet.db"
+
+
+@dataclass
 class DownloadsConfig:
     dir: str = "runtime/models"
     hf_token_env: str = "HF_TOKEN"
@@ -197,6 +228,7 @@ class ManagerConfig:
     server: ServerConfig = field(default_factory=ServerConfig)
     backends: BackendsConfig = field(default_factory=BackendsConfig)
     registry: RegistryConfig = field(default_factory=RegistryConfig)
+    fleet: FleetConfig = field(default_factory=FleetConfig)
     downloads: DownloadsConfig = field(default_factory=DownloadsConfig)
     dashboard: DashboardConfig = field(default_factory=DashboardConfig)
     tui: TuiConfig = field(default_factory=TuiConfig)
@@ -237,6 +269,12 @@ class ManagerConfig:
         PMGR_REGISTRY_PATH — are used unchanged.
         """
         path = Path(self.registry.path).expanduser()
+        return path if path.is_absolute() else _REPO_ROOT / path
+
+    @property
+    def resolved_fleet_path(self) -> Path:
+        """Absolute path to fleet.db — PRM-134, same cwd-independence as above."""
+        path = Path(self.fleet.path).expanduser()
         return path if path.is_absolute() else _REPO_ROOT / path
 
     @property
@@ -312,6 +350,7 @@ def load_config(path: Path | None = None) -> ManagerConfig:
             laya=BackendConfig(**backends_raw.get("laya", {})),
         ),
         registry=RegistryConfig(**raw.get("registry", {})),
+        fleet=FleetConfig(**raw.get("fleet", {})),  # PRM-134
         downloads=DownloadsConfig(**raw.get("downloads", {})),
         dashboard=DashboardConfig(**raw.get("dashboard", {})),
         tui=TuiConfig(**raw.get("tui", {})),
@@ -326,6 +365,14 @@ def load_config(path: Path | None = None) -> ManagerConfig:
         cfg.api.jwks_tls_verify = False
     if val := os.environ.get("PMGR_REGISTRY_PATH"):
         cfg.registry.path = val
+    # PRM-134: the same treatment for the fleet, so a containerised coordinator
+    # can be pointed at a mounted volume without editing the TOML inside it.
+    if val := os.environ.get("PMGR_FLEET_PATH"):
+        cfg.fleet.path = val
+    if (val := os.environ.get("PMGR_FLEET_COORDINATOR", "").lower()) in ("true", "1", "yes"):
+        cfg.fleet.coordinator = True
+    elif val in ("false", "0", "no"):
+        cfg.fleet.coordinator = False
     cfg.validate()
     return cfg
 
