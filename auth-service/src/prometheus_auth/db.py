@@ -3,6 +3,8 @@
 import enum
 import uuid
 from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any
 
 from sqlalchemy import (
     Boolean,
@@ -253,30 +255,119 @@ async def _migrate_oauth_clients_to_principals(engine: AsyncEngine) -> None:
         await conn.execute(text("DROP TABLE oauth_clients"))
 
 
+# PRM-153: the revision describing what every database created before Alembic
+# already contains. A pre-Alembic database is lifted to exactly this shape and
+# stamped, rather than having the baseline run against tables that already exist.
+_BASELINE_REVISION = "f7060a106063"
+_ALEMBIC_INI = Path(__file__).resolve().parents[2] / "alembic.ini"
+
+
+def _migrate_to_head(sync_conn: Any) -> None:
+    """Bring one connection's database to the latest revision — PRM-153.
+
+    Three cases, and the middle one is the whole reason this is not just
+    `upgrade(head)`:
+
+    * **New database** — no tables. Alembic runs every revision, baseline
+      included.
+    * **Pre-Alembic database** — has tables and no `alembic_version`. It is
+      already at the baseline in everything but name, so running the baseline
+      would fail on "table already exists". Instead it is lifted to the baseline
+      shape (`create_all` adds any table it never had; the additive ALTERs below
+      add the columns `create_all` cannot), stamped, and then upgraded normally.
+    * **Already managed** — upgraded to head.
+
+    Without the middle case the first real migration would refuse to touch, or
+    destroy, a database holding live principals.
+
+    Same three cases and the same shape as the gateway's `_migrate_to_head`
+    (RM-68). Copied rather than shared: two ~40-line functions differing in their
+    metadata and their baseline id do not justify a migration framework, and the
+    tests assert they behave alike.
+    """
+    import logging
+
+    # Alembic announces each autogenerate plugin it loads at INFO — noise on every
+    # boot that says nothing an operator needs. Registration happens while
+    # `alembic` is imported, so this has to come first. Migration events stay.
+    logging.getLogger("alembic.runtime.plugins").setLevel(logging.WARNING)
+
+    from alembic import command
+    from alembic.config import Config
+
+    config = Config(str(_ALEMBIC_INI))
+    # Hands env.py the transaction we are already inside, so the schema change
+    # and the version bump commit together.
+    config.attributes["connection"] = sync_conn
+
+    tables = set(inspect(sync_conn).get_table_names())
+    if tables and "alembic_version" not in tables:
+        Base.metadata.create_all(sync_conn)
+        _apply_additive_migrations(sync_conn)
+        command.stamp(config, _BASELINE_REVISION)
+
+    command.upgrade(config, "head")
+
+
+def _apply_additive_migrations(sync_conn: Any) -> None:
+    """The pre-Alembic mechanism, kept for exactly one job — PRM-153.
+
+    These ALTERs are how columns were added before migrations existed, and they
+    are the only way to lift a database that predates them to the baseline shape:
+    `create_all` builds missing *tables* and never touches an existing one's
+    columns. So they stay, run once during adoption, and are not added to.
+
+    **Nothing new goes in this list.** It cannot express a drop, a rename or a
+    type change — which is why auth-service could not remove the dead `nodes`
+    table PRM-134 left behind, and why this item exists. New schema changes are
+    revisions.
+    """
+    for stmt in _ADDITIVE_MIGRATIONS:
+        try:
+            sync_conn.execute(text(stmt))
+        except Exception:  # noqa: BLE001 — the column is already there
+            pass
+
+
 async def create_tables(engine: AsyncEngine) -> None:
+    """Apply pending migrations. Named for its callers, which predate PRM-153."""
+    await _migrate_oauth_clients_to_principals_if_needed(engine)
+    async with engine.begin() as conn:
+        await conn.run_sync(_migrate_to_head)
+
+
+async def _migrate_oauth_clients_to_principals_if_needed(engine: AsyncEngine) -> None:
+    """RM-11's one-time data move, which has to run before Alembic adopts the DB.
+
+    It needs `principals` to exist and `oauth_clients` to still be there, which is
+    a pre-baseline state. Left as it was rather than rewritten as a revision: it
+    is idempotent, it has been running for months, and turning a working data
+    migration into a schema revision would risk the rows it moves for no gain.
+    """
+    async with engine.begin() as conn:
+        has_old = await conn.run_sync(lambda c: inspect(c).has_table("oauth_clients"))
+    if not has_old:
+        return
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
     await _migrate_oauth_clients_to_principals(engine)
-    # Additive migrations — safe to re-run; errors mean the column already exists
-    _ADDITIVE_MIGRATIONS = [
-        "ALTER TABLE principals ADD COLUMN label TEXT",
-        "ALTER TABLE principals ADD COLUMN updated_at DATETIME",
-        "ALTER TABLE principals ADD COLUMN auth_method TEXT NOT NULL DEFAULT 'oauth2'",
-        "ALTER TABLE principals ADD COLUMN email TEXT",
-        "ALTER TABLE principals ADD COLUMN password_hash TEXT",
-        "ALTER TABLE nodes ADD COLUMN is_active BOOLEAN NOT NULL DEFAULT 1",
-        "ALTER TABLE nodes ADD COLUMN hourly_cost_usd FLOAT",
-        "ALTER TABLE nodes ADD COLUMN hardware_amortization_usd_per_hour FLOAT NOT NULL "
-        f"DEFAULT {DEFAULT_HARDWARE_AMORTIZATION_USD_PER_HOUR}",
-        "ALTER TABLE nodes ADD COLUMN electricity_usd_per_hour FLOAT NOT NULL "
-        f"DEFAULT {DEFAULT_ELECTRICITY_USD_PER_HOUR}",
-        "ALTER TABLE nodes ADD COLUMN price_margin_multiplier FLOAT NOT NULL "
-        f"DEFAULT {DEFAULT_PRICE_MARGIN_MULTIPLIER}",
-        "ALTER TABLE nodes ADD COLUMN engines TEXT",
-    ]
-    async with engine.begin() as conn:
-        for stmt in _ADDITIVE_MIGRATIONS:
-            try:
-                await conn.execute(text(stmt))
-            except Exception:
-                pass  # column already present
+
+
+# Additive migrations — safe to re-run; an error means the column already exists.
+# See _apply_additive_migrations: this list is frozen.
+_ADDITIVE_MIGRATIONS = [
+    "ALTER TABLE principals ADD COLUMN label TEXT",
+    "ALTER TABLE principals ADD COLUMN updated_at DATETIME",
+    "ALTER TABLE principals ADD COLUMN auth_method TEXT NOT NULL DEFAULT 'oauth2'",
+    "ALTER TABLE principals ADD COLUMN email TEXT",
+    "ALTER TABLE principals ADD COLUMN password_hash TEXT",
+    "ALTER TABLE nodes ADD COLUMN is_active BOOLEAN NOT NULL DEFAULT 1",
+    "ALTER TABLE nodes ADD COLUMN hourly_cost_usd FLOAT",
+    "ALTER TABLE nodes ADD COLUMN hardware_amortization_usd_per_hour FLOAT NOT NULL "
+    f"DEFAULT {DEFAULT_HARDWARE_AMORTIZATION_USD_PER_HOUR}",
+    "ALTER TABLE nodes ADD COLUMN electricity_usd_per_hour FLOAT NOT NULL "
+    f"DEFAULT {DEFAULT_ELECTRICITY_USD_PER_HOUR}",
+    "ALTER TABLE nodes ADD COLUMN price_margin_multiplier FLOAT NOT NULL "
+    f"DEFAULT {DEFAULT_PRICE_MARGIN_MULTIPLIER}",
+    "ALTER TABLE nodes ADD COLUMN engines TEXT",
+]
