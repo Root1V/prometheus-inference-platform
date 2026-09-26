@@ -178,8 +178,20 @@ def test_update_manager_url_rechecks_connectivity(client, monkeypatch):
     assert resp.json()["is_active"] is False
 
 
-def test_check_updates_status(client, monkeypatch):
+def test_check_on_a_down_node_records_nothing_and_the_ttl_decides(client, monkeypatch):
+    """PRM-151 changed this on purpose, and the old assertion is worth naming.
+
+    Ported from auth-service, this test asserted that a failed check marked the
+    node inactive **immediately**. It no longer does: a failed probe writes
+    nothing, so the previous sighting stands and the liveness TTL decides. That is
+    what makes one missed probe not an outage — and the node below was created
+    seconds ago, so it is still inside the TTL and still routable, correctly.
+
+    A node that is genuinely gone drops out when its last sighting ages past the
+    TTL, which is a fact with a timestamp rather than a verdict from one attempt.
+    """
     node = _create(client, name="check-endpoint-node")
+    seen_before = node["last_seen_at"]
 
     async def _down(manager_url: str) -> bool:
         return False
@@ -187,7 +199,21 @@ def test_check_updates_status(client, monkeypatch):
     monkeypatch.setattr(fleet_routes, "_probe", _down)
     resp = client.post(f"/v1/fleet/nodes/{node['id']}/check")
     assert resp.status_code == 200
-    assert resp.json()["is_active"] is False
+    body = resp.json()
+    assert body["last_seen_at"] == seen_before, "a failed probe must not restamp"
+    assert body["is_active"] is True, "still inside the TTL, so still routable"
+
+
+def test_a_node_never_seen_is_not_routable_after_a_failed_check(client, monkeypatch):
+    """The other half: with no sighting at all, a failed check leaves it out."""
+
+    async def _down(manager_url: str) -> bool:
+        return False
+
+    monkeypatch.setattr(fleet_routes, "_probe", _down)
+    node = _create(client, name="never-seen")
+    assert node["last_seen_at"] is None
+    assert node["is_active"] is False
 
 
 def test_check_not_found(client):
@@ -374,3 +400,104 @@ def test_a_plain_node_refuses_every_fleet_write(plain_node_client):
         plain_node_client.delete(f"/v1/fleet/nodes/{node_id}"),
     ]
     assert [r.status_code for r in calls] == [409] * 6
+
+
+# ── PRM-151: the cordon, the heartbeat, and the sweep ────────────────────────
+
+
+def test_deactivate_cordons_and_check_does_not_lift_it(client):
+    """The bug this item exists for, end to end through the API.
+
+    Before PRM-151 both wrote `is_active`, so the sequence below returned the node
+    to rotation. Verified live against the running stack before the fix.
+    """
+    node = _create(client, name="cordon-me")
+    assert node["is_active"] is True
+
+    deactivated = client.post(f"/v1/fleet/nodes/{node['id']}/deactivate").json()
+    assert deactivated["enabled"] is False
+    assert deactivated["is_active"] is False
+
+    # The node is reachable (the fixture's probe succeeds), and Check is pressed.
+    checked = client.post(f"/v1/fleet/nodes/{node['id']}/check").json()
+    assert checked["enabled"] is False, "a probe lifted the operator's cordon"
+    assert checked["is_active"] is False
+    assert checked["last_seen_at"], "the sighting should still have been recorded"
+
+
+def test_activate_lifts_the_cordon_the_operator_set(client):
+    node = _create(client, name="uncordon-me")
+    client.post(f"/v1/fleet/nodes/{node['id']}/deactivate")
+    activated = client.post(f"/v1/fleet/nodes/{node['id']}/activate").json()
+    assert activated["enabled"] is True
+    assert activated["is_active"] is True
+
+
+def test_activate_still_reports_unroutable_when_the_node_is_down(client, monkeypatch):
+    """Permission granted is not the same as reachable, and the response says so
+    rather than claiming the node is back."""
+
+    async def _down(manager_url: str) -> bool:
+        return False
+
+    # Created while down, so there is no recent sighting to keep it routable —
+    # otherwise the TTL would legitimately still say yes, which is the point of
+    # the test above rather than of this one.
+    monkeypatch.setattr(fleet_routes, "_probe", _down)
+    node = _create(client, name="uncordon-but-down")
+    client.post(f"/v1/fleet/nodes/{node['id']}/deactivate")
+
+    activated = client.post(f"/v1/fleet/nodes/{node['id']}/activate").json()
+    assert activated["enabled"] is True
+    assert activated["is_active"] is False
+
+
+def test_a_heartbeat_records_a_sighting(client):
+    node = _create(client, name="beating")
+    resp = client.post(f"/v1/fleet/nodes/{node['id']}/heartbeat")
+    assert resp.status_code == 200
+    assert resp.json()["last_seen_at"]
+
+
+def test_a_heartbeat_cannot_lift_a_cordon(client):
+    """A node reporting in does not get to overrule an operator."""
+    node = _create(client, name="beating-but-cordoned")
+    client.post(f"/v1/fleet/nodes/{node['id']}/deactivate")
+    body = client.post(f"/v1/fleet/nodes/{node['id']}/heartbeat").json()
+    assert body["enabled"] is False
+    assert body["is_active"] is False
+    assert body["last_seen_at"]
+
+
+def test_a_heartbeat_from_an_unknown_node_is_refused(client):
+    """404, not an auto-join: a misconfigured node must not silently receive
+    traffic. Kubernetes gates registration behind CSR approval for the same
+    reason, and the attempt is logged so an operator can act on it."""
+    assert client.post("/v1/fleet/nodes/never-registered/heartbeat").status_code == 404
+
+
+def test_a_plain_node_refuses_a_heartbeat(plain_node_client):
+    assert plain_node_client.post("/v1/fleet/nodes/any/heartbeat").status_code == 409
+
+
+async def test_the_sweep_stamps_the_nodes_that_answer(tmp_path, monkeypatch):
+    """And writes nothing for the ones that do not — so a missed sweep leaves the
+    previous sighting, and the TTL decides rather than one failed probe."""
+    from prometheus_manager_core.fleet import FleetRegistry, Node
+
+    from prometheus_manager_api import fleet_sweep
+
+    fleet = FleetRegistry(tmp_path / "fleet.db")
+    up = fleet.add(Node(name="up", manager_url="http://up:8090", node_type="mac"))
+    down = fleet.add(Node(name="down", manager_url="http://down:8090", node_type="mac"))
+
+    async def _probe(client, manager_url: str) -> bool:
+        return "up" in manager_url
+
+    monkeypatch.setattr(fleet_sweep, "_probe", _probe)
+    summary = await fleet_sweep.FleetSweep(fleet).sweep_once()
+
+    assert summary == {"seen": ["up"], "missed": ["down"]}
+    assert fleet.get(up.id).last_seen_at is not None
+    assert fleet.get(down.id).last_seen_at is None
+    fleet.close()

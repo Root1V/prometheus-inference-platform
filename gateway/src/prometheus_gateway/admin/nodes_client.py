@@ -39,9 +39,16 @@ async def fetch_nodes(
 ) -> list[tuple[str, str]]:
     """Return [(node_name, manager_url), ...] for active nodes.
 
-    Inactive nodes — those that failed their last connectivity check — are
-    excluded: routing and instance control must never target a node already known
-    to be unreachable. The unfiltered list, inactive rows included, is what the
+    Inactive nodes are excluded: routing and instance control must never target a
+    node already known to be unreachable.
+
+    PRM-151: `is_active` is **derived by the coordinator** — the operator has not
+    cordoned the node *and* it was seen within the liveness TTL — and this
+    deliberately does not recompute it. The definition of routable belongs to the
+    fleet's owner; a second copy of that rule here is exactly how two answers to
+    one question start disagreeing. The response also carries `enabled` and
+    `last_seen_at` separately for anything that needs to tell "cordoned" from
+    "not answering", which this does not. The unfiltered list, inactive rows included, is what the
     dashboard's Nodes page shows, and it comes from the coordinator directly.
 
     Raises on any transport or status error rather than returning `[]`. That is

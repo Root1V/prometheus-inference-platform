@@ -7,29 +7,60 @@ Implements: memory/specs/020-shared-telemetry-package.md — AC-19 (component="a
 
 from __future__ import annotations
 
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
+
 from fastapi import FastAPI
 from fastapi.responses import JSONResponse
 from prometheus_manager_core.telemetry import (
     TraceIDMiddleware,
     configure_logging,
     configure_tracing,
+    get_logger,
     instrument_fastapi,
 )
 
 from .control import router as control_router
 from .discovery import router as discovery_router
 from .fleet_routes import router as fleet_router
+from .fleet_sweep import FleetSweep
 from .routes import router
 
 # Configure structlog when the API module is first loaded (idempotent — AC-24)
 configure_logging(service="manager-api", component="api")
 configure_tracing(service="manager-api")
 
+logger = get_logger(__name__)
+
+
+@asynccontextmanager
+async def _lifespan(application: FastAPI) -> AsyncIterator[None]:
+    """PRM-151: the coordinator sweeps the fleet's liveness while it runs.
+
+    Started here rather than in cli.py because the task needs the running event
+    loop that uvicorn owns. Only the coordinator has `app.state.fleet`, so only
+    the coordinator sweeps — a plain node starts nothing.
+    """
+    fleet = getattr(application.state, "fleet", None)
+    sweep: FleetSweep | None = None
+    if fleet is not None:
+        sweep = FleetSweep(fleet)
+        application.state.fleet_sweep = sweep
+        sweep.start()
+        logger.info("fleet.sweep_started", interval_s=sweep._interval_s)
+    try:
+        yield
+    finally:
+        if sweep is not None:
+            await sweep.stop()
+
+
 app = FastAPI(
     title="Prometheus Manager API",
     version="0.1.0",
     docs_url="/docs",
     redoc_url=None,
+    lifespan=_lifespan,
 )
 
 # AC-28 (018): trace_id middleware propagates X-Trace-ID from gateway
