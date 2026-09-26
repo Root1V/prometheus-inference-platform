@@ -17,7 +17,7 @@ from httpx import Response
 
 from prometheus_gateway import db
 from prometheus_gateway.models.manager_sync import ManagerRegistrySync
-from prometheus_gateway.models.registry import ModelRegistry
+from prometheus_gateway.models.registry import ModelEntry, ModelRegistry
 
 AUTH_ADMIN_URL = "http://auth.test/admin"
 AUTH_ADMIN_KEY = "test-admin-key"
@@ -366,3 +366,65 @@ async def test_a_start_with_no_manager_restores_the_snapshot():
         await sync.stop()
 
     assert set(sync._registry._models) == {"model-a"}
+
+
+# ── A node list never fetched is not an empty one — PRM-146 ───────────────────
+
+
+def _snapshot_entry(entry_id: str) -> ModelEntry:
+    """A model already in the registry — as RM-99's snapshot restore leaves it."""
+    return ModelEntry(
+        id=entry_id,
+        path=f"/models/{entry_id}.gguf",
+        context_length=4096,
+        family="llama3",
+        quantization="Q4_0",
+        backend_url="http://127.0.0.1:9001",
+        backend_status="active",
+        node="mac",
+        model_id=entry_id,
+        model_slug=entry_id,
+    )
+
+
+async def test_a_registry_that_never_answered_does_not_empty_the_catalog():
+    """The test above protects a node list it already had. This one is the gap.
+
+    On the first cycle after a restart there is no previous list, so a failed
+    fetch leaves `_nodes` empty — and everything downstream then runs correctly
+    over zero nodes, finds zero models, and replaces the catalog with nothing.
+    RM-99 had restored a good snapshot into that same registry seconds earlier.
+
+    Measured live: a gateway with a wrong AUTH_SERVICE_ADMIN_API_KEY came up
+    healthy, served its 10 snapshot models, and then served zero, with
+    `manager_sync.refreshed count=0` as the only trace.
+    """
+    registry = ModelRegistry.__new__(ModelRegistry)
+    registry._models = {"from-snapshot": _snapshot_entry("from-snapshot")}
+    sync = _sync(registry)
+
+    with respx.mock:
+        respx.get(f"{AUTH_ADMIN_URL}/nodes").mock(side_effect=ConnectionError("down"))
+        await sync._sync()
+
+    assert "from-snapshot" in registry._models, (
+        "a node registry that could not be asked was read as a registry with no nodes"
+    )
+
+
+async def test_a_registry_that_answers_with_no_nodes_does_empty_the_catalog():
+    """The other half, and the reason this is a flag and not a length check.
+
+    Zero nodes registered is a legitimate answer that means zero models. If the
+    fix refused to sync on an empty `_nodes` regardless of why, removing the
+    last node would leave its models served forever.
+    """
+    registry = ModelRegistry.__new__(ModelRegistry)
+    registry._models = {"stale": _snapshot_entry("stale")}
+    sync = _sync(registry)
+
+    with respx.mock:
+        _mock_nodes()  # 200 OK, an empty list
+        await sync._sync()
+
+    assert registry._models == {}, "an empty node registry must still empty the catalog"

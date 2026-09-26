@@ -5321,6 +5321,42 @@ configured" rather than "the field is missing". They stay frozen with the reques
 change never re-rates the history on read (RM-60).
 
 
+
+## PRM-146 — A node list never fetched is not an empty one
+
+**Why**: found while restoring the bare-metal dev stack after a restart, and the shape of the
+failure is the point. The gateway came up **healthy**: `/health` 200, the dashboard login
+working, `/v1/models` serving all 10 models from RM-99's snapshot. One poll interval later it
+served zero, and the only trace was `manager_sync.refreshed count=0`.
+
+`_refresh_nodes` already protects the node list — *"keep the previous node list rather than
+wiping it on a blip"*. But on the first cycle after a restart **there is no previous list**. A
+failed fetch leaves `_nodes` empty, and every line downstream then behaves correctly over zero
+nodes: zero models found, zero stale nodes, and `self._registry._models = new_models` replaces
+the restored snapshot with `{}`. RM-99's own guard held — the snapshot on disk was not
+overwritten, because `len(stale_nodes) < len(self._nodes)` is `0 < 0` — so the good data was
+still there, and memory had already thrown it away.
+
+**`_nodes` being empty answered two different questions**, and the legitimate answer was given
+to both:
+
+- *no nodes are registered* — true, and it means zero models;
+- *the registry could not be asked* — and that means nothing at all.
+
+It is RM-98 one level up. That entry established that a node which failed must never be
+mistaken for a node with nothing; this is a *registry* that could not be reached being mistaken
+for a registry with nothing in it.
+
+**Scope**: a `_nodes_ever_fetched` flag, set only on a successful fetch, and a `_sync` that
+returns early with a distinct log line naming the two settings to check. A flag and not a
+length test, deliberately — zero registered nodes is a real answer that must still empty the
+catalog, or removing the last node would serve its models forever. Both halves are tested.
+
+**Verified live**: with a deliberately wrong `AUTH_SERVICE_ADMIN_API_KEY`, the catalog now holds
+its 10 snapshot models across polls and inference keeps working, with
+`manager_sync.node_registry_never_reached` in the log instead of silence.
+
+
 Append a new row to the table with the next `RM-NN` id and a new `## RM-NN — ...` section
 below, following the same shape (Why / Scope). Re-sort the table if the new item's
 priority isn't "last."

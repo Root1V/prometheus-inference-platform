@@ -85,6 +85,12 @@ class ManagerRegistrySync:
         # (node_name, manager_url) pairs — refreshed from the node registry at
         # the start of every sync cycle (see `_refresh_nodes`), not fixed here.
         self._nodes: list[tuple[str, str]] = []
+        # PRM-146: has the node list EVER been fetched successfully? `_nodes`
+        # being empty answers two different questions — "no nodes are
+        # registered", which is legitimate and means zero models, and "the
+        # registry could not be asked", which means nothing at all. Without
+        # this flag the first answer was given to both.
+        self._nodes_ever_fetched: bool = False
         self._allowed_backend_hosts: frozenset[str] = _BASE_ALLOWED_BACKEND_HOSTS
         self._registry = registry
         self._poll_interval_s = poll_interval_s
@@ -138,6 +144,7 @@ class ManagerRegistrySync:
             return  # keep the previous node list rather than wiping it on a blip
 
         self._nodes = [(name, url.rstrip("/")) for name, url in nodes]
+        self._nodes_ever_fetched = True  # PRM-146
 
         # RM-08 phase 2: trust the specific hostnames of registered nodes, in
         # addition to loopback/container aliases — not "any remote host". Each
@@ -438,6 +445,34 @@ class ManagerRegistrySync:
     async def _sync(self) -> None:
         # RM-20: pick up any node added/removed via the dashboard before polling.
         await self._refresh_nodes()
+
+        # PRM-146: `_refresh_nodes` keeps the previous node list when the
+        # registry is unreachable — but on the first cycle after a restart
+        # there is no previous list, so it stays empty. Everything below then
+        # runs correctly over zero nodes, finds zero models, and replaces the
+        # catalog with nothing. RM-99 had already restored a good snapshot into
+        # that registry seconds earlier.
+        #
+        # Measured: a gateway with a wrong AUTH_SERVICE_ADMIN_API_KEY came up
+        # healthy, served its 10 snapshot models, and then served zero — with
+        # `manager_sync.refreshed count=0` as the only trace. The dashboard
+        # loaded, the login worked, and every model had vanished.
+        #
+        # It is RM-98's rule one level up: a node that failed must not look
+        # like a node with nothing, and a registry that could not be asked must
+        # not look like a registry with no nodes in it.
+        if not self._nodes_ever_fetched:
+            logger.warning(
+                "manager_sync.node_registry_never_reached",
+                detail=(
+                    "the node registry has not answered since this process started, so "
+                    "the catalog is left as it is — restored from snapshot if there was "
+                    "one, empty if there was not. Check AUTH_SERVICE_ADMIN_URL and "
+                    "AUTH_SERVICE_ADMIN_API_KEY."
+                ),
+                models_retained=len(self._registry._models),
+            )
+            return
 
         # RM-08 phase 2: poll every configured node concurrently, so one
         # unreachable node does not block refreshing the others.
