@@ -289,3 +289,74 @@ def test_the_ast_guard_can_actually_see_the_call_sites() -> None:
     # bills is a new place for the metric inputs to be forgotten, and this line
     # is what makes adding one a decision rather than an omission.
     assert len(calls) == 6, f"expected 6 _record_usage call sites, found {len(calls)}"
+
+
+# ── A refused request is not a served one — PRM-142 ──────────────────────────
+
+
+def _handlers_containing(call_name: str) -> set[str]:
+    """Names of the `router.py` functions that *themselves* call `call_name`.
+
+    `ast.walk` descends into nested definitions, so a plain walk credits every
+    enclosing function too — `create_router` would "contain" all six call
+    sites. Only the innermost function counts, so this stops at a nested
+    `def`.
+    """
+    import ast
+    import pathlib
+
+    source = pathlib.Path(__file__).resolve().parents[1] / "src/prometheus_gateway/router.py"
+    tree = ast.parse(source.read_text())
+    functions = (ast.FunctionDef, ast.AsyncFunctionDef)
+
+    def calls_directly(fn: ast.AST) -> bool:
+        stack = list(ast.iter_child_nodes(fn))
+        while stack:
+            node = stack.pop()
+            if isinstance(node, functions):
+                continue  # belongs to that function, not this one
+            if (
+                isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Name)
+                and node.func.id == call_name
+            ):
+                return True
+            stack.extend(ast.iter_child_nodes(node))
+        return False
+
+    return {fn.name for fn in ast.walk(tree) if isinstance(fn, functions) and calls_directly(fn)}
+
+
+def test_every_buffered_handler_asks_whether_the_backend_accepted_it() -> None:
+    """Five handlers billed a request without ever reading its status code.
+
+    Each forwarded a body, recorded usage against the result, and returned the
+    backend's status verbatim — so a request the engine *refused* was metered
+    and billed exactly like one it had served. Measured on the pass-through
+    route: a 422 left a row of 6 prompt tokens at 1.2e-07 USD carrying
+    `termination_reason: "complete"`.
+
+    The guard is per-handler rather than on a count, because the thing that
+    must not happen is a *new* forwarding route that bills without asking.
+    """
+    billing = _handlers_containing("_record_usage")
+    checking = _handlers_containing("_backend_refused")
+
+    # The streamed path is the one exception, and it is not fixed here: its
+    # status arrives after `StreamingResponse` has already fixed a 200, so the
+    # fix is a restructure rather than a guard. Filed as PRM-143 and told to
+    # the SDK team, because a caller there sees a 200 with an empty stream.
+    unguarded = billing - checking - {"_account_for_it"}
+    assert not unguarded, (
+        f"handlers that bill a request without checking whether the backend "
+        f"accepted it: {sorted(unguarded)}"
+    )
+
+
+def test_that_guard_is_looking_at_something() -> None:
+    """Both halves must be non-empty, or the set difference passes vacuously."""
+    billing = _handlers_containing("_record_usage")
+    checking = _handlers_containing("_backend_refused")
+    assert "_account_for_it" in billing, "the AST walk stopped finding the streamed path"
+    assert len(billing) == 6, f"expected 6 billing handlers, found {sorted(billing)}"
+    assert len(checking) == 5, f"expected 5 guarded handlers, found {sorted(checking)}"

@@ -5193,6 +5193,134 @@ finding that did not exist, and caught it with a control. This investigation mad
 twice in an hour, in the same shape, after quoting them approvingly for avoiding it.
 
 
+
+## PRM-142 — An error envelope is policy, not shape
+
+**Why**: Axonium tested `/v1/models/{model}/predict` with real grants (A-28) and found its `422`
+outside the problem+json envelope — `content-type: application/json`, no `type`, no `request_id`,
+no `trace_id`. The other three error paths on that route were clean. They made the argument with
+the sentence PRM-136 wrote into the handler: *"the shape is the backend's; the policy is ours."*
+An envelope is what makes a failure correlatable, typable, and classifiable as retryable. It was
+leaving with the body.
+
+**And the half they did not find, which is worse.** Five handlers forwarded a request, recorded
+usage against the result, and returned the backend's status code verbatim — without ever reading
+that status. So a request the engine **refused** was metered and billed exactly like one it had
+served. Measured live before the fix:
+
+```
+POST /v1/models/sst2-clf/predict   {"campo_inventado":"x"}   -> 422
+GET  /v1/usage/504456b6-…          -> prompt_tokens 6, cost_usd 1.2e-07,
+                                      termination_reason "complete"
+```
+
+`"complete"` on a request the model never ran said the answer was whole.
+
+**How much each route overcharged depended only on where its token count came from**, which is
+the failure mode the four teams keep meeting — a value populated from the wrong source stays
+plausible:
+
+| route | count from | a refused request billed |
+|---|---|---|
+| `predict` | estimated from the *request* body | a real, non-zero charge — **measured** |
+| `images` | `len(data) or 1` | one image, always |
+| `embeddings` / `rerank` / `chat` | the backend's own `usage` object | 0 tokens — a junk row |
+
+**Scope**: `_backend_refused()` and a guard before the recording in all five buffered handlers.
+Only the pass-through route gets our envelope; the other four keep returning the backend's
+OpenAI-shaped error body, because that *is* a contract the SDKs already parse and re-wrapping it
+would be a breaking change announced to nobody. Told to Axonium as an asymmetry to decide on, not
+resolved unilaterally.
+
+**Two deliberate deviations from what was asked**:
+
+- **`predict-backend-rejected`, not `predict-payload-rejected`.** A 429 or 403 from the engine is
+  also a 4xx and is not about the payload. The type names what the gateway can see; the status
+  and `backend_error` carry the cause.
+- **The engine's error goes in `backend_error`, not `detail`.** RFC 9457 defines `detail` as
+  human-readable text, so `_problem()` grew RFC 9457 extension members instead. Same information,
+  in the field that can hold a structure.
+
+**Verified**: four respx tests (envelope on a 422, no usage row for a refused request, a 5xx
+mapped to `upstream-error` with `backend_status`, and the 2xx path still billing) plus a
+per-handler AST guard — asserted on handlers rather than on a count, because the thing that must
+not happen is a *new* forwarding route that bills without asking. One pre-existing test asserted
+the old behaviour and was rewritten rather than deleted: PRM-136 pinned "the body comes back
+verbatim, including on error", and that is precisely the decision this reverses.
+
+
+## PRM-143 — A streamed request whose backend refused it returns 200 and an empty stream
+
+**Why**: the sixth instance of PRM-142 and the only one not fixed there. `_stream_events` never
+reads `resp.status_code` either, but by the time it could, `StreamingResponse` has already fixed
+a 200. A backend 4xx is not SSE, so no line starts with `data:`, nothing is emitted, token counts
+stay 0 — and the caller gets a 200 whose body is just the terminal frame.
+
+Not fixed with the others because it is a restructure, not a guard: the status has to be probed
+before the response object exists. Half-fixing it would have billed correctly while still lying
+about the outcome.
+
+**Scope**: probe the upstream status before constructing the `StreamingResponse`, so a refused
+stream is an error response. The PRM-142 guard test carries the exemption by name, so adding a
+sixth billing handler still fails the guard and this one cannot quietly become permanent.
+
+
+## PRM-144 — `payload_schema`, because `engine` is a proxy for it
+
+**Why**: P-23 named a gap of our own — the public catalog gives a consumer the modality but not
+the body shape, and for a pass-through route the shape is the engine's. We offered to publish
+`engine` and asked Axonium to decide before we built it. They said no (A-27), and the argument is
+better than ours:
+
+> Motor sustituido por otro de contrato idéntico → rompe a todos aunque el contrato no cambió.
+
+With `engine` in the contract, a consumer's dispatch table is keyed on the name of our
+implementation, so **an internal substitution that changes nothing observable becomes a breaking
+change for every client**. It is the same defect the four teams keep finding — a datum populated
+from the wrong source stays plausible — except written into the contract deliberately.
+
+They also corrected a claim in P-23. We wrote that `engine` "reveals nothing the `id` does not":
+true of `minilm-hfserve`, false of `von-decide` and `laya-decide`. That an id leaks the engine is
+a reason to revise the id, not to add a field that leaks it for every model.
+
+**What they asked for instead** is a versioned *contract* identifier — `typed-decision.v1`,
+`hf-inference.text-classification.v1` — which identifies the shape exactly, survives an engine
+swap that preserves the contract, forces a deliberate `.v2` when the shape changes, does not
+publish the stack to an unauthenticated endpoint, and can be pinned as a fixture in their corpus.
+Grounded in four precedents they cited: Hugging Face's `pipeline_tag`, OpenRouter's
+`supported_parameters`, Kubernetes' `apiVersion`, and OpenAI/Anthropic publishing capabilities
+but never the engine.
+
+**Scope**: `payload_schema` on the catalog entry, derived from `(modality, engine)` in one place,
+and a guard so a new engine or modality cannot reach the catalog without one. `engine` is not
+added anywhere.
+
+
+## PRM-145 — The rates that priced a row, on the row itself
+
+**Why**: A-25. P-21 told Axonium the number is `tokens × rate` and that the export carries the
+rate on every line, so a ledger can **check** our figure rather than copy it. Then they measured
+the asymmetry:
+
+```
+GET /v1/usage/export   -> 403 (needs admin:read)
+GET /v1/usage/{id}     -> 200, and carries cost_usd but no rate
+```
+
+**The only path a non-admin consumer can walk could only copy.** Aeon told them
+`usage.retrieve` would likely be how they build `OBS-007`, precisely because it is per-request
+and needs no `admin:read` — and going that way would have lost the property that made P-21 worth
+answering.
+
+The rates are already stored on the row; PRM-115 put them there for the export. Nothing had to
+be computed, only returned.
+
+**Scope**: `prompt_price_per_1m`, `completion_price_per_1m` and `image_price_each` on the
+`GET /v1/usage/{request_id}` response, under a `rates` object so a `null` means "no price was
+configured" rather than "the field is missing". They stay frozen with the request, so a price
+change never re-rates the history on read (RM-60).
+
+
 Append a new row to the table with the next `RM-NN` id and a new `## RM-NN — ...` section
 below, following the same shape (Why / Scope). Re-sort the table if the new item's
 priority isn't "last."

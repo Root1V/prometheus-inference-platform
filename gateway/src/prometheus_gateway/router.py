@@ -67,31 +67,67 @@ def _problem(
     title: str,
     detail: str,
     extra_headers: dict[str, str] | None = None,
+    extensions: dict[str, Any] | None = None,
 ) -> JSONResponse:
     """Return an RFC 9457 Problem Details response.
 
     Implements: memory/specs/001-gateway-core.md — error format requirement
     Implements: memory/specs/018-observability-telemetry.md — AC-27 (trace_id in error body)
+
+    PRM-142: `extensions` are RFC 9457 extension members — additional
+    top-level fields the spec explicitly allows a problem type to define.
+    They exist so a structured cause can be carried without abusing
+    `detail`, which the spec defines as human-readable text. They cannot
+    overwrite a standard member.
     """
     request_id = getattr(getattr(request, "state", None), "request_id", "unknown")
     # AC-27: include trace_id in error body for client-side log correlation
     trace_id = getattr(getattr(request, "state", None), "trace_id", None)
     if trace_id is None:
         trace_id = structlog.contextvars.get_contextvars().get("trace_id", "none")
+    content: dict[str, Any] = {
+        "type": f"{_BASE_URL}/{error_type}",
+        "title": title,
+        "status": status,
+        "detail": detail,
+        "instance": str(request.url.path),
+        "request_id": request_id,
+        "trace_id": trace_id,
+    }
+    for key, value in (extensions or {}).items():
+        if key not in content:
+            content[key] = value
     return JSONResponse(
         status_code=status,
-        content={
-            "type": f"{_BASE_URL}/{error_type}",
-            "title": title,
-            "status": status,
-            "detail": detail,
-            "instance": str(request.url.path),
-            "request_id": request_id,
-            "trace_id": trace_id,
-        },
+        content=content,
         media_type="application/problem+json",
         headers=extra_headers or {},
     )
+
+
+def _backend_refused(resp: httpx.Response) -> bool:
+    """True when the backend did not accept the request, so nothing was inferred.
+
+    PRM-142. Five handlers forwarded a request, recorded usage against it, and
+    then returned the backend's status code verbatim — without ever asking
+    what that status was. A request the engine refused was metered and billed
+    like one it had served.
+
+    Measured on the pass-through route: a body `sst2-clf` rejected came back
+    422 and left a row of 6 prompt tokens at 1.2e-07 USD, with
+    `termination_reason: "complete"` — which said the answer was whole.
+
+    How much each route overcharged depended only on where its token count
+    came from, which is the failure mode the four teams keep meeting: a value
+    populated from the wrong source stays plausible.
+
+      predict     estimated from the *request* body  -> a real, non-zero charge
+      images      `len(data) or 1`                   -> one image, always
+      embeddings  the backend's own usage object     -> 0 tokens, a junk row
+      rerank      the backend's own usage object     -> 0 tokens, a junk row
+      chat        the backend's own usage object     -> 0 tokens, a junk row
+    """
+    return resp.status_code >= 400
 
 
 # RM-70 (decision #2): a client can still target one replica, but through a
@@ -1567,6 +1603,20 @@ def create_router(registry: ModelRegistry, pool: "BackendPool") -> APIRouter:
                     except Exception:
                         resp_body = {}
 
+                    # PRM-142: see /v1/embeddings. Returning here also keeps a
+                    # refused request out of the `inference.complete` log line,
+                    # which would otherwise record it as an inference that
+                    # finished with zero tokens.
+                    if _backend_refused(resp):
+                        request.state.idempotency_result = (resp.status_code, resp_body)  # RM-78
+                        inf_span.set_attribute("http.status_code", resp.status_code)
+                        return JSONResponse(
+                            content=resp_body,
+                            status_code=resp.status_code,
+                            media_type="application/json",
+                            headers=_served_by_headers(entry),
+                        )
+
                     prompt_tokens: int = usage_obj.get("prompt_tokens", 0)
                     completion_tokens: int = usage_obj.get("completion_tokens", 0)
                     # PRM-100: a subset of prompt_tokens, reported to the caller
@@ -2033,6 +2083,19 @@ def create_router(registry: ModelRegistry, pool: "BackendPool") -> APIRouter:
             resp_body: Any = resp.json()
         except Exception:
             resp_body = {}
+        # PRM-142: nothing was inferred, so nothing is metered or billed. The
+        # body stays the backend's OpenAI-shaped error — that is a contract the
+        # SDKs already parse, and re-wrapping it here would be a breaking
+        # change announced to nobody. Only the pass-through route, whose error
+        # shape was never anyone's contract, gets our envelope.
+        if _backend_refused(resp):
+            request.state.idempotency_result = (resp.status_code, resp_body)  # RM-78
+            return JSONResponse(
+                content=resp_body,
+                status_code=resp.status_code,
+                media_type="application/json",
+                headers=_served_by_headers(entry),
+            )
         embeddings_usage = resp_body.get("usage", {}) if isinstance(resp_body, dict) else {}
         embeddings_prompt_tokens = embeddings_usage.get("prompt_tokens", 0)
         embeddings_latency_ms = int((time.monotonic() - backend_start) * 1000)
@@ -2330,6 +2393,14 @@ def create_router(registry: ModelRegistry, pool: "BackendPool") -> APIRouter:
             resp_body: Any = resp.json()
         except Exception:
             resp_body = {}
+        if _backend_refused(resp):  # PRM-142: see /v1/embeddings
+            request.state.idempotency_result = (resp.status_code, resp_body)  # RM-78
+            return JSONResponse(
+                content=resp_body,
+                status_code=resp.status_code,
+                media_type="application/json",
+                headers=_served_by_headers(entry),
+            )
         rerank_usage = resp_body.get("usage", {}) if isinstance(resp_body, dict) else {}
         rerank_prompt_tokens = rerank_usage.get("prompt_tokens", 0)
         rerank_latency_ms = int((time.monotonic() - backend_start) * 1000)
@@ -2519,6 +2590,46 @@ def create_router(registry: ModelRegistry, pool: "BackendPool") -> APIRouter:
             resp_body: Any = resp.json()
         except Exception:
             resp_body = {}
+
+        # PRM-142: the body of a pass-through request is the backend's by
+        # design; the error *envelope* is not. Axonium measured a 422 from this
+        # route arriving with no `type`, no `request_id` and no `trace_id`,
+        # content-type `application/json`, and made the argument with our own
+        # sentence — "the shape is the backend's; the policy is ours". An
+        # envelope is what makes a failure correlatable, typable, and
+        # classifiable as retryable or not. That is policy. It was leaking out
+        # with the body.
+        #
+        # The engine's own error is preserved verbatim under `backend_error`
+        # rather than pushed into `detail`, which RFC 9457 defines as
+        # human-readable text. They asked for `detail`; this is the same
+        # information in the member that can hold a structure.
+        if _backend_refused(resp):
+            if resp.status_code >= 500:
+                return _problem(
+                    request,
+                    502,
+                    "upstream-error",
+                    "Upstream Error",
+                    f"The backend serving model {model!r} failed while processing "
+                    "this request.",
+                    extensions={"backend_error": resp_body, "backend_status": resp.status_code},
+                )
+            # Named for what we know — the backend refused — and not
+            # `predict-payload-rejected` as suggested, because a 429 or a 403
+            # from the engine is also a 4xx and is not about the payload. The
+            # status code and `backend_error` carry that distinction; the type
+            # should not claim a cause it cannot see.
+            return _problem(
+                request,
+                resp.status_code,
+                "predict-backend-rejected",
+                "Backend Rejected Request",
+                f"The backend serving model {model!r} rejected this request. This "
+                "route forwards the body verbatim, so the shape it expects is the "
+                "backend's own — `backend_error` is what it objected to.",
+                extensions={"backend_error": resp_body},
+            )
 
         # The backend reports no usage for these tasks, so the input is
         # measured here. Estimated, and named as such in the row rather than
@@ -2777,6 +2888,17 @@ def create_router(registry: ModelRegistry, pool: "BackendPool") -> APIRouter:
             resp_body_images: Any = resp.json()
         except Exception:
             resp_body_images = {}
+        # PRM-142: see /v1/embeddings. This route had the worst arithmetic of
+        # the five — `len(data) or 1` reads a refused response as one generated
+        # image and bills for it.
+        if _backend_refused(resp):
+            request.state.idempotency_result = (resp.status_code, resp_body_images)  # RM-78
+            return JSONResponse(
+                content=resp_body_images,
+                status_code=resp.status_code,
+                media_type="application/json",
+                headers=_served_by_headers(entry),
+            )
         images_latency_ms = int((time.monotonic() - backend_start) * 1000)
         num_images = (
             len(resp_body_images.get("data", [])) if isinstance(resp_body_images, dict) else 0
