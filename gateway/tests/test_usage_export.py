@@ -420,9 +420,7 @@ async def test_the_row_carries_the_rates_that_priced_it(app, client_headers, tmp
     pricing.init_pricing_table(str(pricing_file))
 
     await db.create_tables(db.get_engine())
-    await db.record_usage(
-        "client-a", "qwen3-0.6b", 1_000_000, 500_000, request_id="req-rates"
-    )
+    await db.record_usage("client-a", "qwen3-0.6b", 1_000_000, 500_000, request_id="req-rates")
 
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
         resp = await c.get("/v1/usage/req-rates", headers=client_headers)

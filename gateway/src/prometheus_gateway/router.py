@@ -2653,8 +2653,7 @@ def create_router(registry: ModelRegistry, pool: "BackendPool") -> APIRouter:
                     502,
                     "upstream-error",
                     "Upstream Error",
-                    f"The backend serving model {model!r} failed while processing "
-                    "this request.",
+                    f"The backend serving model {model!r} failed while processing this request.",
                     extensions={"backend_error": resp_body, "backend_status": resp.status_code},
                 )
             # Named for what we know — the backend refused — and not
