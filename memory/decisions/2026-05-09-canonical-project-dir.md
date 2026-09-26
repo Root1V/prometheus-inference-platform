@@ -5,6 +5,12 @@ date: 2026-05-09
 
 # Decision: Canonical project directory
 
+> **Reviewed 2026-09-26 — still current.** `scripts/install-rhel.sh` uses
+> `/opt/prometheus-ai-inference` as written. Note the scope: this is the RHEL
+> installer's convention only. The development stack runs from wherever the
+> repository is cloned and this decision says nothing about it.
+
+
 ## Context
 
 The RHEL installer and host bind-mounts require a predictable repository root for service unit files, podman-compose binds, SELinux labels, and operator instructions. Without a canonical path, operators and automation scripts would need per-server configuration which increases operational risk.

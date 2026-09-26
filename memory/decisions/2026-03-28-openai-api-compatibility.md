@@ -1,5 +1,24 @@
 # OpenAI API compatibility
 
+> **Reviewed 2026-09-26 — deliberately amended, not abandoned.**
+>
+> The decision below says the gateway preserves the exact OpenAI shape for **all**
+> inference endpoints. `PRM-136` broke that on purpose with
+> `POST /v1/models/{model}/predict`, which forwards a body verbatim to engines
+> whose task has no OpenAI endpoint to be shaped like — classification, zero-shot
+> decisions, and typed decisions.
+>
+> **The principle as it actually stands**: OpenAI's shape wherever OpenAI has one,
+> and the engine's own shape where it does not, because inventing a body would be
+> this gateway deciding what an engine's API should look like on its behalf. What
+> never passes through is the policy — auth, scope, metering, budget, and, since
+> `PRM-142`, the error envelope.
+>
+> `payload_schema` in `GET /v1/models` (`PRM-144`) is how a caller tells which of
+> the two a model expects, so this is now a documented contract rather than an
+> exception.
+
+
 **Date**: 2026-03-28  
 **Status**: accepted  
 **Scope**: all gateway inference endpoints

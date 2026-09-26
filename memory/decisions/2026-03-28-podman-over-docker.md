@@ -1,5 +1,21 @@
 # Podman over Docker
 
+> **Reviewed 2026-09-26 — scope narrower than written.**
+>
+> "Podman as the sole container runtime across **all** environments" is no longer
+> true: the development stack runs bare-metal, as uvicorn processes, and on the
+> date of this review there were zero containers running. Podman remains the
+> runtime *for the containerised deployment*, and `podman-compose.yml` still
+> describes it.
+>
+> **What the gap cost**: `gateway/.env` held the Podman hostnames
+> (`auth-service:9000`, `manager:8090`, `redis:6379`), none of which resolve on a
+> laptop, while a shell session supplied the real values. A restart from anywhere
+> else took the whole stack down for two hours — `PRM-147`. Both sets of values
+> are now side by side in `docs/local-stack.md`, and this decision is the reason
+> the container set is the one written in the files by default.
+
+
 **Date**: 2026-03-28  
 **Status**: accepted  
 **Scope**: all containerised services (gateway, auth-service, observability stack)

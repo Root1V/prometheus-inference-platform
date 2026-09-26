@@ -1,5 +1,12 @@
 #!/usr/bin/env python3
-"""Every `Implements:` in the source must point at a document that exists — PRM-148.
+"""Documentation that cannot fail on its own — PRM-148, PRM-149.
+
+Two checks, one concern: a document that is wrong reads exactly like one that is
+right, and nothing in a build reads prose.
+
+  1. Every `Implements:` in the source points at a document that exists.
+  2. Every architecture decision carries a dated review note.
+
 
 The code carries 288 `Implements: <path>` comments naming the spec or roadmap
 entry each piece satisfies, and the acceptance criteria it cites by number
@@ -34,6 +41,27 @@ _SOURCE_GLOBS = (
 )
 
 
+_REVIEWED = re.compile(r"Reviewed\s+\d{4}-\d{2}-\d{2}")
+
+
+def _decisions(root: pathlib.Path) -> list[pathlib.Path]:
+    return sorted(p for p in root.glob("memory/decisions/*.md") if p.name != "README.md")
+
+
+def _decision_count(root: pathlib.Path) -> int:
+    return len(_decisions(root))
+
+
+def _unreviewed_decisions(root: pathlib.Path) -> list[str]:
+    """ADRs with no `Reviewed <date>` line — PRM-149.
+
+    An architecture decision is immutable: it is never edited to match the
+    present. So the only way to know whether one is still true is a dated review
+    note, and the only way to know nobody has looked is its absence.
+    """
+    return [p.name for p in _decisions(root) if not _REVIEWED.search(p.read_text(errors="ignore"))]
+
+
 def main() -> int:
     root = pathlib.Path(__file__).resolve().parents[1]
     references: Counter[str] = Counter()
@@ -58,6 +86,8 @@ def main() -> int:
     total = sum(references.values())
     print(f"  {total} references to {len(references)} documents")
 
+    unreviewed = _unreviewed_decisions(root)
+
     if missing:
         print(f"\nFAIL: {sum(missing.values())} reference(s) point at documents that do not exist.")
         print("A comment naming a requirement that is gone reads as authoritative and is not.\n")
@@ -70,6 +100,19 @@ def main() -> int:
         return 1
 
     print("  PASS: every referenced document exists")
+
+    if unreviewed:
+        print(f"\nFAIL: {len(unreviewed)} architecture decision(s) carry no `Reviewed <date>` line.")
+        print("An ADR nobody has checked reads exactly like one that is true — five of the")
+        print("seven here were wrong on 2026-09-26 and none of them said so.\n")
+        for name in unreviewed:
+            print(f"  memory/decisions/{name}")
+        print("\nAdd a `> **Reviewed YYYY-MM-DD — ...**` note stating what still holds and what")
+        print("does not. See memory/decisions/README.md for the vocabulary. Never edit the")
+        print("decision itself to match the present.")
+        return 1
+
+    print(f"  PASS: all {_decision_count(root)} architecture decisions carry a review date")
     return 0
 
 

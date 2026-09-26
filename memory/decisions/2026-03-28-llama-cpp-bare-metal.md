@@ -1,5 +1,18 @@
 # Decision — llama.cpp runs bare-metal, never containerised
 
+> **Reviewed 2026-09-26 — premise superseded, mechanism still current.**
+>
+> **What changed**: llama.cpp is no longer *the* runtime. The manager launches
+> seven engines today — `llama_cpp`, `mlx`, `vllm`, `sglang`, `sd_cpp`,
+> `hf_serve`, `laya` (`prometheus_manager_core.registry.BACKENDS`) — so read
+> every "llama.cpp" below as "the inference engine".
+>
+> **What holds, and is the part worth keeping**: engines run as processes on the
+> bare-metal host and are never containerised. Metal on macOS and direct GPU
+> access are still the reasons, and they apply to MLX and vLLM exactly as they
+> applied to llama.cpp. `lifecycle.py` launches every one of the seven this way.
+
+
 | Field | Value |
 |-------|-------|
 | **Date** | 2026-03-28 |

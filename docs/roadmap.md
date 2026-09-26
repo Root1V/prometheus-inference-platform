@@ -5444,6 +5444,45 @@ all, so a broken scan cannot pass as a clean result. The hook's phase counter sa
 ran ten phases; corrected while adding the eleventh.
 
 
+
+## PRM-149 — The architecture decisions say when they were last true
+
+**Why**: `PRM-148` restored the requirements corpus and marked the *specs* as a historical
+record, but left the 7 architecture decisions reading as live authority. The user caught it:
+those records come from an initial design and the platform has evolved, so they must be read
+critically rather than followed.
+
+They were right, and the cost had already been paid. The first draft of `PRM-134` justified
+moving the node registry partly by citing `manager-owns-registry`'s rejected-alternatives
+table — *"Shared database (SQLite/Postgres) as registry — operational overhead"* — as a live
+constraint. **The manager itself now uses SQLite.** That rejection had been overtaken by the
+platform's own evolution, and nothing in the document said so.
+
+**Audited all seven against the running code.** Two were current; five were not:
+
+| ADR | Verdict |
+|---|---|
+| `rs256-jwt` | Current — a signing-key rotation that day was picked up via JWKS with no config change, which is the property it was decided for |
+| `canonical-project-dir` | Current — `install-rhel.sh` uses the path as written |
+| `llama-cpp-bare-metal` | Premise superseded: seven engines now, not one. Mechanism holds — engines run as host processes, never containerised, and Metal and direct GPU access are still the reasons |
+| `openai-api-compatibility` | Deliberately amended: it claims the exact OpenAI shape for *all* inference endpoints, and `PRM-136` added one that is not |
+| `podman-over-docker` | Over-claimed: "all environments" is false — the dev stack is bare-metal and zero containers were running. `PRM-147` is what that gap cost |
+| `redis-for-state` | Half current, and the other half is a defect: idempotency moved to the database on purpose, while `BackendPool._in_flight` is a dict in the process — a real violation, still open |
+| `manager-owns-registry` | Principle holds, three specifics obsolete: the artefact is SQLite not YAML, the DB rejection is dead, and the diagram says `:8000` |
+
+**Scope**: a dated review note at the top of each record, and `memory/decisions/README.md`
+naming the vocabulary. **The decisions themselves are not edited.** An ADR that was made *was*
+made; rewriting it to match the present destroys the only record of why the code looks the way
+it does, and deleting it makes the code look arbitrary. That is the standard ADR lifecycle and
+this repository now states it.
+
+**And a guard, because the failure mode here is silence.** `scripts/check_spec_references.py`
+grew a second check: an architecture decision with no `Reviewed <date>` line fails the push.
+The reasoning is that an unreviewed ADR reads exactly like a true one — five of these were
+wrong and not one of them said so — so the absence of a review date is the only available
+signal that nobody has looked. Verified by adding an unreviewed record and confirming exit 1.
+
+
 Append a new row to the table with the next `RM-NN` id and a new `## RM-NN — ...` section
 below, following the same shape (Why / Scope). Re-sort the table if the new item's
 priority isn't "last."
