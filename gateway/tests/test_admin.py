@@ -16,6 +16,9 @@ from tests.conftest import make_token
 NODE_URL = "http://mac.local:8090"
 AUTH_TOKEN_URL = "https://auth.test/token"
 AUTH_ADMIN_URL = "https://auth.test/admin"
+# PRM-134: the node registry moved from auth-service to the fleet coordinator, so
+# these routes mock a manager-api rather than the identity service.
+FLEET_URL = "http://coordinator.test:8090"
 
 
 # ── _is_exempt() — SPA shell public, /admin/api/* protected ─────────────────
@@ -65,6 +68,7 @@ def admin_settings(rsa_keys, tmp_path):
         auth_service_tls_verify=True,
         auth_service_admin_url=AUTH_ADMIN_URL,
         auth_service_admin_api_key="test-admin-secret",
+        manager_fleet_url=FLEET_URL,  # PRM-134
     )
 
 
@@ -90,8 +94,15 @@ def _headers(rsa_keys, scope: str) -> dict[str, str]:
 
 
 def _mock_nodes(*nodes: tuple[str, str]) -> None:
-    """Mock auth-service's GET /admin/nodes — nodes as (name, manager_url) pairs."""
-    respx.get(f"{AUTH_ADMIN_URL}/nodes").mock(
+    """Mock the coordinator's GET /v1/fleet/nodes — (name, manager_url) pairs.
+
+    PRM-134: this was auth-service's /admin/nodes with a static X-Admin-Key. The
+    coordinator is authenticated with the manager token like everything else, so
+    mocking the node list now means mocking the token too — any test that needs
+    one needs the other.
+    """
+    _mock_manager_token()
+    respx.get(f"{FLEET_URL}/v1/fleet/nodes").mock(
         return_value=Response(
             200,
             json=[
@@ -193,7 +204,8 @@ async def test_create_node_requires_admin_write(gw, rsa_keys):
 
 async def test_create_node_proxies_to_auth_service(gw, rsa_keys):
     with respx.mock:
-        respx.post(f"{AUTH_ADMIN_URL}/nodes").mock(
+        _mock_manager_token()  # PRM-134: the proxy is authenticated now
+        respx.post(f"{FLEET_URL}/v1/fleet/nodes").mock(
             return_value=Response(201, json={"id": "n1", "name": "mac", "manager_url": NODE_URL})
         )
         resp = await gw.post(
@@ -207,7 +219,8 @@ async def test_create_node_proxies_to_auth_service(gw, rsa_keys):
 
 async def test_delete_node_proxies_to_auth_service(gw, rsa_keys):
     with respx.mock:
-        route = respx.delete(f"{AUTH_ADMIN_URL}/nodes/n1").mock(return_value=Response(204))
+        _mock_manager_token()  # PRM-134: the proxy is authenticated now
+        route = respx.delete(f"{FLEET_URL}/v1/fleet/nodes/n1").mock(return_value=Response(204))
         resp = await gw.delete("/admin/api/nodes/n1", headers=_headers(rsa_keys, "admin:write"))
     assert resp.status_code == 204
     assert route.called
@@ -215,7 +228,8 @@ async def test_delete_node_proxies_to_auth_service(gw, rsa_keys):
 
 async def test_check_node_proxies_to_auth_service(gw, rsa_keys):
     with respx.mock:
-        route = respx.post(f"{AUTH_ADMIN_URL}/nodes/n1/check").mock(
+        _mock_manager_token()  # PRM-134: the proxy is authenticated now
+        route = respx.post(f"{FLEET_URL}/v1/fleet/nodes/n1/check").mock(
             return_value=Response(200, json={"id": "n1", "name": "mac", "is_active": True})
         )
         resp = await gw.post("/admin/api/nodes/n1/check", headers=_headers(rsa_keys, "admin:write"))
@@ -225,7 +239,8 @@ async def test_check_node_proxies_to_auth_service(gw, rsa_keys):
 
 async def test_activate_node_proxies_to_auth_service(gw, rsa_keys):
     with respx.mock:
-        route = respx.post(f"{AUTH_ADMIN_URL}/nodes/n1/activate").mock(
+        _mock_manager_token()  # PRM-134: the proxy is authenticated now
+        route = respx.post(f"{FLEET_URL}/v1/fleet/nodes/n1/activate").mock(
             return_value=Response(200, json={"id": "n1", "name": "mac", "is_active": True})
         )
         resp = await gw.post(
@@ -237,7 +252,8 @@ async def test_activate_node_proxies_to_auth_service(gw, rsa_keys):
 
 async def test_deactivate_node_proxies_to_auth_service(gw, rsa_keys):
     with respx.mock:
-        route = respx.post(f"{AUTH_ADMIN_URL}/nodes/n1/deactivate").mock(
+        _mock_manager_token()  # PRM-134: the proxy is authenticated now
+        route = respx.post(f"{FLEET_URL}/v1/fleet/nodes/n1/deactivate").mock(
             return_value=Response(200, json={"id": "n1", "name": "mac", "is_active": False})
         )
         resp = await gw.post(

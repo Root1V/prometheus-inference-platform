@@ -18,6 +18,7 @@ from prometheus_manager_core.telemetry import (
 
 from .control import router as control_router
 from .discovery import router as discovery_router
+from .fleet_routes import router as fleet_router
 from .routes import router
 
 # Configure structlog when the API module is first loaded (idempotent — AC-24)
@@ -39,6 +40,10 @@ app.include_router(router)
 app.include_router(control_router)
 # RM-48: search/download/manage models from Hugging Face
 app.include_router(discovery_router)
+# PRM-134: the fleet's node list. Mounted on every manager-api, but only the one
+# configured as coordinator holds a registry — the rest answer 409 saying so,
+# which is more useful than a 404 an operator cannot tell from a typo.
+app.include_router(fleet_router)
 
 # Argus A-19: after the routers, so the SERVER span the ASGI instrumentation
 # opens can resolve http.route, and outside TraceIDMiddleware so that

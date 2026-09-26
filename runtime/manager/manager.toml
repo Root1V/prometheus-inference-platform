@@ -36,6 +36,23 @@ log_dir = "runtime/logs"
 # PID files directory
 pid_dir = "runtime/run"
 
+# PRM-134: this node is the fleet coordinator — it owns the list *of* nodes.
+#
+# `manager-api` runs on every node, so "the manager owns the fleet" needs an
+# answer to which manager, and exactly one says yes here. `local` is that one
+# because it is the node that has always been there and the one the gateway
+# already reaches. Every other node (see manager-lab.toml) leaves this false and
+# answers the fleet endpoints with a 409 explaining why.
+#
+# fleet.db is a database of its own, never registry.db below: that one is
+# per-node — the models and instances on *this* host — and the node list is
+# fleet-level with exactly one of it. Keeping them apart is what lets a node's
+# local state be wiped and rebuilt, which is routine in Kubernetes and Nomad and
+# would destroy the fleet registry if they shared a file.
+[fleet]
+coordinator = true
+path = "runtime/manager/fleet.db"
+
 [registry]
 # Path to the manager registry.db — a SQLite database, source of truth for
 # models (RM-49; a legacy registry.yaml next to this path is imported once,

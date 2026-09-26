@@ -26,6 +26,11 @@ stop_timeout_s = 10
 log_dir = "runtime/logs/lab"
 pid_dir = "runtime/run/lab"
 
+# PRM-134: `lab` is an ordinary node, not the coordinator. Its fleet endpoints
+# answer 409 pointing at whichever node says `coordinator = true` — `local`.
+[fleet]
+coordinator = false
+
 [registry]
 # Its own catalog. A model registered on `lab` is not registered on `local`,
 # which is the point: this is where an engine gets tried before it is offered

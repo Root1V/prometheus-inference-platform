@@ -69,6 +69,7 @@ class ManagerRegistrySync:
         self,
         auth_service_admin_url: str,
         auth_service_admin_api_key: str,
+        fleet_url: str,
         registry: ModelRegistry,
         *,
         poll_interval_s: int = 30,
@@ -82,6 +83,8 @@ class ManagerRegistrySync:
     ) -> None:
         self._auth_service_admin_url = auth_service_admin_url
         self._auth_service_admin_api_key = auth_service_admin_api_key
+        # PRM-134: the manager-api that holds the fleet registry.
+        self._fleet_url = fleet_url
         # (node_name, manager_url) pairs — refreshed from the node registry at
         # the start of every sync cycle (see `_refresh_nodes`), not fixed here.
         self._nodes: list[tuple[str, str]] = []
@@ -124,16 +127,22 @@ class ManagerRegistrySync:
         self._task: asyncio.Task[None] | None = None
 
     async def _refresh_nodes(self) -> None:
-        """Re-fetch the node list from auth-service's registry (RM-20).
+        """Re-fetch the node list from the fleet coordinator (RM-20, PRM-134).
 
-        Called at the start of every sync cycle so an admin-added/removed node
+        Called at the start of every sync cycle so an admin-added or removed node
         takes effect within one poll interval, without a gateway restart.
+
+        PRM-134: this used to read auth-service's registry with a shared admin
+        key. It now asks the manager-api designated as fleet coordinator, with
+        the same `backend-registry:read` token this class already renews to poll
+        each node — so serving inference no longer depends on the identity
+        service being reachable, and there is one credential on this path
+        instead of two.
         """
         try:
             nodes = await fetch_nodes(
-                self._auth_service_admin_url,
-                self._auth_service_admin_api_key,
-                tls_verify=self._auth_tls_verify,
+                self._fleet_url,
+                await self._get_auth_headers(),
             )
         except Exception as exc:
             logger.warning(

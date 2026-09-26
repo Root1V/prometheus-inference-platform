@@ -585,6 +585,7 @@ async def test_admin_api_route_uses_higher_admin_rpm(rsa_keys, tmp_path, fake_re
         auth_service_tls_verify=True,
         auth_service_admin_url="https://auth.test/admin",
         auth_service_admin_api_key="test-admin-secret",
+        manager_fleet_url="http://coordinator.test:8090",  # PRM-134
     )
     registry = ModelRegistry.__new__(ModelRegistry)
     registry._models = {}
@@ -594,7 +595,15 @@ async def test_admin_api_route_uses_higher_admin_rpm(rsa_keys, tmp_path, fake_re
     headers = {"Authorization": f"Bearer {token}"}
 
     with respx.mock:
-        respx.get("https://auth.test/admin/nodes").mock(return_value=Response(200, json=[]))
+        # PRM-134: the node list comes from the fleet coordinator, authenticated
+        # with the manager token — so the token endpoint needs mocking too, where
+        # auth-service's registry took a static admin key.
+        respx.post("https://auth.test/token").mock(
+            return_value=Response(200, json={"access_token": "t", "expires_in": 300})
+        )
+        respx.get("http://coordinator.test:8090/v1/fleet/nodes").mock(
+            return_value=Response(200, json=[])
+        )
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
             r1 = await c.get("/admin/api/instances", headers=headers)
             r2 = await c.get("/admin/api/instances", headers=headers)

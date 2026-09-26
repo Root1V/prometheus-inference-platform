@@ -311,14 +311,16 @@ def create_billing_router(manager_client: "ManagerApiClient | None" = None) -> A
                     return str(entry.modality)
 
         settings: Settings = request.app.state.settings
+        # PRM-134: the node list now comes from the coordinator with the manager
+        # token, so the client this needed anyway is also what authenticates the
+        # lookup. Guarded first: without it there is nothing to ask either way.
+        if manager_client is None:
+            return None
         try:
             nodes = await fetch_nodes(
-                settings.auth_service_admin_url,  # type: ignore[arg-type]
-                settings.auth_service_admin_api_key,  # type: ignore[arg-type]
-                tls_verify=settings.auth_service_tls_verify,
+                settings.resolved_fleet_url,
+                await manager_client._headers(),
             )
-            if manager_client is None:
-                return None
             for _name, url in nodes:
                 resp = await manager_client.get(url, "/v1/models")
                 resp.raise_for_status()

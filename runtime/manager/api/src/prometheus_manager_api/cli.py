@@ -57,6 +57,14 @@ def cli(config_path: str | None, host: str | None, port: int | None) -> None:
     bind_port = port or cfg.api.port
 
     app.state.registry = reg
+    # PRM-134: only the coordinator opens the fleet database. On every other node
+    # `app.state.fleet` is absent and the fleet routes refuse with a 409 that says
+    # why — see fleet_routes._not_coordinator.
+    if cfg.fleet.coordinator:
+        from prometheus_manager_core.fleet import FleetRegistry
+
+        app.state.fleet = FleetRegistry(cfg.resolved_fleet_path)
+        click.echo(f"Fleet coordinator: {cfg.resolved_fleet_path}")
     app.state.config = cfg  # RM-10: needed by control.py's start/stop/restart/deregister
     app.state.pid_dir = cfg.resolved_pid_dir
     app.state.jwks_url = cfg.api.jwks_url

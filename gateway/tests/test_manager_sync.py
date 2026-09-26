@@ -21,6 +21,8 @@ from prometheus_gateway.models.registry import ModelEntry, ModelRegistry
 
 AUTH_ADMIN_URL = "http://auth.test/admin"
 AUTH_ADMIN_KEY = "test-admin-key"
+# PRM-134: the node list comes from the fleet coordinator now, not auth-service.
+FLEET_URL = "http://coordinator.test:8090"
 
 
 def _mock_nodes(*nodes: tuple[str, str], inactive: Collection[str] = ()) -> None:
@@ -29,7 +31,7 @@ def _mock_nodes(*nodes: tuple[str, str], inactive: Collection[str] = ()) -> None
     `inactive` names a subset of node names to mark is_active=False, matching
     the shape of a node that failed its connectivity check (RM-20 follow-up).
     """
-    respx.get(f"{AUTH_ADMIN_URL}/nodes").mock(
+    respx.get(f"{FLEET_URL}/v1/fleet/nodes").mock(
         return_value=Response(
             200,
             json=[
@@ -56,6 +58,7 @@ def _sync(registry: ModelRegistry | None = None) -> ManagerRegistrySync:
     return ManagerRegistrySync(
         auth_service_admin_url=AUTH_ADMIN_URL,
         auth_service_admin_api_key=AUTH_ADMIN_KEY,
+        fleet_url=FLEET_URL,  # PRM-134
         registry=registry,
     )
 
@@ -110,7 +113,7 @@ async def test_refresh_nodes_unreachable_keeps_previous_list():
     assert sync._nodes == [("mac", "http://mac.local:8090")]
 
     with respx.mock:
-        respx.get(f"{AUTH_ADMIN_URL}/nodes").mock(side_effect=ConnectionError("down"))
+        respx.get(f"{FLEET_URL}/v1/fleet/nodes").mock(side_effect=ConnectionError("down"))
         await sync._refresh_nodes()
     assert sync._nodes == [("mac", "http://mac.local:8090")]  # unchanged
 
@@ -404,7 +407,7 @@ async def test_a_registry_that_never_answered_does_not_empty_the_catalog():
     sync = _sync(registry)
 
     with respx.mock:
-        respx.get(f"{AUTH_ADMIN_URL}/nodes").mock(side_effect=ConnectionError("down"))
+        respx.get(f"{FLEET_URL}/v1/fleet/nodes").mock(side_effect=ConnectionError("down"))
         await sync._sync()
 
     assert "from-snapshot" in registry._models, (

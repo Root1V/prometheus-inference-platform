@@ -1,321 +1,71 @@
-"""Tests for RM-20 — node registry (/admin/nodes).
+"""The node registry is not here any more — PRM-134.
 
-Implements: docs/roadmap.md — RM-20
+RM-20 put fleet inventory in this service and 25 behaviour tests here with it.
+Those tests are not deleted: they were ported verbatim to
+`runtime/manager/api/tests/test_fleet.py`, where the registry now lives. What
+stays behind is the guard that the move actually happened and stays happened.
 
-Connectivity checks (_check_node_reachable) hit the network — patched to a fixed
-result in most tests here so CRUD behavior doesn't depend on real reachability;
-the dedicated `test_nodes_connectivity_*` tests below exercise the check itself.
+Why a guard and not nothing: two services that both serve a writable node
+registry is worse than either owning it, and the way that happens is somebody
+restoring these routes because a test was missing. This file is that test.
 """
 
-import pytest
+from __future__ import annotations
 
-from prometheus_auth.routers import admin as admin_router
+import pytest
+from sqlalchemy import inspect
 
 from .conftest import ADMIN_HEADERS
 
-
-@pytest.fixture(autouse=True)
-def _reachable(monkeypatch):
-    """Default all connectivity checks to "reachable" unless a test overrides it."""
-
-    async def _fake_check(manager_url: str) -> bool:
-        return True
-
-    monkeypatch.setattr(admin_router, "_check_node_reachable", _fake_check)
-
-
-async def _create_node(
-    client, name="mac-studio-1", manager_url="http://127.0.0.1:8090", node_type="mac", tag=None
-):
-    payload = {"name": name, "manager_url": manager_url, "node_type": node_type}
-    if tag is not None:
-        payload["tag"] = tag
-    resp = await client.post("/admin/nodes", json=payload, headers=ADMIN_HEADERS)
-    assert resp.status_code == 201, resp.text
-    return resp.json()
+_GONE = (
+    ("get", "/admin/nodes"),
+    ("post", "/admin/nodes"),
+    ("patch", "/admin/nodes/any-id"),
+    ("post", "/admin/nodes/any-id/check"),
+    ("post", "/admin/nodes/any-id/activate"),
+    ("post", "/admin/nodes/any-id/deactivate"),
+    ("delete", "/admin/nodes/any-id"),
+)
 
 
-async def test_nodes_create(client):
-    node = await _create_node(client, tag="primary")
-    assert node["name"] == "mac-studio-1"
-    assert node["manager_url"] == "http://127.0.0.1:8090"
-    assert node["node_type"] == "mac"
-    assert node["tag"] == "primary"
-    assert node["is_active"] is True
-
-
-async def test_nodes_admin_key_required(client):
-    resp = await client.post(
-        "/admin/nodes", json={"name": "x", "manager_url": "http://x", "node_type": "mac"}
+@pytest.mark.parametrize("method,path", _GONE)
+async def test_the_node_routes_are_gone(client, method, path):
+    """404 — the route does not exist, as opposed to 403 or 409, which would mean
+    it still exists and is refusing."""
+    resp = await getattr(client, method)(path, headers=ADMIN_HEADERS)
+    assert resp.status_code == 404, (
+        f"{method.upper()} {path} still answers {resp.status_code}. The fleet registry "
+        "lives in the coordinator manager-api now (PRM-134); two writable copies is "
+        "worse than either owning it."
     )
-    assert resp.status_code == 403
 
 
-async def test_nodes_duplicate_name_rejected(client):
-    await _create_node(client, name="dup-node")
-    resp = await client.post(
-        "/admin/nodes",
-        json={"name": "dup-node", "manager_url": "http://other:8090", "node_type": "nvidia"},
-        headers=ADMIN_HEADERS,
-    )
-    assert resp.status_code == 409
+async def test_no_route_on_this_service_mentions_nodes(settings):
+    """The parametrised list above only catches paths somebody thought to name.
+    This catches a node route added under any path at all."""
+    from prometheus_auth.main import create_app
+
+    paths = [getattr(r, "path", "") for r in create_app(settings=settings).routes]
+    offenders = [p for p in paths if "node" in p.lower()]
+    assert not offenders, f"auth-service is serving node routes again: {offenders}"
 
 
-async def test_nodes_list(client):
-    await _create_node(client, name="list-node-1")
-    await _create_node(client, name="list-node-2", node_type="nvidia")
-    resp = await client.get("/admin/nodes", headers=ADMIN_HEADERS)
-    assert resp.status_code == 200
-    names = {n["name"] for n in resp.json()}
-    assert {"list-node-1", "list-node-2"}.issubset(names)
+async def test_the_table_is_still_here(client):
+    """Deliberate, and it is the rollback path.
 
+    The rows were copied to the coordinator by scripts/migrate_node_registry.py,
+    which deletes nothing. Reverting the code restores a working registry, and this
+    codebase's additive-only convention does not drop tables — so `nodes` stays
+    until a later cleanup removes the model too.
 
-async def test_nodes_update(client):
-    node = await _create_node(client, name="update-node")
-    resp = await client.patch(
-        f"/admin/nodes/{node['id']}",
-        json={"manager_url": "http://new-host:9999", "tag": "renamed"},
-        headers=ADMIN_HEADERS,
-    )
-    assert resp.status_code == 200
-    body = resp.json()
-    assert body["manager_url"] == "http://new-host:9999"
-    assert body["tag"] == "renamed"
-    assert body["name"] == "update-node"  # name is immutable
-
-
-async def test_nodes_update_not_found(client):
-    resp = await client.patch(
-        "/admin/nodes/does-not-exist", json={"tag": "x"}, headers=ADMIN_HEADERS
-    )
-    assert resp.status_code == 404
-
-
-async def test_nodes_delete(client):
-    node = await _create_node(client, name="delete-node")
-    resp = await client.delete(f"/admin/nodes/{node['id']}", headers=ADMIN_HEADERS)
-    assert resp.status_code == 204
-
-    listed = await client.get("/admin/nodes", headers=ADMIN_HEADERS)
-    names = {n["name"] for n in listed.json()}
-    assert "delete-node" not in names
-
-
-async def test_nodes_delete_not_found(client):
-    resp = await client.delete("/admin/nodes/does-not-exist", headers=ADMIN_HEADERS)
-    assert resp.status_code == 404
-
-
-async def test_nodes_create_unreachable_is_inactive(client, monkeypatch):
-    async def _fake_check(manager_url: str) -> bool:
-        return False
-
-    monkeypatch.setattr(admin_router, "_check_node_reachable", _fake_check)
-
-    node = await _create_node(client, name="unreachable-node")
-    assert node["is_active"] is False
-
-
-async def test_nodes_update_manager_url_rechecks_connectivity(client, monkeypatch):
-    node = await _create_node(client, name="recheck-on-update")
-    assert node["is_active"] is True
-
-    async def _fake_check(manager_url: str) -> bool:
-        return False
-
-    monkeypatch.setattr(admin_router, "_check_node_reachable", _fake_check)
-    resp = await client.patch(
-        f"/admin/nodes/{node['id']}",
-        json={"manager_url": "http://now-down:8090"},
-        headers=ADMIN_HEADERS,
-    )
-    assert resp.status_code == 200
-    assert resp.json()["is_active"] is False
-
-
-async def test_nodes_check_endpoint_updates_status(client, monkeypatch):
-    node = await _create_node(client, name="check-endpoint-node")
-
-    async def _fake_check(manager_url: str) -> bool:
-        return False
-
-    monkeypatch.setattr(admin_router, "_check_node_reachable", _fake_check)
-    resp = await client.post(f"/admin/nodes/{node['id']}/check", headers=ADMIN_HEADERS)
-    assert resp.status_code == 200
-    assert resp.json()["is_active"] is False
-
-
-async def test_nodes_check_endpoint_not_found(client):
-    resp = await client.post("/admin/nodes/does-not-exist/check", headers=ADMIN_HEADERS)
-    assert resp.status_code == 404
-
-
-async def test_nodes_deactivate_is_manual_override_independent_of_connectivity(client):
-    """/deactivate marks a node inactive even though it's reachable (_reachable fixture)."""
-    node = await _create_node(client, name="manual-toggle-node")
-    assert node["is_active"] is True
-
-    resp = await client.post(f"/admin/nodes/{node['id']}/deactivate", headers=ADMIN_HEADERS)
-    assert resp.status_code == 200
-    assert resp.json()["is_active"] is False
-
-
-async def test_nodes_activate_succeeds_when_reachable(client):
-    """/activate re-probes the node — succeeds when the probe is reachable."""
-    node = await _create_node(client, name="activate-when-reachable")
-
-    # deactivate first (the reachable-by-default fixture would make this a no-op check)
-    await client.post(f"/admin/nodes/{node['id']}/deactivate", headers=ADMIN_HEADERS)
-
-    resp = await client.post(f"/admin/nodes/{node['id']}/activate", headers=ADMIN_HEADERS)
-    assert resp.status_code == 200
-    assert resp.json()["is_active"] is True
-
-
-async def test_nodes_activate_refuses_when_unreachable(client, monkeypatch):
-    """/activate can't just flip the flag — an unreachable node stays inactive."""
-
-    async def _fake_check(manager_url: str) -> bool:
-        return False
-
-    monkeypatch.setattr(admin_router, "_check_node_reachable", _fake_check)
-    node = await _create_node(client, name="activate-when-unreachable")
-    assert node["is_active"] is False
-
-    resp = await client.post(f"/admin/nodes/{node['id']}/activate", headers=ADMIN_HEADERS)
-    assert resp.status_code == 200
-    assert resp.json()["is_active"] is False
-
-
-async def test_nodes_deactivate_not_found(client):
-    resp = await client.post("/admin/nodes/does-not-exist/deactivate", headers=ADMIN_HEADERS)
-    assert resp.status_code == 404
-
-
-async def test_nodes_activate_not_found(client):
-    resp = await client.post("/admin/nodes/does-not-exist/activate", headers=ADMIN_HEADERS)
-    assert resp.status_code == 404
-
-
-# ── PRM-133: declared engines, and the three states ──────────────────────────
-
-
-async def test_a_node_created_without_engines_is_undeclared_not_empty(client):
-    """null, not []. The instance form reads this and must not be told the node
-    can launch nothing when nobody has said anything about it yet.
+    Depends on `client` because that fixture is what initialises the engine and
+    runs create_tables; the assertion is about the schema, not the endpoint.
     """
-    node = await _create_node(client, name="undeclared-1")
-    assert node["engines"] is None
+    from prometheus_auth.db import get_engine
 
-
-async def test_engines_round_trip(client):
-    resp = await client.post(
-        "/admin/nodes",
-        json={
-            "name": "declared-1",
-            "manager_url": "http://127.0.0.1:8090",
-            "node_type": "mac",
-            "engines": ["llama_cpp", "mlx"],
-        },
-        headers=ADMIN_HEADERS,
+    async with get_engine().connect() as conn:
+        tables = await conn.run_sync(lambda sync: inspect(sync).get_table_names())
+    assert "nodes" in tables, (
+        "the `nodes` table was dropped. It is the rollback path for PRM-134 and this "
+        "codebase does not drop tables."
     )
-    assert resp.status_code == 201, resp.text
-    assert resp.json()["engines"] == ["llama_cpp", "mlx"]
-
-    listed = await client.get("/admin/nodes", headers=ADMIN_HEADERS)
-    row = next(n for n in listed.json() if n["name"] == "declared-1")
-    assert row["engines"] == ["llama_cpp", "mlx"]
-
-
-async def test_a_node_can_declare_it_has_none(client):
-    """`[]` is an answer, and a different one from never having been asked."""
-    resp = await client.post(
-        "/admin/nodes",
-        json={
-            "name": "empty-1",
-            "manager_url": "http://127.0.0.1:8090",
-            "node_type": "other",
-            "engines": [],
-        },
-        headers=ADMIN_HEADERS,
-    )
-    assert resp.status_code == 201, resp.text
-    assert resp.json()["engines"] == []
-
-
-async def test_an_unrelated_edit_does_not_declare_engines(client):
-    """The trap `tag` already had: an `is not None` check on a field whose None
-    is meaningful turns "leave it alone" into "set it to nothing".
-    """
-    node = await _create_node(client, name="untouched-1")
-    assert node["engines"] is None
-
-    resp = await client.patch(
-        f"/admin/nodes/{node['id']}", json={"tag": "edited"}, headers=ADMIN_HEADERS
-    )
-    assert resp.status_code == 200, resp.text
-    assert resp.json()["tag"] == "edited"
-    assert resp.json()["engines"] is None
-
-
-async def test_engines_can_be_cleared_to_none_explicitly(client):
-    node = await _create_node(client, name="clearable-1")
-    await client.patch(
-        f"/admin/nodes/{node['id']}", json={"engines": ["vllm"]}, headers=ADMIN_HEADERS
-    )
-    resp = await client.patch(
-        f"/admin/nodes/{node['id']}", json={"engines": []}, headers=ADMIN_HEADERS
-    )
-    assert resp.status_code == 200, resp.text
-    assert resp.json()["engines"] == []
-
-
-async def test_engines_are_deduplicated_preserving_order(client):
-    resp = await client.post(
-        "/admin/nodes",
-        json={
-            "name": "dupes-1",
-            "manager_url": "http://127.0.0.1:8090",
-            "node_type": "mac",
-            "engines": ["mlx", "llama_cpp", "mlx"],
-        },
-        headers=ADMIN_HEADERS,
-    )
-    assert resp.status_code == 201, resp.text
-    assert resp.json()["engines"] == ["mlx", "llama_cpp"]
-
-
-async def test_an_engine_id_that_is_not_an_identifier_is_refused(client):
-    """A shape check, not a membership one — this service has no list of real
-    engines and must not grow one. It exists so the column holds identifiers.
-    """
-    resp = await client.post(
-        "/admin/nodes",
-        json={
-            "name": "bad-1",
-            "manager_url": "http://127.0.0.1:8090",
-            "node_type": "mac",
-            "engines": ["llama cpp; drop table nodes"],
-        },
-        headers=ADMIN_HEADERS,
-    )
-    assert resp.status_code == 422, resp.text
-
-
-async def test_an_unknown_but_well_formed_engine_is_stored(client):
-    """Deliberate: auth-service is not the authority on what an engine is. The
-    UI intersects what it reads with the engines this build can launch, so a
-    name nobody recognises never becomes a selectable option.
-    """
-    resp = await client.post(
-        "/admin/nodes",
-        json={
-            "name": "future-1",
-            "manager_url": "http://127.0.0.1:8090",
-            "node_type": "mac",
-            "engines": ["some_engine_from_2027"],
-        },
-        headers=ADMIN_HEADERS,
-    )
-    assert resp.status_code == 201, resp.text
-    assert resp.json()["engines"] == ["some_engine_from_2027"]
