@@ -5501,27 +5501,58 @@ signal that nobody has looked. Verified by adding an unreviewed record and confi
 ## PRM-150 — `ready` means a model answered, not that a port is open
 
 **Why**: `scanner._probe_health` returns `ready` when a health endpoint answers 200. That is
-**liveness reported as readiness**, and there are two measured cases where it lies:
+**liveness**, and it had been reported as readiness. The industry separates the two and has for
+years — Kubernetes has `livenessProbe`, `readinessProbe` and `startupProbe`; the Open Inference
+Protocol (KServe v2, Triton) serves `/v2/health/live`, `/v2/health/ready` **and
+`/v2/models/{name}/ready`**, per model, distinct from the server.
 
-- `hf-serve` started and died on `ModuleNotFoundError`; caught only because nothing answered.
-- `laya` answered 200 perfectly while the loaded checkpoint was miscalibrated — its own library
-  logged that the confidences were unusable.
+The gap is not theoretical: several engines answer `/health` before the weights are loaded,
+because they load on the first request. The process is alive, the port is open, and the first
+real caller is the one that finds out. `hf-serve` will start with a `--task` the checkpoint
+cannot perform and fail only when asked to do it.
 
-The industry separates these precisely. Kubernetes has `livenessProbe`, `readinessProbe` and
-`startupProbe`; the Open Inference Protocol (KServe v2, Triton) serves `/v2/health/live`,
-`/v2/health/ready` **and `/v2/models/{name}/ready`**. This platform has the first and calls it the
-third.
+**And there was a second half, which is the one that made it a lie rather than a gap.** The
+`{model_id}.error` marker already existed and already carried a reason — but `routes.py` only
+consulted it **when there was no live process**. A running instance with a marker still reported
+`ready`. So even a correctly diagnosed failure could not reach the dashboard.
 
-**Scope**: a startup state distinct from `error` and `unknown`, since a model that takes minutes
-to load is neither; a one-shot smoke inference matched to the modality at launch — an embedding of
-one word, a 1-token completion, a two-document rerank — because that is what catches "loaded but
-broken" and a health check cannot; and the result recorded on the instance so the dashboard can
-say *why* something is not ready. It belongs on the node: the node launched the process, knows the
-command that produced it, and is the cheapest place to find out.
+**Scope**: `prometheus_manager_core.readiness` sends one real request of the model's own modality
+after health goes green, retrying three times over ~6s because a lazy load can still be in
+flight. On failure `start_instance` writes the marker with the engine's own words, leaves
+`discovery` false so the gateway never routes there, and **leaves the process running** — a model
+that took minutes to load should not be discarded over a probe, its log holds the real error, and
+an operator can stop it deliberately. It returns the state either way, because the process did
+start: whether it is *usable* is now a separate fact, which is the whole distinction. `routes.py`
+reads the marker for live processes too.
 
-The smoke request is excluded from usage. It serves no caller, and PRM-142 already established
-that a request nobody was served is not billed.
+**What it catches, and what it does not.** It catches a task the checkpoint cannot perform,
+weights that fail a lazy load, and a request schema the engine does not accept — which this
+project hit for real with `laya`, whose options go in `criteria` and whose `instructions` is
+required. It does **not** catch a model that answers correctly-shaped nonsense: `laya`'s
+miscalibrated checkpoint returned a structurally perfect response while its own library logged
+that the confidences were unusable. The roadmap entry that filed this item claimed otherwise, and
+that was wrong — no single request distinguishes miscalibration from health, and saying it does
+would be the same defect this codebase keeps finding.
 
+**Image generation is excluded deliberately.** Every other probe costs milliseconds; generating an
+image costs seconds of GPU on every start, and the only failure it would catch is one `/health`
+already catches. `image` returns `skipped`, and `skipped` is a third outcome rather than a pass —
+`ready` and `failed` are both False — so no caller can read "no probe ran" as "the model works".
+
+**Not billed.** The probe serves no caller and never touches the gateway. PRM-142 established the
+rule in the other direction; this is the same one.
+
+**Verified**: 19 tests for the probe itself, including that `skipped` is not a pass, that a
+transport failure is a verdict rather than an exception, that it retries and stops on success, and
+that the `typed_decision` body is the shape laya actually accepts rather than the one its README
+shows. Two more in manager-api for the half that made it visible: a live process with a marker now
+reports `error` and keeps its pid, and one without a marker is still `ready`. A guard asserts every
+modality is either probed or explicitly skipped, so a new one cannot arrive mute — the same
+pattern as the engine and price guards.
+
+**What the two existing lifecycle tests had to learn**: a start that is merely healthy no longer
+clears the error marker or sets `discovery`. Both were updated to answer the readiness probe too,
+which is the contract changing rather than a test being appeased.
 
 ## PRM-151 — Node liveness by heartbeat, not by a probe from the centre
 

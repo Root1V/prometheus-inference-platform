@@ -19,6 +19,7 @@ from pathlib import Path
 import httpx
 import psutil
 
+from . import readiness
 from .config import ManagerConfig
 from .registry import Registry, RegistryEntry
 from .scanner import ProcessState, _health_path, _normalize_probe_host, scan
@@ -471,11 +472,41 @@ def start_instance(
                 timeout=_HEALTH_TIMEOUT,
             )
             if resp.status_code == 200:
-                logger.info("lifecycle.ready", model_id=model_id, pid=proc.pid)
-                # AC-8 (spec 010): mark model as discoverable when healthy
-                registry.update(model_id, discovery=True)
-                _clear_error_marker(pid_dir, model_id)
-                # Return the live state
+                logger.info("lifecycle.healthy", model_id=model_id, pid=proc.pid)
+                # PRM-150: health answering is liveness, not readiness. Several
+                # engines open the port before the weights are loaded — they load
+                # on the first request — so the start is not finished until the
+                # model has served one real request of its own modality.
+                verdict = readiness.check(entry, probe_host, port)
+                if verdict.failed:
+                    # Left running on purpose, and not marked discoverable. A
+                    # model that took minutes to load should not be thrown away
+                    # over a probe, the log holds the engine's own words, and the
+                    # operator can stop it. What matters is that the gateway
+                    # never routes to it: `discovery` stays false, and the error
+                    # marker makes the state read `error` instead of `ready`
+                    # (routes.py) — which is the whole point of this item.
+                    logger.warning(
+                        "lifecycle.not_ready",
+                        model_id=model_id,
+                        pid=proc.pid,
+                        modality=entry.modality,
+                        detail=verdict.detail,
+                    )
+                    _write_error_marker(pid_dir, model_id, verdict.detail)
+                else:
+                    logger.info(
+                        "lifecycle.ready",
+                        model_id=model_id,
+                        pid=proc.pid,
+                        skipped=verdict.skipped,
+                        detail=verdict.detail,
+                    )
+                    # AC-8 (spec 010): mark model as discoverable when healthy
+                    registry.update(model_id, discovery=True)
+                    _clear_error_marker(pid_dir, model_id)
+                # Return the live state either way: the process did start, and
+                # whether it is usable is now a separate fact the state carries.
                 states = scan(pid_dir, {model_id}, config.api.proxy_host, {model_id: port})
                 for s in states:
                     if s.pid == proc.pid:

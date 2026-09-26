@@ -468,11 +468,15 @@ class TestErrorMarker:
             patch("prometheus_manager_core.lifecycle._find_running", return_value=None),
             patch("prometheus_manager_core.lifecycle.subprocess.Popen", return_value=mock_proc),
             patch("prometheus_manager_core.lifecycle.httpx.get") as mock_get,
+            # PRM-150: the marker is cleared on a start that is *ready*, not
+            # merely healthy — so the readiness probe answers here too.
+            patch("prometheus_manager_core.readiness.httpx.post") as mock_post,
             patch("prometheus_manager_core.lifecycle.scan", return_value=[mock_state]),
             patch("prometheus_manager_core.lifecycle.time.sleep"),
             patch("prometheus_manager_core.lifecycle.time.monotonic", side_effect=[0, 1, 999]),
         ):
             mock_get.return_value = MagicMock(status_code=200)
+            mock_post.return_value = MagicMock(status_code=200)
             start_instance("test-model", default_config, populated_registry)
 
         assert not marker.exists()
@@ -800,6 +804,10 @@ class TestDiscoveryAutoToggle:
             patch("prometheus_manager_core.lifecycle._find_free_port", return_value=9090),
             patch("prometheus_manager_core.lifecycle.subprocess.Popen") as mock_popen,
             patch("prometheus_manager_core.lifecycle.httpx.get") as mock_get,
+            # PRM-150: health answering is no longer enough. A start is finished
+            # when the model has served one real request of its modality, so the
+            # readiness probe has to answer too.
+            patch("prometheus_manager_core.readiness.httpx.post") as mock_post,
             patch("prometheus_manager_core.lifecycle.scan", return_value=[mock_state]),
         ):
             mock_proc = MagicMock()
@@ -807,6 +815,7 @@ class TestDiscoveryAutoToggle:
             mock_proc.poll.return_value = None
             mock_popen.return_value = mock_proc
             mock_get.return_value = MagicMock(status_code=200)
+            mock_post.return_value = MagicMock(status_code=200)
 
             result = start_instance("test-model", default_config, populated_registry)
 
