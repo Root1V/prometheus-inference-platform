@@ -265,3 +265,74 @@ class ModelRegistry:
 def load_registry(path: Path | str | None = None) -> ModelRegistry:
     """Convenience factory — creates and returns a ModelRegistry."""
     return ModelRegistry(path)
+
+
+# ── PRM-144: what body to send, rather than who serves it ─────────────────────
+#
+# P-23 offered Axonium the engine name in the public catalog, so a consumer
+# could deduce the request shape from `(modality, engine)`. They refused it
+# (A-27), and their argument was better than ours: with `engine` in the
+# contract, a consumer's dispatch table is keyed on the name of *our*
+# implementation, so replacing an engine with a contract-identical one becomes a
+# breaking change for every client although nothing observable changed. It is
+# the same defect the four teams keep finding — a value populated from the wrong
+# source stays plausible — except written into the contract deliberately.
+#
+# So the catalog publishes the contract, versioned, and never the engine. The
+# four precedents they cited all do this: Hugging Face's `pipeline_tag`,
+# OpenRouter's `supported_parameters`, Kubernetes' `apiVersion`, and OpenAI and
+# Anthropic publishing capabilities but never a stack.
+#
+# Names are for *our* contract where we define it and for the engine's where it
+# defines it. The OpenAI-shaped routes here accept an allowlisted subset, so
+# calling one `openai.chat.v1` would promise a compatibility we do not have —
+# which is exactly the plausible-but-wrong-source trap this field exists to
+# close. The pass-through routes are the engine's contract, so they carry the
+# engine's name for it.
+_PAYLOAD_SCHEMAS: dict[tuple[str, str], str] = {
+    # Ours: the body is defined by this gateway, whatever serves it.
+    ("text", ""): "prometheus.chat.v1",
+    ("vision", ""): "prometheus.chat.v1",
+    ("embedding", ""): "prometheus.embeddings.v1",
+    ("image", ""): "prometheus.images.v1",
+    ("rerank", ""): "prometheus.rerank.v1",
+    # Theirs: pass-through, so the shape belongs to the engine and changes with
+    # it. This is the half `modality` alone cannot answer, and the reason
+    # Axonium asked for the field at all.
+    ("classification", "hf_serve"): "hf-inference.text-classification.v1",
+    ("zero_shot", "hf_serve"): "hf-inference.zero-shot-classification.v1",
+    ("typed_decision", "laya"): "typed-decision.v1",
+}
+
+# The modalities whose body is the engine's, so their schema is keyed by engine.
+# Mirrors the gateway router's `_PASS_THROUGH_MODALITIES`; the guard test in
+# tests/test_payload_schema.py fails if the two drift.
+_ENGINE_SHAPED = frozenset({"classification", "zero_shot", "typed_decision"})
+
+
+def payload_schema_for(modality: str, engine: str) -> str | None:
+    """The versioned contract id for this model's request body — PRM-144.
+
+    `None` when we cannot state one, which a consumer should treat as "do not
+    guess" rather than as an absent field. That happens for a modality nobody
+    has mapped yet, and for a pass-through modality served by an engine whose
+    shape has never been recorded — a `zero_shot` model on some new engine is
+    not an `hf-inference` body just because the last one was.
+    """
+    key = (modality, engine if modality in _ENGINE_SHAPED else "")
+    return _PAYLOAD_SCHEMAS.get(key)
+
+
+def payload_schema_of(resolution: "ModelResolution") -> str | None:
+    """The group's contract id, or `None` if its replicas disagree.
+
+    Replicas of one model served by engines with different body shapes is the
+    same class of misconfiguration as the modality disagreement `mismatch`
+    already refuses. Here it cannot be refused — the catalog is a list, not a
+    request — so it reports nothing rather than picking a member's answer and
+    making it look settled (RM-98: a failure must never read as an absence).
+    """
+    schemas = {payload_schema_for(resolution.modality, m.backend) for m in resolution.members}
+    if len(schemas) != 1:
+        return None
+    return schemas.pop()
