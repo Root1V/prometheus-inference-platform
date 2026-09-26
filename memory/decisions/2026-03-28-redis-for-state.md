@@ -1,5 +1,25 @@
 # Redis for shared runtime state
 
+> **Reviewed 2026-09-26 — half current, and the other half is a known defect.**
+>
+> The decision below is "Redis for **all** runtime state that must be consistent
+> across processes". Two things are not in Redis today:
+>
+> - **Idempotency records** live in the gateway's database (`RM-78`). That is a
+>   deliberate improvement on this decision, not a violation: records must
+>   survive a Redis restart and be readable by any replica, and durability is the
+>   point of the feature.
+> - **The least-loaded routing counter** (`BackendPool._in_flight`) is a plain
+>   dict in the process. That one *is* a violation of this decision and it is a
+>   defect: with several gateway replicas each sees only its own load, so
+>   least-loaded routing silently degrades to per-replica balancing. Named in the
+>   2026-09-26 architecture review; not yet fixed.
+>
+> Still in Redis and working as decided: RPM/TPM counters, the spend-cap
+> reserve/settle ledger (integer micro-USD), the circuit breaker, and the token
+> revocation blocklist.
+
+
 **Date**: 2026-03-28  
 **Status**: accepted  
 **Scope**: rate-limit counters, token revocation, JWKS cache

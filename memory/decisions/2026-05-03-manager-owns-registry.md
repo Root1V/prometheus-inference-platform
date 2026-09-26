@@ -1,5 +1,33 @@
 # Manager owns the model registry
 
+> **Reviewed 2026-09-26 — the principle holds, two specifics are obsolete.**
+>
+> **Still true, and it is the important part**: the manager owns the *model*
+> registry and is the source of truth for model availability. Which process is
+> alive is a bare-metal concern; the gateway holds a cached view refreshed by
+> `manager_sync` and never reads engine state directly.
+>
+> **Obsolete — the artefact**: the manager no longer owns a `registry.yaml`. It
+> uses **SQLite**, `runtime/manager/registry.db`
+> (`prometheus_manager_core.config.RegistryConfig.path`). Read "registry.yaml"
+> below as "the manager's registry".
+>
+> **Obsolete — a rejected alternative**: the table rejects *"Shared database
+> (SQLite/Postgres) as registry — operational overhead"*. The manager itself now
+> uses SQLite, so that rejection was overtaken by the platform's own evolution
+> and cannot be cited as a live constraint. It was cited that way once, in the
+> first draft of `PRM-134`; this note exists because of that.
+>
+> **Obsolete — the diagram**: the gateway listens on `:8020`, not `:8000`.
+>
+> **What this decision does *not* cover**: the registry of **nodes** — which
+> hosts exist, their manager URL, hardware class and declared engines. That is a
+> different registry from the one below, it is the subject of `PRM-134`, and the
+> constraint this decision creates for it is real and still binding:
+> `manager-api` runs **per node**, each with its own `registry.db`, so no manager
+> can hold the list *of* nodes without one of them becoming a coordinator.
+
+
 **Date**: 2026-03-29  
 **Status**: accepted  
 **Scope**: model registry, gateway routing, Manager API
