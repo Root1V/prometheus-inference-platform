@@ -90,36 +90,42 @@ echo "[admin-ui 3/3] Type check + build (tsc + vite build)"
 (cd "$ADMIN_UI_DIR" && npm run build)
 
 # ── tests ─────────────────────────────────────────────────────────────────────
-echo "[tests 1/7] gateway (pytest)"
+echo "[tests 1/11] gateway (pytest)"
 uv run --project "$GATEWAY_DIR" pytest "$GATEWAY_DIR/tests" -v --tb=short \
   --cov="$GATEWAY_DIR/src" --cov-report=term-missing --cov-fail-under=80
 
-echo "[tests 2/7] auth-service (pytest)"
+echo "[tests 2/11] auth-service (pytest)"
 (cd "$AUTH_DIR" && uv run pytest tests/ -v --tb=short)
 
-echo "[tests 3/7] telemetry (pytest)"
+echo "[tests 3/11] telemetry (pytest)"
 uv run --project "$TELEMETRY_DIR" pytest "$TELEMETRY_DIR/tests" -v --tb=short \
   --cov="$TELEMETRY_DIR/src" --cov-report=term-missing --cov-fail-under=90
 
-echo "[tests 4/7] runtime/manager/core (pytest)"
+echo "[tests 4/11] runtime/manager/core (pytest)"
 uv run --project "$MANAGER_CORE_DIR" pytest "$MANAGER_CORE_DIR/tests" -v --tb=short
 
-echo "[tests 5/7] runtime/manager/api (pytest)"
+echo "[tests 5/11] runtime/manager/api (pytest)"
 uv run --project "$MANAGER_API_DIR" pytest "$MANAGER_API_DIR/tests" -v --tb=short
 
-echo "[tests 6/7] runtime/manager/tui (pytest)"
+echo "[tests 6/11] runtime/manager/tui (pytest)"
 uv run --project "$MANAGER_TUI_DIR" pytest "$MANAGER_TUI_DIR/tests" -v --tb=short
 
-echo "[tests 7/7] runtime scripts (bash)"
+echo "[tests 7/11] runtime scripts (bash)"
 bash "$RUNTIME_DIR/tests/test_runtime_scripts.sh"
 
-echo "[tests 8/10] scripts/ (bash — spec 023)"
+echo "[tests 8/11] scripts/ (bash — spec 023)"
 bash "$ROOT/scripts/tests/test_scripts_023.sh"
 
-echo "[tests 9/10] scripts/ (bash — PRM-113 usage reunify)"
+echo "[tests 9/11] scripts/ (bash — PRM-113 usage reunify)"
 bash "$ROOT/scripts/tests/test_reunify_usage_history.sh"
 
-echo "[tests 10/10] scripts/ (bash — PRM-117 usage repricing)"
+echo "[tests 10/11] scripts/ (bash — PRM-117 usage repricing)"
 bash "$ROOT/scripts/tests/test_reprice_unpriced_usage.sh"
+
+# PRM-148: repo-wide, so it is a phase of its own rather than a member of any
+# one service's suite. 218 `Implements:` comments pointed at a spec corpus that
+# had been deleted, and nothing failed for months because a comment cannot.
+echo "[tests 11/11] docs (spec references resolve)"
+uv run --project "$GATEWAY_DIR" python "$ROOT/scripts/check_spec_references.py"
 
 echo "--- All checks passed. Push allowed. ---"
