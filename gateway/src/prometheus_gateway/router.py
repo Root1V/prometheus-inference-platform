@@ -31,6 +31,7 @@ from .budget import (
     parse_thresholds,
 )
 from .models.registry import ModelEntry, ModelRegistry, ModelResolution
+from .models.registry import payload_schema_of
 from .models.schemas import (
     ChatCompletionRequest,
     EmbeddingsRequest,
@@ -725,6 +726,14 @@ def create_router(registry: ModelRegistry, pool: "BackendPool") -> APIRouter:
                         "quantization": r.members[0].quantization,
                         "modality": r.modality,
                         "served_by": len(r.members),
+                        # PRM-144: what body to send. `modality` alone cannot
+                        # answer it for a pass-through route, where the shape is
+                        # the engine's — and Axonium refused the engine name,
+                        # correctly, because it keys their dispatch table to our
+                        # implementation rather than to a contract. On both
+                        # catalogs: a consumer reading `mine` needs the shape as
+                        # much as one reading the public list.
+                        "payload_schema": payload_schema_of(r),
                     }
                     for r in models
                 ],
@@ -777,6 +786,14 @@ def create_router(registry: ModelRegistry, pool: "BackendPool") -> APIRouter:
                         "quantization": r.members[0].quantization,
                         "modality": r.modality,
                         "served_by": len(r.members),
+                        # PRM-144: what body to send. `modality` alone cannot
+                        # answer it for a pass-through route, where the shape is
+                        # the engine's — and Axonium refused the engine name,
+                        # correctly, because it keys their dispatch table to our
+                        # implementation rather than to a contract. On both
+                        # catalogs: a consumer reading `mine` needs the shape as
+                        # much as one reading the public list.
+                        "payload_schema": payload_schema_of(r),
                     }
                     for r in authorized
                 ],
