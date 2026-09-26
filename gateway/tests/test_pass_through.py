@@ -100,7 +100,18 @@ async def test_the_body_reaches_the_backend_untouched(gw, rsa_keys):
 
 @respx.mock
 async def test_the_backends_status_code_is_not_rewritten(gw, rsa_keys):
-    """A 422 from the engine is the engine's answer, not a gateway failure."""
+    """A 422 from the engine is the engine's answer, not a gateway failure.
+
+    PRM-142 narrowed what this test asserts, deliberately. It used to require
+    the engine's error *body* back verbatim too — PRM-136 pinned that on the
+    same reasoning as the success path. Axonium's A-28 took that apart: the
+    body of a pass-through request is the backend's, but the error envelope is
+    policy, and forwarding theirs handed callers a 422 with no `type`, no
+    `request_id` and no `trace_id`.
+
+    So the status is still the engine's and the content still survives — under
+    `backend_error`, inside our envelope. See the PRM-142 tests below.
+    """
     respx.post(f"{BACKEND_URL}/predict").mock(
         return_value=Response(422, json={"detail": "inputs is required"})
     )
@@ -108,7 +119,7 @@ async def test_the_backends_status_code_is_not_rewritten(gw, rsa_keys):
     r = await gw.post("/v1/models/clf/predict", json={}, headers=_headers(rsa_keys))
 
     assert r.status_code == 422
-    assert r.json() == {"detail": "inputs is required"}
+    assert r.json()["backend_error"] == {"detail": "inputs is required"}
 
 
 # ── What does not pass through ───────────────────────────────────────────────
@@ -264,3 +275,116 @@ async def test_a_zero_shot_model_routes_through_the_same_pass_through(gw, rsa_ke
     forwarded = route.calls[0].request.content.decode()
     assert "candidate_labels" in forwarded, "the options must reach the engine"
     assert "facturacion" in forwarded
+
+
+# ── A refused request is not a served one — PRM-142 ──────────────────────────
+#
+# Axonium measured a 422 from this route arriving with no `type`, no
+# `request_id` and no `trace_id`, content-type `application/json`, and made the
+# argument with the sentence PRM-136 wrote above: "the shape is the backend's;
+# the policy is ours". An error envelope is what makes a failure correlatable,
+# typable, and classifiable as retryable — that is policy, and it was leaking
+# out with the body.
+#
+# The second half is ours and they did not find it: the same request was
+# *billed*. This route estimates tokens from the request body, so a refusal
+# produced a real, non-zero charge — measured live at 6 prompt tokens and
+# 1.2e-07 USD, with `termination_reason: "complete"`.
+
+# What hf-serve returns when the body is missing a field it requires — captured
+# from the live server that prompted A-28.
+ENGINE_422 = {
+    "detail": [
+        {
+            "type": "missing",
+            "loc": ["body", "inputs"],
+            "msg": "Field required",
+            "input": {"campo_inventado": "x"},
+        }
+    ],
+    "body": {"campo_inventado": "x"},
+}
+
+
+@respx.mock
+async def test_a_backend_rejection_comes_back_in_our_envelope(gw, rsa_keys):
+    """The engine's 422 keeps its status and its content, inside our envelope."""
+    respx.post(f"{BACKEND_URL}/predict").mock(return_value=Response(422, json=ENGINE_422))
+
+    r = await gw.post(
+        "/v1/models/clf/predict",
+        json={"campo_inventado": "x"},
+        headers=_headers(rsa_keys),
+    )
+
+    assert r.status_code == 422, "the caller's body was wrong, so the status is still theirs"
+    assert r.headers["content-type"].startswith("application/problem+json")
+    body = r.json()
+    assert body["type"].endswith("/predict-backend-rejected")
+    assert body["request_id"] and body["request_id"] != "unknown"
+    assert body["trace_id"]
+    assert body["instance"] == "/v1/models/clf/predict"
+    # The engine's own error survives verbatim, under an extension member
+    # rather than stuffed into `detail` — RFC 9457 defines `detail` as
+    # human-readable text, and a caller needs the structure.
+    assert body["backend_error"] == ENGINE_422
+    assert isinstance(body["detail"], str)
+
+
+@respx.mock
+async def test_a_rejected_request_is_not_billed(gw, rsa_keys):
+    """The row this used to leave said 6 tokens, a real cost, and "complete"."""
+    from datetime import datetime, timezone
+
+    from prometheus_gateway import db
+
+    respx.post(f"{BACKEND_URL}/predict").mock(return_value=Response(422, json=ENGINE_422))
+
+    await gw.post(
+        "/v1/models/clf/predict",
+        json={"campo_inventado": "x", "y": "texto suficiente para estimar tokens"},
+        headers=_headers(rsa_keys),
+    )
+
+    rows = await db.query_usage_day(datetime.now(tz=timezone.utc).date())
+    assert not [r for r in rows if r.model_id == "clf"], (
+        "a request the engine refused was metered and billed like one it served"
+    )
+
+
+@respx.mock
+async def test_a_backend_failure_is_an_upstream_error_not_a_rejection(gw, rsa_keys):
+    """A 500 from the engine is ours to own, not the caller's body to blame."""
+    respx.post(f"{BACKEND_URL}/predict").mock(
+        return_value=Response(500, json={"detail": "CUDA out of memory"})
+    )
+
+    r = await gw.post(
+        "/v1/models/clf/predict", json={"inputs": "hola"}, headers=_headers(rsa_keys)
+    )
+
+    assert r.status_code == 502, "an engine failure is not a 500 the caller caused"
+    body = r.json()
+    assert body["type"].endswith("/upstream-error")
+    assert body["backend_status"] == 500
+    assert body["backend_error"] == {"detail": "CUDA out of memory"}
+
+
+@respx.mock
+async def test_a_served_request_is_still_billed(gw, rsa_keys):
+    """The guard must refuse refusals, not stop billing."""
+    from datetime import datetime, timezone
+
+    from prometheus_gateway import db
+
+    respx.post(f"{BACKEND_URL}/predict").mock(return_value=Response(200, json=PREDICT_RESPONSE))
+
+    r = await gw.post(
+        "/v1/models/clf/predict",
+        json={"inputs": "una frase lo bastante larga como para estimar algo"},
+        headers=_headers(rsa_keys),
+    )
+
+    assert r.status_code == 200
+    rows = await db.query_usage_day(datetime.now(tz=timezone.utc).date())
+    assert [r for r in rows if r.model_id == "clf"], "the 2xx path stopped billing"
