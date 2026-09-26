@@ -438,6 +438,18 @@ def _merge(
         result["gpu_percent"] = ps.gpu_percent
         result["gpu_vram_mb"] = ps.gpu_vram_mb
         result["error_message"] = None
+        # PRM-150: a live process with an error marker is running and unusable,
+        # and it used to report `ready` because the marker was only consulted
+        # when nothing was running. That is liveness reported as readiness: the
+        # health endpoint answers, the model does not serve, and the dashboard
+        # said green. The marker is written by lifecycle.py when the readiness
+        # probe fails, and `discovery` stays false so the gateway never routes
+        # here — this makes the state say the same thing.
+        if pid_dir is not None:
+            live_marker = pid_dir / f"{entry['id']}.error"
+            if live_marker.exists():
+                result["state"] = "error"
+                result["error_message"] = live_marker.read_text()
     else:
         result["pid"] = None
         result["state"] = "stopped"

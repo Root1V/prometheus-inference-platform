@@ -510,3 +510,88 @@ class TestFileSizeBytes:
 
         assert resp.status_code == 200
         assert resp.json()["backends"][0]["file_size_bytes"] is None
+
+
+class TestLiveButNotReady:
+    """PRM-150: a running process with an error marker is not `ready`.
+
+    The marker was only consulted when nothing was running, so a model whose
+    readiness probe failed — the engine up, the port open, the model unable to
+    serve — reported `ready` and the dashboard showed green. That is liveness
+    reported as readiness, and it is what the Open Inference Protocol separates
+    with a per-model ready endpoint.
+    """
+
+    def _running(self, model_id: str) -> ProcessState:
+        return ProcessState(
+            pid=4321,
+            model_id=model_id,
+            alias=model_id,
+            port=9090,
+            model_path="/models/probe.gguf",
+            host="127.0.0.1",
+            state="ready",  # what the health probe alone concluded
+            cpu_percent=1.0,
+            rss_mb=128.0,
+            started_at=datetime.now(tz=UTC),
+            managed=True,
+        )
+
+    def _client(self, tmp_path: Path, marker: str | None) -> tuple[TestClient, Path]:
+        reg = Registry(tmp_path / "registry.yaml")
+        reg.add(
+            RegistryEntry(
+                id="probe-model",
+                path="/models/probe.gguf",
+                context_length=512,
+                port=9090,
+                discovery=True,
+            )
+        )
+        pid_dir = tmp_path / "run"
+        pid_dir.mkdir(parents=True)
+        if marker is not None:
+            (pid_dir / "probe-model.error").write_text(marker)
+        app.state.registry = reg
+        app.state.pid_dir = pid_dir
+        return TestClient(app, raise_server_exceptions=True), pid_dir
+
+    def _get(self, client: TestClient):
+        app.dependency_overrides[require_backend_registry_read] = lambda: {
+            "sub": "gateway",
+            "scope": "backend-registry:read",
+        }
+        try:
+            with patch(
+                "prometheus_manager_api.routes.scan",
+                return_value=[self._running("probe-model")],
+            ):
+                return client.get("/v1/backends", headers={"Authorization": "Bearer valid"})
+        finally:
+            app.dependency_overrides.pop(require_backend_registry_read, None)
+
+    def test_a_live_process_whose_readiness_failed_reports_error(self, tmp_path: Path):
+        detail = (
+            "the engine is running and did not serve classification after 3 attempts — "
+            "HTTP 422 from /predict"
+        )
+        client, _ = self._client(tmp_path, detail)
+        resp = self._get(client)
+
+        assert resp.status_code == 200
+        backend = resp.json()["backends"][0]
+        assert backend["state"] == "error", (
+            "a running process with a readiness failure still reported ready — the "
+            "exact lie PRM-150 exists to remove"
+        )
+        assert "did not serve classification" in backend["error_message"]
+        # Still running: the process was not killed, so an operator can read its
+        # log and stop it deliberately.
+        assert backend["pid"] == 4321
+
+    def test_a_live_process_with_no_marker_is_still_ready(self, tmp_path: Path):
+        """The other direction — the guard must not make everything error."""
+        client, _ = self._client(tmp_path, None)
+        backend = self._get(client).json()["backends"][0]
+        assert backend["state"] == "ready"
+        assert backend["error_message"] is None
