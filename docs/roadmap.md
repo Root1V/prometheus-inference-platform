@@ -5406,6 +5406,44 @@ now in the runbook, because "it restarted fine before" only meant it had always 
 from the one terminal that could.
 
 
+
+## PRM-148 — The requirements corpus comes back, and stays
+
+**Why**: found in the architecture review. The source carries 288 `Implements:` comments naming
+the spec each piece satisfies and the acceptance criteria it meets by number — `AC-8`,
+`AC-27`. **218 of them pointed into `memory/specs/`, which does not exist.** Commit `546a196`
+removed the SDD pipeline and the comments were never updated, so for months every acceptance
+criterion the codebase claimed to implement was unverifiable, and `CLAUDE.md` instructed the
+reader to reference a `memory/decisions/` that had gone with it.
+
+It went unnoticed because **a comment cannot fail.** Nothing in the build, the linter or the
+test suite reads a path inside a comment, so 218 authoritative-looking citations decayed in
+silence.
+
+**Restored, not rewritten.** 24 specs and 7 architecture decision records came back from
+`546a196^` at their original paths, which makes all 288 citations resolve without touching a
+line of code. Rewriting 218 comments to a new location would have been churn with no gain.
+
+Two things deliberately left out: `memory/wiki/` (12 files the user had already said were not
+needed) and `memory/roadmap.md`, superseded by the two-file index this project uses now.
+
+**And the restored corpus needed correcting before it could be trusted**, which is the same
+class of problem it was restored to fix:
+
+- Its README declared the SDD lifecycle as live process — *"no feature is implemented without a
+  spec in approved status"* — which `546a196` retired. It now says what it is: a historical
+  record, with the live workflow named.
+- Its index linked `006-multi-model-routing.md`; the file is `006-multi-model-gateway.md`.
+- There is no spec 019. The number was skipped, nothing is lost, and the README now says so
+  rather than leaving a gap that reads as a deletion.
+
+**Scope**: `scripts/check_spec_references.py` parses every `Implements:` in the source and exits
+non-zero naming each path that does not resolve, wired as its own pre-push phase because the
+check is repo-wide rather than any one service's. It also fails when it finds *no* references at
+all, so a broken scan cannot pass as a clean result. The hook's phase counter said `/7` while it
+ran ten phases; corrected while adding the eleventh.
+
+
 Append a new row to the table with the next `RM-NN` id and a new `## RM-NN — ...` section
 below, following the same shape (Why / Scope). Re-sort the table if the new item's
 priority isn't "last."

@@ -89,5 +89,8 @@ Maintenance rules:
 - Before adding anything to either file, ask: is this needed to decide or act, or is it
   just history? History doesn't go in the roadmap.
 - Big architectural decisions don't live here — reference `memory/decisions/` instead of
-  inlining them.
+  inlining them. Those 7 records, and the 24 specs in `memory/specs/`, are a **historical
+  record**: the source cites them 288 times by path and by acceptance criterion, and
+  `scripts/check_spec_references.py` fails the push when a citation stops resolving. New
+  work adds a roadmap entry, never a spec.
 
