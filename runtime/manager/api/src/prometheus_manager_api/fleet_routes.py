@@ -35,6 +35,7 @@ from prometheus_manager_core.fleet import (
     FleetRegistry,
     Node,
     NodeExistsError,
+    now_iso,
 )
 from prometheus_manager_core.telemetry import get_logger
 from pydantic import BaseModel, Field, field_validator
@@ -177,7 +178,10 @@ async def create_node(
         manager_url=body.manager_url,
         node_type=body.node_type,
         tag=body.tag,
-        is_active=reachable,
+        # PRM-151: a probe records a *sighting*, never permission. `enabled`
+        # defaults to True because registering a node is asking for it to be
+        # used; whether it is usable is `last_seen_at` against the TTL.
+        last_seen_at=now_iso() if reachable else None,
         hardware_amortization_usd_per_hour=(
             body.hardware_amortization_usd_per_hour
             if body.hardware_amortization_usd_per_hour is not None
@@ -228,7 +232,8 @@ async def update_node(
 
     if body.manager_url is not None and body.manager_url != node.manager_url:
         node.manager_url = body.manager_url
-        node.is_active = await _probe(body.manager_url)
+        # A new URL invalidates every sighting of the old one.
+        node.last_seen_at = now_iso() if await _probe(body.manager_url) else None
     if body.node_type is not None:
         node.node_type = body.node_type
     if "tag" in body.model_fields_set:
@@ -263,9 +268,19 @@ async def check_node(
     if node is None:
         return _not_found()
 
-    node.is_active = await _probe(node.manager_url)
+    # PRM-151: this used to write `is_active`, which is how a maintenance cordon
+    # got erased by whoever pressed Check next — verified live before the fix. It
+    # records a sighting and nothing else; `enabled` is the operator's alone.
+    if await _probe(node.manager_url):
+        node.last_seen_at = now_iso()
     fleet.update(node)
-    logger.info("fleet.node_checked", node_id=node.id, is_active=node.is_active)
+    logger.info(
+        "fleet.node_checked",
+        node_id=node.id,
+        enabled=node.enabled,
+        last_seen_at=node.last_seen_at,
+        is_active=node.is_active(),
+    )
     return node.to_dict()
 
 
@@ -290,9 +305,21 @@ async def activate_node(
     if node is None:
         return _not_found()
 
-    node.is_active = await _probe(node.manager_url)
+    # PRM-151: /activate is the operator lifting their own cordon, so it sets
+    # `enabled` — and it still probes, because the answer it returns must say
+    # whether the node is actually routable rather than only that permission was
+    # granted. Before this, /activate could not distinguish "I want this back"
+    # from "it is reachable" and wrote both into one field.
+    node.enabled = True
+    if await _probe(node.manager_url):
+        node.last_seen_at = now_iso()
     fleet.update(node)
-    logger.info("fleet.node_activate_attempted", node_id=node.id, is_active=node.is_active)
+    logger.info(
+        "fleet.node_activated",
+        node_id=node.id,
+        enabled=True,
+        is_active=node.is_active(),
+    )
     return node.to_dict()
 
 
@@ -313,9 +340,55 @@ async def deactivate_node(
     if node is None:
         return _not_found()
 
-    node.is_active = False
+    # PRM-151: the cordon, and only the cordon. `last_seen_at` is left alone —
+    # pretending a node stopped answering because an operator took it out of
+    # rotation would make the two facts lie about each other.
+    node.enabled = False
     fleet.update(node)
     logger.info("fleet.node_deactivated", node_id=node.id)
+    return node.to_dict()
+
+
+@router.post("/v1/fleet/nodes/{node_id}/heartbeat", tags=["fleet"])
+async def heartbeat(
+    node_id: str,
+    request: Request,
+    _claims: Annotated[Claims, Depends(require_backend_registry_write)],
+) -> Any:
+    """A node reporting that it is up — PRM-151.
+
+    The inverse of `/check`, and the direction Kubernetes, Nomad and Consul all
+    use: the node renews its own lease and the absence of a renewal is
+    unambiguous, where a probe from the centre cannot tell "it is down" from "I
+    could not reach it".
+
+    It stamps `last_seen_at` and nothing else. In particular it cannot set
+    `enabled`: a node reporting in does not get to overrule an operator who
+    cordoned it, and a cordoned node should keep reporting so the operator can
+    see it is healthy before lifting the cordon.
+
+    **A heartbeat from an unknown node is a 404, deliberately.** Auto-joining the
+    fleet on a heartbeat would let a misconfigured node — wrong name, wrong URL —
+    silently receive traffic. Kubernetes gates node registration behind a
+    bootstrap credential and CSR approval for the same reason. The attempt is
+    logged, so an operator can see a node trying to join and register it.
+    """
+    fleet = _fleet(request)
+    if fleet is None:
+        return _not_coordinator()
+    if not fleet.mark_seen(node_id):
+        logger.warning(
+            "fleet.heartbeat_from_unknown_node",
+            node_id=node_id,
+            detail=(
+                "a node heartbeat named an id this fleet does not hold. Register it "
+                "first — membership is an operator decision, not something a "
+                "heartbeat grants."
+            ),
+        )
+        return _not_found()
+    node = fleet.get(node_id)
+    assert node is not None  # mark_seen just found it
     return node.to_dict()
 
 

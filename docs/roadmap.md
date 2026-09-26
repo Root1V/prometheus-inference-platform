@@ -5554,20 +5554,84 @@ pattern as the engine and price guards.
 clears the error marker or sets `discovery`. Both were updated to answer the readiness probe too,
 which is the contract changing rather than a test being appeased.
 
-## PRM-151 — Node liveness by heartbeat, not by a probe from the centre
+## PRM-151 — Liveness has an age, and the cordon is the operator's alone
 
-**Why**: `is_active` is decided by the coordinator probing each node's `/health`. So a coordinator
-that cannot reach a node and a node that is genuinely down produce the same answer — the shape of
-PRM-146, which was patched at one level and remains at this one.
+**Why**: `is_active` was decided by the coordinator probing each node, so a probe that failed and
+a node that was genuinely down produced the same answer.
 
-Kubernetes, Nomad and Consul all invert the direction: the node registers itself and renews a
-lease, and the absence of a heartbeat within a TTL is unambiguous. It also removes the step where
-an operator types a URL into a form for a machine that could announce itself.
+**And looking for that turned up a real bug, which is now the larger half of this item.**
+`/deactivate` and the probe wrote **the same column**. So:
 
-**Scope**: node self-registration against the coordinator plus a renewed lease with a TTL, with
-the central probe kept as the manual `check` action an operator can still invoke. Superseding the
-probe is what makes `is_active` a fact rather than an inference.
+```
+operator deactivates lab for maintenance   -> is_active = False
+somebody presses Check (lab is up)         -> is_active = True   ← the cordon is gone
+```
 
+Verified live against the running stack before the fix. Two different facts shared one field, and
+the observed one silently overwrote the operator's intent. Kubernetes keeps exactly this pair
+apart — `spec.unschedulable` is intent, `status.conditions[Ready]` is observation — and nothing
+observed may write the operator's half.
+
+**Scope**: `enabled` (the cordon, written only by `/activate` and `/deactivate`) and
+`last_seen_at` (an ISO timestamp, written only by a sighting), with `is_active` **derived**:
+enabled *and* seen within a 60s TTL. A timestamp rather than a boolean because a boolean cannot
+say *when*, and "a probe failed once" and "nothing has answered for an hour" need different
+actions. The wire shape reports all three, so a caller can tell "cordoned" from "not answering" —
+which one boolean could not.
+
+`FleetSweep` probes every node every 15s and stamps the ones that answer, writing nothing for the
+ones that do not: the previous sighting stands and the TTL decides, so a single missed sweep is
+not an outage. Started from the app lifespan and only where `app.state.fleet` exists, so a plain
+node sweeps nothing. The TTL is four sweep intervals, the same small multiple Kubernetes uses for
+its node lease (10s renewal, 40s duration).
+
+`POST /v1/fleet/nodes/{id}/heartbeat` accepts the push direction now. It stamps `last_seen_at` and
+cannot set `enabled` — a node reporting in does not get to overrule an operator, and a cordoned
+node should keep reporting so the operator can see it is healthy before lifting the cordon. **A
+heartbeat from an unknown node is a 404, not an auto-join**: a misconfigured node with the wrong
+name or URL must not silently start receiving traffic, which is why Kubernetes gates registration
+behind CSR approval. The attempt is logged so an operator can see a node trying to join.
+
+**What this does not deliver, and the honest reason.** The item was filed as "liveness by
+heartbeat, not by a probe from the centre", and liveness is still a sweep from the centre.
+`manager-api` has JWKS configuration to *validate* tokens and no client credentials to mint one,
+so a node cannot authenticate to the coordinator at all. That is an operational decision — one
+OAuth2 client for the fleet or one per node — and inventing it here would have been a design
+choice smuggled in as an implementation detail. Filed as PRM-152. Both paths already write through
+the same `mark_seen`, so the day nodes report in, the sweep can be switched off and nothing else
+changes.
+
+**A contract change worth naming**: a ported test asserted that a failed Check marked a node
+inactive immediately. It no longer does — a failed probe writes nothing and the TTL decides, which
+is what makes one missed probe stop being an outage. The test now pins the new behaviour and says
+why, rather than being adjusted to pass.
+
+**Verified**: 12 tests for the two facts and the TTL, including that a sighting cannot lift a
+cordon, that a cordoned node still records sightings, and that a `fleet.db` written by PRM-134
+gains both columns without a wipe — `enabled` defaulting to true, because every existing row was
+registered by an operator who wanted it. 9 more at the API level for the cordon sequence, the
+heartbeat, the unknown-node refusal and the sweep. Live: the coordinator restarted, the migration
+ran on the existing database, the sweep stamped both nodes, and the original bug is gone — Check
+now advances `last_seen_at` and leaves `enabled` alone.
+
+
+## PRM-152 — A node needs a credential to report in
+
+**Why**: PRM-151 built `POST /v1/fleet/nodes/{id}/heartbeat` and no node can call it.
+`manager-api` holds a JWKS URL for *validating* incoming tokens and has no client id or secret to
+obtain one, so the fleet's liveness is still a sweep from the coordinator — which cannot
+distinguish "the node is down" from "I could not reach it", the ambiguity PRM-151 set out to end.
+
+**The decision comes first**, and it is not ours to assume: one OAuth2 client shared by the whole
+fleet (one registration, one secret to rotate, no per-node bookkeeping, and any holder can
+heartbeat as any node) or one per node (a compromised node can only speak for itself, at the cost
+of a registration per node and a place to keep each secret). Kubernetes answers this with a
+bootstrap token that is exchanged for a per-node identity, which is the second shape with the
+first shape's ergonomics.
+
+**Scope once decided**: credentials in `manager.toml` under `[fleet]`, the token-minting the
+gateway's `ManagerApiClient` already implements, a heartbeat task on the node, and turning off the
+coordinator's sweep — or keeping it as a fallback for nodes that have not reported yet.
 
 Append a new row to the table with the next `RM-NN` id and a new `## RM-NN — ...` section
 below, following the same shape (Why / Scope). Re-sort the table if the new item's
