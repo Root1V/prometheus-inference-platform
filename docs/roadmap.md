@@ -5869,6 +5869,89 @@ is recorded. Live: a successful login, a failed login and a real node change all
 trail readable through the API and the table confirmed to contain neither password.
 
 
+
+## PRM-158 — Admission control: refuse the last arrivals so the rest stay answerable
+
+**Why**: the architecture review called this the most serious of the three gaps that decide whether
+the platform competes, because it is the one that appears under real load — which is exactly when a
+product is evaluated. A burst arrived in full, the rate limiter counted requests without knowing how
+full the engine was, and a saturated GPU turned latency into timeouts for **everybody** instead of a
+clean refusal for the last arrivals.
+
+**It bounds; it does not queue.** The engine already has a queue — llama.cpp has slots and a pending
+list, vLLM has `max_num_seqs` — so a gateway queue would move the wait and give it a second place to
+be accounted for. What was missing is a limit on how deep we let the engine's own queue grow, which
+is what Envoy's `max_pending_requests` is.
+
+**The signal already existed.** PRM-156 taught the gateway to read `is_processing` per slot, so it
+knows both a backend's capacity and its real load. Admission control is one comparison on numbers
+that were already there, and it deliberately uses the *same* view of load that selection uses —
+a second view would mean the two disagreeing about which backend is full.
+
+**Where it lives.** `_healthy_members` returns "members that can take a request right now", and a
+saturated backend cannot, so saturation sits beside `unreachable` and `circuit open` rather than
+becoming a sixth check on each of the five forwarding handlers. That is not a conflation: all three
+answer the same question. It also means a saturated replica with an idle sibling is a **routing**
+decision, not a refusal — the request goes to the sibling, which is the whole reason replicas exist.
+The 503 happens only when every replica is full.
+
+**Its own error type.** "Every replica is down" and "every replica is busy" need different actions —
+page somebody, versus back off — so they cannot share a type. `backend-unavailable` already documents
+two causes that only a `Retry-After` distinguishes; a third would leave a client unable to tell a
+broken model from a busy one. `503 capacity-exhausted` carries `Retry-After: 1`, a hint rather than a
+promise: a slot frees when a request finishes and how long that takes is the model's business.
+
+**Off by default, and that is the decision.** `ADMISSION_HEADROOM=0` limits nothing. Turning a limit
+on by default would start refusing traffic on an existing deployment the first time it restarted, on
+a number nobody chose for it. 2.0 is the value to start from, and it is a deployment decision because
+the right headroom depends on request duration — a 200 ms embedding tolerates a deep queue, a
+40-second completion does not.
+
+A backend that reports no capacity is never refused on this basis. sd.cpp reports none, so there is
+nothing to bound against, and inventing a number would refuse real traffic on a guess.
+
+**The default nearly shipped inverted.** `load_ratio >= 0.0` is true for every backend that reports
+capacity, so the first version refused *every* request whenever admission control was off — which is
+the default. The test written to assert "zero disables it" is the only reason that is not in
+production.
+
+**Verified**: 8 tests, including that an idle sibling wins over a saturated one, that a full group
+returns `capacity-exhausted` naming both replicas, and that behaviour is unchanged while disabled.
+
+
+## PRM-159 — The SDK guide stops existing twice
+
+**Why**: found while documenting PRM-158's new error, by a guard that already existed. A test asserts
+every error type the gateway raises appears in the guide's catalog; it failed on
+`capacity-exhausted`, as designed. Fixing it surfaced something worse.
+
+**The guide exists twice** — `docs/sdk-integration-guide.md` under version control, and a copy in the
+shared channel directory the SDK team vendors — and they had drifted **170 lines**:
+
+```
+docs/ (in git)     revision 2026-09-19b   §3.10: no    payload_schema: no
+channel directory  revision 2026-09-26    §3.10: yes   payload_schema: yes
+```
+
+Every guide edit from PRM-142, PRM-144 and PRM-145 had gone **only to the channel copy**. The one
+under version control was a week stale.
+
+**And the drift was invisible in the worst direction: the guard reads the repo's copy.** So the
+guarantee "every error the gateway raises is documented" had been holding true of a file consumers do
+not read. A guard checking the wrong artefact is worse than no guard, because it is reported as a
+pass.
+
+**Scope**: the repo's copy brought up to date, and a second check in
+`scripts/check_spec_references.py` that fails the push when the two differ, printing the exact `cp`.
+It says nothing when the channel directory is absent, since that is somebody else's machine rather
+than a failure. Verified in both directions.
+
+This is `A-17` again — *"the change has leaked into §3.8, where you did not announce it"* — and the
+same root cause the four teams keep meeting: **a fact that exists twice starts disagreeing, and it
+shows up first where nobody is looking.** Told to Axonium in P-27 rather than quietly fixed, with the
+offer to serve the guide from one place instead of copying it by hand.
+
+
 Append a new row to the table with the next `RM-NN` id and a new `## RM-NN — ...` section
 below, following the same shape (Why / Scope). Re-sort the table if the new item's
 priority isn't "last."
