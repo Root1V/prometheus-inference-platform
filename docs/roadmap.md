@@ -5679,7 +5679,7 @@ real one, after which login, Nodes, Instances, Users, the catalog and a live inf
 answer.
 
 
-## PRM-154 — Drop the `nodes` table auth-service no longer uses
+## PRM-154 — Drop the two things their moves left behind
 
 **Why**: PRM-134 moved the node registry to the fleet coordinator and deliberately left
 auth-service's table and rows in place as the rollback path. PRM-153 then gave auth-service a
@@ -5688,6 +5688,10 @@ migration mechanism that can remove a table, which the previous one could not.
 Doing both on the same day would have removed the rollback path while the change it protects was
 still hours old.
 
+**And PRM-155 added a second one**: `fleet.db`'s `is_active` column, superseded by `enabled` +
+`last_seen_at` and kept so a rollback of PRM-151 reads something sane. Same reasoning, same day,
+same decision to wait — and it is now expressible, which it was not before PRM-155.
+
 **Scope**: one revision dropping `nodes`, the `Node` model and `NodeType` out of
 `auth-service/db.py`, and the six `ALTER TABLE nodes` entries out of the frozen additive list —
 that last one is safe only because the table will no longer exist for a pre-Alembic database to be
@@ -5695,6 +5699,61 @@ lifted into, so it has to happen in the same change as the drop, not before it.
 
 It is also the first revision that exercises something the old mechanism could not express, which
 is worth having for its own sake.
+
+
+
+## PRM-155 — manager-core's schema changes come under version control
+
+**Why**: the third of the three migration strategies the architecture review found. `registry.db`
+and `fleet.db` were kept in shape by `CREATE TABLE IF NOT EXISTS` plus `ALTER TABLE` guarded by a
+`PRAGMA table_info` check.
+
+That is schema **inference**, not migration, and it has three consequences. Nothing recorded what
+had been applied — `registry.db` had no version table at all, so no file could say which changes
+it had seen. The guards accumulate for ever, because each is the only evidence its change exists.
+And there was no transaction around "make the change and record it", so **a change interrupted
+half-way left no trace of how far it got** — which on a schema that re-infers on the next startup
+means indistinguishable from never having run.
+
+**Not Alembic, and the review was wrong to assume it.** It recommended "Alembic in auth-service and
+manager-core", and checking showed manager-core talks to SQLite through the stdlib `sqlite3` module
+with **no SQLAlchemy dependency at all** — deliberately, for a component that runs on every node.
+Alembic would add SQLAlchemy and Alembic to it, and without declarative models there is no
+`--autogenerate`, which is most of what Alembic buys. What would arrive is the machinery and not
+the benefit. So the same property is built with the tools the module already has: ~150 lines, no
+new dependency.
+
+**Scope**: `schema.py` with numbered `Migration` records, a `schema_version` table keyed by chain,
+and `apply()` running each pending migration inside a transaction **with its own version bump**, so
+a database is always at a version it actually reached. Two chains — `registry` and `fleet` — each
+in its own database. `validate()` refuses a chain that is not strictly ascending from the baseline,
+because a duplicated or out-of-order version applies different statements to different databases
+depending on how far each had got.
+
+Both chains are **empty today**, which is the honest state: the PRAGMA-guarded backfills are the
+baseline, and the one column that wants dropping — `fleet.db`'s `is_active`, superseded by
+`enabled` + `last_seen_at` — is PRM-151's rollback aid from the same day. Filed with PRM-154.
+
+**One difference from Alembic worth stating.** An unstamped database is stamped at the baseline
+whether it was created a moment ago or has been in use for months. In Alembic the baseline
+*revision holds the DDL*, so a new database runs it and an existing one is stamped to avoid running
+it twice; here the schema script runs unconditionally with `IF NOT EXISTS`, so both paths arrive at
+the baseline shape first and stamping is all that is left. `had_existing_tables` therefore controls
+nothing — it is recorded so an operator sees, once, that a database already in use came under
+version control.
+
+**A real defect the tests caught.** The first version rolled the *version* back on a failed
+migration and left the DDL applied. Python's `sqlite3` opens a transaction implicitly for
+INSERT/UPDATE/DELETE and **not for DDL**, so `ALTER TABLE` ran in autocommit and could not be rolled
+back — exactly the half-applied state this mechanism exists to prevent, reproduced inside the thing
+meant to fix it. An explicit `BEGIN` fixes it and the test that found it stays.
+
+**Verified**: 15 tests, including that a migration can `DROP COLUMN` and move data while changing
+shape — neither expressible before — that an applied migration does not run twice, that a failed one
+leaves the previous version with nothing applied, and that a later run retries it. Then on copies of
+the real databases, and then on the real ones: `registry.db` 31 models and 10 instances,
+`registry-lab.db` 4 and 4, `fleet.db` 2 nodes, all stamped, `adopted: true` logged for all three
+chains, and the dashboard, catalog and a live inference still answering.
 
 
 Append a new row to the table with the next `RM-NN` id and a new `## RM-NN — ...` section
