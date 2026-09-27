@@ -5647,16 +5647,57 @@ now advances `last_seen_at` and leaves `enabled` alone.
 obtain one, so the fleet's liveness is still a sweep from the coordinator — which cannot
 distinguish "the node is down" from "I could not reach it", the ambiguity PRM-151 set out to end.
 
-**The decision comes first**, and it is not ours to assume: one OAuth2 client shared by the whole
-fleet (one registration, one secret to rotate, no per-node bookkeeping, and any holder can
-heartbeat as any node) or one per node (a compromised node can only speak for itself, at the cost
-of a registration per node and a place to keep each secret). Kubernetes answers this with a
-bootstrap token that is exchanged for a per-node identity, which is the second shape with the
-first shape's ergonomics.
+**Decided: one client per node.** The alternative was one shared by the fleet — one secret to
+rotate, no per-node bookkeeping, and any holder able to report for any node. What settled it was
+not the blast radius, which is modest once the scope is narrow: it is that PRM-157 had just landed
+and records `actor_client_id` on every action, so a shared credential makes everything any node
+does indistinguishable in the audit trail from the first day. The heartbeat is also not the last
+thing a node will authenticate for, and a shared credential is harder to walk back later than to
+get right now with two nodes. Kubernetes' NodeRestriction and Consul's per-agent
+`node "web-01" { policy = "write" }` are the same answer. Rejected: a bootstrap token exchanged
+for a per-node identity, which needs the coordinator to create registrations in auth-service —
+the cross-service admin coupling PRM-134 removed from the fleet path.
 
-**Scope once decided**: credentials in `manager.toml` under `[fleet]`, the token-minting the
-gateway's `ManagerApiClient` already implements, a heartbeat task on the node, and turning off the
-coordinator's sweep — or keeping it as a fallback for nodes that have not reported yet.
+**The sharper problem, found while reading**: the heartbeat required `backend-registry:write`. That
+scope registers, cordons and deletes any node and starts and stops instances on every manager, so
+the credential a node needed to say "I am alive" also handed it the fleet. Two new scopes replace
+it — `fleet:heartbeat` for what it may do, `node:<id>` for who it may do it for — and
+`assert_may_heartbeat` refuses a report the token does not name. `node:<id>` is pattern-matched
+rather than enumerated for RM-07's reason: node ids live in the coordinator's registry, and a copy
+here would be a second answer to "which nodes exist".
+
+**And a node cannot derive its own identity** — the coordinator assigns a UUID at registration. It
+is configured with it (`PMGR_FLEET_NODE_ID`), alongside its client id and secret and never in
+`manager.toml`, which this repository tracks: `FleetConfig` exposes the three as properties over
+the environment, so a `client_secret` written into the TOML fails at startup instead of being
+committed. Rejected: a second endpoint keyed on node *name* (two ways to name one node) and
+discovery by matching its own `manager_url` against the registry (a second identity key that can
+disagree).
+
+**The coordinator does not call itself.** It is a node and needs `last_seen_at` like the rest, but
+it owns `fleet.db` — so it stamps its own row in process. No HTTP to itself, no credential issued
+for a service to authenticate to itself.
+
+**The sweep is now behind `[fleet] sweep`, on by default.** Off is the end state rather than an
+option: while a probe also stamps `last_seen_at`, "the node is down" and "I could not reach it"
+stay indistinguishable, which is the ambiguity PRM-151 set out to end. On by default so a fleet
+upgraded to this code does not lose its liveness before its nodes are registered.
+
+**Verified live, end to end.** `local` logged `fleet.heartbeat_started local=true` and kept its own
+row fresh in process; `lab` logged `local=false`, minted one token and reported over HTTP, which the
+coordinator's access log shows as `POST /v1/fleet/nodes/8ed6…/heartbeat 200`. With
+`[fleet] sweep = false` and no `sweep_started` line at all, both rows keep advancing — so the
+liveness now on record is what each node said about itself.
+
+**And the refusal, at both layers.** Asked for a token naming `local`, auth-service answered
+`400 invalid_scope: Scope(s) not permitted for this client`; using the token it legitimately holds
+to report for `local`, the coordinator answered 403 naming the grant it needs and the one it has.
+Either layer alone would be enough; both is what makes a compromised node's reach its own row.
+
+Setting it up is the operator's: registering a client writes a secret. `docs/local-stack.md`
+carries the commands, where the credentials go, and the `--env-file` the launch now needs — a
+manager started without it serves inference and reports nothing, which with the sweep off means
+nothing reports it at all.
 
 
 ## PRM-153 — Alembic in auth-service

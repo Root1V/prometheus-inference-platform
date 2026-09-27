@@ -40,7 +40,11 @@ from prometheus_manager_core.fleet import (
 from prometheus_manager_core.telemetry import get_logger
 from pydantic import BaseModel, Field, field_validator
 
-from .auth import require_backend_registry_read, require_backend_registry_write
+from .auth import (
+    require_backend_registry_read,
+    require_backend_registry_write,
+    require_fleet_heartbeat,
+)
 
 logger = get_logger(__name__)
 
@@ -353,9 +357,9 @@ async def deactivate_node(
 async def heartbeat(
     node_id: str,
     request: Request,
-    _claims: Annotated[Claims, Depends(require_backend_registry_write)],
+    _claims: Annotated[Claims, Depends(require_fleet_heartbeat)],
 ) -> Any:
-    """A node reporting that it is up — PRM-151.
+    """A node reporting that it is up — PRM-151, PRM-152.
 
     The inverse of `/check`, and the direction Kubernetes, Nomad and Consul all
     use: the node renews its own lease and the absence of a renewal is
@@ -366,6 +370,13 @@ async def heartbeat(
     `enabled`: a node reporting in does not get to overrule an operator who
     cordoned it, and a cordoned node should keep reporting so the operator can
     see it is healthy before lifting the cordon.
+
+    **PRM-152: `fleet:heartbeat` plus `node:<this id>`**, not
+    `backend-registry:write` as this first required. That scope registers, cordons
+    and deletes any node and starts and stops instances on every manager, so the
+    credential a node needed to say "I am alive" also handed it the fleet. The
+    node grant is what makes one client per node worth having: `local`'s
+    credential cannot report for `lab`.
 
     **A heartbeat from an unknown node is a 404, deliberately.** Auto-joining the
     fleet on a heartbeat would let a misconfigured node — wrong name, wrong URL —

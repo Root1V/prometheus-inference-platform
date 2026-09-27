@@ -30,9 +30,17 @@ from prometheus_manager_api.app import app
 from prometheus_manager_api.auth import (
     require_backend_registry_read,
     require_backend_registry_write,
+    require_fleet_heartbeat,
 )
 
 _CLAIMS = {"sub": "gateway", "scope": "backend-registry:read backend-registry:write"}
+
+# PRM-152: the heartbeat authorizes differently from the rest — `fleet:heartbeat`
+# plus a grant naming the node in the path. Overridden here like the others,
+# because what these tests pin is what a heartbeat *does* to the registry; the
+# rule about who may send one is `assert_may_heartbeat`'s own, in test_heartbeat.py,
+# where it is tested without a token.
+_NODE_CLAIMS = {"sub": "node-local", "scope": "fleet:heartbeat node:any"}
 
 
 @pytest.fixture
@@ -53,11 +61,13 @@ def client(tmp_path: Path, monkeypatch):
     app.state.fleet = fleet
     app.dependency_overrides[require_backend_registry_read] = lambda: _CLAIMS
     app.dependency_overrides[require_backend_registry_write] = lambda: _CLAIMS
+    app.dependency_overrides[require_fleet_heartbeat] = lambda: _NODE_CLAIMS
     try:
         yield TestClient(app)
     finally:
         app.dependency_overrides.pop(require_backend_registry_read, None)
         app.dependency_overrides.pop(require_backend_registry_write, None)
+        app.dependency_overrides.pop(require_fleet_heartbeat, None)
         if hasattr(app.state, "fleet"):
             del app.state.fleet
         fleet.close()
@@ -68,11 +78,13 @@ def plain_node_client():
     """A manager-api that is NOT the coordinator — no `app.state.fleet` at all."""
     app.dependency_overrides[require_backend_registry_read] = lambda: _CLAIMS
     app.dependency_overrides[require_backend_registry_write] = lambda: _CLAIMS
+    app.dependency_overrides[require_fleet_heartbeat] = lambda: _NODE_CLAIMS
     try:
         yield TestClient(app)
     finally:
         app.dependency_overrides.pop(require_backend_registry_read, None)
         app.dependency_overrides.pop(require_backend_registry_write, None)
+        app.dependency_overrides.pop(require_fleet_heartbeat, None)
 
 
 def _create(

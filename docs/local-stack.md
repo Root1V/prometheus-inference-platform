@@ -31,7 +31,7 @@ Because both services read their `.env` by absolute path, starting them needs no
 `auth-service/start.sh` also works but binds `0.0.0.0`, which publishes the
 identity service to the local network. On a laptop, prefer the line above.
 
-## The four secrets
+## The five secrets
 
 None of them are recoverable once lost — there is no escrow, and reading them
 back out of a running process is blocked. If one goes missing the only path is
@@ -43,6 +43,7 @@ to regenerate, which means restarting the service that holds it.
 | `AUTH_ADMIN_API_KEY` | `auth-service/.env`, **and the same value** as `AUTH_SERVICE_ADMIN_API_KEY` in `gateway/.env` | `openssl rand -hex 32` | the whole dashboard — see below |
 | `SHARE_TOKEN_ENCRYPTION_KEY` | `auth-service/.env` | `openssl rand -hex 32` | stored credential-share secrets become undecryptable (they expire in 1 h, so in practice nothing) |
 | OAuth2 client secrets | `gateway/.env` → `MANAGER_CLIENT_ID` / `MANAGER_CLIENT_SECRET` | registered once via `POST /admin/clients` | manager sync; re-register the client |
+| Per-node fleet secrets | the environment of each `manager-api` → `PMGR_FLEET_CLIENT_SECRET` | one `POST /admin/clients` per node — see **A node reporting in** | that node stops reporting its own liveness; re-register it |
 
 Keep the private key at `chmod 600`. `auth-service/certs/*.pem`,
 `auth-service/.env` and `gateway/.env` are all gitignored — verify with
@@ -95,6 +96,64 @@ by `AUTH_JWT_ISSUER` in `auth-service/.env`. A mismatch is reported as
 `Token signature validation failed`, because the middleware treats any failed
 claim check that way, so the message points at the key and the cause is the
 issuer.
+
+## A node reporting in
+
+Every node reports its own liveness to the fleet coordinator every 10 s
+(PRM-152). **One OAuth2 client per node**, so a node speaks only for itself: the
+coordinator refuses a report whose token does not name the node in the path, and
+PRM-157's audit trail records which node acted. A single shared credential would
+let any node forge liveness for any other.
+
+The coordinator is the exception — it owns `fleet.db`, so it stamps its own row in
+process and needs no credential to talk to itself. It still needs to know **which
+row is its own**.
+
+Node ids come from the coordinator, which assigns a UUID at registration:
+
+```bash
+curl -s http://127.0.0.1:8090/v1/fleet/nodes -H "Authorization: Bearer $TOKEN" \
+  | python3 -c 'import sys,json; [print(n["id"], n["name"]) for n in json.load(sys.stdin)]'
+```
+
+Then one client per node, granted exactly two scopes — `fleet:heartbeat` and
+`node:<that id>`:
+
+```bash
+curl -s -X POST http://127.0.0.1:9000/admin/clients \
+  -H "X-Admin-Key: $AUTH_ADMIN_API_KEY" -H 'Content-Type: application/json' \
+  -d '{"client_name":"node-lab","role":"app",
+       "allowed_scopes":["fleet:heartbeat","node:<NODE_ID>"]}'
+```
+
+The `client_secret` comes back once and is never retrievable again. Put the three
+identity facts in that node's environment — never in `manager.toml`, which this
+repository tracks:
+
+```
+PMGR_FLEET_NODE_ID=<the UUID above>
+PMGR_FLEET_CLIENT_ID=<from the response>
+PMGR_FLEET_CLIENT_SECRET=<from the response>
+```
+
+Durably, not in a shell — that is what PRM-147 was. A gitignored env file loaded
+at launch is enough:
+
+```bash
+uv run --env-file runtime/manager/lab.env --project runtime/manager/api \
+  pmgr-api --config runtime/manager/manager-lab.toml
+```
+
+Missing any of the three disables the heartbeat and logs
+`fleet.heartbeat_disabled` naming what is absent; the node keeps serving
+inference. `fleet.heartbeat_started` on startup and
+`fleet.heartbeat_token_renewed` are the two lines that say it is working, and
+`last_seen_at` on the node's row is the fact itself.
+
+`[fleet] sweep` in the coordinator's `manager.toml` is the probe from before nodes
+could authenticate. Leave it on until every node reports in, then turn it off:
+while a probe also stamps `last_seen_at`, "the node is down" and "I could not
+reach it" stay indistinguishable — which is the whole reason nodes report in.
 
 ## Diagnosing
 

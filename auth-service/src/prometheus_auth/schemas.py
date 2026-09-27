@@ -21,6 +21,13 @@ VALID_SCOPES: frozenset[str] = frozenset(
         "admin:usage",
         "backend-registry:read",  # Manager API — memory/specs/008-llama-server-manager.md — AC-13
         "backend-registry:write",  # RM-10 — Manager API register/deregister/start/stop/restart
+        # PRM-152: a node reporting that it is up, and nothing else. Deliberately
+        # not `backend-registry:write`, which the heartbeat endpoint used to
+        # require: that scope registers, cordons and deletes any node and starts
+        # and stops instances on every manager, so a credential handed to a node
+        # to say "I am alive" also handed it the fleet. Paired with a
+        # `node:<id>` grant, which is what says *which* node it may speak for.
+        "fleet:heartbeat",
         "ui:chat",  # Web Chat UI access — memory/specs/013-web-chat-ui-proxy.md — AC-6
     }
 )
@@ -38,10 +45,28 @@ VALID_SCOPES: frozenset[str] = frozenset(
 # mixed-case variant tag (e.g. "qwen3vl-32B-Q4").
 _MODEL_SCOPE_RE = re.compile(r"^model:[a-zA-Z0-9][a-zA-Z0-9._-]*$")
 
+# ── Per-node scopes (PRM-152) ─────────────────────────────────────────────────
+# `node:<id>` says which node a credential may speak for. Pattern-matched rather
+# than enumerated for exactly the reason `model:<id>` is: the set of node ids is
+# open-ended and lives in the fleet coordinator's own registry, not here — and a
+# copy of it here would be a second answer to "which nodes exist" that can
+# disagree with the first.
+#
+# It is what makes one credential per node worth having: with it, a compromised
+# node can forge liveness for itself and for nothing else, and PRM-157's audit
+# trail names which node acted. That is Consul's agent token (`node "web-01"
+# { policy = "write" }`) and Kubernetes' NodeRestriction, which limits a kubelet
+# to its own Node and Lease objects.
+_NODE_SCOPE_RE = re.compile(r"^node:[a-zA-Z0-9][a-zA-Z0-9._-]*$")
+
 
 def is_valid_scope(scope: str) -> bool:
-    """True if *scope* is a known platform scope or a well-formed `model:<id>` grant."""
-    return scope in VALID_SCOPES or bool(_MODEL_SCOPE_RE.match(scope))
+    """True if *scope* is a known platform scope or a well-formed `model:`/`node:` grant."""
+    return (
+        scope in VALID_SCOPES
+        or bool(_MODEL_SCOPE_RE.match(scope))
+        or bool(_NODE_SCOPE_RE.match(scope))
+    )
 
 
 def invalid_scopes(scopes: list[str] | set[str]) -> set[str]:

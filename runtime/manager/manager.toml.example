@@ -30,6 +30,43 @@ log_dir = "runtime/logs"
 # PID files directory
 pid_dir = "runtime/run"
 
+# PRM-134/PRM-152: the fleet — the list *of* nodes, and this node's place in it.
+# The section was missing from this example, which is the file a new node is built
+# from; a node built without it cannot report its own liveness.
+[fleet]
+# Exactly one manager-api in the fleet sets this. It opens `path` and serves
+# /v1/fleet/nodes; every other node leaves it false and answers those endpoints
+# with a 409 naming the coordinator.
+coordinator = false
+path = "runtime/manager/fleet.db"
+# Where this node reports that it is up (PRM-152). Leave empty on the
+# coordinator: it owns fleet.db and stamps its own row in process.
+coordinator_url = ""
+# Where this node mints its heartbeat token. Named rather than derived from
+# `jwks_url` above, which is the same service today — a value that is right by
+# coincidence is one that stops being right silently.
+auth_token_url = ""
+# Kubernetes' kubelet renews its Lease every 10s against a 40s duration; this is
+# 10s against a 60s TTL, so several missed reports are needed before a node stops
+# being routable.
+heartbeat_interval_s = 10.0
+# PRM-151's probe from the coordinator. On until every node reports in, then off:
+# while a probe also stamps `last_seen_at`, "the node is down" and "I could not
+# reach it" stay indistinguishable.
+sweep = true
+#
+# The node's identity and credential are NOT in this file. One OAuth2 client per
+# node, granted `fleet:heartbeat` and `node:<its id>`, supplied through the
+# environment:
+#
+#   PMGR_FLEET_NODE_ID       the id the coordinator assigned this node at
+#                            registration (a UUID — a node cannot derive it)
+#   PMGR_FLEET_CLIENT_ID     its own OAuth2 client
+#   PMGR_FLEET_CLIENT_SECRET that client's secret — never in a tracked file
+#
+# Missing any of them disables the heartbeat and logs which ones by name; the
+# node still serves inference. See docs/local-stack.md.
+
 [registry]
 # Path to the manager registry.db — a SQLite database, source of truth for
 # models (RM-49; a legacy registry.yaml next to this path is imported once,

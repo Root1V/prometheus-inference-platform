@@ -24,6 +24,7 @@ from .control import router as control_router
 from .discovery import router as discovery_router
 from .fleet_routes import router as fleet_router
 from .fleet_sweep import FleetSweep
+from .heartbeat import NodeHeartbeat
 from .routes import router
 
 # Configure structlog when the API module is first loaded (idempotent — AC-24)
@@ -35,24 +36,60 @@ logger = get_logger(__name__)
 
 @asynccontextmanager
 async def _lifespan(application: FastAPI) -> AsyncIterator[None]:
-    """PRM-151: the coordinator sweeps the fleet's liveness while it runs.
+    """The two fleet background tasks — PRM-151's sweep and PRM-152's heartbeat.
 
-    Started here rather than in cli.py because the task needs the running event
-    loop that uvicorn owns. Only the coordinator has `app.state.fleet`, so only
-    the coordinator sweeps — a plain node starts nothing.
+    Started here rather than in cli.py because both need the running event loop
+    that uvicorn owns.
+
+    **Every node reports itself; only the coordinator sweeps.** The sweep is the
+    fallback from before nodes could authenticate (PRM-152) and is now behind
+    `[fleet] sweep`, on by default. Turning it off is the end state rather than an
+    option: while a probe also stamps `last_seen_at`, "the node is down" and "I
+    could not reach it" remain indistinguishable, which is the whole reason the
+    heartbeat exists.
     """
     fleet = getattr(application.state, "fleet", None)
+    config = getattr(application.state, "config", None)
+    fleet_cfg = getattr(config, "fleet", None)
+
     sweep: FleetSweep | None = None
-    if fleet is not None:
+    if fleet is not None and (fleet_cfg is None or fleet_cfg.sweep):
         sweep = FleetSweep(fleet)
         application.state.fleet_sweep = sweep
         sweep.start()
         logger.info("fleet.sweep_started", interval_s=sweep._interval_s)
+
+    heartbeat: NodeHeartbeat | None = None
+    if fleet_cfg is not None:
+        # `fleet` is passed only when this node is the coordinator, which stamps
+        # its own row in process — no HTTP to itself and no credential to hold.
+        candidate = NodeHeartbeat(fleet_cfg, fleet=fleet)
+        if absent := candidate.missing():
+            logger.warning(
+                "fleet.heartbeat_disabled",
+                missing=absent,
+                detail=(
+                    "this node will not report its own liveness, so the coordinator's "
+                    "sweep is the only thing keeping it routable. See PRM-152."
+                ),
+            )
+        else:
+            heartbeat = candidate
+            application.state.fleet_heartbeat = heartbeat
+            heartbeat.start()
+            logger.info(
+                "fleet.heartbeat_started",
+                node_id=fleet_cfg.node_id,
+                interval_s=fleet_cfg.heartbeat_interval_s,
+                local=heartbeat.local,
+            )
     try:
         yield
     finally:
         if sweep is not None:
             await sweep.stop()
+        if heartbeat is not None:
+            await heartbeat.stop()
 
 
 app = FastAPI(
