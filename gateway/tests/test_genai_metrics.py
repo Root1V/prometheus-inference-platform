@@ -342,10 +342,17 @@ def test_every_buffered_handler_asks_whether_the_backend_accepted_it() -> None:
     billing = _handlers_containing("_record_usage")
     checking = _handlers_containing("_backend_refused")
 
-    # The streamed path is the one exception, and it is not fixed here: its
-    # status arrives after `StreamingResponse` has already fixed a 200, so the
-    # fix is a restructure rather than a guard. Filed as PRM-143 and told to
-    # the SDK team, because a caller there sees a 200 with an empty stream.
+    # The streamed path is exempted because its check is in the enclosing
+    # function, not in the one that bills: `_account_for_it` runs inside the
+    # generator, while `_stream_response` reads the status before the
+    # `StreamingResponse` exists at all. That ordering *is* PRM-143's fix — the
+    # status used to be read never — so the exemption is only valid while
+    # `_stream_response` is still the one doing the asking, which is asserted
+    # below rather than assumed.
+    assert "_stream_response" in checking, (
+        "PRM-143: the streamed path stopped checking whether the backend "
+        "accepted the request, so billing it is unguarded again"
+    )
     unguarded = billing - checking - {"_account_for_it"}
     assert not unguarded, (
         f"handlers that bill a request without checking whether the backend "
@@ -359,4 +366,6 @@ def test_that_guard_is_looking_at_something() -> None:
     checking = _handlers_containing("_backend_refused")
     assert "_account_for_it" in billing, "the AST walk stopped finding the streamed path"
     assert len(billing) == 6, f"expected 6 billing handlers, found {sorted(billing)}"
-    assert len(checking) == 5, f"expected 5 guarded handlers, found {sorted(checking)}"
+    # Six, not five: PRM-143 added `_stream_response`, which is the one that
+    # checks on behalf of a nested function rather than for itself.
+    assert len(checking) == 6, f"expected 6 guarded handlers, found {sorted(checking)}"

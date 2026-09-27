@@ -32,6 +32,7 @@ from .budget import (
     get_client_billing_settings_cached,
     parse_thresholds,
 )
+from .models.backends import TRANSIENT_STATUS_CODES
 from .models.registry import ModelEntry, ModelRegistry, ModelResolution
 from .models.registry import payload_schema_of
 from .models.schemas import (
@@ -3356,7 +3357,7 @@ async def _stream_response(
     # Taken raw rather than read back out of `genai_request_attrs`, where it is
     # already mapped — one mapping, done in `_provider_of`, called once.
     engine: str | None = None,
-) -> StreamingResponse:
+) -> StreamingResponse | JSONResponse:
     """Forward a streaming request using a pooled client.
 
     Implements: memory/specs/001-gateway-core.md — AC-2
@@ -3365,8 +3366,25 @@ async def _stream_response(
     Implements: memory/specs/018-observability-telemetry.md — AC-8 (X-Trace-ID forwarded)
     Flushes each chunk immediately. Closes with 'data: [DONE]' per OpenAI convention.
     Retry is NOT applied (AC-17c: response headers already sent).
+
     RM-60: budget_redis/reservation/alert_thresholds_percent settle the
     caller's spend-cap reservation once the real token counts are known.
+
+    PRM-143: **the upstream status is read before this returns.** It used to be
+    read never. `StreamingResponse` fixes its status at construction, and the
+    connection was opened inside the generator, which does not run until the
+    response is consumed — so a backend that refused the request produced a `200`
+    whose body was the terminal frame and nothing else. No `data:` line to
+    forward, no tokens, no error the caller could see: a refusal delivered as an
+    empty success. It was the sixth instance of PRM-142 and the only one left,
+    because fixing it is this restructure rather than a guard.
+
+    So the request is sent eagerly with `stream=True`, which yields the response
+    headers without reading the body, and only a status this gateway is willing to
+    stream is handed to `StreamingResponse`. Anything else returns like the
+    non-streaming path: the backend's own status and body for a refusal, a 503 for
+    a transport failure, and no usage row either way (PRM-142's rule — a request
+    the backend refused is not a request served).
     """
     request_id = getattr(getattr(request, "state", None), "request_id", "unknown")
     claims = getattr(getattr(request, "state", None), "claims", None)
@@ -3378,12 +3396,90 @@ async def _stream_response(
     # function still behaves as it did when used on its own.
     billed_name = served_name or backend_id
 
+    # PRM-143: open the connection now, before `StreamingResponse` fixes a 200.
+    # `stream=True` returns once the response headers have arrived, so the status
+    # is known while it is still possible to return something else.
+    upstream_request = client.build_request(
+        "POST",
+        url,
+        json=payload,
+        timeout=120.0,
+        # AC-8 (018): forward X-Trace-ID to backend for streaming requests
+        headers={"X-Trace-ID": trace_id},
+    )
+    try:
+        upstream = await client.send(upstream_request, stream=True)
+    except Exception as exc:
+        # A transport failure before a single byte: the caller gets a real error
+        # instead of a 200 carrying `{"error": "stream interrupted"}`, which is
+        # what this produced when the connection was opened inside the generator.
+        logger.error(
+            "llama.stream_unreachable", backend_id=backend_id, request_id=request_id, error=str(exc)
+        )
+        if cb:
+            await cb.record_failure()
+        if idempotency_claim is not None:
+            # RM-82 took the claim off `request.state`, so the middleware will not
+            # settle it — this function owns it from here, on every path out.
+            await idempotency.release(idempotency_claim)
+        return _problem(
+            request,
+            503,
+            "backend-unavailable",
+            "Backend Unavailable",
+            "The inference backend is currently unreachable. Please try again later.",
+        )
+
+    if _backend_refused(upstream):
+        # The backend refused this request. Read its words, close the connection,
+        # and answer like the non-streaming path does — the body stays the
+        # backend's OpenAI-shaped error, which the SDKs already parse (PRM-142).
+        try:
+            await upstream.aread()
+            body: Any = upstream.json()
+        except Exception:
+            body = {"error": {"message": "The backend refused the request."}}
+        finally:
+            await upstream.aclose()
+        logger.warning(
+            "llama.stream_refused",
+            backend_id=backend_id,
+            request_id=request_id,
+            status=upstream.status_code,
+        )
+        # The breaker sees exactly what `BackendPool.forward` would have recorded
+        # for this status — a transient code is a failure, anything else answered.
+        # Deriving it from the pool's own set rather than restating the rule: this
+        # is the same request either way, and a breaker that counted differently
+        # depending on whether `stream` was set would be a second answer to one
+        # question.
+        if cb:
+            if upstream.status_code in TRANSIENT_STATUS_CODES:
+                await cb.record_failure()
+            else:
+                await cb.record_success()
+        # Nothing is metered and nothing is stored for replay: the model produced
+        # nothing, and PRM-142 established that a request the backend refused is
+        # not a request served. The spend-cap reservation is left to expire with
+        # the period, which is what the non-streaming path does with it too.
+        if idempotency_claim is not None:
+            await idempotency.release(idempotency_claim)
+        return JSONResponse(
+            content=body,
+            status_code=upstream.status_code,
+            media_type="application/json",
+            headers=served_by_headers or {},
+        )
+
     # RM-72: claimed here, synchronously, rather than inside the generator —
     # the generator doesn't start until the response is consumed, by which time
     # other requests have already selected. A streamed response occupies its
     # backend for as long as it generates, which is exactly when least-loaded
     # routing matters most, so the claim spans the whole generator and is
     # released by it.
+    #
+    # PRM-143: after the status check, so a refused request never claims a slot it
+    # would have to give straight back.
     pool.acquire(backend_id)
 
     async def event_generator() -> Any:
@@ -3470,14 +3566,12 @@ async def _stream_response(
         # RM-62: same prefill-throughput extraction as the non-streaming path.
         prompt_tps: float | None = None
         try:
-            # AC-8 (018): forward X-Trace-ID to backend for streaming requests
-            async with client.stream(
-                "POST",
-                url,
-                json=payload,
-                timeout=120.0,
-                headers={"X-Trace-ID": trace_id},
-            ) as resp:
+            # PRM-143: the connection was opened and its status checked before
+            # `StreamingResponse` was constructed, so this consumes the response
+            # that is already open rather than making its own. Closed in the
+            # `finally` below, which is what `async with` was doing here.
+            resp = upstream
+            try:
                 async for line in resp.aiter_lines():
                     if line:
                         if line.startswith("data:") and "[DONE]" in line:
@@ -3570,6 +3664,11 @@ async def _stream_response(
                                 # rather than dropping a token the client needs.
                                 pass
                         yield f"{line}\n\n"
+            finally:
+                # PRM-143: the connection is opened by the caller now, so the
+                # close that `async with` performed happens here — on every exit,
+                # including the GeneratorExit raised when a client hangs up.
+                await upstream.aclose()
             # RM-88: reached only if the backend's stream ran to its end. If the
             # caller hangs up mid-answer this generator is closed at a `yield`
             # above and we never get here — which is precisely how the two are

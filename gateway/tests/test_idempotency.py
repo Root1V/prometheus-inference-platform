@@ -496,7 +496,11 @@ async def test_a_stream_that_produced_nothing_is_not_billed(gw, rsa_keys):
 
     resp = await gw.post("/v1/chat/completions", json=_chat(stream=True), headers=headers)
 
-    assert "error" in resp.text
+    # PRM-143: this used to be a 200 whose body carried `{"error": "stream
+    # interrupted"}` — the substring was all this line could assert. An engine
+    # that never answered is now a 503, and the status is the part that matters
+    # to a caller deciding whether to retry.
+    assert resp.status_code == 503
     utc_today = datetime.now(timezone.utc).date()
     assert await db.query_usage_events_range(utc_today, utc_today) == []
 
