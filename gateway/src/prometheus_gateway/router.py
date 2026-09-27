@@ -23,7 +23,9 @@ from opentelemetry import context as otel_context
 from fastapi import APIRouter, Request, Response
 from fastapi.responses import JSONResponse, StreamingResponse
 
-from . import db, idempotency, pricing
+from dataclasses import replace
+
+from . import db, idempotency, pricing, traffic_split
 from .budget import (
     BudgetReservation,
     BudgetTracker,
@@ -146,6 +148,22 @@ def _served_by_headers(entry: "ModelEntry") -> dict[str, str]:
     one of them misbehaves. Same idea as LiteLLM's x-litellm-model-id.
     """
     return {INSTANCE_HEADER: entry.label or entry.id, "X-Prometheus-Instance-Id": entry.id}
+
+
+# PRM-160: which variant a split sent this request to. Same reasoning as the
+# instance header above — without it a client watching a canary cannot tell
+# whether the split is happening at all, or which variant to look at when one of
+# them misbehaves.
+#
+# A header and not the body: RM-77 already settled that the body names the model
+# the caller asked for and never the thing that actually served it. A canary must
+# not change what `model` says in a response, or every client parsing it would see
+# a name it did not send.
+VARIANT_HEADER = "X-Prometheus-Variant"
+
+
+def _variant_headers(served_variant: str | None) -> dict[str, str]:
+    return {VARIANT_HEADER: served_variant} if served_variant else {}
 
 
 def _pin_to_instance(
@@ -529,6 +547,53 @@ def _served_by(
         if member.id == served_id:
             return member
     return fallback
+
+
+def _resolve_requested(
+    registry: "ModelRegistry", requested: str
+) -> tuple["ModelResolution | None", str | None]:
+    """Resolve what the caller asked for, honouring a traffic split — PRM-160.
+
+    Returns the resolution and, when a split was applied, the variant that was
+    chosen — so the response can name it in a header while the body keeps saying
+    what the caller asked for.
+
+    **Every handler goes through here instead of `registry.resolve` directly**, and
+    a guard test asserts that. This is the shape PRM-142 and PRM-131 both cost:
+    five forwarding handlers, one rule, and no structure making it true at all five
+    — so the rule was true at four.
+
+    The split is applied to the *requested name*, and the scope check that follows
+    still runs against that name. A `model:<public-name>` grant therefore covers
+    every variant behind it, which is the point: a caller was authorised for the
+    name, and which checkpoint answers is an operator's decision, not a change in
+    who may call it.
+
+    What the resolution carries afterwards is deliberate. `model_key` stays the
+    requested name — it is what the response reports and what the grant was
+    checked against — while the members, the price and the spend cap all come from
+    the variant. PRM-113 built that separation; this is the case it was built for.
+    """
+    variant_id = traffic_split.get_split_table().choose(requested)
+    if variant_id is None:
+        return registry.resolve(requested), None
+
+    resolution = registry.resolve(variant_id)
+    if resolution is None:
+        # The split names a model that is not registered. Reported as the variant
+        # being unknown rather than the public name, because the public name is
+        # fine and the split is what is wrong.
+        logger.warning(
+            "traffic_split.variant_unknown",
+            requested=requested,
+            variant=variant_id,
+            detail="a split points at a model this gateway does not have",
+        )
+        return None, variant_id
+
+    # The caller asked for the public name, so that is what the response says and
+    # what their grant is checked against — see the docstring.
+    return replace(resolution, name=requested, model_key=requested), variant_id
 
 
 def _no_replica_available(
@@ -1317,7 +1382,7 @@ def create_router(registry: ModelRegistry, pool: "BackendPool") -> APIRouter:
             # RM-57: `body.model` may name a single instance (as before) or a
             # catalog model served by several replicas. Validation below runs
             # against the group; which replica serves it is decided after.
-            resolution = registry.resolve(body.model)
+            resolution, served_variant = _resolve_requested(registry, body.model)
             if resolution is None:
                 inf_span.set_attribute("http.status_code", 400)
                 return _problem(
@@ -1619,7 +1684,10 @@ def create_router(registry: ModelRegistry, pool: "BackendPool") -> APIRouter:
                         trace_id,
                         served_name=resolution.model_key,
                         billing_id=_billing_id(entry),
-                        served_by_headers=_served_by_headers(entry),
+                        served_by_headers={
+                            **_served_by_headers(entry),
+                            **_variant_headers(served_variant),
+                        },
                         budget_redis=budget_redis,
                         reservation=reservation,
                         alert_thresholds_percent=alert_thresholds_percent,
@@ -1693,7 +1761,10 @@ def create_router(registry: ModelRegistry, pool: "BackendPool") -> APIRouter:
                             content=resp_body,
                             status_code=resp.status_code,
                             media_type="application/json",
-                            headers=_served_by_headers(entry),
+                            headers={
+                                **_served_by_headers(entry),
+                                **_variant_headers(served_variant),
+                            },
                         )
 
                     prompt_tokens: int = usage_obj.get("prompt_tokens", 0)
@@ -1870,7 +1941,7 @@ def create_router(registry: ModelRegistry, pool: "BackendPool") -> APIRouter:
                         content=resp_body,
                         status_code=resp.status_code,
                         media_type="application/json",
-                        headers=_served_by_headers(entry),
+                        headers={**_served_by_headers(entry), **_variant_headers(served_variant)},
                     )
 
             except (httpx.ConnectError, httpx.ConnectTimeout, httpx.RemoteProtocolError) as exc:
@@ -1939,7 +2010,7 @@ def create_router(registry: ModelRegistry, pool: "BackendPool") -> APIRouter:
         request_id = getattr(getattr(request, "state", None), "request_id", "unknown")
 
         # RM-57: may name one instance or a catalog model with replicas.
-        resolution = registry.resolve(body.model)
+        resolution, served_variant = _resolve_requested(registry, body.model)
         if resolution is None:
             return _problem(
                 request,
@@ -2173,7 +2244,7 @@ def create_router(registry: ModelRegistry, pool: "BackendPool") -> APIRouter:
                 content=resp_body,
                 status_code=resp.status_code,
                 media_type="application/json",
-                headers=_served_by_headers(entry),
+                headers={**_served_by_headers(entry), **_variant_headers(served_variant)},
             )
         embeddings_usage = resp_body.get("usage", {}) if isinstance(resp_body, dict) else {}
         embeddings_prompt_tokens = embeddings_usage.get("prompt_tokens", 0)
@@ -2235,7 +2306,7 @@ def create_router(registry: ModelRegistry, pool: "BackendPool") -> APIRouter:
             content=resp_body,
             status_code=resp.status_code,
             media_type="application/json",
-            headers=_served_by_headers(entry),
+            headers={**_served_by_headers(entry), **_variant_headers(served_variant)},
         )
 
     # ── POST /v1/rerank ─────────────────────────────────────────────────────
@@ -2257,7 +2328,7 @@ def create_router(registry: ModelRegistry, pool: "BackendPool") -> APIRouter:
         claims = getattr(getattr(request, "state", None), "claims", None)
         request_id = getattr(getattr(request, "state", None), "request_id", "unknown")
 
-        resolution = registry.resolve(body.model)
+        resolution, served_variant = _resolve_requested(registry, body.model)
         if resolution is None:
             return _problem(
                 request,
@@ -2478,7 +2549,7 @@ def create_router(registry: ModelRegistry, pool: "BackendPool") -> APIRouter:
                 content=resp_body,
                 status_code=resp.status_code,
                 media_type="application/json",
-                headers=_served_by_headers(entry),
+                headers={**_served_by_headers(entry), **_variant_headers(served_variant)},
             )
         rerank_usage = resp_body.get("usage", {}) if isinstance(resp_body, dict) else {}
         rerank_prompt_tokens = rerank_usage.get("prompt_tokens", 0)
@@ -2534,7 +2605,7 @@ def create_router(registry: ModelRegistry, pool: "BackendPool") -> APIRouter:
             content=resp_body,
             status_code=resp.status_code,
             media_type="application/json",
-            headers=_served_by_headers(entry),
+            headers={**_served_by_headers(entry), **_variant_headers(served_variant)},
         )
 
     # ── POST /v1/models/{model}/predict ─────────────────────────────────────
@@ -2558,7 +2629,7 @@ def create_router(registry: ModelRegistry, pool: "BackendPool") -> APIRouter:
         claims = getattr(getattr(request, "state", None), "claims", None)
         request_id = getattr(getattr(request, "state", None), "request_id", "unknown")
 
-        resolution = registry.resolve(model)
+        resolution, served_variant = _resolve_requested(registry, model)
         if resolution is None:
             return _problem(
                 request,
@@ -2749,7 +2820,7 @@ def create_router(registry: ModelRegistry, pool: "BackendPool") -> APIRouter:
         request_id = getattr(getattr(request, "state", None), "request_id", "unknown")
 
         # RM-57: may name one instance or a catalog model with replicas.
-        resolution = registry.resolve(body.model)
+        resolution, served_variant = _resolve_requested(registry, body.model)
         if resolution is None:
             return _problem(
                 request,
@@ -2975,7 +3046,7 @@ def create_router(registry: ModelRegistry, pool: "BackendPool") -> APIRouter:
                 content=resp_body_images,
                 status_code=resp.status_code,
                 media_type="application/json",
-                headers=_served_by_headers(entry),
+                headers={**_served_by_headers(entry), **_variant_headers(served_variant)},
             )
         images_latency_ms = int((time.monotonic() - backend_start) * 1000)
         num_images = (
@@ -3036,7 +3107,7 @@ def create_router(registry: ModelRegistry, pool: "BackendPool") -> APIRouter:
             content=resp_body_images,
             status_code=resp.status_code,
             media_type="application/json",
-            headers=_served_by_headers(entry),
+            headers={**_served_by_headers(entry), **_variant_headers(served_variant)},
         )
 
     return router

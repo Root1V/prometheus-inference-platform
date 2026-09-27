@@ -70,7 +70,7 @@ import httpx
 from fastapi import APIRouter, Request, Response
 from fastapi.responses import JSONResponse
 
-from .. import audit, db, pricing, rate_limits
+from .. import audit, db, pricing, rate_limits, traffic_split
 from ..config import Settings
 from ..router import _problem
 from ..telemetry import activity_tracker, get_logger
@@ -280,6 +280,101 @@ def create_admin_router(manager_client: ManagerApiClient) -> APIRouter:
                 "expires_in": body_json.get("expires_in"),
             }
         )
+
+    @router.get("/admin/api/traffic-splits")
+    async def list_splits(request: Request) -> Any:
+        """The live splits — PRM-160. `admin:read`."""
+        if (forbidden := _require_scope(request, "admin:read")) is not None:
+            return forbidden
+        table = traffic_split.get_split_table()
+        return {
+            "splits": [
+                {
+                    "name": name,
+                    "variants": [
+                        {
+                            "model_id": v.model_id,
+                            "weight": v.weight,
+                            # The share this variant actually receives, computed
+                            # rather than stored: weights are integers so an
+                            # operator can write 1:2 without making them add to
+                            # 100, and a stored percentage would be a second
+                            # answer that could disagree with the weights.
+                            "share_percent": round(
+                                v.weight * 100 / sum(x.weight for x in variants), 2
+                            ),
+                        }
+                        for v in variants
+                    ],
+                }
+                for name, variants in sorted(table.all().items())
+            ]
+        }
+
+    @router.put("/admin/api/traffic-splits/{name}")
+    async def put_split(name: str, body: dict[str, Any], request: Request) -> Any:
+        """Define or replace a split — PRM-160. `admin:write`.
+
+        Validated before it is stored, not after: a split that would misroute is
+        refused where it is written, which is the only place an operator is
+        looking. Stored and applied in that order, so a table that rejects the row
+        does not leave the process routing on something the database does not have.
+        """
+        if (forbidden := _require_scope(request, "admin:write")) is not None:
+            return forbidden
+        try:
+            variants = traffic_split.parse_variants(body.get("variants"))
+        except (traffic_split.SplitError, ValueError) as exc:
+            return _problem(
+                request, 400, "invalid-traffic-split", "Invalid Traffic Split", str(exc)
+            )
+
+        # Every variant has to be a model this gateway can actually route to, or
+        # the split is a promise it cannot keep — and it would only be discovered
+        # by whichever caller drew the missing variant.
+        registry = getattr(request.app.state, "registry", None)
+        if registry is not None:
+            unknown = [v.model_id for v in variants if registry.resolve(v.model_id) is None]
+            if unknown:
+                return _problem(
+                    request,
+                    400,
+                    "unknown-model",
+                    "Unknown Model",
+                    f"These variants are not registered: {', '.join(sorted(unknown))}. A "
+                    "split pointing at a model this gateway does not have would fail for "
+                    "whichever share of traffic drew it.",
+                )
+
+        await db.upsert_traffic_split(name, traffic_split.serialise(variants))
+        traffic_split.get_split_table().set(name, variants)
+        logger.info(
+            "traffic_split.updated",
+            name=name,
+            variants=[(v.model_id, v.weight) for v in variants],
+        )
+        return {
+            "name": name,
+            "variants": [{"model_id": v.model_id, "weight": v.weight} for v in variants],
+        }
+
+    @router.delete("/admin/api/traffic-splits/{name}")
+    async def remove_split(name: str, request: Request) -> Any:
+        """Stop splitting a name — PRM-160. `admin:write`.
+
+        Afterwards the name resolves as an ordinary model again, which is what it
+        was before the split and what ending a rollout means.
+        """
+        if (forbidden := _require_scope(request, "admin:write")) is not None:
+            return forbidden
+        existed = await db.delete_traffic_split(name)
+        traffic_split.get_split_table().remove(name)
+        if not existed:
+            return _problem(
+                request, 404, "not-found", "Not Found", f"No traffic split named {name!r}."
+            )
+        logger.info("traffic_split.removed", name=name)
+        return Response(status_code=204)
 
     @router.get("/admin/api/audit")
     async def list_audit(request: Request) -> Any:

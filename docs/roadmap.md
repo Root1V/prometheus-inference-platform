@@ -5952,6 +5952,73 @@ shows up first where nobody is looking.** Told to Axonium in P-27 rather than qu
 offer to serve the guide from one place instead of copying it by hand.
 
 
+
+## PRM-160 — One name, several models, with weights
+
+**Why**: the last of the three gaps the architecture review said decide whether this competes.
+Replacing a checkpoint was a cut — one public name resolved to one model, so pointing it somewhere
+new moved every request at once and a regression was discovered by all of the traffic rather than by
+a tenth of it. With seven engines and models that move weekly (Laya published 0.3.2 through 0.3.7 in
+four days) that is not hypothetical.
+
+What the industry calls this: SageMaker's **production variants** with `InitialVariantWeight`,
+KServe's `canaryTrafficPercent`, Istio's weighted clusters. All the same shape — a route fans out to
+real, separately deployed things, with weights.
+
+**A new checkpoint is a new model, not a version of one**, and that is RM-70's rule rather than a new
+one. There, a rename is a new model because `model:<slug>` grants and usage rows have to keep meaning
+something. A different checkpoint prices differently, performs differently and fails differently, so
+usage blended under one name would be two things averaged into a figure that looks plausible and
+describes neither.
+
+**Which is why billing needed no changes at all.** PRM-113 separated *the name the caller sent*
+(`model_slug`) from *the id that bills* (`model_id`), and until now those were always the same model.
+A traffic split is precisely the case that separation was built for — verified live on a 50/50 split:
+every row carries `model_slug=chat` and a `model_id` of whichever variant served, at that variant's
+rate.
+
+**What the caller sees.** The request is unchanged. `model` in the response is still the name they
+sent, never the variant — RM-77 settled that the body names the model asked for and not the thing
+that served it, and a canary must not change what a response says. `X-Prometheus-Variant` names the
+variant, when a split applied and only then: the same idea as `X-Prometheus-Instance` one level up,
+which says which replica where this says which model.
+
+The scope check still runs against the requested name, so a `model:<public-name>` grant covers every
+variant behind it. That is deliberate: the caller was authorised for the name, and which checkpoint
+answers is an operator's decision rather than a change in who may call it.
+
+**A broken canary looks broken.** When the chosen variant has no usable replica the request fails
+naming that variant; it does not fall back to the stable one. Falling back would mean a canary can
+never fail its rollout — it would take traffic, be unable to serve it, and report perfect health
+while the other variant carried everything. A 10% variant that is down produces 10% failures, which
+is the signal a rollout exists to read (RM-98 again).
+
+**Refused where it is written, not where it is used.** A split with no variants, a weight of zero or
+less, a duplicated model id, or a variant this gateway does not have is rejected by the admin
+endpoint. Each of those would otherwise be discovered by whichever share of traffic happened to draw
+it. Weights are integers so 1:2 is expressible without anyone making three numbers add to 100, and
+the percentage is computed on read rather than stored — a stored share is a second answer that can
+disagree with the weights.
+
+**One resolver, and a guard.** All five forwarding handlers go through `_resolve_requested` instead of
+`registry.resolve`, and an AST guard asserts none of them resolves a name behind the split's back. A
+request that bypassed it would ignore any canary on that name — and five handlers with one rule and
+no structure enforcing it is exactly what PRM-142 and PRM-131 each cost.
+
+Held in memory and backed by a table, loaded at startup and updated on an admin write, because
+`_resolve_requested` is synchronous and on the request path: a split lookup that awaited a query
+would put the database in front of every inference. One unparseable row is dropped with a loud line
+rather than taking the table down, since a gateway that refused to start over one bad split would
+stop serving every model that has none.
+
+**Verified**: 15 tests including the weight distribution over 20,000 draws and the call-site guard.
+Live: a split rejected for naming an unregistered variant, then a 50/50 split that returned exactly
+5 and 5 across ten requests with the variant header on each, usage rows billed per variant, the body
+still saying `chat`, and the name ceasing to resolve when the split was removed. Documented in the
+SDK guide §3.6b and told to Axonium in P-28, including the part that affects them most: the total
+cost of a split name is no longer `requests × one rate`.
+
+
 Append a new row to the table with the next `RM-NN` id and a new `## RM-NN — ...` section
 below, following the same shape (Why / Scope). Re-sort the table if the new item's
 priority isn't "last."
