@@ -77,6 +77,8 @@ class BackendHealthMonitor:
         # shown beside the configured rate limit. Absent for engines that don't
         # report any — sd.cpp has no /slots at all.
         self._slots: dict[str, int] = {}
+        # PRM-156: how many of those slots the backend says are busy.
+        self._busy: dict[str, int] = {}
         self._task: asyncio.Task[None] | None = None
         self._client: httpx.AsyncClient | None = None
 
@@ -174,8 +176,12 @@ class BackendHealthMonitor:
         # rather than url — that's what routing and the circuit breaker use.
         if self._pool is not None:
             for entry in entries:
-                slots = self._slots.get(str(entry.backend_url).rstrip("/"))
+                base = str(entry.backend_url).rstrip("/")
+                slots = self._slots.get(base)
                 self._pool.set_slot_capacity(entry.id, slots or 0)  # type: ignore[attr-defined]
+                # PRM-156: the backend's own view of how loaded it is. None when
+                # the engine does not report, which is different from zero.
+                self._pool.set_reported_busy(entry.id, self._busy.get(base))  # type: ignore[attr-defined]
 
     async def _probe(self, backend_url: str, engine: str = "llama_cpp") -> bool:
         assert self._client is not None
@@ -202,16 +208,29 @@ class BackendHealthMonitor:
         return True
 
     async def _read_slots(self, base: str, slots_path: str = "/slots") -> None:
-        """Record how many concurrent slots this backend has, if it says.
+        """Record how many slots this backend has, and how many are busy — PRM-156.
+
+        The busy count is the half that was being thrown away. The same response
+        that says how many slots exist says, per slot, whether it `is_processing`
+        — so the backend already reports its own load and the gateway was counting
+        its own requests instead.
+
+        That distinction is the whole of PRM-156: a locally-counted numerator is
+        correct for one gateway process and wrong for two, because each sees only
+        the requests it sent. The backend's own count is true for all of them.
 
         Failure is not an error: sd.cpp has no /slots route, and a backend that
-        doesn't report is simply left out of the capacity figure rather than
-        counted as having none.
+        does not report is left out of both figures rather than counted as idle —
+        which would make it look like the emptiest backend in the fleet.
         """
         try:
             resp = await self._client.get(f"{base}{slots_path}")  # type: ignore[union-attr]
             slots = resp.json()
             if isinstance(slots, list) and slots:
                 self._slots[base] = len(slots)
+                self._busy[base] = sum(
+                    1 for slot in slots if isinstance(slot, dict) and slot.get("is_processing")
+                )
         except Exception:
             self._slots.pop(base, None)
+            self._busy.pop(base, None)

@@ -66,6 +66,10 @@ class BackendPool:
         # RM-72: how many requests each backend can genuinely work on at once,
         # pushed in by BackendHealthMonitor. Absent for engines that don't say.
         self._slot_capacity: dict[str, int] = {}
+        # PRM-156: how loaded the backend says it is, from the same /slots read.
+        # Absent — not zero — for an engine that does not report: a backend with
+        # no opinion must not look like the emptiest one in the fleet.
+        self._reported_busy: dict[str, int] = {}
         self._circuit_breakers: dict[str, CircuitBreaker] = {}
         self._redis = redis_client
         self._failure_threshold = failure_threshold
@@ -75,8 +79,17 @@ class BackendPool:
         self._retry_backoff_base_ms = retry_backoff_base_ms
 
     def in_flight(self, backend_id: str) -> int:
-        """Requests this backend is handling right now — RM-72."""
+        """Requests **this process** sent that have not finished — RM-72.
+
+        Deliberately still the local count: it is what `acquire`/`release` track
+        and what the slot claim is for. The load signal routing uses is
+        `load_ratio`, which combines this with the backend's own report (PRM-156).
+        """
         return self._in_flight.get(backend_id, 0)
+
+    def reported_busy(self, backend_id: str) -> int | None:
+        """The backend's own count, or None if the engine does not report — PRM-156."""
+        return self._reported_busy.get(backend_id)
 
     def set_slot_capacity(self, backend_id: str, slots: int) -> None:
         """Record how many concurrent requests *backend_id* can handle — RM-72."""
@@ -84,6 +97,13 @@ class BackendPool:
             self._slot_capacity[backend_id] = slots
         else:
             self._slot_capacity.pop(backend_id, None)
+
+    def set_reported_busy(self, backend_id: str, busy: int | None) -> None:
+        """Record the backend's own count of requests it is working on — PRM-156."""
+        if busy is None:
+            self._reported_busy.pop(backend_id, None)
+        else:
+            self._reported_busy[backend_id] = busy
 
     def load_ratio(self, backend_id: str) -> float:
         """How full this backend is, 0.0 upward — RM-72.
@@ -98,8 +118,36 @@ class BackendPool:
         A backend that reports no capacity (sd.cpp reports none at all) falls
         back to its raw count, which is the old behaviour for exactly the
         backends that can't do better.
+
+        **PRM-156: the numerator is the larger of what this process sent and what
+        the backend says it is doing.** The local count alone was the defect the
+        architecture review named — it is exact for one gateway process and blind
+        for two, because each sees only its own requests, so least-loaded routing
+        silently degraded to per-replica balancing with nothing to indicate it.
+
+        The fix is not a shared counter. Envoy, Linkerd and Finagle all keep
+        least-request counts proxy-local and mitigate the partial view with
+        power-of-two-choices, because a counter on the request path costs a round
+        trip and leaks for ever when a process dies between acquire and release.
+        Here there is something better than either: the engine reports
+        `is_processing` per slot, so its own load is ground truth, shared by
+        construction across any number of gateway replicas, and impossible to
+        leak — it is not ours to leak.
+
+        `max` rather than either alone, because the two fail in opposite
+        directions and never in the same one:
+
+        * the reported count is up to one health-poll interval stale (10s by
+          default), so it misses requests this process has just sent;
+        * the local count misses every request any *other* replica sent.
+
+        Taking the larger never underestimates, and underestimating is what makes
+        a backend look emptiest precisely when it is not. It also damps the
+        herding a shared signal would otherwise cause: a replica's own local count
+        rises the instant it dispatches, so it stops picking the same backend
+        without waiting for the next poll.
         """
-        active = self._in_flight.get(backend_id, 0)
+        active = max(self._in_flight.get(backend_id, 0), self._reported_busy.get(backend_id, 0))
         slots = self._slot_capacity.get(backend_id)
         return active / slots if slots else float(active)
 
