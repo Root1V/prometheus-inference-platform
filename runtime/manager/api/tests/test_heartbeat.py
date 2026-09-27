@@ -19,8 +19,8 @@ from prometheus_manager_api import heartbeat as hb_module
 from prometheus_manager_api.auth import assert_may_heartbeat
 from prometheus_manager_api.heartbeat import NodeHeartbeat
 
-NODE = "cdf36458-ca33-4d4a-917b-91822774d853"
-OTHER = "8ed68951-d6cb-44f8-9335-6ddba3dde1fc"
+NODE = "11111111-1111-4111-8111-111111111111"
+OTHER = "22222222-2222-4222-8222-222222222222"
 
 
 # ── The rule ─────────────────────────────────────────────────────────────────
