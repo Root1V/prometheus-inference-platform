@@ -4222,7 +4222,8 @@ assertion reading `header[-2]` broke when two columns were appended, which is th
 rule exists to prevent, in our own suite.
 
 **The remainder is PRM-161**: how a replay appears in the ledger rather than only in a header.
-Split off because it is blocked on a team this item never needed an answer from.
+Split off because it is a separate question — how a replay is represented in billing — and this
+item's own promise did not depend on it.
 
 
 ## PRM-115 — The usage row reports the name the caller used
@@ -6094,10 +6095,28 @@ Both ship together or neither does.
 
 Also note `_record_usage` returns early on zero tokens, so this needs a deliberate exception.
 
-**Blocked, and on purpose.** Adding rows changes row counts, and **Aeon imputes cost from row
-counts**. Axonium confirmed the change does not affect them and explicitly declined to answer for
-Aeon. Shipping without that answer would alter another team's cost figures silently — the failure
-this codebase keeps meeting, where the number stays plausible and nothing breaks. Nothing a caller
-needs is waiting on it: `X-Idempotent-Replay-Of` already links a replay to the row it replayed.
+**It was filed `blocked` and it was never blocked**, which is worth writing down because of how
+that happened rather than for the day it cost.
 
-**To unblock**: ask Aeon directly. Axonium relayed the question and would not answer it.
+The reasoning was: adding rows changes row counts, Aeon imputes cost from row counts, and Axonium
+declined to answer for them. Aeon answered on **19/09**, in channel entry `A-21`, quoted there in
+their own words:
+
+> «No leemos el export. Ni por índice ni por nombre: cero referencias en el repo. Así que las filas
+> de replay con cero tokens no nos rompen ningún recuento, porque no hay recuento nuestro que
+> romper.»
+
+There is no reader, so there is no format to respect and no count to break. `A-21` is marked
+`respondida`, so that answer was read and replied to at the time — and the roadmap kept saying
+"still waiting on Aeon" for eight days anyway. On 2026-09-27 that sentence was carried into this
+item, unread, and stamped `blocked`.
+
+**Which is this codebase's own recurring defect, committed against itself.** The fact lived in two
+places — the channel and the roadmap — and the stale copy was the one acted on. Nothing checks that
+the two agree, and nothing mechanically can: the lesson is that a roadmap claim about *another
+team's* position is a quotation, and a quotation gets re-read at the source before it decides
+anything.
+
+**What Aeon asked for instead, for the day they do connect**: read by column name, aggregate by
+`model_id`, display `model_slug`. Tracked on their side as `OBS-007`, still `TODO`. The export
+already does exactly that since PRM-115, so there is no migration waiting either.
