@@ -5756,6 +5756,55 @@ the real databases, and then on the real ones: `registry.db` 31 models and 10 in
 chains, and the dashboard, catalog and a live inference still answering.
 
 
+
+## PRM-156 — Least-loaded routing reads the backend's own load
+
+**Why**: the architecture review's fifth finding. `BackendPool._in_flight` is a plain dict, so with
+several gateway replicas each sees only the requests it sent, and least-loaded routing degrades to
+per-replica balancing with nothing to indicate it.
+
+**Not Redis, and the review proposed Redis.** That is the second time in this block its
+recommendation was the wrong tool — the first was Alembic for manager-core — and the pattern is
+worth naming: the review identified the defects accurately and reached for the mechanism already in
+the codebase instead of asking what the problem wanted.
+
+Envoy's `LEAST_REQUEST`, Linkerd and Finagle all keep least-request counts **proxy-local** and
+mitigate the partial view with power-of-two-choices. None of them shares a counter, for two
+reasons: it costs a round trip on the selection path, and it leaks for ever when a process dies
+between acquire and release — an in-process dict at least dies with the process that owns it.
+
+**And there is something better than either here.** `BackendHealthMonitor` already polls `/slots`
+to learn a backend's capacity, and the same response reports, per slot, whether it
+`is_processing`. The busy half was being discarded while the gateway counted its own requests
+instead. The backend's own count is ground truth, shared by construction across any number of
+replicas, and impossible to leak because it is not the gateway's to leak.
+
+**The signal is the larger of the two, because they are stale in opposite directions**:
+
+- the reported count is up to one health-poll interval old (10s by default), so it misses requests
+  this process has just sent;
+- the local count misses every request any *other* replica sent.
+
+`max` never underestimates, and underestimating is what makes a backend look emptiest exactly when
+it is not. It also damps the herding a shared signal would otherwise cause with a strict
+`argmin` selection: a replica's own count rises the instant it dispatches, so it stops choosing
+that backend without waiting for the next poll. Power-of-two-choices remains the textbook answer
+if that turns out not to be enough, and is deliberately not added on speculation.
+
+`None` and `0` stay different: a backend that does not report — sd.cpp has no `/slots` route — is
+absent from the figure rather than recorded as idle, which would make a silent backend look like
+the emptiest in the fleet and send every request to it.
+
+**Scope**: the busy count read in `_read_slots` and pushed in beside capacity, `set_reported_busy`
+and `reported_busy` on the pool, and `load_ratio`'s numerator. RM-72's normalisation by capacity is
+unchanged, so least loaded still means least loaded relative to what a backend can take.
+
+**Verified**: 10 tests, including two pools standing for two replicas agreeing on which backend is
+busier — the ranking they disagreed about before — and that a `release` lowers only the local half,
+which is the leak a Redis counter would have added. Live against llama.cpp on :8084, polled through
+a 400-token completion: `0/4` busy, then `1/4` for the duration, then back to `0/4`.
+
+
 Append a new row to the table with the next `RM-NN` id and a new `## RM-NN — ...` section
 below, following the same shape (Why / Scope). Re-sort the table if the new item's
 priority isn't "last."
