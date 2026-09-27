@@ -51,13 +51,51 @@ def test_an_unstamped_database_is_stamped_at_the_baseline():
     assert _version(conn) == BASELINE_VERSION
 
 
-def test_a_new_database_is_also_stamped_at_the_baseline():
-    """Not Alembic's rule, and the difference is deliberate: there the baseline
-    revision holds the DDL, so a new database runs it. Here the schema script runs
-    unconditionally, so both paths arrive at the baseline before this is called."""
+def test_a_new_database_is_stamped_at_head():
+    """PRM-154's finding, and this test asserted the opposite until it.
+
+    A database with no tables was just created by the schema script, at head
+    shape, so there is nothing for the chain to do to it. While every migration was
+    additive, stamping it at the baseline was harmless — head and the baseline
+    differed only by columns the script creates anyway — and the assertion could
+    not tell the two apart because the chain here was empty. The case below is the
+    one that made it matter.
+    """
     conn = _db()
     _baseline(conn)
-    assert schema.apply(conn, "c", (), had_existing_tables=False) == BASELINE_VERSION
+    drop = Migration(2, "drop dead", ("ALTER TABLE t DROP COLUMN dead",))
+    assert schema.apply(conn, "c", (drop,), had_existing_tables=False) == 2
+    assert _version(conn) == 2
+
+
+def test_a_new_database_does_not_run_a_migration_that_removes_something():
+    """The failure the rule exists to prevent. The schema script describes head, so
+    a brand-new database never had the column — and being stamped at the baseline
+    would have it try to drop one that was never there, which fails and takes the
+    process down on a first install."""
+    conn = _db()
+    # Head shape: what today's schema script creates. No `dead` column.
+    conn.executescript("CREATE TABLE t (id INTEGER PRIMARY KEY, keep TEXT);")
+    conn.commit()
+    drop = Migration(2, "drop dead", ("ALTER TABLE t DROP COLUMN dead",))
+
+    assert schema.apply(conn, "c", (drop,), had_existing_tables=False) == 2
+    assert _columns(conn) == {"id", "keep"}
+
+
+def test_an_adopted_database_still_runs_that_migration():
+    """The other half, and why this is not simply "always stamp head": a database
+    that predates the mechanism is at the baseline and has seen nothing since."""
+    conn = _db()
+    _baseline(conn)  # has `dead`, like every database the old mechanism left
+    drop = Migration(2, "drop dead", ("ALTER TABLE t DROP COLUMN dead",))
+
+    assert schema.apply(conn, "c", (drop,), had_existing_tables=True) == 2
+    assert _columns(conn) == {"id", "keep"}
+
+
+def test_head_is_the_baseline_when_there_are_no_migrations():
+    assert schema.head(()) == BASELINE_VERSION
 
 
 def test_applying_migrations_advances_and_records_the_version():
@@ -226,9 +264,8 @@ def test_an_empty_chain_is_valid():
 
 
 def test_the_registry_and_fleet_chains_are_valid():
-    """They are empty today, and the guard has to pass on empty as well as on
-    whatever they grow into — otherwise the first real migration is also the first
-    time this is exercised."""
+    """The guard has to pass on an empty chain as well as on whatever they grow
+    into — `registry` is still empty, `fleet` carries PRM-154's drop."""
     from prometheus_manager_core import fleet, registry
 
     schema.validate(registry._MIGRATIONS)
@@ -245,16 +282,23 @@ def test_the_two_chains_are_recorded_separately(tmp_path):
     fleet_reg = FleetRegistry(tmp_path / "fleet.db")
     model_reg = Registry(tmp_path / "registry.db")
     try:
-        for path, chain in (
-            (tmp_path / "fleet.db", "fleet"),
-            (tmp_path / "registry.db", "registry"),
+        from prometheus_manager_core import fleet as fleet_mod
+        from prometheus_manager_core import registry as registry_mod
+
+        for path, chain, expected_chain in (
+            (tmp_path / "fleet.db", "fleet", fleet_mod._MIGRATIONS),
+            (tmp_path / "registry.db", "registry", registry_mod._MIGRATIONS),
         ):
             conn = sqlite3.connect(path)
             try:
                 rows = list(conn.execute("SELECT chain, version FROM schema_version"))
             finally:
                 conn.close()
-            assert rows == [(chain, BASELINE_VERSION)]
+            # PRM-154: at that chain's head, not the baseline. A new database is
+            # created at head shape by its schema script, and `fleet` now has a
+            # migration above the baseline while `registry` does not — so the two
+            # numbers differ, which is exactly why they are recorded per chain.
+            assert rows == [(chain, schema.head(expected_chain))]
     finally:
         fleet_reg.close()
         del model_reg

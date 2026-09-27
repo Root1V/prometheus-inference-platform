@@ -123,6 +123,21 @@ def _legacy_database(path: Path) -> None:
         INSERT INTO principals VALUES
             ('c-1','legacy client','$2b$12$hash','app','inference:read',300,
              '2026-01-01 00:00:00',1,NULL);
+        -- PRM-154: every pre-Alembic auth.db has this table, and the adoption
+        -- path now has to drop it. Included so the fixture keeps exercising the
+        -- real path rather than a subset that happens to skip the hard part.
+        CREATE TABLE nodes (
+            id VARCHAR(36) NOT NULL PRIMARY KEY,
+            name VARCHAR(64) NOT NULL UNIQUE,
+            manager_url VARCHAR(512) NOT NULL,
+            node_type VARCHAR(6) NOT NULL,
+            tag TEXT,
+            created_at DATETIME NOT NULL,
+            updated_at DATETIME
+        );
+        INSERT INTO nodes VALUES
+            ('n-1','local','http://127.0.0.1:8090','mac',NULL,
+             '2026-01-01 00:00:00',NULL);
         """
     )
     conn.commit()
@@ -154,19 +169,37 @@ async def test_a_pre_alembic_database_is_adopted_not_rebuilt(tmp_path: Path):
         # The columns the frozen ALTER list exists to add.
         columns = {r[1] for r in conn.execute("PRAGMA table_info(principals)")}
         assert {"label", "updated_at", "auth_method", "email", "password_hash"} <= columns
+        # PRM-154: and the node registry this service no longer owns is gone,
+        # in the same pass that preserved the principal. Additive lifting and a
+        # destructive revision on one path, neither taking the other's rows.
+        assert not conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='nodes'"
+        ).fetchone()
     finally:
         conn.close()
 
 
 async def test_adoption_stamps_the_baseline_before_upgrading(tmp_path: Path):
     """Stamped at the baseline rather than at head: any revision after the
-    baseline still has to run, because a pre-Alembic database has not seen it."""
+    baseline still has to run, because a pre-Alembic database has not seen it.
+
+    PRM-154 made that observable. While the baseline was the only revision, head
+    *was* the baseline and this could only assert that a stamp happened at all —
+    a database wrongly stamped at head would have passed. Now there is a revision
+    after it, and the property is that the revision **ran**: the table it drops is
+    gone from a database that arrived here without ever having seen it.
+    """
     path = tmp_path / "stamped.db"
     _legacy_database(path)
     await _migrate(path)
-    # With the baseline as the only revision, head *is* the baseline. The
-    # assertion is that it was stamped at all rather than left unmanaged.
-    assert _version(path) == _BASELINE_REVISION
+
+    assert _version(path) != _BASELINE_REVISION, (
+        "left at the baseline — the post-baseline revisions did not run"
+    )
+    assert "nodes" not in _tables(path), (
+        "adopted at head instead of at the baseline: PRM-154's drop was skipped, "
+        "so the table a pre-Alembic database still has would have survived"
+    )
 
 
 # ── Case 3: already managed, and idempotent ──────────────────────────────────

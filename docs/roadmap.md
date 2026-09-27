@@ -5763,8 +5763,47 @@ same decision to wait — and it is now expressible, which it was not before PRM
 that last one is safe only because the table will no longer exist for a pre-Alembic database to be
 lifted into, so it has to happen in the same change as the drop, not before it.
 
-It is also the first revision that exercises something the old mechanism could not express, which
-is worth having for its own sake.
+**What went with the model**: the three node request/response schemas and the engine-id validator,
+orphaned when PRM-134 removed the routes that used them, and the three cost defaults, which are a
+node's properties and which the coordinator already carries its own copies of.
+`scripts/migrate_node_registry.py` went too — it read the table it was copying out of, so the drop
+makes it inert rather than merely unused. A node row touched no principal, no token and no scope;
+this service now owns only security.
+
+**The guards were rewritten, not deleted.** `test_nodes.py` asserted that `nodes` must *still be
+here* and named the reasons: the rows were the way back, the copying script deleted nothing, and
+the mechanism of the day could not drop a table anyway. All three are spent, so the same test now
+holds the drop in place — a second writable node registry is worse than either service owning it —
+and a companion asserts the model is gone too, because a table dropped while its model survives is
+rebuilt by `create_all` on the next adoption.
+
+## And a rule in PRM-155 that only a subtractive migration could expose
+
+`schema.apply` stamped every unstamped database at the baseline, and its docstring said so
+deliberately: the schema script runs unconditionally with `IF NOT EXISTS`, so "both paths arrive at
+the baseline shape before this is called" and `had_existing_tables` was recorded for an operator's
+benefit and decided nothing.
+
+That is true exactly while every migration is additive. Head and the baseline then differ only by
+columns the script creates anyway, so running the chain over a brand-new database changes nothing.
+**A migration that removes something breaks it**: a new database stamped at the baseline is told to
+drop a column it was never given, which fails and takes down a first install.
+
+So `had_existing_tables` became load-bearing — tables present means a pre-mechanism database that
+has seen nothing since the baseline, absent means one the schema script just created at head — and
+the obligation that makes it correct is now written down: **a schema script must describe head**.
+It is the same contract Alembic puts on `create_all` + `stamp head`. The test that asserted the old
+rule passed vacuously on an empty chain, which is why the rule survived to be found here; it now
+carries the case that breaks.
+
+**Verified live.** auth-service restarted, logged
+`Running upgrade f7060a106063 -> a1d4e77c0b52`, and its 19 principals and token issuance came
+through untouched with `nodes` gone. The coordinator restarted, logged
+`schema.migrated chain=fleet version=2`, and `fleet.db`'s columns no longer include `is_active`
+while both rows kept their `enabled` and `last_seen_at` — and `to_dict()` still reports
+`is_active=True` for both, derived, which is the whole reason the stored copy had to go. The
+gateway's catalog stayed at 10 models across both drops. The two rows and both databases were
+copied to gitignored files first.
 
 
 

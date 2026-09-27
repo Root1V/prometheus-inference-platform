@@ -622,8 +622,8 @@ async def revoke_share_link(
 # token and no scope: it is topology, a hardware class, cost figures and a list
 # of installed engines. This service owns security and now owns only security.
 #
-# The `Node` model, the `nodes` table and its additive migrations stay in db.py
-# on purpose. The rows are still there, so reverting restores a working registry,
-# and this codebase's additive-only convention does not drop tables. Nothing
-# writes to them any more. `scripts/migrate_node_registry.py` is what copied the
-# rows to the coordinator; it never deletes from here.
+# The `Node` model, the `nodes` table and its additive migrations stayed in db.py
+# as the rollback path, and PRM-154 removed all three once the window closed —
+# the coordinator had owned the registry for a day, PRM-151 and PRM-152 had built
+# on it, and a revert would by then have lost more than it restored. The rows had
+# been copied to the coordinator's `fleet.db` by a script that deleted nothing.

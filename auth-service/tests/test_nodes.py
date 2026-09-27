@@ -50,13 +50,20 @@ async def test_no_route_on_this_service_mentions_nodes(settings):
     assert not offenders, f"auth-service is serving node routes again: {offenders}"
 
 
-async def test_the_table_is_still_here(client):
-    """Deliberate, and it is the rollback path.
+async def test_the_table_is_gone(client):
+    """PRM-154. This test asserted the opposite until the rollback window closed.
 
-    The rows were copied to the coordinator by scripts/migrate_node_registry.py,
-    which deletes nothing. Reverting the code restores a working registry, and this
-    codebase's additive-only convention does not drop tables — so `nodes` stays
-    until a later cleanup removes the model too.
+    It is rewritten rather than deleted, because what it pins has not changed —
+    only the answer. It said `nodes` must still exist: PRM-134 left the table and
+    its rows as the way back, the rows were copied by a script that deleted
+    nothing, and the mechanism of the day could not have dropped it anyway. All
+    three are now spent. The coordinator has owned the registry since
+    2026-09-26, PRM-151 and PRM-152 built on top of it, and a revert to a
+    registry nothing has written to since would lose more than it restored.
+
+    So the guard now holds the drop in place: a table this service does not use
+    must not come back, because a second writable node registry is worse than
+    either service owning it.
 
     Depends on `client` because that fixture is what initialises the engine and
     runs create_tables; the assertion is about the schema, not the endpoint.
@@ -65,7 +72,18 @@ async def test_the_table_is_still_here(client):
 
     async with get_engine().connect() as conn:
         tables = await conn.run_sync(lambda sync: inspect(sync).get_table_names())
-    assert "nodes" in tables, (
-        "the `nodes` table was dropped. It is the rollback path for PRM-134 and this "
-        "codebase does not drop tables."
+    assert "nodes" not in tables, (
+        "the `nodes` table is back. The fleet's node list belongs to the coordinator "
+        "manager-api (PRM-134); this service owns security and only security."
     )
+
+
+async def test_the_model_is_gone_too(client):
+    """A table dropped while the model survives comes back on the next adoption:
+    `create_all` builds it from the models before the baseline is stamped, and
+    the drop revision has already run. The model going is what makes it stay
+    gone."""
+    import prometheus_auth.db as db
+
+    assert not hasattr(db, "Node"), "the Node model is back, so create_all will rebuild the table"
+    assert not hasattr(db, "NodeType")

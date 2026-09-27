@@ -5,9 +5,9 @@ import re
 from datetime import datetime
 from typing import Literal
 
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import BaseModel, Field, model_validator
 
-from .db import NodeType, PrincipalRole
+from .db import PrincipalRole
 
 # ── Platform scopes (fixed enum) ─────────────────────────────────────────────
 # Implements: memory/specs/005-auth-service.md — Q3 (resolved)
@@ -178,88 +178,10 @@ class RevokeShareLinkResponse(BaseModel):
     revoked: bool
 
 
-# ── Node registry (RM-20) ──────────────────────────────────────────────────────
-
-# PRM-133: an engine id, bounded. This is a shape check, not a membership one —
-# auth-service has no list of real engines and should not grow one (see
-# db.py's Node.engines). It exists so the column holds identifiers rather than
-# arbitrary text.
-_ENGINE_ID_RE = re.compile(r"^[a-z][a-z0-9_-]{0,31}$")
-
-
-def _validate_engines(value: list[str] | None) -> list[str] | None:
-    if value is None:
-        return None
-    seen: list[str] = []
-    for item in value:
-        if not _ENGINE_ID_RE.match(item):
-            raise ValueError(
-                f"Invalid engine id {item!r}: lowercase letters, digits, '_' and '-', "
-                "starting with a letter, at most 32 characters."
-            )
-        if item not in seen:
-            seen.append(item)
-    return seen
-
-
-class CreateNodeRequest(BaseModel):
-    name: str = Field(..., min_length=1, max_length=64)
-    manager_url: str = Field(..., min_length=1, max_length=512)
-    node_type: NodeType
-    tag: str | None = Field(None, max_length=255)
-    # RM-62 follow-up: the two $/hour components (amortization + electricity)
-    # and the price-suggestion margin — each entered by the operator, each
-    # falling back to a platform default (db.py's DEFAULT_* constants) when
-    # left blank, so a node is never left without a usable total.
-    hardware_amortization_usd_per_hour: float | None = Field(None, ge=0)
-    electricity_usd_per_hour: float | None = Field(None, ge=0)
-    price_margin_multiplier: float | None = Field(None, gt=0)
-    # PRM-133: the inference engines installed on this node. Omitted means
-    # "not declared", which is not the same as `[]` — see db.py's Node.engines.
-    engines: list[str] | None = Field(None, max_length=32)
-
-    _check_engines = field_validator("engines")(_validate_engines)
-
-    model_config = {"use_enum_values": True}
-
-
-class NodeListItem(BaseModel):
-    id: str
-    name: str
-    manager_url: str
-    node_type: str
-    tag: str | None = None
-    is_active: bool
-    hardware_amortization_usd_per_hour: float
-    electricity_usd_per_hour: float
-    price_margin_multiplier: float
-    # Computed = hardware_amortization_usd_per_hour + electricity_usd_per_hour
-    # — read-only convenience for callers that just want the total.
-    hourly_cost_usd: float
-    # PRM-133: null means the node has never declared its engines; [] means it
-    # declared that it has none. A caller that collapses the two is the bug.
-    engines: list[str] | None = None
-    created_at: datetime
-    updated_at: datetime | None = None
-
-
-class UpdateNodeRequest(BaseModel):
-    """Partial update — only supplied fields are changed. `name` is immutable."""
-
-    manager_url: str | None = Field(None, min_length=1, max_length=512)
-    node_type: NodeType | None = None
-    tag: str | None = Field(None, max_length=255)
-    hardware_amortization_usd_per_hour: float | None = Field(None, ge=0)
-    electricity_usd_per_hour: float | None = Field(None, ge=0)
-    price_margin_multiplier: float | None = Field(None, gt=0)
-    # PRM-133: sending `[]` clears the list to "declared none"; omitting the
-    # field leaves it alone. Both are meaningful, so this one is read through
-    # `model_fields_set` like `tag` above rather than an `is not None` check.
-    engines: list[str] | None = Field(None, max_length=32)
-
-    _check_engines = field_validator("engines")(_validate_engines)
-
-    model_config = {"use_enum_values": True}
+# PRM-154: the three node request/response schemas and the engine-id validator
+# stood here, orphaned when PRM-134 removed the routes that used them and dropped
+# with the `Node` model. The fleet's shapes live in
+# `prometheus_manager_api.fleet_routes` now, next to the registry they describe.
 
 
 # ── OAuth2 token schemas ──────────────────────────────────────────────────────
