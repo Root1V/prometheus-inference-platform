@@ -4185,109 +4185,45 @@ four. Draining detached tasks after each test left a window open — the engine 
 so a straggler still awaiting a session writes into whichever database is current when it wakes,
 which is the *next* test's. It drains before as well now; six consecutive clean runs.
 
-## PRM-100 — a client can read the usage row for its own request (in-progress)
+## PRM-100 — a client can read the usage row for its own request
 
-**Why**: [[RM-88]] added `termination_reason` so that a charge for a half-delivered answer could
-be explained, and the answers document sent to Axonium says in as many words that it gives a
-client disputing a charge something to point at. Both usage endpoints require `admin:read`. The
-only party who can look is the one who does not need to — the promise is half kept, and Axonium
-put that in writing before we noticed it ourselves.
+**Why**: [[RM-88]] added `termination_reason` so a charge for a half-delivered answer could be
+explained, and the answers document sent to Axonium says in as many words that it gives a client
+disputing a charge something to point at. Both usage endpoints required `admin:read`, so the only
+party who could look was the one who did not need to — and granting that scope to a client would
+let it see everyone's rows.
 
-**What actually blocks it, which is not the endpoint**: `usage_events` has no `request_id`
-column. The gateway returns `x-request-id` on every response and never writes it to the billing
-record, so today not even an administrator can go from a request identifier to its row. The link
-the request needs does not exist on our side.
+**What it took**, which was not the endpoint: `usage_events` had no `request_id`, so not even an
+administrator could go from the identifier we return on every response to the billing record.
+Cached prompt tokens were reported and never stored, which would have made reconciliation
+impossible whenever the cache was used rather than merely inaccurate — Axonium found that by asking
+for the tokens broken down instead of aggregated, since an aggregate cannot be reconciled against
+a response.
 
-**Scope**, taking Axonium's design, which is better than the obvious one:
-- `GET /v1/usage/{request_id}` returning that row only — tokens, model, `interrupted`,
-  `termination_reason`, cost, timestamp. Not the request, not its content or parameters.
-- Filtered by the `client_id` in the token; **404 rather than 403** for a request belonging to
-  someone else, so the response does not confirm that it exists.
-- No admin scope, no aggregates. Granting `admin:read` to a client so it can see its own row
-  would let it see everyone's.
-- Needs the `request_id` stored first, with a migration, and threaded through `_record_usage`
-  from the four call sites that record usage.
+**Shipped**: both columns, threaded through all four paths that record usage; `request_id` on the
+idempotency record; `GET /v1/usage/{request_id}` returning one row filtered by the token's client
+id, with **404 rather than 403** for someone else's request so the response does not confirm it
+exists; `X-Idempotent-Replay-Of` on replay responses, so a replay reaches the row it replayed at
+the moment the link is known and with no storage or lookup; the endpoint in the integration guide.
+PRM-115 corrected which model name it returns.
 
-**Explicitly not closing this as "won't do"**: the alternative Axonium offered — documenting that
-`termination_reason` is an operational field rather than something a caller can query — is worse.
-It would put in writing that we bill with a reason the payer cannot see.
-
-**Two corrections from Axonium's next round, both raising the cost and both right.**
-
-*Tokens have to come back broken down, not aggregated.* An aggregate cannot be reconciled against
-the response once caching is involved, and reconciling is the only thing the endpoint is for.
-Which surfaced something they could not have known: the usage row **does not store cached prompt
-tokens at all**. The gateway reports `prompt_tokens_details.cached_tokens` and writes none of it,
-so reconciliation would not fail occasionally — it would be impossible whenever the cache was
-used. Another column in the same migration. (`instance_id` they also asked for is already stored,
-and free.)
-
-*The `404` breaks the case the endpoint exists for*, which they caught in their own design before
-we built it. A replay carries its **own** request id, and by our own rule a replay records no
-usage — so `GET /v1/usage/{replay_id}` would return `404`, and that id is the only one its caller
-holds. A bare `404` then means three different things, one of which is ordinary correct
-behaviour. Verified against the deployment: two ids, one row.
-
-Answer, going one step past their proposal:
-- **`X-Idempotent-Replay-Of` on the replay response**, so the link exists at the moment it is
-  known and needs no storage or lookup. Cheap and can ship ahead of the rest.
-- **A replay writes its own usage row** — zero tokens, zero cost, `replay_of` pointing at the
-  original. Preferred over a side table because it keeps one place to look and turns "no row" into
-  an explicit statement rather than an absence to interpret, which is precisely their objection.
-  Note `_record_usage` currently returns early on zero tokens, so this needs a deliberate
-  exception, and zero-token rows will appear in the CSV export.
-- **No fourth `termination_reason`.** The first draft used `"replay"`, and Axonium asked what
-  `interrupted` would then be — `true`, under the existing derivation, which is false: nothing was
-  interrupted because nothing was generated. Answering showed the value was in the wrong column
-  entirely. `termination_reason` says *how a generation ended*; a replay is a different **billing
-  relationship** to a generation that already ended. So the replay row carries
-  `termination_reason: "complete"` — accurate, because only complete responses are ever stored for
-  replay: an error hands its key back, and a stream that ended in an error frame is released rather
-  than stored. Three values, and the `interrupted` derivation is untouched.
-- **`replay_of` becomes the discriminator, and that has to reach the CSV export.** Axonium spotted
-  the consequence: with no fourth value, replay rows land in the `complete` bucket, so counting
-  generations with `WHERE termination_reason = 'complete'` over-counts — silently, because the
-  number comes out plausible and nothing fails. `replay_of IS NULL` is the test instead.
-  They asked for a line in the guide; the export needs more than that. Its column list is
-  explicit, so adding replay rows without adding `replay_of` to it would produce a file containing
-  rows the reader cannot filter out — worse than the ambiguity it replaced, because a doc can tell
-  you what to filter by only if the field is there. Both ship together or neither does.
-
-They asked whether this changes the cost enough to reconsider. It does raise it, and the answer
-is still yes: an endpoint that returns `404` for the ordinary case is not cheaper, it is unusable.
-
-### PRM-100 — what shipped, and what is still waiting
-
-**Shipped**: `request_id` and `cached_prompt_tokens` on `usage_events`, threaded through all four
-paths that record usage; `request_id` on the idempotency record;
-`GET /v1/usage/{request_id}` reading exactly one row filtered by the token's client id, with
-`404` for anything else; `X-Idempotent-Replay-Of` on replay responses; the endpoint documented in
-the integration guide.
-
-Two details worth keeping: the route had to be declared **after** `/v1/usage/export`, because
-FastAPI matches in declaration order and a parameterised path registered first swallows `export`
-as a request id — caught by that endpoint's own tests. And the cached figure comes from
+Two details worth keeping. The route had to be declared **after** `/v1/usage/export`, because
+FastAPI matches in declaration order and a parameterised path registered first swallows `export` as
+a request id — caught by that endpoint's own tests. And the cached figure comes from
 `prompt_tokens_details.cached_tokens` on the non-streaming path and llama.cpp's `timings.cache_n`
 on the streaming one, which are the same quantity, so a row means the same thing either way.
 
-**Verified live**: an inference, then its own row read back with the cached tokens present; a
-replay whose `X-Idempotent-Replay-Of` resolves to the billed row; and a second client getting
-`404` for the first client's request, indistinguishable from `404` for one that never existed.
-
 **Then A-13, from the same round**: the export's shape was a commitment made in correspondence —
 new columns appended, existing ones never moved — and documented nowhere. Axonium noticed while
-accepting P-09, and the timing mattered: PRM-100 was about to add columns to a file whose format
-was unwritten. The guide now carries the column list and the rule, `request_id` and
-`cached_prompt_tokens` are appended to the export where the row already stored them, and a test
-compares the documented list against the code so the two cannot drift. That test earned itself
-immediately — an assertion reading `header[-2]` broke when two columns were appended, which is
-precisely the failure the rule exists to prevent, in our own suite.
+accepting P-09, and the timing mattered: this item was about to add columns to a file whose format
+was unwritten. The guide now carries the column list and the rule, and a test compares the
+documented list against the code so the two cannot drift. It earned itself immediately — an
+assertion reading `header[-2]` broke when two columns were appended, which is the exact failure the
+rule exists to prevent, in our own suite.
 
-**Still waiting on Aeon**: the replay *rows* — zero tokens, `replay_of` — and with them
-`replay_of` in the CSV export and the counting caveat in the guide. Axonium confirmed the export
-change does not affect them but explicitly declined to answer for Aeon, who do impute cost from
-row counts. Not built until they answer; the header above already covers the case a caller hits
-today.
+**The remainder is PRM-161**: how a replay appears in the ledger rather than only in a header.
+Split off because it is blocked on a team this item never needed an answer from.
+
 
 ## PRM-115 — The usage row reports the name the caller used
 
@@ -6127,3 +6063,41 @@ cost of a split name is no longer `requests × one rate`.
 Append a new row to the table with the next `RM-NN` id and a new `## RM-NN — ...` section
 below, following the same shape (Why / Scope). Re-sort the table if the new item's
 priority isn't "last."
+
+
+## PRM-161 — A replay says so in the ledger, not only in a header
+
+**Why**: split out of PRM-100, which delivered everything a caller needs today. A replay records no
+usage by our own rule, so its row does not exist — and "no row" is an absence the reader has to
+interpret, which was Axonium's objection to the obvious design. A zero-token row carrying
+`replay_of` makes it an explicit statement, in the one place anyone already looks.
+
+**Decided, and worth keeping because the reasoning cost two rounds:**
+
+*No fourth `termination_reason`.* The first draft used `"replay"`, and Axonium asked what
+`interrupted` would then be — `true`, under the existing derivation, which is false: nothing was
+interrupted because nothing was generated. Answering showed the value was in the wrong column
+entirely. `termination_reason` says *how a generation ended*; a replay is a different **billing
+relationship** to a generation that already ended. So a replay row carries
+`termination_reason: "complete"` — accurate, because only complete responses are ever stored for
+replay: an error hands its key back, and a stream ending in an error frame is released rather than
+stored. Three values, and the `interrupted` derivation is untouched.
+
+*`replay_of` is therefore the discriminator, and it has to reach the CSV export.* With no fourth
+value, replay rows land in the `complete` bucket, so counting generations with
+`WHERE termination_reason = 'complete'` over-counts — silently, because the number comes out
+plausible and nothing fails. `replay_of IS NULL` is the test instead. Axonium asked for a line in
+the guide; the export needs more, because its column list is explicit and adding replay rows
+without adding `replay_of` would produce a file whose rows the reader cannot filter out — worse than
+the ambiguity it replaced, since a doc can tell you what to filter by only if the field is there.
+Both ship together or neither does.
+
+Also note `_record_usage` returns early on zero tokens, so this needs a deliberate exception.
+
+**Blocked, and on purpose.** Adding rows changes row counts, and **Aeon imputes cost from row
+counts**. Axonium confirmed the change does not affect them and explicitly declined to answer for
+Aeon. Shipping without that answer would alter another team's cost figures silently — the failure
+this codebase keeps meeting, where the number stays plausible and nothing breaks. Nothing a caller
+needs is waiting on it: `X-Idempotent-Replay-Of` already links a replay to the row it replayed.
+
+**To unblock**: ask Aeon directly. Axonium relayed the question and would not answer it.
