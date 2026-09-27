@@ -3645,6 +3645,24 @@ already correct, since its `environment:` entries are real process environment.
 **Verified live** against Argus's collector: the gateway restarted carrying all of it, and their
 `otelcol_receiver_accepted_spans_total` kept climbing with zero export errors.
 
+
+**Completed 2026-09-27, because the file was never loaded.** The variables were in the right
+place and no launch path put them in a process environment: `docs/local-stack.md` gave the two
+uvicorn commands without it, under a heading saying the services need no `source`. True of their
+own `.env` files, false of telemetry — so anybody following the runbook ran the stack **dark**,
+and all four services were. `instrument_fastapi` is a documented no-op when tracing is inactive,
+so there was no server span either: no `http.route`, no status per endpoint, and PRM-157's audit
+copy reached Argus by no path at all. Only manager-api had ever been seen from their side, which
+is why A-32's evidence came from there and nobody noticed the rest.
+
+The runbook's commands now load `runtime/telemetry.env` (and the managers' own identity files
+alongside it — `--env-file` repeats). Verified end to end: 32-hex `x-trace-id` on all four
+services, and the Argus agent's own counters moved 248 → 276 accepted spans for three requests,
+all forwarded to their store.
+
+**And the obvious check is a false negative**, which cost a wrong conclusion here first:
+`/health` returns a UUID whether tracing is on or off, because RM-95 suppresses probe spans at
+source. The diagnostic has to use a real route.
 ## RM-95 — health probes ask where the engine answers, and stop tracing themselves (done)
 
 Three things, all prompted by Argus reporting our gateway hammering a backend with 404s.
