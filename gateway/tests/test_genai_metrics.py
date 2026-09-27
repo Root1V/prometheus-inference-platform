@@ -96,10 +96,17 @@ def test_the_scope_is_argus_own_and_keeps_its_attributes() -> None:
             ttft_s=None, cost_usd=None, backend_id="b1",
         )
     """)
+    # The installed version, not a literal. What this test is about is the
+    # *attribute* surviving; pinning the package version here made a dependency
+    # bump fail a test that has nothing to say about it — which it did on the bump
+    # to `1.0.0a7`, and the dependency is `==` pinned in pyproject anyway, so a
+    # change is always a deliberate edit that a tripwire here does not catch.
+    import importlib.metadata as _md
+
     assert result["scopes"] == [
         {
             "name": "argus-semconv",
-            "version": "1.0.0a5",
+            "version": _md.version("argus-obs-semconv"),
             "attributes": {"argus.semconv.version": "1.0.0"},
         }
     ]

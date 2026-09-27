@@ -111,6 +111,128 @@ async def test_the_outcome_words_come_from_argus_not_from_us():
     assert audit.outcome_for(500) in argus.ARGUS_OUTCOME_VALUES
 
 
+# ── PRM-162: the vocabulary is theirs, and the event hangs where the facts are ──
+
+
+def _event_attrs(monkeypatch) -> dict:
+    """Capture what `record` puts on the current span, without a real provider."""
+    captured: dict = {}
+
+    class _Span:
+        def add_event(self, name, attributes=None):
+            captured["name"] = name
+            captured.update(attributes or {})
+
+    monkeypatch.setattr(audit.trace, "get_current_span", lambda: _Span())
+    return captured
+
+
+async def test_the_event_goes_on_the_span_that_is_already_current(monkeypatch):
+    """The defect this item found. The previous version called `start_span`, which
+    makes a second span per admin action — the doubling its own comment said it
+    avoided — and hung the event off that, where no HTTP attribute exists. A-32's
+    "you already emit the route template" was true of the request and false of the
+    event."""
+    attrs = _event_attrs(monkeypatch)
+    await audit.record(action="POST /admin/api/test", outcome="ok", status_code=200)
+    assert attrs.get("name") == "audit.admin_action", "the event never reached the current span"
+
+
+async def test_the_actor_attributes_are_the_standards_not_ours(monkeypatch):
+    from argus_semconv import attributes as argus
+
+    attrs = _event_attrs(monkeypatch)
+    await audit.record(
+        action="POST /admin/api/test",
+        outcome="ok",
+        status_code=200,
+        actor_user_id="u-1",
+        actor_email="a@b.c",
+        actor_client_id="c-1",
+    )
+    assert attrs["user.id"] == "u-1"
+    assert attrs["user.email"] == "a@b.c"
+    assert attrs[argus.ARGUS_TENANT] == "c-1"
+    assert attrs[argus.ARGUS_ACTOR_KIND] == "user"
+    assert not [k for k in attrs if k.startswith("prometheus.audit.actor")], (
+        "an actor attribute is still in our own namespace"
+    )
+
+
+async def test_a_machine_credential_is_the_subject_and_says_so(monkeypatch):
+    """One `user.id` whoever acted, and `argus.actor.kind` is what makes it
+    readable — A-32's own argument: `svc-7` does not mean the same thing both ways."""
+    from argus_semconv import attributes as argus
+
+    attrs = _event_attrs(monkeypatch)
+    await audit.record(
+        action="POST /admin/api/test", outcome="ok", status_code=200, actor_client_id="c-1"
+    )
+    assert attrs["user.id"] == "c-1"
+    assert attrs[argus.ARGUS_ACTOR_KIND] == "service"
+
+
+async def test_no_actor_at_all_is_unknown_and_that_is_a_value(monkeypatch):
+    """`unknown` is legitimate rather than filler: in an audit record "not stated"
+    is a fact, and it has to be distinguishable from "nobody set this"."""
+    from argus_semconv import attributes as argus
+
+    attrs = _event_attrs(monkeypatch)
+    await audit.record(action="POST /admin/api/test", outcome="ok", status_code=200)
+    assert attrs[argus.ARGUS_ACTOR_KIND] == "unknown"
+    assert "user.id" not in attrs
+
+
+async def test_the_actor_kind_values_come_from_their_tuple():
+    from argus_semconv import attributes as argus
+
+    assert (
+        audit.KIND_USER,
+        audit.KIND_SERVICE,
+        audit.KIND_UNKNOWN,
+    ) == argus.ARGUS_ACTOR_KIND_VALUES
+
+
+async def test_the_event_leaves_to_the_span_what_the_span_carries(monkeypatch):
+    """Measured on the server span: `http.request.method` + `http.route`,
+    `http.response.status_code` and `client.address` are all there. Repeating them
+    on an event that hangs off that span would be the same fact twice."""
+    attrs = _event_attrs(monkeypatch)
+    await audit.record(
+        action="POST /admin/api/nodes/{node_id}/check",
+        outcome="ok",
+        status_code=200,
+        source_ip="127.0.0.1",
+    )
+    assert "prometheus.audit.action" not in attrs
+    assert "prometheus.audit.status_code" not in attrs
+    assert "prometheus.audit.source_ip" not in attrs
+
+
+async def test_but_the_log_line_states_them_itself(monkeypatch):
+    """A log line reaches no span. Nothing joins it, so what it does not say is not
+    written down anywhere its reader can get to.
+
+    Captured with structlog's own helper rather than `caplog`: these lines are
+    structlog's and never become stdlib records, so `caplog` sees an empty list and
+    the assertion would pass or fail for reasons unrelated to the log line.
+    """
+    from structlog.testing import capture_logs
+
+    _event_attrs(monkeypatch)
+    with capture_logs() as logs:
+        await audit.record(
+            action="POST /admin/api/nodes/{node_id}/check",
+            outcome="ok",
+            status_code=403,
+            source_ip="10.0.0.9",
+        )
+    line = next(e for e in logs if e.get("event") == "audit.admin_action")
+    assert line["action"] == "POST /admin/api/nodes/{node_id}/check"
+    assert line["status_code"] == 403
+    assert line["source_ip"] == "10.0.0.9"
+
+
 # ── An administrative change lands a row, through one door ───────────────────
 
 
@@ -247,7 +369,10 @@ async def test_the_row_survives_a_broken_emission(monkeypatch):
     def _explode(*args, **kwargs):
         raise RuntimeError("collector down")
 
-    monkeypatch.setattr(audit._tracer, "start_span", _explode)
+    # PRM-162: the event goes on the span that is already current, so what is
+    # broken here is getting at that span — not starting a new one, which is what
+    # this patched before and is the second span the module should never have made.
+    monkeypatch.setattr(audit.trace, "get_current_span", _explode)
     await audit.record(action="POST /admin/api/test", outcome="ok", status_code=200)
 
     events = await db.list_audit_events()

@@ -6138,3 +6138,59 @@ anything.
 **What Aeon asked for instead, for the day they do connect**: read by column name, aggregate by
 `model_id`, display `model_slug`. Tracked on their side as `OBS-007`, still `TODO`. The export
 already does exactly that since PRM-115, so there is no migration waiting either.
+
+
+## PRM-162 — The audit vocabulary becomes theirs, and the event hangs where the facts are
+
+**Why**: PRM-157 emitted the actor under `prometheus.audit.*` because `argus_semconv` had no name
+for it, and raised the gap in channel entry P-31 rather than inventing `argus.*` names in someone
+else's namespace. A-32 answered, and the answer was better than the request: **three of the four
+already existed**, and one of them we were already emitting.
+
+| we proposed | it is | why |
+|---|---|---|
+| `argus.actor.id` | `user.id` | OTel's registry |
+| `argus.actor.email` | `user.email` | OTel's registry |
+| `argus.action` | `http.request.method` + `http.route` | **stable**, and already on the span |
+| `argus.actor.kind` | `argus.actor.kind` | nothing standard says it. This one is theirs |
+
+Their reasoning is the one this codebase applies to itself: naming something that already has a
+stable name is RM-07's mistake in reverse. `argus.actor.kind` takes `user | service | unknown` with
+`unknown` **legitimate rather than filler** — in an audit record "not stated" is a fact and has to
+be distinguishable from "nobody set this", which is the three-state problem we have brought them
+twice (RM-98, PRM-133) and which they avoided at the start this time.
+
+**One subject, whichever acted.** `user.id` carries the user when the dashboard authenticated one
+and the machine credential otherwise, and `argus.actor.kind` is what makes that readable — `svc-7`
+does not mean the same thing both ways, which was their own argument for the attribute. Which also
+removed `prometheus.audit.actor.client_id`: `argus.tenant` already carries the client, and for a
+service credential a third copy of the same string is what it would have been.
+
+**And renaming exposed the defect the rename depended on.** The module said the event hangs off the
+server span that already exists, *because a second span would double every admin request in their
+trace view for no information* — and the code called `start_span`, making exactly that second span
+and hanging the event off it. So the event sat on a span with no attributes at all, and A-32's "you
+already emit the route template" was true of the request and false of the event. Deleting our
+action attribute without fixing this would have lost the action entirely. `trace.get_current_span()`
+is the whole fix.
+
+**Two payloads, deliberately different.** The event leaves to its span everything that span
+carries — route template, status code, client address, all measured present with the `http/dup`
+opt-in. The log line states them itself, because nothing joins a log line to a span: an attribute
+the event can inherit is one the log line has to carry.
+
+**`prometheus.audit.target` is what is left.** Neither vocabulary names *what a change was made
+to*. It stays under `prometheus.` and goes back to them in P-32, which is the shape A-32 asked for
+— a second round rather than four invented names across two namespaces.
+
+**Verified live**: a real failed login through the running gateway emitted
+`argus_actor_kind=unknown` (correct — no claims, no client, the email read from the body), with the
+action, status and source ip on the log line and a 32-hex trace id; 19 spans reached the Argus
+agent for it. And in-process with the opt-in on, the `audit.admin_action` event is on the **SERVER**
+span carrying `http.route=/admin/api/auth/login` and `http.request.method=POST`, with no second
+span anywhere.
+
+One incidental fix: `test_the_scope_is_argus_own_and_keeps_its_attributes` pinned the package
+version as a literal and failed on the bump to `1.0.0a7`. It is about the *attribute* surviving, so
+it now reads the installed version — the dependency is `==` pinned, so a change is always a
+deliberate edit that a tripwire in that test does not catch.
