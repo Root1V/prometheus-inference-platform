@@ -20,16 +20,54 @@ That last row has cost time twice. A value in the repo-root `.env` looks
 authoritative and is invisible to a bare-metal process. To find out what a
 service is *actually* using, ask the service, not a file — see **Diagnosing**.
 
-Because both services read their `.env` by absolute path, starting them needs no
-`source` and no particular working directory:
+Because both services read their `.env` by absolute path, their own configuration
+needs no `source` and no particular working directory. **Telemetry is the
+exception, and the commands below load it.** RM-94 established why: an OTel SDK
+reads `os.environ`, and a `.env` parsed by pydantic-settings never reaches it — so
+the telemetry variables live in `runtime/telemetry.env` and have to be in the
+process environment at launch. A process started without it runs **dark**: no
+spans leave it, and `instrument_fastapi` becomes a no-op, so there is no server
+span and no `http.route` either.
 
 ```bash
-.venv/bin/python .venv/bin/uvicorn prometheus_auth.asgi:app    --host 127.0.0.1 --port 9000
-.venv/bin/python .venv/bin/uvicorn prometheus_gateway.asgi:app --host 127.0.0.1 --port 8020
+uv run --env-file runtime/telemetry.env uvicorn prometheus_auth.asgi:app    --host 127.0.0.1 --port 9000
+```
+
+```bash
+uv run --env-file runtime/telemetry.env uvicorn prometheus_gateway.asgi:app --host 127.0.0.1 --port 8020
+```
+
+The managers take a second env file each — their own identity (PRM-152) — and
+`--env-file` may be repeated:
+
+```bash
+uv run --env-file runtime/telemetry.env --env-file runtime/manager/local.env --project runtime/manager/api pmgr-api --config runtime/manager/manager.toml
+```
+
+```bash
+uv run --env-file runtime/telemetry.env --env-file runtime/manager/lab.env --project runtime/manager/api pmgr-api --config runtime/manager/manager-lab.toml
 ```
 
 `auth-service/start.sh` also works but binds `0.0.0.0`, which publishes the
 identity service to the local network. On a laptop, prefer the line above.
+
+**How to tell, in one request** — and **not** with `/health`:
+
+```bash
+curl -si http://127.0.0.1:8020/v1/models -H "Authorization: Bearer $TOKEN" | grep x-trace-id
+```
+
+A **32-character hex** id means spans are leaving the process; a **UUID** means
+they are not. `TraceIDMiddleware` deliberately advertises its own id rather than an
+OTel one nobody could look up, so the format is the signal.
+
+`/health` returns a UUID **either way** and is useless for this: RM-95 suppressed
+probe spans at source (they were 57% of the gateway's telemetry), so there is no
+span on that route to take an id from. Checking there reads as "dark" on a process
+that is exporting perfectly — which happened while writing this section.
+
+The whole stack was running dark on 2026-09-27 because these commands did not load
+the file.
 
 ## The five secrets
 
@@ -186,6 +224,8 @@ curl -s -o /dev/null -w '%{http_code}\n' \
 | Healthy, 10 models, then 0 models a minute later | the node registry is unreachable. Since PRM-146 the catalog is retained and the log says `manager_sync.node_registry_never_reached` |
 | `400 unknown-model` for a model `GET /v1/models` just listed | the same thing, before PRM-146 |
 | Gateway refuses to start naming three variables | `ADMIN_DASHBOARD_ENABLED=true` with `AUTH_SERVICE_ADMIN_URL` or `AUTH_SERVICE_ADMIN_API_KEY` blank. Deliberate: a loud refusal beats a gateway serving zero models |
+| `x-trace-id` is a UUID on a real route (not `/health`) | The process was launched without `runtime/telemetry.env`. Nothing it emits reaches Argus — no spans, no server span, no `http.route`. See the launch commands above |
+| `x-trace-id` is a UUID on `/health` | Nothing. RM-95 suppresses probe spans, so that route has no id to advertise whether tracing is on or off |
 
 ## Verifying a restart
 
