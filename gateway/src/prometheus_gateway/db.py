@@ -873,6 +873,68 @@ async def list_audit_events(
         return list(result.scalars().all())
 
 
+# ── Traffic splits — PRM-160 ──────────────────────────────────────────────────
+#
+# One public name, several real models behind it, with weights. What SageMaker
+# calls production variants and KServe calls a canary percentage.
+#
+# **A new checkpoint is a new model, not a new version of one**, and that is
+# RM-70's rule rather than a new one: a rename is a new model there because
+# `model:<slug>` grants and usage rows have to keep meaning something. A different
+# checkpoint prices differently, performs differently and fails differently, so
+# usage blended under one name would be two things averaged into a number that
+# looks plausible and describes neither.
+#
+# Which is why this needs no new plumbing to bill correctly. PRM-113 already split
+# "the name the caller sent" (`model_slug`) from "the id that bills"
+# (`model_id`), and until now those were always the same model. A traffic split is
+# precisely the case that separation was built for.
+
+
+class TrafficSplit(Base):
+    """A public name and the weighted models behind it — PRM-160."""
+
+    __tablename__ = "traffic_splits"
+
+    # The name a client sends. Not a foreign key to anything: the point is that it
+    # need not be a model itself.
+    name: Mapped[str] = mapped_column(String(128), primary_key=True)
+    # JSON: [{"model_id": "...", "weight": 90}, {"model_id": "...", "weight": 10}]
+    # Integer weights rather than percentages, so 1:2:3 is expressible without
+    # anyone having to make three numbers add to 100.
+    variants: Mapped[str] = mapped_column(Text, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc)
+    )
+
+
+async def list_traffic_splits() -> list[TrafficSplit]:
+    async with get_session_factory()() as session:
+        result = await session.execute(select(TrafficSplit).order_by(TrafficSplit.name))
+        return list(result.scalars().all())
+
+
+async def upsert_traffic_split(name: str, variants: str) -> None:
+    async with get_session_factory()() as session:
+        row = await session.get(TrafficSplit, name)
+        if row is None:
+            session.add(TrafficSplit(name=name, variants=variants))
+        else:
+            row.variants = variants
+            row.updated_at = datetime.now(timezone.utc)
+        await session.commit()
+
+
+async def delete_traffic_split(name: str) -> bool:
+    async with get_session_factory()() as session:
+        row = await session.get(TrafficSplit, name)
+        if row is None:
+            return False
+        await session.delete(row)
+        await session.commit()
+        return True
+
+
 async def get_client_billing_settings(client_id: str) -> ClientBillingSettings | None:
     session_factory = get_session_factory()
     async with session_factory() as session:

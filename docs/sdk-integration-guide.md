@@ -596,6 +596,42 @@ Content-Type: application/json
    never silently dropped in a way that changed an answer — the request schema is an allowlist,
    so unknown fields simply do not reach the backend.
 
+### 3.6b Traffic splits — one name, several models
+
+A model name you send may be a **traffic split** rather than a model: several real
+models behind one public name, with weights. SageMaker calls these production variants,
+KServe calls it a canary percentage. An operator defines them; nothing in the request
+selects one.
+
+**Three things follow, and an SDK only needs to know the third.**
+
+- **The request does not change.** You send the public name in `model`, exactly as before.
+- **`model` in the response is still the name you sent**, never the variant. A canary must
+  not change what a response says, or every client parsing `model` would see a name it
+  did not ask for.
+- **`X-Prometheus-Variant` names the model that actually served it**, when a split was
+  applied and only then. Same idea as `X-Prometheus-Instance` (§3.7), one level up: that
+  header says which replica, this one says which model.
+
+```
+POST /v1/chat/completions   {"model": "chat", ...}
+  200  X-Prometheus-Variant: qwen3-8b-q6
+       body: {"model": "chat", ...}
+```
+
+**Usage attribution is per variant, and this matters if you reconcile.**
+`GET /v1/usage/{request_id}` (§3.8) reports `model` as the name you sent — `chat` — so
+reconciling against the response still matches. The row is *billed* against the variant
+that served, at that variant's rate, because two checkpoints priced the same is a
+coincidence rather than a rule. So a split name's total cost is not
+`requests × one rate`, and computing it that way will drift the moment the variants are
+priced differently.
+
+**A variant with no healthy replica fails, and does not fall back.** If the split sends
+10% of traffic to a variant that is down, you see 10% failures — deliberately. Falling
+back to the stable variant would mean a canary could never fail its rollout: it would
+report perfect health while the other variant carried everything.
+
 ### 3.7 Headers
 
 **Required**: `Authorization: Bearer <token>` on every endpoint except `GET /v1/models`.

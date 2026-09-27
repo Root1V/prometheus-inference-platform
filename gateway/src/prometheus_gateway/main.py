@@ -10,7 +10,7 @@ from fastapi import FastAPI, Request, Response
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 
-from . import audit, idempotency, rate_limits
+from . import audit, idempotency, rate_limits, traffic_split
 from .auth.middleware import JWTAuthMiddleware
 from .config import Settings
 from .models.backends import BackendPool
@@ -161,6 +161,22 @@ def create_app(
         # price change made in the UI survive a restart, on top of applying
         # immediately at write time via PricingTable.set_price().
         price_table = get_pricing_table()
+        # PRM-160: the traffic splits, read once into memory. `_resolve_requested`
+        # is on the request path and synchronous, so a split lookup that awaited a
+        # query would put the database in front of every inference. Same shape as
+        # the prices below: loaded here, updated when an admin writes.
+        try:
+            from .db import list_traffic_splits
+
+            split_rows = {row.name: row.variants for row in await list_traffic_splits()}
+            traffic_split.get_split_table().load(split_rows)
+            if split_rows:
+                logger.info("traffic_split.loaded", names=sorted(split_rows))
+        except Exception as exc:  # noqa: BLE001
+            # A split table that cannot be read must not stop the gateway serving
+            # un-split models, which is every model until somebody defines one.
+            logger.error("traffic_split.load_failed", error=str(exc))
+
         for row in await list_model_price_configs():
             price_table.set_price(
                 row.model_id,
