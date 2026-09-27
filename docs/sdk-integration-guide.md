@@ -1,6 +1,6 @@
 # Prometheus Gateway — SDK Integration Guide
 
-**Revision**: 2026-09-19b · `18dfa97`
+**Revision**: 2026-09-26 · `PRM-142/144/145`
 <!-- Consumers vendor this file and diff it. The date and commit above are what to quote
      when asking whether a copy is current; they change whenever this document does. -->
 
@@ -265,19 +265,58 @@ No authentication required. Returns every currently-deployed model:
       "context_length": 4096,
       "family": "qwen3",
       "quantization": "IQ4_NL",
-      "modality": "text"
+      "modality": "text",
+      "served_by": 1,
+      "payload_schema": "prometheus.chat.v1"
     }
   ]
 }
 ```
 
-`modality` is one of `text`, `vision`, `embedding`, `image` — matters for which endpoint a
-given model can be called on (see the modality-mismatch error in §5.2).
+`modality` decides which endpoint a model can be called on (see the modality-mismatch error in
+§5.2). There are eight, and the last three all route to §3.10:
+
+| `modality` | Endpoint |
+|---|---|
+| `text` | `POST /v1/chat/completions` (§3.3) |
+| `vision` | `POST /v1/chat/completions` with image content parts (§3.3) |
+| `embedding` | `POST /v1/embeddings` (§3.4) |
+| `image` | `POST /v1/images/generations` (§3.5) |
+| `rerank` | `POST /v1/rerank` (§3.6) |
+| `classification` | `POST /v1/models/{model}/predict` (§3.10) |
+| `zero_shot` | `POST /v1/models/{model}/predict` (§3.10) |
+| `typed_decision` | `POST /v1/models/{model}/predict` (§3.10) |
+
+`served_by` is how many replicas serve this model. `1` is the ordinary case; more means requests
+load-balance across them, and an individual replica can still be addressed deliberately with
+`X-Prometheus-Instance` (§3.7).
+
+**`payload_schema` is a versioned identifier for the request body's contract** — dispatch on
+this, not on `modality`. For the five endpoints above whose body this gateway defines, it names
+our contract (`prometheus.chat.v1`, `prometheus.embeddings.v1`, `prometheus.images.v1`,
+`prometheus.rerank.v1`) and does **not** change when a model moves between engines, because
+nothing a caller sends changes. For the pass-through route the body is the engine's, so it names
+the engine's contract (`hf-inference.text-classification.v1`,
+`hf-inference.zero-shot-classification.v1`, `typed-decision.v1`) and a different engine serving
+the same modality can mean a different shape — which is precisely the half `modality` cannot
+answer.
+
+The names are not `openai.chat.v1` on purpose: this gateway accepts an allowlisted subset of the
+OpenAI request fields (§3.3), so that name would promise a compatibility it does not have.
+
+**`null` means "we cannot state a shape", not "there is no field".** Two cases produce it: a
+modality newer than this field's map, and a model whose replicas run on engines with different
+body shapes — a misconfiguration the catalog reports as unknown rather than resolving by picking
+one replica's answer. Treat `null` as "do not guess".
+
+The engine serving a model is deliberately **not** published, here or anywhere else. It would key
+your dispatch table to the name of our implementation, so an internal swap that preserves the
+contract would break you for no reason a caller could see.
 
 ### 3.2 `GET /v1/models/mine` — what *this token* can actually call
 
-Requires a valid Bearer token (`401` if missing). Same item shape as above, but filtered to
-only the models this token has `model:<id>` scope for. A token with `admin:write` sees the
+Requires a valid Bearer token (`401` if missing). Same item shape as above — including
+`payload_schema` — but filtered to only the models this token has `model:<id>` scope for. A token with `admin:write` sees the
 full catalog regardless of individual model grants (an internal-tooling carve-out, not
 something to expect for a normal client SDK integration). A token with `inference:read` but no
 `model:*` grants gets an empty `data` array, not an error.
@@ -647,11 +686,34 @@ Every inference response carries `x-request-id`. That id is what this takes:
   "image_count": 0,
   "interrupted": false,
   "termination_reason": "complete",
-  "cost_usd": null,
+  "cost_usd": 0.000021,
+  "rates": {
+    "prompt_price_per_1m": 1.5,
+    "completion_price_per_1m": 2.0,
+    "image_price_each": null
+  },
   "instance_id": "qwen3-0-6b-iq4-nl-local-1",
   "created_at": "2026-09-14T19:33:54.580624"
 }
 ```
+
+**`rates` is the arithmetic that produced `cost_usd`, so this row can be checked and not only
+copied.** It answers A-25: the export (§3.9) had carried the applied rates since PRM-115 and needs
+`admin:read`, while this row — the one path a consumer without admin scope can walk — carried the
+cost alone.
+
+- **`cost_usd == prompt_tokens × prompt_price_per_1m / 1e6 + completion_tokens ×
+  completion_price_per_1m / 1e6`**, and for images `image_count × image_price_each`. Verify it;
+  do not re-derive it from a price list.
+- **The rates are frozen at the moment the row was billed** and never recomputed on read (RM-60).
+  A price change does not re-rate history — and now that guarantee is *verifiable*, because a
+  consumer checking an old row against today's prices would otherwise find a mismatch it could not
+  explain.
+- **`null` means no price was configured for that model, not zero.** `cost_usd` is `null` for the
+  same reason. The platform never reports an unpriced request as free.
+- `request_kind` is `chat`, `embedding`, `image` or `predict` (§3.10). **Four values, and
+  `predict` is newer than the others** — if your usage type enumerates this field as a closed set,
+  that is the value that breaks it.
 
 The `usage` object mirrors the inference response field for field, including
 `prompt_tokens_details.cached_tokens` — a **subset** of `prompt_tokens`, not a separate bucket.
@@ -718,6 +780,95 @@ the model went by).
 `cached_prompt_tokens` is a **subset** of `prompt_tokens`, matching
 `prompt_tokens_details.cached_tokens` in the inference response — adding the two would double
 count.
+
+### 3.10 `POST /v1/models/{model}/predict` — the tasks OpenAI has no shape for
+
+**Added after revision `2026-09-19b`, which is why A-26 found three modalities in the catalog
+with no endpoint to call them with.** Three modalities route here and only here:
+
+| `modality` | Example model | What it does |
+|---|---|---|
+| `classification` | `sst2-clf` | Assigns a label from a fixed set the model was trained on |
+| `zero_shot` | `von-decide` | Scores arbitrary candidate labels supplied per request (NLI) |
+| `typed_decision` | `laya-decide` | Answers several typed questions in one forward pass, each with a probability distribution *and* a separate confidence |
+
+**The body is forwarded to the engine verbatim, and its answer comes back verbatim.** Every
+other route here is OpenAI-shaped because every task it serves has an OpenAI endpoint to be
+shaped like. These do not, and inventing a body for them would be this gateway deciding, on the
+engine's behalf, what its API should look like.
+
+**So the request and response shape is the engine's, and it is not stable across engines within
+one modality.** This is the cost of pass-through, and it is paid by the caller. Model it as a
+`predict(model, body)` that interprets nothing — a `classify(text)` typed per modality would
+promise a stability this endpoint does not offer. `payload_schema` in `GET /v1/models` (§3.1) is
+what identifies the shape.
+
+Real requests and responses from a live deployment:
+
+```
+POST /v1/models/sst2-clf/predict
+{"inputs": "El servicio ha sido excelente"}
+
+200  [{"label": "POSITIVE", "score": 0.9783}]
+```
+
+```
+POST /v1/models/von-decide/predict
+{"inputs": "Me cobraron dos veces la misma factura",
+ "parameters": {"candidate_labels": ["hubo un cargo duplicado", "el cliente está satisfecho"]}}
+
+200  {"sequence": "...", "labels": [...], "scores": [0.9963, 0.0037]}
+```
+
+```
+POST /v1/models/laya-decide/predict
+{"state": {"email": "Me cobraron dos veces y necesito el reembolso hoy o cancelamos el plan"},
+ "questions": {
+   "category":   {"type": "choice", "instructions": "¿Qué equipo debe atenderlo?",
+                  "criteria": ["facturación", "soporte", "ventas"]},
+   "churn_risk": {"type": "noul",   "instructions": "¿El cliente amenaza con cancelar?"}}}
+
+200  {"answers": {"category":   {"choice": "facturación", "confidence": 1.0,
+                                 "probabilities": {...}},
+                  "churn_risk": {"noul": 0.6354, "confidence": 0.6354}},
+      "usage": {"input_tokens": 92, "output_tokens": 0},
+      "routing": {...}}
+```
+
+**What does not pass through** — the model still resolves, `inference:read` plus the specific
+`model:<id>` scope is still required, a dead replica is still skipped, and the request is still
+metered and still counts against a spend cap. The shape is the backend's; the policy is ours.
+
+- **A model that *has* an OpenAI endpoint is refused here** with `400 modality-mismatch` — the
+  inverse of every other handler's check. Without it the same model would be reachable two ways,
+  with two billing paths and two rate-limit budgets, and the one that bills correctly would be
+  whichever the caller did not use.
+- **The engine's errors are wrapped, not forwarded** — see `predict-backend-rejected` in §5.2.
+- **`request_kind` on the usage row is `"predict"`** (§3.8), a fourth value beside `chat`,
+  `embedding` and `image`. If your usage types enumerate that field as a closed set, this is the
+  value that breaks them.
+- **The rate-limit budget is `predict`** (§6.3), shared by all three modalities.
+
+**One caveat about `typed_decision` that is not in the model's own documentation**, measured here
+by asking the same question three ways against the same text:
+
+```
+texto: "...me cobraron dos veces..."        laya-decide   von-decide
+  "¿le cobraron dos veces?"                   0.988         0.999
+  "¿hubo un cargo duplicado?"                 0.945         0.999
+  "¿se produjo una facturación errónea?"      0.700         0.998
+
+texto: "...o cancelamos el plan"            laya-decide   von-decide
+  "¿amenaza con cancelar?"                    0.830         0.927
+  "¿amenaza con irse?"                        0.024         0.613
+```
+
+`von-decide` is an NLI model — judging whether one sentence entails another *written differently*
+is the task it was trained on, so a paraphrase costs it a thousandth. `laya-decide` matches
+vocabulary more than meaning, and on the harder pair it does not hedge: it inverts. Word a
+`typed_decision` question with the vocabulary that appears in the text, or use `zero_shot`.
+
+---
 
 ---
 
@@ -830,6 +981,7 @@ model" as something only the SDK can catch.
 | 409 | `idempotency-key-reuse` | The key was already used for a *different* request — the fingerprint spans path and payload. Retrying never helps; generate a new key, or resend the original request unchanged. | No |
 | 409 | `idempotency-in-progress` | The first call with this key is still running. The one idempotency refusal that resolves by waiting, and the only one carrying `Retry-After`. | **Yes**, after `Retry-After` |
 | 409 | `idempotency-response-not-retained` | The original succeeded, but its response was too large to store (over 1 MiB — in practice only images), so there is nothing to replay. Retrying **generates and bills again**; that is why this is refused rather than silently regenerated. | No — a deliberate decision, not a retry |
+| 4xx | `predict-backend-rejected` | Only on `POST /v1/models/{model}/predict` (§3.10) — the engine refused the request. **The engine's own error body is preserved verbatim under the `backend_error` extension member**, and the engine's status code is kept (a 422 stays a 422). Named for what the gateway can see: a 429 or 403 from the engine is also a 4xx and is not about the payload, so the type does not claim a cause — `backend_error` and the status carry that. | No, unless the status says so |
 | 422 | `validation-error` | Request body failed schema validation (missing/wrong-typed field). `errors` extension member carries Pydantic's per-field detail. | No (fix the request) |
 | 401 | `missing-credentials` | No/malformed `Authorization` header, or token passed as a query param. | No (fix the request) |
 | 401 | `invalid-token` | Signature/algorithm/issuer/audience/`sub`-claim validation failed. | No |
@@ -838,7 +990,8 @@ model" as something only the SDK can catch.
 | 402 | `spend-cap-exceeded` | Client has hit its configured monthly spend cap. | No — needs the cap raised, or wait for next month |
 | 403 | `forbidden` | Missing `inference:read`/`inference:stream`, or missing the specific `model:<id>` scope. | No |
 | 429 | `rate-limit-exceeded-requests` | RPM budget exceeded. `Retry-After` header + `retry_after` body field tell you exactly how long to wait, and the `scope` body field says **which** budget ran out. Charged per `client_id` and per `user_id` independently — except where they are the same string, as in a `client_credentials` token, which is charged once (PRM-128; before that fix a 60 RPM budget stopped at 30 while the header still read 60). | **Yes**, after `Retry-After` |
-| 502 | `upstream-error` | Backend returned repeated 502/503/504s and the gateway's own internal retries (3 attempts, exponential backoff) were exhausted. | Cautiously — see §6 |
+| 502 | `upstream-error` | Backend returned repeated 502/503/504s and the gateway's own internal retries (3 attempts, exponential backoff) were exhausted. On `/v1/models/{model}/predict` (§3.10) it also covers any 5xx the engine returns — there the engine's body is under `backend_error` and its real status under `backend_status`, because a 500 the engine produced is not one the caller can act on. | Cautiously — see §6 |
+| 503 | `capacity-exhausted` | **Every replica of the model is at capacity** — the request was refused rather than queued behind work that would outlive its own timeout. Distinct from `backend-unavailable` on purpose: that one means the replicas are broken or unreachable and somebody should look at them, this one means they are busy and working. Carries `Retry-After: 1`, which is a hint rather than a promise — a slot frees when a request finishes, and how long that takes is the model's business. | **Yes**, shortly. Back off and retry; repeated occurrences mean the model needs another replica |
 | 503 | `model-not-loaded` | Model is registered but not currently deployed/running. | No — needs operator action |
 | 503 | `backend-unavailable` | Two distinct causes share this same `type`, and only one of them sets `Retry-After` — see the note below the table. | See below |
 | 503 | `rate-limiting-unavailable` | Redis (rate limiter backing store) is down and the deployment is configured fail-closed. | **Yes**, with backoff — transient infra issue |
@@ -928,6 +1081,7 @@ Endpoints are grouped, and each group has its own RPM/TPM budget:
 | `chat_completions` | `POST /v1/chat/completions` |
 | `embeddings` | `POST /v1/embeddings` |
 | `rerank` | `POST /v1/rerank` |
+| `predict` | `POST /v1/models/{model}/predict` (§3.10) — all three pass-through modalities share one budget, not one each |
 | `default` | everything else (images, usage, token) |
 
 `X-RateLimit-Scope` names the budget the six `X-RateLimit-*` numbers on that response belong to,

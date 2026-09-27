@@ -87,6 +87,12 @@ class _StubPool:
     def get_circuit_breaker(self, backend_id: str):
         return self._breakers.get(backend_id)
 
+    def saturated(self, backend_id: str, *, headroom: float) -> bool:
+        """PRM-158. These tests are about health and load *ordering*, so nothing
+        here is ever saturated — and the real pool returns exactly this whenever
+        admission control is off, which is its default."""
+        return False
+
     def in_flight(self, backend_id: str) -> int:
         return self._in_flight.get(backend_id, 0)
 

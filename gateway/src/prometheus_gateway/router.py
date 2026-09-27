@@ -219,6 +219,8 @@ async def _healthy_members(
     leaves a single-instance model behaving exactly as it did before.
     """
     monitor = getattr(getattr(request.app, "state", None), "health_monitor", None)
+    settings = getattr(getattr(request.app, "state", None), "settings", None)
+    admission_headroom = getattr(settings, "admission_headroom", 0.0) or 0.0
     members = sorted(members, key=lambda m: pool.load_ratio(m.id))
 
     usable: list[ModelEntry] = []
@@ -227,6 +229,19 @@ async def _healthy_members(
     for entry in members:
         if monitor is not None and entry.backend_url and monitor.unreachable(entry.backend_url):
             skipped[entry.id] = "unreachable"
+            continue
+
+        # PRM-158: admission control. A backend already holding more than
+        # `headroom` times what it can work on at once is not a backend that can
+        # take a request right now, which is what this function returns — so
+        # saturation belongs here beside "unreachable" and "circuit open" rather
+        # than as a sixth check bolted onto each of the five forwarding handlers.
+        #
+        # Skipped, not refused: a saturated replica with an idle sibling means the
+        # request goes to the sibling, which is the whole point of having one. The
+        # 503 only happens when every replica is saturated, and it says so.
+        if pool.saturated(entry.id, headroom=admission_headroom):
+            skipped[entry.id] = "saturated"
             continue
 
         cb = pool.get_circuit_breaker(entry.id)
@@ -534,6 +549,28 @@ def _no_replica_available(
             health.soonest_recovery_at, tz=timezone.utc
         ).isoformat()
         detail += f". Earliest recovery at {recovery_iso}"
+
+    # PRM-158: "every replica is down" and "every replica is busy" need different
+    # actions — page somebody, versus back off and retry — so they cannot share a
+    # type. `backend-unavailable` already documents two causes that only one
+    # Retry-After distinguishes (§5.2 of the SDK guide); making saturation a third
+    # would leave a client unable to tell a broken model from a busy one.
+    if health.skipped and all(why == "saturated" for why in health.skipped.values()):
+        # Retry-After is a guess and says so by being short: a slot frees when a
+        # request finishes, and how long that takes is the model's business. One
+        # second is "come back promptly", not a promise.
+        headers.setdefault("Retry-After", "1")
+        return _problem(
+            request,
+            503,
+            "capacity-exhausted",
+            "Capacity Exhausted",
+            f"Every replica of model {model_name!r} is at capacity: {detail}. The request "
+            "was refused rather than queued behind work that would outlive its own "
+            "timeout — retry shortly, or add a replica.",
+            extra_headers=headers,
+        )
+
     return _problem(
         request,
         503,

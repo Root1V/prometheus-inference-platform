@@ -129,6 +129,23 @@ class Settings(BaseSettings):
     # validator below demands this one whenever manager_sync runs.
     manager_fleet_url: str = ""
 
+    # PRM-158: admission control. How much outstanding work a backend may hold,
+    # as a multiple of the slots it reports — 2.0 means "twice what it can work on
+    # at once may be outstanding", and a request arriving above that is refused
+    # with 503 `capacity-exhausted` rather than queued behind work that will
+    # outlive its own timeout.
+    #
+    # **0.0 disables it, and that is the default.** Turning a limit on by default
+    # would start refusing traffic on an existing deployment the first time it
+    # restarted, on a number nobody chose for it. 2.0 is the value to start from,
+    # and it is a deployment decision because the right headroom depends on how
+    # long the model's requests take: a 200ms embedding tolerates a deep queue, a
+    # 40-second completion does not.
+    #
+    # Only applies to backends that report capacity. sd.cpp reports none, so there
+    # is nothing to bound against and it is never refused on this basis.
+    admission_headroom: float = 0.0
+
     admin_dashboard_enabled: bool = False
 
     # ── Users section — docs/roadmap.md RM-11 ─────────────────────────────────

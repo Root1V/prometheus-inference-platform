@@ -43,9 +43,47 @@ _SOURCE_GLOBS = (
 
 _REVIEWED = re.compile(r"Reviewed\s+\d{4}-\d{2}-\d{2}")
 
+# PRM-158: the SDK guide exists twice — `docs/` in this repo, and a copy in the
+# shared channel directory the SDK team vendors. They drifted by 170 lines before
+# anybody noticed, and the drift was invisible in the worst possible direction:
+# the guard that asserts every error type is documented reads the repo's copy,
+# which was the stale one, so it had been passing against a document consumers do
+# not read.
+#
+# The repo's copy is the source — it is the one under version control. This checks
+# that the delivered copy matches it, and says nothing when the channel directory
+# is not present, because that is somebody else's machine rather than a failure.
+_CHANNEL_GUIDE = (
+    pathlib.Path.home() / "Documents/Victor/prometheus_axonium/sdk-integration-guide.md"
+)
+_REPO_GUIDE = "docs/sdk-integration-guide.md"
+
+
+def _guide_drift(root: pathlib.Path) -> str | None:
+    """A one-line description of the drift, or None when there is none to report."""
+    source = root / _REPO_GUIDE
+    if not source.exists() or not _CHANNEL_GUIDE.exists():
+        return None
+    if source.read_text() == _CHANNEL_GUIDE.read_text():
+        return None
+    import difflib
+
+    changed = sum(
+        1
+        for line in difflib.unified_diff(
+            source.read_text().splitlines(),
+            _CHANNEL_GUIDE.read_text().splitlines(),
+            n=0,
+        )
+        if line.startswith(("+", "-")) and not line.startswith(("+++", "---"))
+    )
+    return f"{changed} line(s) differ between {_REPO_GUIDE} and the copy in the channel"
+
 
 def _decisions(root: pathlib.Path) -> list[pathlib.Path]:
-    return sorted(p for p in root.glob("memory/decisions/*.md") if p.name != "README.md")
+    return sorted(
+        p for p in root.glob("memory/decisions/*.md") if p.name != "README.md"
+    )
 
 
 def _decision_count(root: pathlib.Path) -> int:
@@ -59,7 +97,11 @@ def _unreviewed_decisions(root: pathlib.Path) -> list[str]:
     present. So the only way to know whether one is still true is a dated review
     note, and the only way to know nobody has looked is its absence.
     """
-    return [p.name for p in _decisions(root) if not _REVIEWED.search(p.read_text(errors="ignore"))]
+    return [
+        p.name
+        for p in _decisions(root)
+        if not _REVIEWED.search(p.read_text(errors="ignore"))
+    ]
 
 
 def main() -> int:
@@ -89,30 +131,59 @@ def main() -> int:
     unreviewed = _unreviewed_decisions(root)
 
     if missing:
-        print(f"\nFAIL: {sum(missing.values())} reference(s) point at documents that do not exist.")
-        print("A comment naming a requirement that is gone reads as authoritative and is not.\n")
+        print(
+            f"\nFAIL: {sum(missing.values())} reference(s) point at documents that do not exist."
+        )
+        print(
+            "A comment naming a requirement that is gone reads as authoritative and is not.\n"
+        )
         for target, count in sorted(missing.items(), key=lambda kv: -kv[1]):
             print(f"  {count:3}x  {target}")
             for source in sorted(set(where[target]))[:3]:
                 print(f"         {source}")
-        print("\nEither restore the document (it may be in git history — this corpus was")
+        print(
+            "\nEither restore the document (it may be in git history — this corpus was"
+        )
         print("recovered from 546a196^) or update the comments to where it moved.")
         return 1
 
     print("  PASS: every referenced document exists")
 
     if unreviewed:
-        print(f"\nFAIL: {len(unreviewed)} architecture decision(s) carry no `Reviewed <date>` line.")
-        print("An ADR nobody has checked reads exactly like one that is true — five of the")
+        print(
+            f"\nFAIL: {len(unreviewed)} architecture decision(s) carry no `Reviewed <date>` line."
+        )
+        print(
+            "An ADR nobody has checked reads exactly like one that is true — five of the"
+        )
         print("seven here were wrong on 2026-09-26 and none of them said so.\n")
         for name in unreviewed:
             print(f"  memory/decisions/{name}")
-        print("\nAdd a `> **Reviewed YYYY-MM-DD — ...**` note stating what still holds and what")
-        print("does not. See memory/decisions/README.md for the vocabulary. Never edit the")
+        print(
+            "\nAdd a `> **Reviewed YYYY-MM-DD — ...**` note stating what still holds and what"
+        )
+        print(
+            "does not. See memory/decisions/README.md for the vocabulary. Never edit the"
+        )
         print("decision itself to match the present.")
         return 1
 
-    print(f"  PASS: all {_decision_count(root)} architecture decisions carry a review date")
+    print(
+        f"  PASS: all {_decision_count(root)} architecture decisions carry a review date"
+    )
+
+    if (drift := _guide_drift(root)) is not None:
+        print(f"\nFAIL: the SDK guide has two copies and they disagree — {drift}.")
+        print("The repo's copy is the source. Copy it over the channel's:")
+        print(f"  cp {_REPO_GUIDE} {_CHANNEL_GUIDE}")
+        print(
+            "\nThis is not cosmetic. The error-catalog guard reads the repo's copy, so"
+        )
+        print("drift lets it pass against a document the SDK team does not read.")
+        return 1
+    if _CHANNEL_GUIDE.exists():
+        print("  PASS: the SDK guide's two copies match")
+
     return 0
 
 

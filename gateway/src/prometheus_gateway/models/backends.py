@@ -98,6 +98,40 @@ class BackendPool:
         else:
             self._slot_capacity.pop(backend_id, None)
 
+    def saturated(self, backend_id: str, *, headroom: float) -> bool:
+        """Is this backend already holding more than we should hand it? — PRM-158.
+
+        Admission control, and it is bounding rather than queueing. The engine
+        already has a queue — llama.cpp has slots and a pending list, vLLM has
+        `max_num_seqs` — so a second queue in the gateway would only move the wait
+        and add a place for it to be accounted for twice. What is missing is a
+        limit on how deep we let the engine's own queue grow, which is exactly
+        what Envoy's `max_pending_requests` is.
+
+        `headroom` is a multiple of the backend's slots, so 2.0 means "twice what
+        it can work on at once may be outstanding". Above one slot's worth of
+        queue a request is waiting, which is fine; far above it every request is
+        waiting and the client sees a timeout instead of an answer. Refusing the
+        last arrivals keeps the ones already accepted answerable — the property a
+        saturated GPU otherwise destroys for everybody at once.
+
+        **Returns False when capacity is unknown.** sd.cpp reports no slots, so
+        there is no number to bound against, and inventing one would refuse real
+        traffic on a guess. A backend that cannot be measured is not admitted
+        against, and that is stated rather than hidden.
+        """
+        # A headroom of zero or less means admission control is off, and it is the
+        # default. Without this line `load_ratio >= 0.0` is true for every backend
+        # that reports capacity, so the default would refuse every request on a
+        # stack that had never opted in. Found by the test for it, which is the
+        # only reason it is not in production.
+        if headroom <= 0:
+            return False
+        slots = self._slot_capacity.get(backend_id)
+        if not slots:
+            return False
+        return self.load_ratio(backend_id) >= headroom
+
     def set_reported_busy(self, backend_id: str, busy: int | None) -> None:
         """Record the backend's own count of requests it is working on — PRM-156."""
         if busy is None:
