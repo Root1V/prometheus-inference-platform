@@ -57,6 +57,8 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 
+from . import schema
+
 # RM-62 follow-up: platform defaults for a node's cost fields, applied when the
 # operator leaves them blank — derived from a MacBook Pro M4 Max (~$8,100
 # amortized over three years) plus ~70W sustained inference load at Lima, Peru's
@@ -117,6 +119,13 @@ _ADDED_COLUMNS = (
     ("enabled", "INTEGER NOT NULL DEFAULT 1"),
     ("last_seen_at", "TEXT"),
 )
+
+
+# PRM-155: numbered schema changes for fleet.db. Empty is the honest state: the
+# one column that wants dropping — `is_active`, superseded by `enabled` +
+# `last_seen_at` — is PRM-151's rollback aid and PRM-151 merged the same day. A
+# rollback path removed the day it is created is not one. Filed as PRM-154.
+_MIGRATIONS: tuple[schema.Migration, ...] = ()
 
 
 @dataclass
@@ -263,16 +272,39 @@ class FleetRegistry:
         self._conn.row_factory = sqlite3.Row
         self._conn.execute("PRAGMA journal_mode=WAL")
         self._conn.execute("PRAGMA synchronous=NORMAL")
+        # A database in use before PRM-155 is already at the baseline; the two
+        # lines below put a new one there. `schema.apply` distinguishes them.
+        had_tables = bool(
+            self._conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='nodes'"
+            ).fetchone()
+        )
         self._conn.executescript(_SCHEMA_SQL)
         self._migrate_added_columns()
         self._conn.commit()
+        schema.validate(_MIGRATIONS)
+        self._version = schema.apply(
+            self._conn, "fleet", _MIGRATIONS, had_existing_tables=had_tables
+        )
 
     @property
     def path(self) -> Path:
         return self._path
 
+    @property
+    def schema_version(self) -> int:
+        """The version this database is actually at — PRM-155."""
+        return self._version
+
     def _migrate_added_columns(self) -> None:
-        """Backfill columns added after this table shipped — PRM-151."""
+        """Backfill columns added before PRM-155 numbered its changes.
+
+        Kept for one job, like auth-service's frozen ALTER list: lifting a
+        `fleet.db` written by PRM-134 to the baseline shape, which is what
+        `schema.apply` then stamps. **Nothing new goes here** — new changes are
+        numbered migrations in `_MIGRATIONS`, which can express a drop, a rename
+        or a type change where this cannot.
+        """
         existing = {row[1] for row in self._conn.execute("PRAGMA table_info(nodes)")}
         for name, col_def in _ADDED_COLUMNS:
             if name not in existing:

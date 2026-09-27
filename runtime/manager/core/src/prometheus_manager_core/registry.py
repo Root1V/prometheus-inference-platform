@@ -31,6 +31,7 @@ from typing import Any
 
 import yaml
 
+from . import schema
 from .hf_discovery import infer_family, read_gguf_modality_evidence
 
 _ID_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{1,62}[a-z0-9]$")
@@ -363,6 +364,13 @@ class RegistryEntry:
         }
 
 
+# PRM-155: numbered schema changes for registry.db. Empty today — the columns the
+# existing PRAGMA-guarded backfills add are the baseline, and nothing in this
+# schema is dead yet. New changes come here rather than being added to those
+# backfills, which cannot express a drop, a rename or a type change.
+_MIGRATIONS: tuple[schema.Migration, ...] = ()
+
+
 class Registry:
     """Load and persist runtime/manager/registry.db.
 
@@ -380,9 +388,25 @@ class Registry:
         self._conn = sqlite3.connect(str(self._path), check_same_thread=False)
         self._conn.execute("PRAGMA journal_mode=WAL")
         self._conn.execute("PRAGMA synchronous=NORMAL")
+        # PRM-155: was this database in use before its changes were numbered?
+        # Asked before the schema script runs, because afterwards every database
+        # looks the same.
+        had_tables = bool(
+            self._conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='models'"
+            ).fetchone()
+        )
         self._conn.executescript(_SCHEMA_SQL)
         _backfill_identity_columns(self._conn)
         self._conn.commit()
+        # PRM-155: numbered, ordered, applied once, recorded. Before this,
+        # registry.db had no version table at all — the schema was re-inferred
+        # from PRAGMA on every startup, so nothing could say what a given file had
+        # seen and a change interrupted half-way left no trace.
+        schema.validate(_MIGRATIONS)
+        self._schema_version = schema.apply(
+            self._conn, "registry", _MIGRATIONS, had_existing_tables=had_tables
+        )
         self._load()
 
     # ── public API: instances ────────────────────────────────────────────────
