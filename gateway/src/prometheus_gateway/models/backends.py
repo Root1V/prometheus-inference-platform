@@ -20,8 +20,11 @@ from ..telemetry import get_logger
 
 logger = get_logger(__name__)
 
-# HTTP status codes that indicate a transient backend fault — safe to retry
-_TRANSIENT_STATUS_CODES: frozenset[int] = frozenset({502, 503, 504})
+# HTTP status codes that indicate a transient backend fault — safe to retry.
+# Public because the streaming path (PRM-143) has to record the same circuit
+# breaker event this module would for a given status, and one set is how the two
+# paths stay in agreement about what "the backend failed" means.
+TRANSIENT_STATUS_CODES: frozenset[int] = frozenset({502, 503, 504})
 
 # RM-52: was 120.0 — too short for a real FLUX.1-dev generation (~150-500s at
 # 20 steps on Metal, confirmed empirically), which read-timed-out and then
@@ -309,7 +312,7 @@ class BackendPool:
                     url, json=payload, timeout=_BACKEND_REQUEST_TIMEOUT_S, headers=headers
                 )
 
-                if resp.status_code in _TRANSIENT_STATUS_CODES:
+                if resp.status_code in TRANSIENT_STATUS_CODES:
                     raise _TransientBackendError(resp.status_code)
 
                 # Success — reset circuit breaker

@@ -5275,8 +5275,33 @@ before the response object exists. Half-fixing it would have billed correctly wh
 about the outcome.
 
 **Scope**: probe the upstream status before constructing the `StreamingResponse`, so a refused
-stream is an error response. The PRM-142 guard test carries the exemption by name, so adding a
-sixth billing handler still fails the guard and this one cannot quietly become permanent.
+stream is an error response.
+
+**How.** The connection is opened by `_stream_response` itself — `client.send(request, stream=True)`
+returns once the response headers have arrived, without reading the body — and only a status worth
+streaming is handed to `StreamingResponse`. `_stream_events` consumes the response that is already
+open instead of making its own, and closes it in a `finally`, which is what its `async with` was
+doing. `pool.acquire` moved to *after* the check, so a stream that never starts never claims the
+slot RM-72 holds for as long as one generates; an engine rejecting everything would otherwise have
+read as the busiest replica in the fleet and been routed away from.
+
+**Two failures, told apart.** A refusal returns the backend's own status and body, which is what
+the non-streaming half of the same endpoint does — a caller toggling `stream` must not get a
+different error contract. A connection that never opened returns 503 `backend-unavailable`; it
+used to land in the generator's own `except` and be delivered as `{"error": "stream interrupted"}`
+inside a 200, so an SDK reading the status saw success. Neither path bills, neither stores anything
+for an idempotent replay, and both release the claim RM-82 handed to the generator — the generator
+being the thing that no longer runs.
+
+The circuit breaker records what `BackendPool.forward` would have recorded for that status, reading
+the pool's own transient set rather than restating the rule. Same request either way: a breaker that
+counted differently depending on `stream` would be a second answer to one question.
+
+**Verified live**: a streamed request carrying an unparseable JSON schema came back `400` with
+llama.cpp's own message and left no usage row; the next healthy stream on the same model streamed
+normally and left exactly one. The PRM-142 guard test kept its exemption for `_account_for_it` —
+the status is checked by the enclosing function, not the one that bills — but now asserts
+`_stream_response` is doing the asking, so the exemption cannot outlive the fix.
 
 
 ## PRM-144 — `payload_schema`, because `engine` is a proxy for it
