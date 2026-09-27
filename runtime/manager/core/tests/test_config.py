@@ -256,12 +256,12 @@ def test_every_backend_is_recognisable_by_the_scanner():
 def test_a_nodes_identity_is_read_from_the_environment(monkeypatch):
     from prometheus_manager_core.config import FleetConfig
 
-    monkeypatch.setenv("PMGR_FLEET_NODE_ID", "cdf36458-ca33-4d4a-917b-91822774d853")
+    monkeypatch.setenv("PMGR_FLEET_NODE_ID", "11111111-1111-4111-8111-111111111111")
     monkeypatch.setenv("PMGR_FLEET_CLIENT_ID", "client-local")
     monkeypatch.setenv("PMGR_FLEET_CLIENT_SECRET", "s3cret")
 
     cfg = FleetConfig()
-    assert cfg.node_id == "cdf36458-ca33-4d4a-917b-91822774d853"
+    assert cfg.node_id == "11111111-1111-4111-8111-111111111111"
     assert cfg.client_id == "client-local"
     assert cfg.client_secret == "s3cret"
     assert cfg.can_report_in

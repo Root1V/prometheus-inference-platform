@@ -17,9 +17,11 @@ from prometheus_auth.schemas import invalid_scopes, is_valid_scope
 
 from .conftest import ADMIN_HEADERS, register_client
 
-# A real node id from the live fleet's shape — the coordinator assigns a UUID at
-# registration, so that is what a grant has to accommodate.
-NODE_ID = "cdf36458-ca33-4d4a-917b-91822774d853"
+# A UUID, because that is what the coordinator assigns at registration and so what
+# a `node:<id>` grant has to accommodate. Deliberately not one this fleet holds:
+# this repository is public, and a test does not need the id to be real to pin the
+# pattern.
+NODE_ID = "11111111-1111-4111-8111-111111111111"
 
 
 # ── The scopes themselves ─────────────────────────────────────────────────────
@@ -92,7 +94,7 @@ async def test_a_node_cannot_ask_for_another_nodes_grant(client):
             "grant_type": "client_credentials",
             "client_id": data["client_id"],
             "client_secret": data["client_secret"],
-            "scope": "fleet:heartbeat node:8ed68951-d6cb-44f8-9335-6ddba3dde1fc",
+            "scope": "fleet:heartbeat node:22222222-2222-4222-8222-222222222222",
         },
     )
     assert resp.status_code == 400
