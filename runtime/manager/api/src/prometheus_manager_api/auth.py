@@ -22,6 +22,10 @@ _bearer = HTTPBearer(auto_error=False)
 
 REQUIRED_SCOPE = "backend-registry:read"
 REQUIRED_SCOPE_WRITE = "backend-registry:write"
+# PRM-152: what a node's own credential carries. `fleet:heartbeat` is what it may
+# do; `node:<id>` is who it may do it for, and both are required.
+SCOPE_HEARTBEAT = "fleet:heartbeat"
+NODE_SCOPE_PREFIX = "node:"
 
 
 class JwtAuthError(HTTPException):
@@ -131,15 +135,59 @@ async def _validate_token(
         ) from exc
 
 
-def _require_scope(claims: dict[str, Any], required: str) -> None:
-    scopes: list[str] = []
+def _scopes(claims: dict[str, Any]) -> list[str]:
     scope_claim = claims.get("scope", "")
     if isinstance(scope_claim, str):
-        scopes = scope_claim.split()
-    elif isinstance(scope_claim, list):
-        scopes = scope_claim
+        return scope_claim.split()
+    if isinstance(scope_claim, list):
+        return scope_claim
+    return []
 
-    if required not in scopes:
+
+def assert_may_heartbeat(claims: dict[str, Any], node_id: str) -> None:
+    """May this credential report that *node_id* is up? — PRM-152.
+
+    Two conditions, and the second is the reason there is one client per node: a
+    token must carry `node:<the id in the path>`, so `local`'s credential cannot
+    report for `lab`. That is Kubernetes' NodeRestriction — a kubelet may write
+    its own Node and Lease and no other — and Consul's per-agent
+    `node "web-01" { policy = "write" }`.
+
+    Pure, and separate from the dependency below, so the rule can be tested
+    without a key set to validate a token against. The rule is the part that has
+    to be right.
+    """
+    scopes = _scopes(claims)
+    if SCOPE_HEARTBEAT not in scopes:
+        raise HTTPException(
+            status_code=403,
+            detail={
+                "type": "https://prometheus.local/errors/forbidden",
+                "title": "Forbidden",
+                "status": 403,
+                "detail": f"Scope '{SCOPE_HEARTBEAT}' is required.",
+            },
+        )
+    if f"{NODE_SCOPE_PREFIX}{node_id}" not in scopes:
+        granted = sorted(s for s in scopes if s.startswith(NODE_SCOPE_PREFIX))
+        raise HTTPException(
+            status_code=403,
+            detail={
+                "type": "https://prometheus.local/errors/forbidden",
+                "title": "Forbidden",
+                "status": 403,
+                "detail": (
+                    f"This credential may not report for node {node_id!r}. A node "
+                    f"speaks only for itself: it needs the grant "
+                    f"'{NODE_SCOPE_PREFIX}{node_id}', and holds "
+                    f"{granted or 'no node grant at all'}."
+                ),
+            },
+        )
+
+
+def _require_scope(claims: dict[str, Any], required: str) -> None:
+    if required not in _scopes(claims):
         raise HTTPException(
             status_code=403,
             detail={
@@ -176,4 +224,22 @@ async def require_backend_registry_write(
     """
     claims = await _validate_token(request, credentials)
     _require_scope(claims, REQUIRED_SCOPE_WRITE)
+    return claims
+
+
+async def require_fleet_heartbeat(
+    node_id: str,
+    request: Request,
+    credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(_bearer)],
+) -> dict[str, Any]:
+    """FastAPI dependency for the heartbeat: validate the JWT, then `assert_may_heartbeat`.
+
+    Implements: docs/roadmap.md — PRM-152.
+
+    `node_id` comes from the path, which is what makes "only for itself"
+    enforceable here rather than in the handler: the check and the identity it is
+    checked against arrive together.
+    """
+    claims = await _validate_token(request, credentials)
+    assert_may_heartbeat(claims, node_id)
     return claims

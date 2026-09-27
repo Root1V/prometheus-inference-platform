@@ -31,6 +31,17 @@ pid_dir = "runtime/run/lab"
 [fleet]
 coordinator = false
 
+# PRM-152: where this node reports that it is up, every 10s. Its identity and
+# credential are not here — `PMGR_FLEET_NODE_ID`, `PMGR_FLEET_CLIENT_ID` and
+# `PMGR_FLEET_CLIENT_SECRET` come from the environment, because this file is
+# tracked in a public repository and because "who I am" and "how I prove it"
+# moved separately is how a node ends up reporting under an identity it no longer
+# holds. One OAuth2 client per node, granted `fleet:heartbeat` and `node:<its
+# id>`: the coordinator refuses a report the token does not name, so `lab` cannot
+# report for `local`.
+coordinator_url = "http://127.0.0.1:8090"
+auth_token_url = "http://127.0.0.1:9000/oauth2/token"
+
 [registry]
 # Its own catalog. A model registered on `lab` is not registered on `local`,
 # which is the point: this is where an engine gets tried before it is offered

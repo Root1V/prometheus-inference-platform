@@ -186,6 +186,63 @@ class FleetConfig:
     coordinator: bool = False
     path: str = "runtime/manager/fleet.db"
 
+    # ── PRM-152: reporting in ────────────────────────────────────────────────
+    # Where this node sends its heartbeat. The coordinator's own base URL, which
+    # on the coordinator itself is left empty: it stamps its own row in process
+    # rather than making an HTTP call to itself for a credential it would have
+    # to be issued to talk to itself.
+    coordinator_url: str = ""
+    # Where this node mints its heartbeat token. Named explicitly rather than
+    # derived from `api.jwks_url`: the two are the same service today and a
+    # derived value that is right by coincidence is the failure mode this
+    # codebase keeps meeting.
+    auth_token_url: str = ""
+    # Kubernetes' kubelet renews its Lease every 10s against a 40s duration. Ten
+    # seconds against this fleet's 60s TTL (`fleet.DEFAULT_LIVENESS_TTL_S`) has
+    # the same shape: a node misses several reports before it stops being
+    # routable, so one slow moment is not an outage.
+    heartbeat_interval_s: float = 10.0
+    # PRM-151's coordinator-side probe. On until the fleet is confirmed reporting
+    # in, then off — and off is the end state, not an option: while a probe also
+    # stamps `last_seen_at`, "the node is down" and "I could not reach it" stay
+    # indistinguishable, which is the ambiguity the heartbeat exists to end.
+    sweep: bool = True
+
+    @property
+    def node_id(self) -> str:
+        """This node's id in the fleet — `PMGR_FLEET_NODE_ID`.
+
+        The coordinator assigns a UUID at registration, so a node cannot derive
+        its own id and has to be told it. Read from the environment with the two
+        credential parts below rather than written in this file, because the three
+        travel together: "who I am" and "how I prove it" moved separately is how an
+        operator ends up with a node reporting under an identity it no longer
+        holds. It also keeps every per-node identity out of a tracked TOML.
+        """
+        return os.environ.get("PMGR_FLEET_NODE_ID", "")
+
+    @property
+    def client_id(self) -> str:
+        """`PMGR_FLEET_CLIENT_ID` — one OAuth2 client per node (PRM-152)."""
+        return os.environ.get("PMGR_FLEET_CLIENT_ID", "")
+
+    @property
+    def client_secret(self) -> str:
+        """`PMGR_FLEET_CLIENT_SECRET`. Never in a file this repository tracks."""
+        return os.environ.get("PMGR_FLEET_CLIENT_SECRET", "")
+
+    @property
+    def can_report_in(self) -> bool:
+        """Is everything a heartbeat needs present? — PRM-152.
+
+        A node missing any of it keeps serving inference and says so at startup,
+        rather than refusing to start over a credential that is not on the
+        inference path. PRM-147's lesson is that the *reason* has to be on the
+        record — a missing environment variable that produces silence is exactly
+        how two hours went into the wrong place.
+        """
+        return bool(self.node_id and self.client_id and self.client_secret)
+
 
 @dataclass
 class DownloadsConfig:
@@ -373,6 +430,16 @@ def load_config(path: Path | None = None) -> ManagerConfig:
         cfg.fleet.coordinator = True
     elif val in ("false", "0", "no"):
         cfg.fleet.coordinator = False
+    # PRM-152: the credential itself is read from the environment on every access
+    # (see FleetConfig), so only the operational half is overridable here.
+    if val := os.environ.get("PMGR_FLEET_COORDINATOR_URL"):
+        cfg.fleet.coordinator_url = val
+    if val := os.environ.get("PMGR_FLEET_AUTH_TOKEN_URL"):
+        cfg.fleet.auth_token_url = val
+    if (val := os.environ.get("PMGR_FLEET_SWEEP", "").lower()) in ("true", "1", "yes"):
+        cfg.fleet.sweep = True
+    elif val in ("false", "0", "no"):
+        cfg.fleet.sweep = False
     cfg.validate()
     return cfg
 

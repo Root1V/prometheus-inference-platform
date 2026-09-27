@@ -248,3 +248,60 @@ def test_every_backend_is_recognisable_by_the_scanner():
     from prometheus_manager_core.scanner import _BACKEND_SIGNATURES
 
     assert {sig.backend for sig in _BACKEND_SIGNATURES} == set(BACKENDS)
+
+
+# ── PRM-152: a node's credential ─────────────────────────────────────────────
+
+
+def test_a_nodes_identity_is_read_from_the_environment(monkeypatch):
+    from prometheus_manager_core.config import FleetConfig
+
+    monkeypatch.setenv("PMGR_FLEET_NODE_ID", "cdf36458-ca33-4d4a-917b-91822774d853")
+    monkeypatch.setenv("PMGR_FLEET_CLIENT_ID", "client-local")
+    monkeypatch.setenv("PMGR_FLEET_CLIENT_SECRET", "s3cret")
+
+    cfg = FleetConfig()
+    assert cfg.node_id == "cdf36458-ca33-4d4a-917b-91822774d853"
+    assert cfg.client_id == "client-local"
+    assert cfg.client_secret == "s3cret"
+    assert cfg.can_report_in
+
+
+def test_a_node_credential_cannot_be_written_into_a_tracked_config():
+    """`manager.toml` and `manager-lab.toml` are tracked in this repository, which
+    is public. The three identity facts are properties over the environment rather
+    than fields, so `client_secret = "..."` in the TOML is not quietly ignored —
+    `load_config` passes the section through as keyword arguments, so it fails at
+    startup, which is the only safe direction for that mistake to fail in."""
+    import dataclasses
+
+    from prometheus_manager_core.config import FleetConfig
+
+    fields = {f.name for f in dataclasses.fields(FleetConfig)}
+    assert fields.isdisjoint({"node_id", "client_id", "client_secret"})
+    with pytest.raises(TypeError):
+        FleetConfig(client_secret="would-be-committed")  # type: ignore[call-arg]
+
+
+def test_the_fleet_environment_overrides_apply(tmp_path, monkeypatch):
+    from prometheus_manager_core.config import load_config
+
+    path = tmp_path / "manager.toml"
+    path.write_text('[fleet]\ncoordinator = true\ncoordinator_url = "http://from-file:8090"\n')
+
+    monkeypatch.setenv("PMGR_FLEET_COORDINATOR_URL", "http://from-env:8090")
+    monkeypatch.setenv("PMGR_FLEET_AUTH_TOKEN_URL", "http://auth:9000/oauth2/token")
+    monkeypatch.setenv("PMGR_FLEET_SWEEP", "false")
+
+    cfg = load_config(path)
+    assert cfg.fleet.coordinator_url == "http://from-env:8090"
+    assert cfg.fleet.auth_token_url == "http://auth:9000/oauth2/token"
+    assert cfg.fleet.sweep is False
+
+
+def test_the_sweep_is_on_until_an_operator_turns_it_off():
+    """PRM-151's probe stays the fallback by default: a fleet upgraded to this
+    code must not lose its liveness because no node reports in yet."""
+    from prometheus_manager_core.config import FleetConfig
+
+    assert FleetConfig().sweep is True
