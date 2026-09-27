@@ -70,7 +70,7 @@ import httpx
 from fastapi import APIRouter, Request, Response
 from fastapi.responses import JSONResponse
 
-from .. import db, pricing, rate_limits
+from .. import audit, db, pricing, rate_limits
 from ..config import Settings
 from ..router import _problem
 from ..telemetry import activity_tracker, get_logger
@@ -223,6 +223,16 @@ def create_admin_router(manager_client: ManagerApiClient) -> APIRouter:
         except Exception as exc:
             return _proxy_error_response(request, exc)
 
+        # PRM-157: this route audits itself, and it is the only one that does.
+        # "Who tried to sign in, and did it work" is the most audited fact in any
+        # system, and the answer is in the body — which the audit middleware
+        # deliberately never reads, because this same body carries a password.
+        # Here the handler has already parsed it, so it can record the email and
+        # nothing else. A failed attempt is recorded as carefully as a successful
+        # one: a run of failures against one address is the pattern an auditor is
+        # looking for, and a log of successes alone cannot show it.
+        attempted_email = body.get("email") if "email" in body else None
+
         if resp.status_code != 200:
             # auth-service returns standard OAuth2 error bodies
             # ({"error": ..., "error_description": ...}), not the manager-api
@@ -231,9 +241,21 @@ def create_admin_router(manager_client: ManagerApiClient) -> APIRouter:
                 oauth_error = resp.json()
             except Exception:
                 oauth_error = {}
+            status = 401 if resp.status_code in (400, 401) else 502
+            await audit.record(
+                action="POST /admin/api/auth/login",
+                outcome=audit.outcome_for(status),
+                status_code=status,
+                actor_email=attempted_email,
+                actor_client_id=(body.get("client_id") if attempted_email is None else None),
+                request_id=getattr(getattr(request, "state", None), "request_id", None),
+                trace_id=getattr(getattr(request, "state", None), "trace_id", None),
+                source_ip=(request.client.host if request.client else None),
+                user_agent=request.headers.get("user-agent"),
+            )
             return _problem(
                 request,
-                401 if resp.status_code in (400, 401) else 502,
+                status,
                 "invalid-credentials",
                 "Invalid Credentials",
                 oauth_error.get("error_description")
@@ -241,12 +263,70 @@ def create_admin_router(manager_client: ManagerApiClient) -> APIRouter:
                 or "The auth-service rejected these credentials.",
             )
         body_json = resp.json()
+        await audit.record(
+            action="POST /admin/api/auth/login",
+            outcome=audit.outcome_for(200),
+            status_code=200,
+            actor_email=attempted_email,
+            actor_client_id=(body.get("client_id") if attempted_email is None else None),
+            request_id=getattr(getattr(request, "state", None), "request_id", None),
+            trace_id=getattr(getattr(request, "state", None), "trace_id", None),
+            source_ip=(request.client.host if request.client else None),
+            user_agent=request.headers.get("user-agent"),
+        )
         return JSONResponse(
             content={
                 "access_token": body_json.get("access_token"),
                 "expires_in": body_json.get("expires_in"),
             }
         )
+
+    @router.get("/admin/api/audit")
+    async def list_audit(request: Request) -> Any:
+        """The audit trail — PRM-157. `admin:read`, newest first.
+
+        A log nobody can read is not a control, which is why this exists rather
+        than leaving the rows to whoever has database access. `admin:read` and not
+        `admin:write`: reading the trail is not an administrative change, and
+        requiring write to see who wrote would mean only the people who can alter
+        the system can check it.
+
+        Served from the gateway's own table rather than queried out of Argus,
+        because that table is the record. Argus has a copy for search and
+        alerting, and a copy is not a source.
+        """
+        if (forbidden := _require_scope(request, "admin:read")) is not None:
+            return forbidden
+        try:
+            limit = int(request.query_params.get("limit", "100"))
+        except ValueError:
+            return _problem(
+                request, 400, "invalid-limit", "Invalid Limit", "`limit` must be an integer."
+            )
+        actor = request.query_params.get("actor_client_id")
+        events = await db.list_audit_events(limit=limit, actor_client_id=actor)
+        return {
+            "events": [
+                {
+                    "id": e.id,
+                    "at": e.at.isoformat() if e.at else None,
+                    "actor": {
+                        "client_id": e.actor_client_id,
+                        "user_id": e.actor_user_id,
+                        "email": e.actor_email,
+                    },
+                    "action": e.action,
+                    "target": json.loads(e.target) if e.target else None,
+                    "outcome": e.outcome,
+                    "status_code": e.status_code,
+                    "request_id": e.request_id,
+                    "trace_id": e.trace_id,
+                    "source_ip": e.source_ip,
+                    "user_agent": e.user_agent,
+                }
+                for e in events
+            ]
+        }
 
     @router.get("/admin/api/instances")
     async def list_instances(request: Request) -> Any:

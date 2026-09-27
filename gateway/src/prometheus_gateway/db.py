@@ -748,6 +748,131 @@ async def query_model_cost_range(
         ]
 
 
+# ── The audit log — PRM-157 ───────────────────────────────────────────────────
+#
+# Who changed what, when, and whether it worked. The architecture review put this
+# among the three gaps that decide whether the platform can be sold at all: there
+# was no record of who changed a price, started an instance or revoked a client.
+#
+# **The gateway's own database is the record, and Argus gets a copy.** Not the
+# other way round. An observability pipeline is lossy by design — sampled,
+# retained for weeks, exported best-effort — and a trail that can drop events is
+# not an audit trail. Kubernetes makes the same split: the API server writes audit
+# events to its own backend, and whatever scrapes the cluster is a consumer.
+#
+# What is deliberately **not** stored: request bodies. `/admin/api/auth/login`
+# carries a password and a secret rotation returns a secret, so a log that kept
+# bodies would be the largest credential store in the platform. The action and the
+# path parameters are enough to say what was touched, and nothing here needs the
+# payload to be useful.
+
+
+class AuditEvent(Base):
+    """One administrative action, append-only and never updated — PRM-157."""
+
+    __tablename__ = "audit_events"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc)
+    )
+    # The actor, in three parts because a request can be a machine, a person, or a
+    # person acting through a machine credential, and an audit trail that
+    # collapses them cannot answer "who". `actor_email` is present only where the
+    # request carried one — it is an identifier, not a secret.
+    actor_client_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    actor_user_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    actor_email: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    # METHOD + the route *template*, never the resolved path: `POST
+    # /admin/api/nodes/{node_id}/deactivate` groups, where the resolved path makes
+    # every id its own action and nothing can be counted.
+    action: Mapped[str] = mapped_column(String(160), nullable=False)
+    # The path parameters as JSON — which node, which model, which client. This is
+    # what the action was done *to*, and it is the only part of the request
+    # recorded, on purpose.
+    target: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # One of argus_semconv's outcome values, so the row and what Argus receives
+    # say the same word.
+    outcome: Mapped[str] = mapped_column(String(16), nullable=False)
+    status_code: Mapped[int] = mapped_column(Integer, nullable=False)
+    request_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    trace_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    # Kubernetes' audit records include these and for the same reason: an action
+    # from an unexpected address or client is the question an auditor asks first.
+    source_ip: Mapped[str | None] = mapped_column(String(45), nullable=True)
+    user_agent: Mapped[str | None] = mapped_column(String(255), nullable=True)
+
+    __table_args__ = (
+        # An auditor reads by time, and by actor when following one person.
+        Index("ix_audit_events_at", "at"),
+        Index("ix_audit_events_actor", "actor_client_id", "at"),
+    )
+
+
+async def record_audit_event(
+    *,
+    action: str,
+    outcome: str,
+    status_code: int,
+    actor_client_id: str | None = None,
+    actor_user_id: str | None = None,
+    actor_email: str | None = None,
+    target: str | None = None,
+    request_id: str | None = None,
+    trace_id: str | None = None,
+    source_ip: str | None = None,
+    user_agent: str | None = None,
+) -> None:
+    """Append one audit row. Never raises — PRM-157.
+
+    A failure to write the audit row must not fail the action that was already
+    performed: by the time this is called the change has happened, and turning a
+    successful mutation into a 500 would make the log's own failure the more
+    damaging event. It is logged loudly instead, which is what an operator needs
+    to know that the trail has a hole in it.
+    """
+    try:
+        async with get_session_factory()() as session:
+            session.add(
+                AuditEvent(
+                    action=action,
+                    outcome=outcome,
+                    status_code=status_code,
+                    actor_client_id=actor_client_id,
+                    actor_user_id=actor_user_id,
+                    actor_email=actor_email,
+                    target=target,
+                    request_id=request_id,
+                    trace_id=trace_id,
+                    source_ip=source_ip,
+                    user_agent=(user_agent or None) and user_agent[:255],
+                )
+            )
+            await session.commit()
+    except Exception as exc:  # noqa: BLE001
+        from .telemetry import get_logger
+
+        get_logger(__name__).error(
+            "audit.write_failed",
+            action=action,
+            request_id=request_id,
+            error=str(exc),
+            detail="the action succeeded and its audit row did not — the trail has a gap",
+        )
+
+
+async def list_audit_events(
+    *, limit: int = 100, actor_client_id: str | None = None
+) -> list[AuditEvent]:
+    """Newest first — PRM-157. A log nobody can read is not a control."""
+    async with get_session_factory()() as session:
+        stmt = select(AuditEvent).order_by(AuditEvent.at.desc()).limit(min(limit, 1000))
+        if actor_client_id:
+            stmt = stmt.where(AuditEvent.actor_client_id == actor_client_id)
+        result = await session.execute(stmt)
+        return list(result.scalars().all())
+
+
 async def get_client_billing_settings(client_id: str) -> ClientBillingSettings | None:
     session_factory = get_session_factory()
     async with session_factory() as session:
