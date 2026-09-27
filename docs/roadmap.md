@@ -5683,11 +5683,21 @@ option: while a probe also stamps `last_seen_at`, "the node is down" and "I coul
 stay indistinguishable, which is the ambiguity PRM-151 set out to end. On by default so a fleet
 upgraded to this code does not lose its liveness before its nodes are registered.
 
-**Verified live** on the coordinator, which needs no secret: restarted with its own node id and
-`PMGR_FLEET_SWEEP=false`, it logged `fleet.heartbeat_started local=true`, started no sweep, and
-kept its own `last_seen_at` fresh while `lab`'s stood still — the heartbeat stamps one row, its
-own. `lab`'s HTTP path needs its client registered, which writes a secret and is the operator's
-command to run; `docs/local-stack.md` carries it.
+**Verified live, end to end.** `local` logged `fleet.heartbeat_started local=true` and kept its own
+row fresh in process; `lab` logged `local=false`, minted one token and reported over HTTP, which the
+coordinator's access log shows as `POST /v1/fleet/nodes/8ed6…/heartbeat 200`. With
+`[fleet] sweep = false` and no `sweep_started` line at all, both rows keep advancing — so the
+liveness now on record is what each node said about itself.
+
+**And the refusal, at both layers.** Asked for a token naming `local`, auth-service answered
+`400 invalid_scope: Scope(s) not permitted for this client`; using the token it legitimately holds
+to report for `local`, the coordinator answered 403 naming the grant it needs and the one it has.
+Either layer alone would be enough; both is what makes a compromised node's reach its own row.
+
+Setting it up is the operator's: registering a client writes a secret. `docs/local-stack.md`
+carries the commands, where the credentials go, and the `--env-file` the launch now needs — a
+manager started without it serves inference and reports nothing, which with the sweep off means
+nothing reports it at all.
 
 
 ## PRM-153 — Alembic in auth-service

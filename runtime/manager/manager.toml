@@ -59,11 +59,13 @@ path = "runtime/manager/fleet.db"
 # is to know *which* row is its own, from `PMGR_FLEET_NODE_ID` in the
 # environment; without it the heartbeat is disabled and says so at startup.
 #
-# `sweep` is PRM-151's probe from the centre, still on. Turn it off once every
-# node reports in: while a probe also stamps `last_seen_at`, "the node is down"
-# and "I could not reach it" stay indistinguishable, which is the ambiguity the
-# heartbeat exists to end.
-sweep = true
+# `sweep` is PRM-151's probe from the centre, and it is off because every node in
+# this fleet now reports in (verified 2026-09-27: `local` stamps its own row in
+# process, `lab` over HTTP with its own credential). A probe also stamps
+# `last_seen_at`, so leaving it on would keep "the node is down" and "I could not
+# reach it" indistinguishable — the ambiguity the heartbeat exists to end. Turn it
+# back on only for a node that cannot report yet.
+sweep = false
 
 [registry]
 # Path to the manager registry.db — a SQLite database, source of truth for
