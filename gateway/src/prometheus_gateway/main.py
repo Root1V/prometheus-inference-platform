@@ -10,7 +10,7 @@ from fastapi import FastAPI, Request, Response
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 
-from . import idempotency, rate_limits
+from . import audit, idempotency, rate_limits
 from .auth.middleware import JWTAuthMiddleware
 from .config import Settings
 from .models.backends import BackendPool
@@ -335,6 +335,14 @@ def create_app(
         ignored = getattr(request.state, "ignored_parameters", None)
         if ignored:
             response.headers["X-Prometheus-Ignored-Parameters"] = ", ".join(ignored)
+        # PRM-157: one door for every administrative change. There are more than
+        # twenty mutating /admin/api handlers, and a rule that must be remembered
+        # at twenty call sites is the defect this codebase keeps meeting —
+        # PRM-142 was five handlers forgetting to read a status, PRM-131 five
+        # forgetting a metric input. Recorded after call_next so the route
+        # template, the resolved claims and the real status are all known.
+        if audit.should_audit(request.method, request.url.path):
+            await audit.record_request(request, response.status_code)
         return response
 
     @app.exception_handler(RequestValidationError)

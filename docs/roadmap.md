@@ -5805,6 +5805,70 @@ which is the leak a Redis counter would have added. Live against llama.cpp on :8
 a 400-token completion: `0/4` busy, then `1/4` for the duration, then back to `0/4`.
 
 
+
+## PRM-157 — An audit log with an actor, and Argus gets a copy
+
+**Why**: one of the three gaps the architecture review said decide whether this platform can be
+sold at all. There was no record of who changed a price, started an instance or revoked a client —
+and until PRM-134 it was impossible even in principle, because the gateway spoke to auth-service as
+a blanket admin and every action arrived as "the gateway".
+
+**The row is the record. Argus gets a copy.** Not the other way round, and the reason is not a
+preference: an observability pipeline is lossy **by design** — sampled at the collector, retained
+for weeks, exported best-effort — so a trail that may drop an event is not an audit trail.
+Kubernetes draws the same line, with the API server writing to its own backend and whatever scrapes
+the cluster as a consumer. The order in the code is literal: the row is written, then the emission
+is attempted. If the emission fails the record survives; if the row fails, that is logged as loudly
+as this codebase knows how, because a gap in the trail is the one thing an operator must not learn
+about later.
+
+**One door, not twenty.** Recorded in the `request_id` middleware after `call_next`, where the route
+template, the resolved claims and the real status are all known. There are more than twenty mutating
+`/admin/api` handlers, and a rule that must be remembered at each of them is the defect this
+codebase keeps meeting: PRM-142 was five handlers forgetting to read a status, PRM-131 five
+forgetting a metric input.
+
+**No request body is ever stored, with one narrow exception.** `/admin/api/auth/login` carries a
+password and a secret rotation *returns* a secret, so a log that kept bodies would be the largest
+credential store in the platform. The action and the path parameters say what was touched. The
+exception is `actor_email` on the login route, which records itself from the handler that had
+already parsed the body: "who tried to sign in" is the most audited fact in any system and an email
+is an identifier, not a secret. Failed attempts are recorded as carefully as successful ones,
+because a run of failures against one address is the pattern an auditor looks for and a log of
+successes cannot show it.
+
+**The action is a route template**, `POST /admin/api/nodes/{node_id}/deactivate`, never the resolved
+path — which would make every id its own action so nothing could be counted or alerted on. The id
+goes in `target`, separately.
+
+**A read is not audited.** Recording every dashboard poll would bury the writes in noise, which is
+how audit logs stop being read.
+
+**The Argus integration, and the half their conventions do not cover.** `argus.event`,
+`argus.outcome`, `argus.component.role`, `argus.feature` and `argus.tenant` are used as they stand,
+and the outcome word is taken from their tuple rather than retyped so a change on their side is an
+import error here instead of two systems disagreeing about what "ok" means. What `argus_semconv`
+1.0.0 has no attribute for is **the actor**, which for an audit event is the entire point. Rather
+than inventing names in their namespace, the actor and action go out under `prometheus.audit.*` and
+four attributes are proposed to them in channel entry P-31 — the PRM-144 lesson applied to
+ourselves, since a private vocabulary standing in for a missing contract is exactly what we asked
+them not to make us do. It reaches them as a span **event** on the server span that already exists,
+not a new span, which would double every admin request in their trace view for no information.
+
+**Readable with `admin:read`**, not `admin:write`: requiring write to see who wrote would mean only
+the people who can alter the system are able to check it.
+
+**Two things the tests caught.** The migration was missing the guard every post-baseline revision
+here needs — the pre-Alembic adoption path runs `create_all` from today's models, so the table
+already exists — and `db.py`'s own comment had warned about exactly that. And the test for "a failed
+row does not fail the action" originally patched out the function that *contains* the guard and then
+asserted the guard worked; it now breaks the database instead.
+
+**Verified**: 15 tests, including that a password never reaches the table and that a denied change
+is recorded. Live: a successful login, a failed login and a real node change all landed, with the
+trail readable through the API and the table confirmed to contain neither password.
+
+
 Append a new row to the table with the next `RM-NN` id and a new `## RM-NN — ...` section
 below, following the same shape (Why / Scope). Re-sort the table if the new item's
 priority isn't "last."
