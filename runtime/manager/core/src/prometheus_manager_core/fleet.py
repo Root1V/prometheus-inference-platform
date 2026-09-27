@@ -39,12 +39,15 @@ symmetric software, one configured role.
 
 ## What is deliberately not here
 
-Node **self-registration and heartbeat liveness**, which is the other half of
-what those systems do. `is_active` below is still decided by a probe from the
-centre, and a registry that cannot be reached is still a registry that answers
-nothing — the failure class PRM-146 patched rather than removed. Filed
-separately, because it changes how a node comes into existence and that is its
-own decision.
+Node **self-registration**. Heartbeat liveness arrived in PRM-151 and PRM-152 —
+each node reports in with its own credential and liveness is derived from
+`last_seen_at` against a TTL, which is why the `is_active` column this table used
+to carry is gone (PRM-154). Membership is still an operator decision: a heartbeat
+from an id this fleet does not hold is a 404, not an auto-join, for the reason
+Kubernetes gates node registration behind CSR approval.
+
+A registry that cannot be *reached* is still a registry that answers nothing —
+the failure class PRM-146 patched rather than removed.
 """
 
 from __future__ import annotations
@@ -93,10 +96,12 @@ CREATE TABLE IF NOT EXISTS nodes (
     -- needs to tell apart. Kubernetes derives status.conditions[Ready] from a
     -- renewed Lease the same way. NULL means never seen.
     last_seen_at                        TEXT,
-    -- Superseded by `enabled` + `last_seen_at` above, kept because this
-    -- codebase's migrations are additive. Written on every update so a rollback
-    -- reads something sane; never the source of truth (see Node.is_active).
-    is_active                           INTEGER NOT NULL DEFAULT 0,
+    -- PRM-154: an `is_active` column stood here, superseded by the two above and
+    -- kept as PRM-151's rollback aid. It was a derived value being persisted, and
+    -- a fact that exists twice starts disagreeing — a row updated by an older
+    -- build would have carried a stale answer next to the inputs it was derived
+    -- from. Dropped by migration 2, and absent here because a schema script has
+    -- to describe head (see schema.apply).
     hardware_amortization_usd_per_hour  REAL NOT NULL,
     electricity_usd_per_hour            REAL NOT NULL,
     price_margin_multiplier             REAL NOT NULL,
@@ -121,11 +126,24 @@ _ADDED_COLUMNS = (
 )
 
 
-# PRM-155: numbered schema changes for fleet.db. Empty is the honest state: the
-# one column that wants dropping — `is_active`, superseded by `enabled` +
-# `last_seen_at` — is PRM-151's rollback aid and PRM-151 merged the same day. A
-# rollback path removed the day it is created is not one. Filed as PRM-154.
-_MIGRATIONS: tuple[schema.Migration, ...] = ()
+# PRM-155: numbered schema changes for fleet.db.
+_MIGRATIONS: tuple[schema.Migration, ...] = (
+    # PRM-154. The first change of any kind this mechanism has carried, and it is
+    # one the mechanism it replaced could not express at all: an `ALTER TABLE` list
+    # can add a column and nothing else, which is why this column outlived its
+    # purpose rather than being removed when it was superseded.
+    #
+    # `is_active` was PRM-151's rollback aid, and PRM-151 merged the same day, so
+    # removing it then would have removed a rollback path a few hours old. It has
+    # now been superseded through two items built on top of it (PRM-151's cordon,
+    # PRM-152's heartbeat), and what is left is a derived value stored beside the
+    # inputs it is derived from — free to disagree with them, and read by nothing.
+    schema.Migration(
+        version=2,
+        name="PRM-154: drop the superseded is_active column",
+        statements=("ALTER TABLE nodes DROP COLUMN is_active",),
+    ),
+)
 
 
 @dataclass
@@ -320,8 +338,8 @@ class FleetRegistry:
         stamp = when or now_iso()
         with self._lock:
             cursor = self._conn.execute(
-                "UPDATE nodes SET last_seen_at = ?, is_active = ? WHERE id = ?",
-                (stamp, 1, node_id),
+                "UPDATE nodes SET last_seen_at = ? WHERE id = ?",
+                (stamp, node_id),
             )
             self._conn.commit()
             return cursor.rowcount > 0
@@ -351,10 +369,10 @@ class FleetRegistry:
                 raise NodeExistsError(node.name)
             self._conn.execute(
                 "INSERT INTO nodes (id, name, manager_url, node_type, tag, enabled, "
-                "last_seen_at, is_active, hardware_amortization_usd_per_hour, "
+                "last_seen_at, hardware_amortization_usd_per_hour, "
                 "electricity_usd_per_hour, price_margin_multiplier, engines, "
                 "created_at, updated_at) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     node.id,
                     node.name,
@@ -363,8 +381,6 @@ class FleetRegistry:
                     node.tag,
                     int(node.enabled),
                     node.last_seen_at,
-                    # Kept in step for a rollback; never read back as truth.
-                    int(node.is_active()),
                     node.hardware_amortization_usd_per_hour,
                     node.electricity_usd_per_hour,
                     node.price_margin_multiplier,
@@ -387,7 +403,7 @@ class FleetRegistry:
         with self._lock:
             self._conn.execute(
                 "UPDATE nodes SET manager_url = ?, node_type = ?, tag = ?, enabled = ?, "
-                "last_seen_at = ?, is_active = ?, "
+                "last_seen_at = ?, "
                 "hardware_amortization_usd_per_hour = ?, electricity_usd_per_hour = ?, "
                 "price_margin_multiplier = ?, engines = ?, updated_at = ? WHERE id = ?",
                 (
@@ -396,7 +412,6 @@ class FleetRegistry:
                     node.tag,
                     int(node.enabled),
                     node.last_seen_at,
-                    int(node.is_active()),
                     node.hardware_amortization_usd_per_hour,
                     node.electricity_usd_per_hour,
                     node.price_margin_multiplier,

@@ -10,7 +10,6 @@ from sqlalchemy import (
     Boolean,
     DateTime,
     Enum,
-    Float,
     ForeignKey,
     Index,
     Integer,
@@ -107,87 +106,15 @@ class CredentialShareToken(Base):
     __table_args__ = (Index("ix_share_tokens_client_id", "client_id"),)
 
 
-class NodeType(str, enum.Enum):
-    mac = "mac"
-    nvidia = "nvidia"
-    other = "other"
-
-
-# RM-62 follow-up: platform defaults for a node's cost fields, applied when
-# the operator leaves them blank at creation — derived from a MacBook Pro M4
-# Max (~$8,100 amortized over a 3-year lifespan) + ~70W sustained inference
-# load at Lima, Peru's highest residential electricity tier. Editable per
-# node any time; these are just the starting point for a new one.
-DEFAULT_HARDWARE_AMORTIZATION_USD_PER_HOUR = 0.3082
-DEFAULT_ELECTRICITY_USD_PER_HOUR = 0.0146
-DEFAULT_PRICE_MARGIN_MULTIPLIER = 1.3
-
-
-class Node(Base):
-    """Inference manager node inventory.
-
-    Implements: docs/roadmap.md — RM-20 (replaces the gateway's static MANAGER_NODES).
-    """
-
-    __tablename__ = "nodes"
-
-    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
-    # The name used in dashboard URLs (e.g. /admin/api/nodes/{name}/models) — unique.
-    name: Mapped[str] = mapped_column(String(64), nullable=False, unique=True)
-    manager_url: Mapped[str] = mapped_column(String(512), nullable=False)
-    node_type: Mapped[NodeType] = mapped_column(Enum(NodeType), nullable=False)
-    tag: Mapped[str | None] = mapped_column(Text, nullable=True)
-    # RM-62: superseded by the 3 fields below (kept, unused, per this
-    # codebase's additive-only migration convention — see _ADDITIVE_MIGRATIONS).
-    hourly_cost_usd: Mapped[float | None] = mapped_column(Float, nullable=True)
-    # RM-62 follow-up: the $/hour total is the sum of these two, each entered
-    # by the operator (nothing in this codebase can derive them) — split so
-    # either can be adjusted independently (e.g. an electricity rate change
-    # without re-estimating hardware amortization). Never left unconfigured:
-    # a blank value at creation gets the platform default above, so every
-    # node always has a real total for the price-suggestion calculator.
-    hardware_amortization_usd_per_hour: Mapped[float] = mapped_column(
-        Float, nullable=False, default=DEFAULT_HARDWARE_AMORTIZATION_USD_PER_HOUR
-    )
-    electricity_usd_per_hour: Mapped[float] = mapped_column(
-        Float, nullable=False, default=DEFAULT_ELECTRICITY_USD_PER_HOUR
-    )
-    # Multiplier applied over this node's break-even cost by the Model
-    # Pricing table's "suggest price" calculator — per-node since different
-    # hardware/markets may warrant a different margin.
-    price_margin_multiplier: Mapped[float] = mapped_column(
-        Float, nullable=False, default=DEFAULT_PRICE_MARGIN_MULTIPLIER
-    )
-    # PRM-133: which inference engines are installed on this node, as a JSON
-    # array of engine ids ("llama_cpp", "mlx", ...). Three states, and the
-    # difference between the last two is the whole point (RM-98):
-    #   NULL  — never declared. Predates this column, or the operator skipped
-    #           it. The instance form must not read this as "everything", which
-    #           is what it did before the column existed.
-    #   '[]'  — declared, and the answer is none. A node that can hold models
-    #           but cannot launch one.
-    #   '[..]'— declared.
-    # Deliberately not validated against a list of known engines here:
-    # auth-service is the identity and node registry, it does not know what an
-    # inference engine is, and a second copy of that list would drift from the
-    # manager's own. The UI offers only real ones and intersects what it reads
-    # with them, so an unrecognised string can never become a selectable option.
-    engines: Mapped[str | None] = mapped_column(Text, nullable=True, default=None)
-    # Set by a connectivity check (GET {manager_url}/health) at creation, on
-    # manager_url changes, and via /check and /activate (activate can't just
-    # flip this to True — it re-probes and only succeeds if reachable, so the
-    # badge never lies about a node being reachable when it isn't). /deactivate
-    # is the one true manual override — no probe — for taking a reachable node
-    # out of rotation on demand (e.g. maintenance).
-    is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True),
-        default=lambda: datetime.now(timezone.utc),
-        nullable=False,
-    )
-    updated_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True), nullable=True, default=None
-    )
+# PRM-154: `NodeType`, the three cost defaults and the `Node` model stood here.
+# PRM-134 moved the fleet's node list to the coordinator manager-api and left them
+# as the rollback path; the revision that drops the table closes that window. The
+# cost figures went with the model — they are a node's properties, and the
+# coordinator carries its own copies in `prometheus_manager_core.fleet`, where the
+# service that owns nodes can keep them.
+#
+# A node row touched no principal, no token and no scope. This service owns
+# security and now owns only security.
 
 
 # ── Engine and session factory ────────────────────────────────────────────────
@@ -361,13 +288,10 @@ _ADDITIVE_MIGRATIONS = [
     "ALTER TABLE principals ADD COLUMN auth_method TEXT NOT NULL DEFAULT 'oauth2'",
     "ALTER TABLE principals ADD COLUMN email TEXT",
     "ALTER TABLE principals ADD COLUMN password_hash TEXT",
-    "ALTER TABLE nodes ADD COLUMN is_active BOOLEAN NOT NULL DEFAULT 1",
-    "ALTER TABLE nodes ADD COLUMN hourly_cost_usd FLOAT",
-    "ALTER TABLE nodes ADD COLUMN hardware_amortization_usd_per_hour FLOAT NOT NULL "
-    f"DEFAULT {DEFAULT_HARDWARE_AMORTIZATION_USD_PER_HOUR}",
-    "ALTER TABLE nodes ADD COLUMN electricity_usd_per_hour FLOAT NOT NULL "
-    f"DEFAULT {DEFAULT_ELECTRICITY_USD_PER_HOUR}",
-    "ALTER TABLE nodes ADD COLUMN price_margin_multiplier FLOAT NOT NULL "
-    f"DEFAULT {DEFAULT_PRICE_MARGIN_MULTIPLIER}",
-    "ALTER TABLE nodes ADD COLUMN engines TEXT",
+    # PRM-154: six `ALTER TABLE nodes` entries stood here. They lifted a
+    # pre-Alembic database to the baseline shape, and there is no longer a table
+    # for them to lift — the revision that drops it runs immediately after this
+    # list, on the same adoption path. Removing them earlier than the drop would
+    # have been wrong: a database adopted between the two would have arrived at
+    # the baseline missing the columns the baseline declares.
 ]

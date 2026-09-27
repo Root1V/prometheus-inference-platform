@@ -43,6 +43,19 @@ old mechanism put it there — so it is stamped at the baseline rather than havi
 the baseline's statements run against tables that already exist. Same reasoning as
 the gateway's RM-68 and auth-service's PRM-153: without it the first real
 migration would refuse or damage a database holding live rows.
+
+A database with **no** tables is a different case, and PRM-154 is what showed it.
+The schema script has just created it at the *current* shape, so it is stamped at
+head: there is nothing for the chain to do to it. While every migration was
+additive the distinction did not matter — head and the baseline differed only by
+columns the script now creates anyway, so running them was a no-op. The first
+migration that **removes** something breaks that: a new database stamped at the
+baseline would be told to drop a column it was never given.
+
+Which puts one obligation on the caller, and it is the same one Alembic puts on
+`create_all` + `stamp head`: **the schema script must describe head**, not some
+earlier shape plus migrations to catch up. It is checked in the only place it can
+be — the tests for each chain.
 """
 
 from __future__ import annotations
@@ -85,6 +98,11 @@ class Migration:
     statements: tuple[str, ...]
 
 
+def head(migrations: tuple[Migration, ...]) -> int:
+    """The version a database created by today's schema script is already at."""
+    return max((m.version for m in migrations), default=BASELINE_VERSION)
+
+
 def _current_version(conn: sqlite3.Connection, chain: str) -> int | None:
     row = conn.execute("SELECT version FROM schema_version WHERE chain = ?", (chain,)).fetchone()
     return int(row[0]) if row else None
@@ -108,17 +126,20 @@ def apply(
 ) -> int:
     """Bring one database to the latest version. Returns the version it is at.
 
-    An unstamped database is stamped at the baseline, whether it was created a
-    moment ago or has been in use for months. That is not the same as Alembic's
-    rule and the difference is worth stating: there, the baseline *revision holds
-    the DDL*, so a new database runs it and an existing one is stamped to avoid
-    running it twice. Here the schema script runs unconditionally with
-    `IF NOT EXISTS`, so both paths arrive at the baseline shape before this is
-    called, and stamping is all that is left to do either way.
+    An unstamped database is stamped at the baseline if it already had tables and
+    at head if it did not, and `had_existing_tables` is how the two are told
+    apart. A database with tables predates this mechanism: the old one lifted it
+    to the baseline shape and it has seen nothing since, so every migration still
+    has to run. A database with none was created by the schema script a moment
+    ago, at head shape, so none of them do.
 
-    `had_existing_tables` therefore says nothing about *what* to do — it is
-    recorded because an operator wants to know, once, that a database already in
-    use came under version control.
+    **This used to be one branch**, stamping the baseline either way, and the
+    docstring said `had_existing_tables` was recorded for an operator's benefit
+    and decided nothing. That was true while every migration was additive: head
+    and the baseline then differed only by columns the script creates anyway, so
+    running the chain over a new database changed nothing. PRM-154 is the first
+    migration that removes something, and under the old rule a new database would
+    have been told to drop a column it never had.
 
     Every migration runs inside a transaction with its own version bump, so the
     two cannot disagree. That is the failure the mechanism this replaces could not
@@ -129,7 +150,7 @@ def apply(
 
     version = _current_version(conn, chain)
     if version is None:
-        version = BASELINE_VERSION
+        version = BASELINE_VERSION if had_existing_tables else head(migrations)
         _record(conn, chain, version)
         conn.commit()
         logger.info("schema.initialised", chain=chain, version=version, adopted=had_existing_tables)
