@@ -1,6 +1,6 @@
 # Prometheus Gateway — SDK Integration Guide
 
-**Revision**: 2026-09-26 · `PRM-142/144/145`
+**Revision**: 2026-09-27 · `PRM-143/158/159/160`
 <!-- Consumers vendor this file and diff it. The date and commit above are what to quote
      when asking whether a copy is current; they change whenever this document does. -->
 
@@ -480,8 +480,18 @@ Notes an SDK must handle correctly:
   → completion tokens). Check `usage` defensively on every chunk (other backend types may
   include it), but don't build the SDK's token-accounting around expecting a `usage`-bearing
   chunk from llama.cpp models.
-- **Mid-stream failures don't produce an HTTP error status** — by the time a backend fails
-  mid-generation, the `200`/`text/event-stream` headers are already committed. Instead, the
+- **A streamed request can fail *before* the stream begins, with a real HTTP status.** The
+  gateway opens the connection to the engine and reads its status **before** the
+  `200`/`text/event-stream` headers exist, so a request the engine refuses comes back as an
+  ordinary error response: the engine's own status and OpenAI-shaped body, exactly as the
+  non-streaming form of the same endpoint returns it — a client that sets `stream: true` does
+  not get a different error contract for doing so. A connection that never opened is a
+  `503 backend-unavailable` in the problem+json envelope. Neither is billed.
+  **An SDK must not assume `stream: true` implies a `200`**: check the status before starting
+  to parse SSE. Until `PRM-143` this case arrived as a `200` whose body was nothing but the
+  terminal frame, which no caller could distinguish from a legitimately empty answer.
+- **Mid-stream failures, by contrast, don't produce an HTTP error status** — once generation
+  has begun the `200`/`text/event-stream` headers are already committed. Instead, the
   gateway emits an in-band error chunk followed by `data: [DONE]`, then closes the connection.
   **The SDK must parse this in-band shape and cannot rely on HTTP status alone to detect a
   failed stream.** As of this codebase version there is exactly one code path that emits an
@@ -1052,6 +1062,10 @@ in both cases)**:
   header carries the value.
 - **Genuine connection failure** (the backend was unreachable even after the gateway's own
   internal retries) — this case sets **no `Retry-After` header and no body field at all**.
+  Since `PRM-143` this also covers a **streaming** request whose connection never opened. There
+  the gateway performs no internal retries at all (see §6.1), so the 503 arrives after one
+  attempt rather than three — the backoff guidance below applies unchanged, but the elapsed
+  time before you see it is shorter.
   There is zero backoff signal from the server in this specific case — confirmed by reading
   the response-building call directly, not inferred from absence of documentation. If your
   SDK needs a default backoff here, it is a genuine guess, not a value coming from the API —
