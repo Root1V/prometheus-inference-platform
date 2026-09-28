@@ -303,10 +303,6 @@ class ManagerConfig:
             )
 
     @property
-    def resolved_binary(self) -> Path:
-        return Path(self.server.binary).expanduser()
-
-    @property
     def resolved_log_dir(self) -> Path:
         """Same cwd-independence as resolved_registry_path (RM-75, PRM-165)."""
         path = Path(self.server.log_dir).expanduser()

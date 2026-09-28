@@ -196,8 +196,8 @@ class TestRegistryPathResolution:
 class TestSiblingPathResolution:
     """PRM-165: the other manager paths must not depend on the cwd either."""
 
-    # (attribute, relative default) — resolved_binary is deliberately absent:
-    # see test_backend_binaries_are_left_bare_for_path_lookup below.
+    # (attribute, relative default) — binaries are not paths and are absent on
+    # purpose: see test_backend_binaries_are_left_bare_for_path_lookup below.
     CASES = [
         ("resolved_log_dir", "runtime/logs"),
         ("resolved_pid_dir", "runtime/run"),

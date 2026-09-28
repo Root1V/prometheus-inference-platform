@@ -6091,8 +6091,7 @@ a pidfile under one cwd and looks for it under another has lost the instance it 
 through. Out of scope, and deliberately so: `resolved_backend_binary` returns bare command
 names (`vllm`, `python3`, `mlx_lm.server`) that exec resolves against `PATH`, so anchoring
 them would make every non-llama_cpp backend fail to start; a test now pins that. `[server]`'s
-own `resolved_binary` is untouched dead code — nothing calls it, `lifecycle.py` uses
-`resolved_backend_binary` — and removing it belongs to whoever audits that.
+own `resolved_binary` was left as dead code here and dropped in PRM-166.
 
 **Verified**: the container is unaffected. The image installs the package non-editable into
 `/app/.venv`, so `_REPO_ROOT` is `/app` — exactly the `WORKDIR` these paths already resolved
@@ -6100,6 +6099,20 @@ against, making the change a no-op there; `PMGR_REGISTRY_PATH` was already absol
 tests cover each path anchoring to the repo root, staying identical across three cwds
 (including `runtime/manager/`, the one that caused RM-75), absolute values passing through,
 and backend binaries staying bare. Manager suites green: core 324, api 159, tui 38.
+
+## PRM-166 — drop the manager's dead `resolved_binary` (done)
+
+**Why**: `ManagerConfig.resolved_binary` has had no caller since RM-08 phase 1 moved
+lifecycle to per-backend binaries (`a4ed1ca`). PRM-165 left it alone because it was outside
+that fix; this closes it.
+
+**Scope**: the property only. `ServerConfig.binary` stays — `resolved_backend_binary` still
+reads it for `llama_cpp`. Nothing else changes.
+
+**Verified**: no caller anywhere — no literal reference outside its own definition, no
+`getattr`/`hasattr` reaching it, and no route or `to_dict` serialising `ManagerConfig` (all
+`to_dict` are on registry/fleet entries). mypy over all four packages and the full pre-push
+green.
 
 Append a new row to the table with the next `RM-NN` id and a new `## RM-NN — ...` section
 below, following the same shape (Why / Scope). Re-sort the table if the new item's
