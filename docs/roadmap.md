@@ -6256,3 +6256,67 @@ at `200` — that one says only that the process answers, which is why RM-95 sup
 Guide §6.4 corrected and the revision stamped `2026-09-28 · PRM-162/163`, with the deprecation note
 a consumer needs: until today `/metrics` required nothing, so anything built against that now needs
 the scope.
+
+
+## PRM-164 — The audit target becomes their pair
+
+**Why**: PRM-162 left `prometheus.audit.target` as the one attribute neither vocabulary named, and
+raised it in P-32 offering two shapes. A-34 chose the flat pair — `argus.target.type` +
+`argus.target.id` — on an argument better than ours: inside a JSON, type and id become one value
+again, which is the route-template problem moved one level down. A JSON also forces a reader to
+know the shape per route (`node_id` here, `client_id` there), so querying "the object" would have
+to enumerate routes. `type` is closed cardinality for grouping, `id` open and opaque for filtering.
+
+**The type describes the id, not the object of the action.** That is what settles the cases where
+the two differ: `PATCH /admin/api/nodes/{node}/models/config` changes a node's model configuration
+and the id it carries is a node, so the type is `node` — what was done is already in `http.route`.
+So the type comes from the path segment the parameter belongs to, singular and lowercase, which is
+what makes the value read like the route's resource without being the route.
+
+**Not from the parameter's name, and that is the load-bearing part.** Ours are not a guide:
+`{node}` and `{node_id}` are both nodes, and `/admin/api/users/{client_id}` administers a principal
+that is very often a person. Their pipeline hashes `argus.target.id` where the type says `user`
+(A-34 §2), so the type is what stands between a person's identifier and their store — taking `users`
+from the route rather than `client` from the parameter is what makes the rule fire.
+
+**One identifier, one treatment.** `client_id` appears under two resources — `/users/{client_id}`
+and `/billing/clients/{client_id}/settings` — so the segment rule would call it `user` in one place
+and `client` in the other, and only `user` is hashed. A pseudonym is worth what the least protected
+place that subject's identifier appears is worth, so both emit `user`: erring toward hashing a
+machine client's id costs a little query convenience, the other direction publishes a person's.
+Raised in P-33, because the blind spot is in their rule and `client` is in their own example set.
+
+**A closed set that nothing enforces is not closed**, so a guard walks every mutating admin route
+and asserts the produced types are exactly `TARGET_TYPES` — a new route producing a new type fails
+there rather than putting an undeclared value in their store, and a declared type no route produces
+fails too. It earned itself immediately: it found `client` undeclared (the billing route above) and
+`limit` declared for no route.
+
+**And `{action}` is never a target.** `/instances/{model_id}/{action}` is start, stop or restart, so
+the last parameter is not an object. It is the only such parameter across the admin routes, declared
+rather than guessed — and it is also a finding for them, since `http.route` cannot tell those three
+apart. In P-33.
+
+### Two things found on the way, both real
+
+**The log line's `trace_id` was `none` for every admin action except the login.** It was there by
+accident: bound as a structlog contextvar by `TraceIDMiddleware`, which clears it in a `finally`
+when the response is done — and `record_request` runs after `call_next`. The login survived because
+it audits itself from inside its handler. Measured: the row carried `744c92ad…` and the response
+header carried the same id while the line said `none`. The row was never wrong; what was lost is
+exactly what Argus said the copy is for — search, the `trace_id` join, and alerts on patterns. The
+ids are now stated on the line rather than inherited, which is the same two-payload rule PRM-162
+wrote down: the event hangs off its span, the log line reaches no span.
+
+**`greenlet` was an undeclared runtime dependency of the gateway.** SQLAlchemy's async engine
+requires it and does not declare it as a hard dependency; auth-service has always declared it, the
+two share a virtualenv, and so the gateway worked on a package it never asked for. A `uv sync` that
+resolved only the gateway pruned it and the first database call failed with *"the greenlet library
+is required to use this function"* — which is what a fresh install of the gateway alone would have
+done all along. Now declared, same line as auth-service's.
+
+**Verified live**: two real admin actions through the running gateway — a node check emitting
+`argus.target.type=node` with the id in the clear, and a principal update emitting
+`argus.target.type=user` with the id their pipeline hashes — both with `argus.actor.kind=user`, the
+operator's `user.id`, and a `trace_id` matching the response header. The `user`-typed event is the
+real traffic A-34 §3 asked for to confirm the pseudonym against their store.
