@@ -16,7 +16,11 @@ from .config import Settings
 from .models.backends import BackendPool
 from .models.registry import ModelRegistry
 from .rate_limit_middleware import RateLimitMiddleware
-from .router import create_router
+
+# `_problem` is private to router.py and imported anyway: it is the canonical
+# RFC 9457 builder, and the alternative is a fourth hand-rolled copy of the same
+# envelope — which the validation handler below already names as a problem.
+from .router import _problem, create_router
 from .telemetry import (
     TraceIDMiddleware,
     configure_logging,
@@ -404,13 +408,40 @@ def create_app(
         return {"status": "ok"}
 
     @app.get("/metrics")
-    async def get_metrics(request: Request) -> dict[str, Any]:
-        """In-process operational metrics — unauthenticated.
+    async def get_metrics(request: Request) -> Any:
+        """In-process operational metrics — **`admin:read`**, as of PRM-163.
 
         Implements: memory/specs/018-observability-telemetry.md — AC-19, AC-20, AC-21, AC-22.
-        No authentication required (already exempted in JWTAuthMiddleware.EXEMPT_PATHS).
-        No per-user data — only aggregate counters and named backend states (AC-21).
+        Implements: docs/roadmap.md — PRM-163.
+
+        It was unauthenticated, and AC-21's "no per-user data" was true and not the
+        point: aggregate counters are still an operational map. Per-instance
+        `circuit_state` and `instance_ids` say which replica to aim at and whether it
+        is already failing, `dependencies.redis` says whether the thing every
+        authenticated request needs is reachable, and `jwt_validations_failed` is a
+        free oracle for anyone testing credentials — it says whether their attempts
+        arrive, without them having to authenticate.
+
+        The same figures are behind `admin:read` on `/v1/backends`, and the SDK guide
+        told consumers that scope was what kept the circuit state private. It was not.
+        Axonium found it (A-31) and named the shape this codebase keeps meeting, one
+        turn further on: not one truth in two places with one stale, but **one truth
+        in two places with only one protected** — and the protected one is the one
+        the documentation describes.
+
+        The scope is checked here rather than by the middleware because the middleware
+        only answers "is this token valid"; `/v1/backends` states its own requirement
+        the same way, and the two now say the same thing in the same place.
         """
+        claims = getattr(getattr(request, "state", None), "claims", None)
+        if claims is None or not claims.has_scope("admin:read"):
+            return _problem(
+                request,
+                403,
+                "forbidden",
+                "Forbidden",
+                "This endpoint requires admin:read scope.",
+            )
         pool = getattr(request.app.state, "backend_pool", None)
         snapshot = await metrics_store.snapshot(pool)
         snapshot["dependencies"] = await _dependency_status(request)

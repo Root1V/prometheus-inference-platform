@@ -1,6 +1,6 @@
 # Prometheus Gateway — SDK Integration Guide
 
-**Revision**: 2026-09-27 · `PRM-143/158/159/160`
+**Revision**: 2026-09-28 · `PRM-162/163`
 <!-- Consumers vendor this file and diff it. The date and commit above are what to quote
      when asking whether a copy is current; they change whenever this document does. -->
 
@@ -1152,6 +1152,13 @@ retry after the indicated wait, unlike a request that actually reached an overlo
 `GET /v1/backends` (requires `admin:read` — likely not available to a typical SDK-consuming
 client, but worth knowing about for platform-operator tooling built on the same SDK) exposes
 live circuit state per model if a health-check style pre-flight is ever useful.
+
+**`GET /metrics` returns the same circuit state and also requires `admin:read`** (PRM-163). Until
+2026-09-28 it required nothing at all, so the sentence above was misleading in the direction that
+matters: `admin:read` described what one door asked for while an adjacent door asked for nothing
+and answered with the same figures, plus per-instance ids, replica counts, redis reachability and a
+count of failed JWT validations. If you built anything against an unauthenticated `/metrics`, it
+now needs the scope; nothing in the three SDKs read it.
 
 ---
 

@@ -714,19 +714,24 @@ def _real_app(settings):
     return create_app(settings=settings, registry=registry)
 
 
-async def test_metrics_reports_dependency_health(settings):
+def _admin_headers(rsa_keys) -> dict[str, str]:
+    """PRM-163: `/metrics` needs `admin:read`, like the `/v1/backends` it mirrors."""
+    return {"Authorization": f"Bearer {make_token(rsa_keys['private'], scope='admin:read')}"}
+
+
+async def test_metrics_reports_dependency_health(settings, rsa_keys):
     """The dashboard polls /metrics, so that's where a dependency outage has to
     show. /health stays a liveness probe — the process is alive either way."""
     from httpx import ASGITransport, AsyncClient
 
     app = _real_app(settings)
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
-        body = (await c.get("/metrics")).json()
+        body = (await c.get("/metrics", headers=_admin_headers(rsa_keys))).json()
 
     assert "redis" in body["dependencies"]
 
 
-async def test_metrics_reports_redis_unreachable_and_what_it_breaks(settings):
+async def test_metrics_reports_redis_unreachable_and_what_it_breaks(settings, rsa_keys):
     """Redis being gone fails every authenticated request closed with 401
     invalid-token, which reads like an auth problem rather than a stopped
     container. The snapshot has to say what actually broke."""
@@ -739,7 +744,7 @@ async def test_metrics_reports_redis_unreachable_and_what_it_breaks(settings):
     app = _real_app(settings)
     app.state.shared_redis = _DeadRedis()
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
-        body = (await c.get("/metrics")).json()
+        body = (await c.get("/metrics", headers=_admin_headers(rsa_keys))).json()
         health = await c.get("/health")
 
     redis = body["dependencies"]["redis"]
@@ -748,3 +753,62 @@ async def test_metrics_reports_redis_unreachable_and_what_it_breaks(settings):
     assert "401" in redis["impact"]
     # Liveness is unchanged on purpose: the process is running fine.
     assert health.status_code == 200
+
+
+# ── PRM-163: the operational map stops being public ──────────────────────────
+
+
+async def test_metrics_needs_a_token_at_all(settings):
+    """It was unauthenticated, and what it returns is an operational map:
+    per-instance `circuit_state` says which replica to aim at and whether it is
+    already failing, and `jwt_validations_failed` tells anyone testing credentials
+    that their attempts arrive — without them having to authenticate."""
+    from httpx import ASGITransport, AsyncClient
+
+    app = _real_app(settings)
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
+        resp = await c.get("/metrics")
+
+    assert resp.status_code == 401
+
+
+async def test_metrics_needs_the_same_scope_as_its_twin(settings, rsa_keys):
+    """`/v1/backends` returns the same circuit state behind `admin:read`, and the
+    SDK guide told consumers that scope was what kept it private. Now it is."""
+    from httpx import ASGITransport, AsyncClient
+
+    app = _real_app(settings)
+    token = make_token(rsa_keys["private"], scope="inference:read")
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
+        resp = await c.get("/metrics", headers={"Authorization": f"Bearer {token}"})
+
+    assert resp.status_code == 403
+    assert resp.json()["type"].endswith("/forbidden")
+    # The same envelope as every other gateway error, from router.py's own builder
+    # rather than a fourth copy of it.
+    assert resp.headers["content-type"].startswith("application/problem+json")
+
+
+async def test_metrics_answers_an_admin(settings, rsa_keys):
+    from httpx import ASGITransport, AsyncClient
+
+    app = _real_app(settings)
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
+        resp = await c.get("/metrics", headers=_admin_headers(rsa_keys))
+
+    assert resp.status_code == 200
+    assert "inference" in resp.json()
+
+
+async def test_health_stays_open(settings):
+    """The liveness probe is not what this closes: it says only that the process
+    answers, which is why RM-95 suppresses its spans and why it carries nothing an
+    operational map would."""
+    from httpx import ASGITransport, AsyncClient
+
+    app = _real_app(settings)
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
+        resp = await c.get("/health")
+
+    assert resp.status_code == 200
+    assert resp.json() == {"status": "ok"}

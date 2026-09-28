@@ -6194,3 +6194,43 @@ One incidental fix: `test_the_scope_is_argus_own_and_keeps_its_attributes` pinne
 version as a literal and failed on the bump to `1.0.0a7`. It is about the *attribute* surviving, so
 it now reads the installed version — the dependency is `==` pinned, so a change is always a
 deliberate edit that a tripwire in that test does not catch.
+
+
+## PRM-163 — `/metrics` stops being public
+
+**Why**: Axonium found it while answering a question about `/health` and reported it as `A-31`,
+measured against the same gateway in the same minute — `GET /v1/backends` without a token is a
+`401`, with an ordinary token a `403` naming `admin:read`, and `GET /metrics` a `200`. Verified
+here before deciding: per-instance `circuit_state`, `instance_ids`, replica counts,
+`dependencies.redis.reachable`, throughput and `jwt_validations_failed`, all with no credential.
+
+AC-21's "no per-user data" was true and beside the point. Aggregate counters are still an
+operational map: the circuit state says which replica to aim at and whether it is already failing,
+and `jwt_validations_failed` is a free oracle for anyone testing credentials — it says whether their
+attempts arrive, without them having to authenticate.
+
+**The shape, one turn on from the one we keep meeting.** Not a truth in two places with one stale:
+**a truth in two places with only one protected**, and the protected one is the one the
+documentation describes. Guide §6.4 said `/v1/backends` "requires `admin:read`… exposes live circuit
+state", so a reader came away with the circuit state being private. It was not. Axonium named it as
+`A-27` again — there we accepted that an unauthenticated catalog must not name the engine, and this
+is the same argument with more in the payload.
+
+**Scope**: `/metrics` out of `JWTAuthMiddleware.EXEMPT_PATHS` and an `admin:read` check in the
+handler, stated where `/v1/backends` states its own so the two say the same thing in the same place.
+The rate-limit exemption stays, also matching its twin. `_problem` is imported from `router.py`
+rather than hand-rolling a fourth copy of the envelope, which the validation handler above it
+already names as a problem.
+
+**The dashboard was the only consumer** and it called `axios.get("/metrics")` plain, with a comment
+saying "unauthenticated". It now goes through `rootClient`, whose interceptor attaches the session
+token — verified live: a real dashboard login yields `admin:read admin:write` and reads `/metrics`
+at `200`. Nothing in the three SDKs reads it; Axonium said so and does not intend to.
+
+**Verified live**: no token `401 missing-credentials` with no `backends` key in the body, an ordinary
+token `403` in `application/problem+json`, the dashboard's own token `200`, and `/health` still open
+at `200` — that one says only that the process answers, which is why RM-95 suppresses its spans.
+
+Guide §6.4 corrected and the revision stamped `2026-09-28 · PRM-162/163`, with the deprecation note
+a consumer needs: until today `/metrics` required nothing, so anything built against that now needs
+the scope.

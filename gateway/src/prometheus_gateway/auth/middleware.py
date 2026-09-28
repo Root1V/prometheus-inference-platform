@@ -23,7 +23,13 @@ logger = get_logger(__name__)
 # Bearer token to obtain one would be circular. Same reason as the login above,
 # for the SDK path rather than the dashboard's.
 EXEMPT_PATHS: frozenset[str] = frozenset(
-    {"/health", "/metrics", "/v1/models", "/admin/api/auth/login", "/oauth2/token"}
+    # PRM-163: `/metrics` was here and is not any more. It returned per-instance
+    # circuit state, instance ids, replica counts, redis reachability and
+    # `jwt_validations_failed` to an unauthenticated GET — the same facts
+    # `/v1/backends` gates behind `admin:read`, and the SDK guide told consumers
+    # that gate was what kept them private. Axonium measured it (A-31) and named
+    # the shape: one truth in two places, only one of them protected.
+    {"/health", "/v1/models", "/admin/api/auth/login", "/oauth2/token"}
 )
 # Implements: memory/specs/013-web-chat-ui-proxy.md — all /ui/* paths use cookie auth, not Bearer
 # PRM-102: /share/<token> is opened by the person receiving the credentials, who
