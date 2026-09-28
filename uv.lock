@@ -68,14 +68,14 @@ wheels = [
 
 [[package]]
 name = "argus-obs-semconv"
-version = "1.0.0a7"
+version = "1.0.0a8"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "opentelemetry-api" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/f8/96/97046a8d6a0f58a13f3fe090bfac98397aa832d9fedbb59bc5ba230c1cae/argus_obs_semconv-1.0.0a7.tar.gz", hash = "sha256:d207b18b5fd34b3d6cfdd6c2308f9cfe5dd239c1581d13ff266d7b0b3b696d7e", size = 41611, upload-time = "2026-09-27T17:30:47.984Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/f2/a1/035b675d00604b21994654affb7689dd2329d406b05cccb2c0cfc62415a8/argus_obs_semconv-1.0.0a8.tar.gz", hash = "sha256:9b9495f2174e8f7940560a2ea3374b723d8e0e31d1a201c6825caf7e21d0167b", size = 41655, upload-time = "2026-09-28T02:23:36.424Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/aa/bc/7c91a3387fa1633723d99c90b7eea7c14ae359c75014b741fb9ad8363e00/argus_obs_semconv-1.0.0a7-py3-none-any.whl", hash = "sha256:d150c514308aa74c1ebbf78eae82a44bddc4a61d7688a5d85ea99e8fac401265", size = 22590, upload-time = "2026-09-27T17:30:46.886Z" },
+    { url = "https://files.pythonhosted.org/packages/8b/ca/8cd4aa1813fcdf98deada3b3ef99cbf994b75a8cee72137442046e0b0700/argus_obs_semconv-1.0.0a8-py3-none-any.whl", hash = "sha256:df9a38526c51e0a4af8c0085b97635ef2eb4c8b584a36fb67c1b35199aa5ee4f", size = 22618, upload-time = "2026-09-28T02:23:35.175Z" },
 ]
 
 [[package]]
@@ -1371,6 +1371,7 @@ dependencies = [
     { name = "alembic" },
     { name = "argus-obs-semconv" },
     { name = "fastapi" },
+    { name = "greenlet" },
     { name = "httpx" },
     { name = "jinja2" },
     { name = "prometheus-telemetry" },
@@ -1402,8 +1403,9 @@ dev = [
 requires-dist = [
     { name = "aiosqlite", specifier = ">=0.20" },
     { name = "alembic", specifier = ">=1.13" },
-    { name = "argus-obs-semconv", specifier = "==1.0.0a7" },
+    { name = "argus-obs-semconv", specifier = "==1.0.0a8" },
     { name = "fastapi", specifier = ">=0.111" },
+    { name = "greenlet", specifier = ">=3.0" },
     { name = "httpx", specifier = ">=0.27" },
     { name = "jinja2", specifier = ">=3.1.6" },
     { name = "prometheus-telemetry", editable = "telemetry" },

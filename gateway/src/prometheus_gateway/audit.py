@@ -96,11 +96,58 @@ KIND_USER, KIND_SERVICE, KIND_UNKNOWN = argus.ARGUS_ACTOR_KIND_VALUES
 ATTR_ACTOR_ID = "user.id"
 ATTR_ACTOR_EMAIL = "user.email"
 
-# `target` is the one with no standard name and no `argus.*` one either: nothing in
-# either vocabulary says *what a change was made to*. Kept under `prometheus.` and
-# raised with them in P-32, which is what A-32 asked for — «mejor una segunda ronda
-# que cuatro nombres inventados en dos namespaces».
-ATTR_TARGET = "prometheus.audit.target"
+# PRM-164: the target has their names now. P-32 asked and A-34 answered with the
+# flat pair over the JSON blob, on an argument better than ours: inside a JSON,
+# type and id become one value again — which is the route-template problem moved
+# one level down. A JSON also forces a reader to know the shape per route
+# (`node_id` here, `client_id` there), so querying "the object" would have to
+# enumerate routes.
+ATTR_TARGET_TYPE = argus.ARGUS_TARGET_TYPE
+ATTR_TARGET_ID = argus.ARGUS_TARGET_ID
+
+# The type is closed cardinality — it exists to **group**. Declared here because a
+# closed set that nothing enforces is not closed: a guard test walks every mutating
+# admin route and fails when one yields a type that is not in this set, so a new
+# route is a decision rather than a new value appearing in their store.
+#
+# `user` is load-bearing beyond grouping: their pipeline hashes `argus.target.id`
+# where the type says `user`, so the type is what stands between a person's
+# identifier and their store (A-34 §2). Mislabelling one is the hole they had just
+# closed, one level down.
+TARGET_TYPES: frozenset[str] = frozenset(
+    {
+        "node",
+        "user",
+        "model",
+        "instance",
+        "download",
+        "catalog",
+        "pricing",
+        "traffic_split",
+        "share",
+    }
+)
+
+# One identifier, one treatment. `client_id` is the same value under two resources —
+# `/admin/api/users/{client_id}` administers the principal, and
+# `/admin/api/billing/clients/{client_id}/settings` configures its billing — so the
+# route segment would call it `user` in one place and `client` in the other, and
+# their pipeline hashes only `user`.
+#
+# The pseudonymisation of a subject is worth what the least protected place that
+# subject's identifier appears is worth: emitting one row with the hash and another
+# with the same id in the clear leaves the clear one, which is the whole thing the
+# rule exists to prevent. So both say `user`, which errs toward hashing a machine
+# client's id — a little query convenience — rather than toward publishing a
+# person's. Raised with them in P-33, because the rule's blind spot is theirs to
+# decide on and `client` is in their own example set.
+_TYPE_OVERRIDES: dict[str, str] = {"client": "user"}
+
+# Path parameters that are not objects. `{action}` is a verb in the path —
+# `/instances/{model_id}/{action}` is start, stop or restart — so it can never be
+# the thing acted upon. Declared rather than guessed at, and the only one: every
+# other parameter across the mutating admin routes identifies something.
+_NON_OBJECT_PARAMS: frozenset[str] = frozenset({"action"})
 
 # These three are on the server span already, measured: `http.request.method` +
 # `http.route` (the route template A-32 pointed out we emit), and
@@ -114,6 +161,18 @@ ATTR_TARGET = "prometheus.audit.target"
 LOG_ATTR_ACTION = "action"
 LOG_ATTR_STATUS = "status_code"
 LOG_ATTR_SOURCE_IP = "source_ip"
+# PRM-164: and the correlation ids, for the same reason and one worse. They were on
+# the line by accident — bound as structlog contextvars by `TraceIDMiddleware`, which
+# clears them in a `finally` when the response is done. `record_request` runs *after*
+# `call_next`, so every admin action except the login (which audits itself from
+# inside its handler, while the binding still exists) emitted `trace_id: "none"`.
+#
+# Measured: the row carried `744c92ad…` and the response header carried the same id,
+# while the log line for that action said `none`. The row was never wrong; what was
+# lost is the correlation Argus said the copy is *for* — search, `trace_id` join, and
+# alerts on patterns. So they are stated, not inherited.
+LOG_ATTR_TRACE_ID = "trace_id"
+LOG_ATTR_REQUEST_ID = "request_id"
 
 # Everything under /admin/api is administrative. A read changes nothing and is not
 # audited: recording every dashboard poll would bury the writes in noise, which is
@@ -174,6 +233,57 @@ def action_for(request: Request) -> tuple[str, str | None]:
     return f"{request.method.upper()} {template}", (json.dumps(params) if params else None)
 
 
+def target_for(request: Request) -> tuple[str | None, str | None]:
+    """`(argus.target.type, argus.target.id)` for what this request acted on — PRM-164.
+
+    **The type describes the id, not the object of the action.** That is A-34's
+    semantics — *«es el único que sabe si el id de al lado es una cosa o alguien»* —
+    and it settles the cases where the two differ: `PATCH
+    /admin/api/nodes/{node}/models/config` changes a node's model configuration, and
+    the id it carries is a node, so the type is `node`. What was done is already in
+    `http.route`.
+
+    So the type comes from the **path segment the parameter belongs to**, singular
+    and lowercase, which is what makes the value read like the route's resource
+    without being the route. Not from the parameter's name: ours are not a reliable
+    guide — `{node}` and `{node_id}` are both nodes, and `/admin/api/users/{client_id}`
+    administers a principal that is very often a person. Taking `users` from the
+    route rather than `client` from the parameter is what makes their hashing rule
+    fire, and erring that way costs a little query convenience where the principal
+    turns out to be a machine. The other direction costs an identifier in the clear.
+
+    The **last** object parameter wins, because that is the most specific — A-34's
+    rule. Where a route carries two that both matter, the outer one is lost from the
+    pair; the row keeps the full parameter set, and the case is raised in P-33.
+    """
+    route = request.scope.get("route")
+    template = getattr(route, "path", None) or request.url.path
+    params: dict[str, Any] = dict(request.scope.get("path_params") or {})
+    if not params:
+        return None, None
+
+    # Walk the template so the order is the route's, not the dict's.
+    names = [
+        seg[1:-1]
+        for seg in template.split("/")
+        if seg.startswith("{") and seg.endswith("}") and seg[1:-1] not in _NON_OBJECT_PARAMS
+    ]
+    names = [n for n in names if n in params]
+    if not names:
+        return None, None
+    chosen = names[-1]
+
+    segments = template.strip("/").split("/")
+    try:
+        at = segments.index("{" + chosen + "}")
+    except ValueError:
+        return None, str(params[chosen])
+    resource = segments[at - 1] if at > 0 else ""
+    target_type = resource.rstrip("s").replace("-", "_") if resource else ""
+    target_type = _TYPE_OVERRIDES.get(target_type, target_type)
+    return (target_type or None), str(params[chosen])
+
+
 async def record(
     *,
     action: str,
@@ -183,6 +293,8 @@ async def record(
     actor_user_id: str | None = None,
     actor_email: str | None = None,
     target: str | None = None,
+    target_type: str | None = None,
+    target_id: str | None = None,
     request_id: str | None = None,
     trace_id: str | None = None,
     source_ip: str | None = None,
@@ -227,8 +339,13 @@ async def record(
         attributes[ATTR_ACTOR_ID] = subject
     if actor_email:
         attributes[ATTR_ACTOR_EMAIL] = actor_email
-    if target:
-        attributes[ATTR_TARGET] = target
+    # PRM-164: the pair goes to Argus; the row keeps `target`, the full parameter
+    # set as JSON. Not the same fact twice — the row is the record of truth and
+    # holds every parameter, including the outer one a two-object route loses here.
+    if target_type:
+        attributes[ATTR_TARGET_TYPE] = target_type
+    if target_id:
+        attributes[ATTR_TARGET_ID] = target_id
 
     # PRM-162: the event goes on the span that is **already current**, which is the
     # SERVER span the ASGI instrumentation opened for this request.
@@ -257,6 +374,8 @@ async def record(
         **{k.replace(".", "_"): v for k, v in attributes.items()},
         **{LOG_ATTR_ACTION: action, LOG_ATTR_STATUS: status_code},
         **({LOG_ATTR_SOURCE_IP: source_ip} if source_ip else {}),
+        **({LOG_ATTR_TRACE_ID: trace_id} if trace_id else {}),
+        **({LOG_ATTR_REQUEST_ID: request_id} if request_id else {}),
     )
 
 
@@ -271,6 +390,7 @@ async def record_request(request: Request, status_code: int) -> None:
     """
     claims = getattr(getattr(request, "state", None), "claims", None)
     action, target = action_for(request)
+    target_type, target_id = target_for(request)
     await record(
         action=action,
         outcome=outcome_for(status_code),
@@ -278,6 +398,8 @@ async def record_request(request: Request, status_code: int) -> None:
         actor_client_id=getattr(claims, "client_id", None),
         actor_user_id=getattr(claims, "user_id", None),
         target=target,
+        target_type=target_type,
+        target_id=target_id,
         request_id=getattr(getattr(request, "state", None), "request_id", None),
         trace_id=getattr(getattr(request, "state", None), "trace_id", None),
         source_ip=(request.client.host if request.client else None),

@@ -233,6 +233,156 @@ async def test_but_the_log_line_states_them_itself(monkeypatch):
     assert line["source_ip"] == "10.0.0.9"
 
 
+# ── PRM-164: the target is their pair, and the type is what protects a person ──
+
+
+def _req(template: str, params: dict):
+    class _R:
+        def __init__(self):
+            self.scope = {
+                "route": type("x", (), {"path": template})(),
+                "path_params": params,
+            }
+            self.url = type("u", (), {"path": template})()
+
+    return _R()
+
+
+async def test_the_type_describes_the_id_not_the_object():
+    """A-34's semantics, and it settles the cases where the two differ. `PATCH
+    /admin/api/nodes/{node}/models/config` changes a node's model configuration and
+    the id it carries is a node — what was done is already in `http.route`."""
+    assert audit.target_for(_req("/admin/api/nodes/{node}/models/config", {"node": "lab"})) == (
+        "node",
+        "lab",
+    )
+
+
+async def test_the_most_specific_parameter_is_the_target():
+    assert audit.target_for(
+        _req("/admin/api/nodes/{node}/models/{model_id}", {"node": "lab", "model_id": "m-1"})
+    ) == ("model", "m-1")
+
+
+async def test_a_verb_in_the_path_is_never_the_target():
+    """`/instances/{model_id}/{action}` is start, stop or restart. The last
+    parameter is the most specific and this one is not an object at all."""
+    assert audit.target_for(
+        _req(
+            "/admin/api/nodes/{node}/instances/{model_id}/{action}",
+            {"node": "lab", "model_id": "m-1", "action": "start"},
+        )
+    ) == ("instance", "m-1")
+
+
+async def test_administering_a_principal_says_user_whatever_the_parameter_is_called():
+    """The privacy-critical one. Their pipeline hashes `argus.target.id` where the
+    type says `user`, so the type is what stands between a person's identifier and
+    their store. Our parameter is called `client_id` and the resource is `users`;
+    taking the resource is what makes the rule fire."""
+    assert audit.target_for(_req("/admin/api/users/{client_id}", {"client_id": "c-1"})) == (
+        "user",
+        "c-1",
+    )
+
+
+async def test_the_same_identifier_gets_the_same_treatment_everywhere():
+    """`client_id` appears under two resources. A pseudonym is worth what the least
+    protected place that subject's identifier appears is worth, so emitting the hash
+    in one row and the clear value in another would leave the clear one — which is
+    the whole thing the rule prevents."""
+    principal = audit.target_for(_req("/admin/api/users/{client_id}", {"client_id": "c-1"}))
+    billing = audit.target_for(
+        _req("/admin/api/billing/clients/{client_id}/settings", {"client_id": "c-1"})
+    )
+    assert principal == billing == ("user", "c-1")
+
+
+async def test_a_route_with_no_parameters_has_no_target():
+    assert audit.target_for(_req("/admin/api/nodes", {})) == (None, None)
+
+
+async def test_a_hyphenated_resource_is_normalised():
+    assert audit.target_for(_req("/admin/api/traffic-splits/{name}", {"name": "chat"})) == (
+        "traffic_split",
+        "chat",
+    )
+
+
+async def test_every_mutating_admin_route_yields_a_declared_type(settings):
+    """The guard that makes the cardinality closed, which is what A-34 asked for: a
+    set nothing enforces is not closed. A new admin route producing a new type fails
+    here rather than putting an undeclared value in their store — and a declared type
+    no route produces fails too, because a set that lists what does not happen stops
+    describing anything."""
+    import re
+
+    from prometheus_gateway.main import create_app
+
+    app = create_app(settings=settings)
+    produced: set[str] = set()
+    for route in app.routes:
+        path = getattr(route, "path", "")
+        methods = getattr(route, "methods", set()) or set()
+        if not path.startswith("/admin/api/") or not (methods & {"POST", "PUT", "PATCH", "DELETE"}):
+            continue
+        names = re.findall(r"\{([^}]+)\}", path)
+        if not names:
+            continue
+        target_type, _ = audit.target_for(_req(path, {n: "x" for n in names}))
+        if target_type is not None:
+            produced.add(target_type)
+
+    assert produced == audit.TARGET_TYPES, (
+        f"undeclared: {sorted(produced - audit.TARGET_TYPES)}; "
+        f"declared but produced by no route: {sorted(audit.TARGET_TYPES - produced)}"
+    )
+
+
+async def test_the_log_line_carries_the_correlation_ids_itself(monkeypatch):
+    """They were on the line by accident, as structlog contextvars that
+    `TraceIDMiddleware` clears when the response is done — and `record_request` runs
+    after that, so every admin action except the self-auditing login emitted
+    `trace_id: "none"`. The row was always right; the copy Argus correlates by was
+    not."""
+    from structlog.testing import capture_logs
+
+    _event_attrs(monkeypatch)
+    with capture_logs() as logs:
+        await audit.record(
+            action="POST /admin/api/nodes/{node_id}/check",
+            outcome="ok",
+            status_code=200,
+            trace_id="744c92ad7994e25e297206be944db1eb",
+            request_id="4755342b-a42a-47f1-ab8c-5bba91b7ca23",
+        )
+    line = next(e for e in logs if e.get("event") == "audit.admin_action")
+    assert line["trace_id"] == "744c92ad7994e25e297206be944db1eb"
+    assert line["request_id"] == "4755342b-a42a-47f1-ab8c-5bba91b7ca23"
+
+
+async def test_the_pair_reaches_the_event_and_the_json_does_not(monkeypatch):
+    attrs = _event_attrs(monkeypatch)
+    await audit.record(
+        action="POST /admin/api/nodes/{node_id}/deactivate",
+        outcome="ok",
+        status_code=200,
+        target='{"node_id": "8ed6"}',
+        target_type="node",
+        target_id="8ed6",
+    )
+    assert attrs["argus.target.type"] == "node"
+    assert attrs["argus.target.id"] == "8ed6"
+    assert "prometheus.audit.target" not in attrs
+
+
+async def test_the_row_keeps_every_parameter(gw, rsa_keys):
+    """The pair loses the outer parameter where a route carries two that both
+    matter. The row is the record of truth and keeps the full set — not the same
+    fact twice, a fuller one in the place that must not lose it."""
+    assert "target" in db.AuditEvent.__table__.columns
+
+
 # ── An administrative change lands a row, through one door ───────────────────
 
 
