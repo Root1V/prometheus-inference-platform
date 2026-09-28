@@ -1,5 +1,6 @@
-import axios from "axios";
 import { useQuery } from "@tanstack/react-query";
+
+import { rootClient } from "./client";
 
 /** Per-backend (= per-model) counters and circuit-breaker state. */
 export interface BackendMetrics {
@@ -27,10 +28,14 @@ export interface BackendMetrics {
 }
 
 /**
- * Gateway's GET /metrics — unauthenticated, process-in-memory operational
- * counters (see gateway/src/prometheus_gateway/telemetry.py). Counters are
- * cumulative since the gateway process started — a restart zeroes them, and
- * there's no historical trend, only the current snapshot.
+ * Gateway's GET /metrics — process-in-memory operational counters (see
+ * gateway/src/prometheus_gateway/telemetry.py). Counters are cumulative since the
+ * gateway process started — a restart zeroes them, and there's no historical
+ * trend, only the current snapshot.
+ *
+ * Requires `admin:read` as of PRM-163. It was unauthenticated, which put
+ * per-instance circuit state and `jwt_validations_failed` behind no credential at
+ * all while `/v1/backends` gated the same figures.
  */
 export interface MetricsSnapshot {
   service: string;
@@ -60,9 +65,11 @@ const POLL_INTERVAL_MS = 5000;
 export function useMetrics() {
   return useQuery({
     queryKey: METRICS_KEY,
-    // Root-level path, not under /admin/api — /metrics is unauthenticated
-    // and same-origin (the SPA is served by the gateway itself).
-    queryFn: async () => (await axios.get<MetricsSnapshot>("/metrics")).data,
+    // Root-level path, not under /admin/api, so `rootClient` rather than
+    // `apiClient` — but through a client all the same: PRM-163 put `/metrics`
+    // behind `admin:read`, and the session's token is attached by rootClient's
+    // interceptor. A plain `axios.get` here would now 401.
+    queryFn: async () => (await rootClient.get<MetricsSnapshot>("/metrics")).data,
     refetchInterval: POLL_INTERVAL_MS,
   });
 }
