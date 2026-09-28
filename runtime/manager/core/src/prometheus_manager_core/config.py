@@ -308,11 +308,20 @@ class ManagerConfig:
 
     @property
     def resolved_log_dir(self) -> Path:
-        return Path(self.server.log_dir)
+        """Same cwd-independence as resolved_registry_path (RM-75, PRM-165)."""
+        path = Path(self.server.log_dir).expanduser()
+        return path if path.is_absolute() else _REPO_ROOT / path
 
     @property
     def resolved_pid_dir(self) -> Path:
-        return Path(self.server.pid_dir)
+        """Same cwd-independence as resolved_registry_path (RM-75, PRM-165).
+
+        A pid_dir that moves with the cwd is how a manager loses track of
+        instances it started: it writes the pidfile under one directory and
+        looks for it under another.
+        """
+        path = Path(self.server.pid_dir).expanduser()
+        return path if path.is_absolute() else _REPO_ROOT / path
 
     @property
     def resolved_registry_path(self) -> Path:
@@ -341,12 +350,20 @@ class ManagerConfig:
         See memory/specs/011-downloads-view-redesign.md — AC-25
         """
         if self.downloads.ca_bundle:
-            return Path(self.downloads.ca_bundle)
+            path = Path(self.downloads.ca_bundle).expanduser()
+            return path if path.is_absolute() else _REPO_ROOT / path
         return None
 
     @property
     def resolved_downloads_dir(self) -> Path:
-        return Path(self.downloads.dir)
+        """Same cwd-independence as resolved_registry_path (RM-75, PRM-165).
+
+        Downloaded weights are large; resolving this against the cwd means a
+        model already on disk is re-fetched into a second tree rather than
+        found.
+        """
+        path = Path(self.downloads.dir).expanduser()
+        return path if path.is_absolute() else _REPO_ROOT / path
 
     @property
     def hf_token(self) -> str | None:

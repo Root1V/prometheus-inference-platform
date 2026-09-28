@@ -193,6 +193,69 @@ class TestRegistryPathResolution:
         assert load_config(path=None).resolved_registry_path == Path("/data/registry.db")
 
 
+class TestSiblingPathResolution:
+    """PRM-165: the other manager paths must not depend on the cwd either."""
+
+    # (attribute, relative default) — resolved_binary is deliberately absent:
+    # see test_backend_binaries_are_left_bare_for_path_lookup below.
+    CASES = [
+        ("resolved_log_dir", "runtime/logs"),
+        ("resolved_pid_dir", "runtime/run"),
+        ("resolved_downloads_dir", "runtime/models"),
+    ]
+
+    @pytest.mark.parametrize("attr,relative", CASES)
+    def test_default_anchors_to_the_repo_root(self, attr: str, relative: str):
+        repo_root = Path(__file__).resolve().parents[4]
+        resolved = getattr(ManagerConfig(), attr)
+        assert resolved.is_absolute()
+        assert resolved == repo_root / relative
+
+    @pytest.mark.parametrize("attr,relative", CASES)
+    def test_identical_from_any_cwd(self, attr: str, relative: str, tmp_path, monkeypatch):
+        """Including from runtime/manager/ — the cwd that caused RM-75."""
+        cfg = ManagerConfig()
+        from_repo_root = getattr(cfg, attr)
+
+        nested = tmp_path / "runtime" / "manager"
+        nested.mkdir(parents=True)
+        for cwd in (tmp_path, nested):
+            monkeypatch.chdir(cwd)
+            assert getattr(cfg, attr) == from_repo_root
+
+    def test_absolute_log_and_pid_dirs_are_left_alone(self, tmp_path: Path):
+        cfg = ManagerConfig(
+            server=ServerConfig(
+                host="127.0.0.1",
+                log_dir=str(tmp_path / "logs"),
+                pid_dir=str(tmp_path / "run"),
+            )
+        )
+        assert cfg.resolved_log_dir == tmp_path / "logs"
+        assert cfg.resolved_pid_dir == tmp_path / "run"
+
+    def test_absolute_downloads_dir_is_left_alone(self, tmp_path: Path):
+        cfg = ManagerConfig(downloads=DownloadsConfig(dir=str(tmp_path / "weights")))
+        assert cfg.resolved_downloads_dir == tmp_path / "weights"
+
+    def test_relative_ca_bundle_anchors_to_the_repo_root(self):
+        repo_root = Path(__file__).resolve().parents[4]
+        cfg = ManagerConfig(downloads=DownloadsConfig(ca_bundle="certs/corp.pem"))
+        assert cfg.resolved_ca_bundle == repo_root / "certs" / "corp.pem"
+
+    def test_backend_binaries_are_left_bare_for_path_lookup(self):
+        """Anchoring these would break Popen: they are PATH lookups, not paths.
+
+        `vllm`, `python3`, `mlx_lm.server` and friends are resolved by exec
+        against PATH — turning them into <repo root>/vllm would make every
+        non-llama_cpp backend fail to start.
+        """
+        cfg = ManagerConfig()
+        for backend in ("mlx", "vllm", "sglang", "sd_cpp"):
+            binary = cfg.resolved_backend_binary(backend)
+            assert not binary.startswith("/"), f"{backend} binary became a path: {binary}"
+
+
 # ── PRM-135: adding a backend is four coordinated edits, and nothing checked ──
 
 

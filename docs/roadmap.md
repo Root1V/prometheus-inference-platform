@@ -6079,6 +6079,28 @@ SDK guide §3.6b and told to Axonium in P-28, including the part that affects th
 cost of a split name is no longer `requests × one rate`.
 
 
+## PRM-165 — fix: the manager's remaining paths still resolved against the cwd (done)
+
+**Why**: RM-75 anchored `registry.db` to the repo root but stopped there, leaving the same
+defect in every sibling path. `resolved_pid_dir` is the one that bites: a manager that writes
+a pidfile under one cwd and looks for it under another has lost the instance it started.
+`resolved_downloads_dir` re-fetches weights already on disk into a second tree.
+
+**Scope**: `resolved_log_dir`, `resolved_pid_dir`, `resolved_downloads_dir` and
+`resolved_ca_bundle` now use RM-75's rule — relative anchors to `_REPO_ROOT`, absolute passes
+through. Out of scope, and deliberately so: `resolved_backend_binary` returns bare command
+names (`vllm`, `python3`, `mlx_lm.server`) that exec resolves against `PATH`, so anchoring
+them would make every non-llama_cpp backend fail to start; a test now pins that. `[server]`'s
+own `resolved_binary` is untouched dead code — nothing calls it, `lifecycle.py` uses
+`resolved_backend_binary` — and removing it belongs to whoever audits that.
+
+**Verified**: the container is unaffected. The image installs the package non-editable into
+`/app/.venv`, so `_REPO_ROOT` is `/app` — exactly the `WORKDIR` these paths already resolved
+against, making the change a no-op there; `PMGR_REGISTRY_PATH` was already absolute. 10 new
+tests cover each path anchoring to the repo root, staying identical across three cwds
+(including `runtime/manager/`, the one that caused RM-75), absolute values passing through,
+and backend binaries staying bare. Manager suites green: core 324, api 159, tui 38.
+
 Append a new row to the table with the next `RM-NN` id and a new `## RM-NN — ...` section
 below, following the same shape (Why / Scope). Re-sort the table if the new item's
 priority isn't "last."
