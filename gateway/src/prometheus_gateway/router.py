@@ -806,9 +806,9 @@ def create_router(registry: ModelRegistry, pool: "BackendPool") -> APIRouter:
 
     # ── GET /v1/models ──────────────────────────────────────────────────────
     # Implements: memory/specs/006-multi-model-gateway.md — AC-1
-    # Implements: docs/roadmap.md — RM-45, PRM-166
+    # Implements: docs/roadmap.md — RM-45, PRM-167
     #
-    # PRM-166: one catalog, and it is the caller's. There were two — this one
+    # PRM-167: one catalog, and it is the caller's. There were two — this one
     # public and unscoped, and `/v1/models/mine` authenticated and filtered by the
     # caller's `model:<id>` grants. The public one published the whole inventory
     # (ids, family, quantization, context length, replica count, payload schema) to
@@ -828,7 +828,7 @@ def create_router(registry: ModelRegistry, pool: "BackendPool") -> APIRouter:
     # thing. One implementation, so the item shape cannot drift between them —
     # it was duplicated between the two handlers before this.
     async def _catalog(request: Request) -> Any:
-        """The models this token may call — PRM-166."""
+        """The models this token may call — PRM-167."""
         from opentelemetry.trace import SpanKind
 
         claims = getattr(getattr(request, "state", None), "claims", None)
@@ -892,13 +892,13 @@ def create_router(registry: ModelRegistry, pool: "BackendPool") -> APIRouter:
 
     # ── GET /v1/models/mine ──────────────────────────────────────────────────
     # RM-45 created this because `/v1/models` was the full public catalog and a
-    # token had no way to find out what it could actually call. PRM-166 made that
+    # token had no way to find out what it could actually call. PRM-167 made that
     # the answer for both, so this is an alias — kept because it is in the guide
     # and SDKs call it, and removing a documented endpoint to save one line would
     # be a breaking change bought for nothing.
     @router.get("/v1/models/mine")
     async def list_my_models(request: Request) -> Any:
-        """Alias of `GET /v1/models` since PRM-166 — identical response."""
+        """Alias of `GET /v1/models` since PRM-167 — identical response."""
         return await _catalog(request)
 
     # ── GET /v1/backends ────────────────────────────────────────────────────
