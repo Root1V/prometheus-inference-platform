@@ -1605,7 +1605,7 @@ dev = [
 requires-dist = [
     { name = "opentelemetry-exporter-otlp-proto-http", specifier = ">=1.44.0" },
     { name = "opentelemetry-instrumentation-fastapi", specifier = ">=0.46b0" },
-    { name = "opentelemetry-instrumentation-httpx", specifier = ">=0.46b0" },
+    { name = "opentelemetry-instrumentation-httpx", specifier = ">=0.65b0" },
     { name = "opentelemetry-sdk", specifier = ">=1.25" },
     { name = "starlette", specifier = ">=0.36" },
     { name = "structlog", specifier = ">=25.5.0" },
