@@ -52,7 +52,9 @@ def test_endpoint_installs_a_periodic_otlp_reader() -> None:
     # This provider's own readers. `_all_metric_readers` is a class-level set
     # shared by every provider ever built in the process, so asserting on it
     # would pass on a reader some other test installed.
-    readers = provider._sdk_config.metric_readers  # type: ignore[attr-defined]
+    # SDK 1.44 moved these off `_sdk_config` (which now carries only resource,
+    # views and exemplar_filter) onto the provider itself.
+    readers = provider._metric_readers  # type: ignore[attr-defined]
     assert [type(r) for r in readers] == [PeriodicExportingMetricReader]
 
 
@@ -78,7 +80,7 @@ def test_no_endpoint_still_installs_a_real_provider() -> None:
 
     provider = om.get_meter_provider()
     assert isinstance(provider, MeterProvider)
-    assert provider._sdk_config.metric_readers == ()  # type: ignore[attr-defined]
+    assert provider._metric_readers == ()  # type: ignore[attr-defined]
 
 
 def test_is_idempotent() -> None:
