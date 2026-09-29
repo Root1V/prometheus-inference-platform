@@ -16,6 +16,7 @@ from tests.conftest import make_token
 NODE_URL = "http://mac.local:8090"
 AUTH_TOKEN_URL = "https://auth.test/token"
 AUTH_ADMIN_URL = "https://auth.test/admin"
+AUTH_SHARE_URL = "https://auth.test/share"
 # PRM-134: the node registry moved from auth-service to the fleet coordinator, so
 # these routes mock a manager-api rather than the identity service.
 FLEET_URL = "http://coordinator.test:8090"
@@ -69,6 +70,7 @@ def admin_settings(rsa_keys, tmp_path):
         auth_service_admin_url=AUTH_ADMIN_URL,
         auth_service_admin_api_key="test-admin-secret",
         manager_fleet_url=FLEET_URL,  # PRM-134
+        auth_service_share_url=AUTH_SHARE_URL,  # PRM-102
     )
 
 

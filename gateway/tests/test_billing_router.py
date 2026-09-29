@@ -50,6 +50,8 @@ def settings(rsa_keys, tmp_path):
         admin_dashboard_enabled=True,
         auth_service_admin_url="http://auth.test",
         auth_service_admin_api_key="secret",
+        manager_fleet_url="http://coordinator.test:8090",  # PRM-134
+        auth_service_share_url="https://auth.test/share",  # PRM-102
     )
 
 
@@ -429,6 +431,8 @@ async def test_get_pricing_reflects_yaml_and_db_sources(
         admin_dashboard_enabled=True,
         auth_service_admin_url="http://auth.test",
         auth_service_admin_api_key="secret",
+        manager_fleet_url="http://coordinator.test:8090",  # PRM-134
+        auth_service_share_url="https://auth.test/share",  # PRM-102
         pricing_file=str(pricing_file),
     )
     app = create_app(settings=settings, registry=registry, redis_client=fake_redis)

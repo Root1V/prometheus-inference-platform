@@ -6114,6 +6114,35 @@ reads it for `llama_cpp`. Nothing else changes.
 `to_dict` are on registry/fleet entries). mypy over all four packages and the full pre-push
 green.
 
+## PRM-168 — fix: CI was red for 40+ runs because tests read the developer's `.env` (done)
+
+**Why**: `Settings.model_config` points `env_file` at the real `gateway/.env` so the app finds
+it from any cwd. Under pytest that silently supplied whatever the developer had configured, so
+six fixtures enabling `admin_dashboard_enabled=True` without every field PRM-102's and
+PRM-134's validators demand passed on a developer machine and failed in CI, which has no
+`.env` — it is gitignored. `.githooks/pre-push` reported green the whole time, which is why
+nobody was told: the hook and CI were not running the same thing.
+
+**Scope**: tests only — no production code. An autouse session fixture in
+`gateway/tests/conftest.py` neutralises `env_file` for the run, which is the part that stops
+this recurring; the next validator someone adds now fails locally too. The six fixtures got
+the fields they were missing (`auth_service_share_url` in five, `manager_fleet_url` in three).
+`test_every_mutating_admin_route_yields_a_declared_type` was a seventh case of the same cause
+with a different shape: it took the bare `settings` fixture, where the dashboard is off and
+`create_app` mounts no `/admin/api/` routes, so it found none and read as every declared type
+being unproduced — it now takes `admin_settings`. Out of scope: the six fixtures still
+duplicate a long kwargs list, which is what let their gaps drift apart; collapsing that is a
+separate change.
+
+**Verified**: the failure was reproduced first in a worktree with no `.env` — `5 failed, 558
+passed, 123 errors`, matching CI's profile — and the same worktree now runs the full
+`.githooks/pre-push` green with no `.env` present at all, which is CI's condition. Counted
+against the run log, the 123 errors were 182 mentions of `AUTH_SERVICE_SHARE_URL` and 68 of
+`MANAGER_FLEET_URL` and nothing else. One failure seen locally
+(`ModuleNotFoundError: prometheus_manager_core` in `test_payload_schema`) was an artefact of
+running the gateway suite alone rather than through the hook, and does not occur in CI —
+checked against the run's own log before treating it as out of scope.
+
 Append a new row to the table with the next `RM-NN` id and a new `## RM-NN — ...` section
 below, following the same shape (Why / Scope). Re-sort the table if the new item's
 priority isn't "last."

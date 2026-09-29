@@ -586,6 +586,7 @@ async def test_admin_api_route_uses_higher_admin_rpm(rsa_keys, tmp_path, fake_re
         auth_service_admin_url="https://auth.test/admin",
         auth_service_admin_api_key="test-admin-secret",
         manager_fleet_url="http://coordinator.test:8090",  # PRM-134
+        auth_service_share_url="https://auth.test/share",  # PRM-102
     )
     registry = ModelRegistry.__new__(ModelRegistry)
     registry._models = {}

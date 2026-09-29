@@ -28,6 +28,7 @@ pytestmark = pytest.mark.asyncio
 AUTH_TOKEN_URL = "https://auth.test/token"
 AUTH_ADMIN_URL = "https://auth.test/admin"
 FLEET_URL = "http://coordinator.test:8090"
+AUTH_SHARE_URL = "https://auth.test/share"
 
 
 @pytest.fixture
@@ -43,6 +44,7 @@ def admin_settings(rsa_keys, tmp_path):
         jwt_revocation_redis_url=None,
         rate_limit_strict=False,
         admin_dashboard_enabled=True,
+        auth_service_share_url=AUTH_SHARE_URL,  # PRM-102
         manager_client_id="gw-service",
         manager_client_secret="secret",
         auth_service_token_url=AUTH_TOKEN_URL,
@@ -309,7 +311,10 @@ async def test_a_hyphenated_resource_is_normalised():
     )
 
 
-async def test_every_mutating_admin_route_yields_a_declared_type(settings):
+# `admin_settings`, not the base `settings`: this walks the /admin/api/ routes, and
+# `create_app` only mounts them when the dashboard is enabled. On the bare fixture it
+# finds none and the assertion reads as every declared type being unproduced.
+async def test_every_mutating_admin_route_yields_a_declared_type(admin_settings):
     """The guard that makes the cardinality closed, which is what A-34 asked for: a
     set nothing enforces is not closed. A new admin route producing a new type fails
     here rather than putting an undeclared value in their store — and a declared type
@@ -319,7 +324,7 @@ async def test_every_mutating_admin_route_yields_a_declared_type(settings):
 
     from prometheus_gateway.main import create_app
 
-    app = create_app(settings=settings)
+    app = create_app(settings=admin_settings)
     produced: set[str] = set()
     for route in app.routes:
         path = getattr(route, "path", "")

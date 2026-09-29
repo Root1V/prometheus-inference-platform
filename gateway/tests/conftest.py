@@ -17,6 +17,29 @@ from prometheus_gateway.config import Settings
 from prometheus_gateway.models.registry import ModelRegistry
 
 
+# ── Test isolation from the developer's own .env ────────────────────────────
+
+
+@pytest.fixture(autouse=True, scope="session")
+def ignore_the_developers_env_file():
+    """Settings must not read `gateway/.env` while tests run.
+
+    `Settings.model_config` points `env_file` at the real `gateway/.env` so the
+    app finds it from any cwd. Under pytest that silently supplies whatever the
+    developer happens to have configured locally, so a fixture that omits a
+    field some validator requires still passes on their machine and fails in
+    CI, which has no `.env` — it is gitignored. That is exactly what happened:
+    two fixtures written before PRM-102 and PRM-134 added their validators went
+    unnoticed for 40+ red CI runs while `.githooks/pre-push` stayed green.
+
+    Neutralising it here makes a local run reproduce CI instead of masking it.
+    """
+    original = Settings.model_config.get("env_file")
+    Settings.model_config["env_file"] = None
+    yield
+    Settings.model_config["env_file"] = original
+
+
 # ── RSA key generation ─────────────────────────────────────────────────────
 
 
