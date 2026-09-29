@@ -185,3 +185,69 @@ async def test_unknown_model_returns_400_before_403(gw, rsa_keys):
     resp = await gw.post("/v1/chat/completions", json=body, headers=headers)
     assert resp.status_code == 400
     assert resp.json()["type"].endswith("unknown-model")
+
+
+# ── PRM-166: one catalog, and it is the caller's ─────────────────────────────
+
+
+async def test_the_catalog_needs_a_token(gw):
+    """It published the whole inventory — ids, family, quantization, context
+    length, replica count — to anyone who could reach the port, while RM-07 made
+    model access deny-by-default. Discovery allow-all beside inference
+    deny-by-default is the same shape PRM-163 closed on `/metrics`."""
+    resp = await gw.get("/v1/models")
+    assert resp.status_code == 401
+    assert resp.json()["type"].endswith("/missing-credentials")
+
+
+async def test_the_catalog_answers_what_this_token_may_call(gw, rsa_keys):
+    token = make_token(rsa_keys["private"], scope="inference:read model:small-model")
+    resp = await gw.get("/v1/models", headers={"Authorization": f"Bearer {token}"})
+
+    assert resp.status_code == 200
+    # The fixture serves two active models; the grant names one.
+    assert [m["id"] for m in resp.json()["data"]] == ["small-model"]
+
+
+async def test_a_token_with_no_grants_sees_an_empty_catalog(gw, rsa_keys):
+    """And that is a true absence, not a failure — but the caller cannot tell it
+    from "the platform has no models", which is why the handler's docstring says
+    so and the guide says so. RM-98 in the other direction."""
+    token = make_token(rsa_keys["private"], scope="inference:read")
+    resp = await gw.get("/v1/models", headers={"Authorization": f"Bearer {token}"})
+
+    assert resp.status_code == 200
+    assert resp.json()["data"] == []
+
+
+async def test_admin_write_still_sees_every_model(gw, rsa_keys):
+    """RM-14's carve-out: admin:write already implies full model management, so
+    this is not a new privilege — and it is how the Playground lists."""
+    token = make_token(rsa_keys["private"], scope="admin:write")
+    resp = await gw.get("/v1/models", headers={"Authorization": f"Bearer {token}"})
+
+    assert resp.status_code == 200
+    assert len(resp.json()["data"]) >= 1
+
+
+async def test_mine_is_an_alias_now(gw, rsa_keys):
+    """Kept because it is in the guide and SDKs call it. One implementation, so
+    the item shape cannot drift between the two — it was duplicated before."""
+    token = make_token(rsa_keys["private"], scope="inference:read model:small-model")
+    headers = {"Authorization": f"Bearer {token}"}
+
+    public = await gw.get("/v1/models", headers=headers)
+    mine = await gw.get("/v1/models/mine", headers=headers)
+
+    assert public.status_code == mine.status_code == 200
+    assert public.json() == mine.json()
+
+
+async def test_the_catalog_is_not_exempt_from_authentication_any_more():
+    """The exemption list is where this lived, and where it would come back."""
+    from prometheus_gateway.auth.middleware import EXEMPT_PATHS
+
+    assert "/v1/models" not in EXEMPT_PATHS
+    # `/health` stays: it says only that the process answers, and A-29 asked us to
+    # put that in writing rather than let it grow into a small `/metrics`.
+    assert "/health" in EXEMPT_PATHS

@@ -806,51 +806,29 @@ def create_router(registry: ModelRegistry, pool: "BackendPool") -> APIRouter:
 
     # ── GET /v1/models ──────────────────────────────────────────────────────
     # Implements: memory/specs/006-multi-model-gateway.md — AC-1
-    @router.get("/v1/models")
-    async def list_models() -> dict[str, Any]:
-        """List active models (those with a backend_url set). No auth required."""
-        from opentelemetry.trace import SpanKind
-
-        with _tracer.start_as_current_span("models.list", kind=SpanKind.INTERNAL) as span:
-            # RM-57: every routable name — instance ids as before, plus the
-            # catalog name that load-balances across replicas. `served_by` is
-            # how a client tells the two apart.
-            models = registry.list_served_names()
-            span.set_attribute("model_count", len(models))
-            return {
-                "object": "list",
-                "data": [
-                    {
-                        "id": r.name,
-                        "object": "model",
-                        "owned_by": "prometheus",
-                        "context_length": _advertised_context_length(r),
-                        "family": r.members[0].family,
-                        "quantization": r.members[0].quantization,
-                        "modality": r.modality,
-                        "served_by": len(r.members),
-                        # PRM-144: what body to send. `modality` alone cannot
-                        # answer it for a pass-through route, where the shape is
-                        # the engine's — and Axonium refused the engine name,
-                        # correctly, because it keys their dispatch table to our
-                        # implementation rather than to a contract. On both
-                        # catalogs: a consumer reading `mine` needs the shape as
-                        # much as one reading the public list.
-                        "payload_schema": payload_schema_of(r),
-                    }
-                    for r in models
-                ],
-            }
-
-    # ── GET /v1/models/mine ──────────────────────────────────────────────────
-    # RM-45: unlike GET /v1/models above (public, lists the full catalog),
-    # this requires a valid Bearer token and returns only the models the
-    # caller's own model:<id> scopes grant — model access can be assigned or
-    # changed after a client is created, so a client may want to check what
-    # it currently has before making an inference request.
-    @router.get("/v1/models/mine")
-    async def list_my_models(request: Request) -> Any:
-        """List only the models the caller's JWT authorizes it to use."""
+    # Implements: docs/roadmap.md — RM-45, PRM-166
+    #
+    # PRM-166: one catalog, and it is the caller's. There were two — this one
+    # public and unscoped, and `/v1/models/mine` authenticated and filtered by the
+    # caller's `model:<id>` grants. The public one published the whole inventory
+    # (ids, family, quantization, context length, replica count, payload schema) to
+    # anyone who could reach the port, which sat badly beside RM-07: model access
+    # is deny-by-default, and discovery was allow-all.
+    #
+    # It is also what every credentialed inference API does — OpenAI, Anthropic,
+    # Azure, Bedrock, Vertex, Groq, Together — and what the closest analogue to
+    # this platform does: LiteLLM's proxy requires its key and filters the list to
+    # what that key may call. The APIs that publish an open catalog are either
+    # single-tenant engine processes meant to sit behind something (vLLM,
+    # llama.cpp, Ollama) or a marketplace whose product *is* the catalog
+    # (OpenRouter). Neither is this.
+    #
+    # `/v1/models/mine` stays as an alias of the same function rather than being
+    # removed: it is in the guide, SDKs call it, and the two now mean the same
+    # thing. One implementation, so the item shape cannot drift between them —
+    # it was duplicated between the two handlers before this.
+    async def _catalog(request: Request) -> Any:
+        """The models this token may call — PRM-166."""
         from opentelemetry.trace import SpanKind
 
         claims = getattr(getattr(request, "state", None), "claims", None)
@@ -863,14 +841,15 @@ def create_router(registry: ModelRegistry, pool: "BackendPool") -> APIRouter:
                 "This endpoint requires a valid Bearer token.",
             )
 
-        with _tracer.start_as_current_span("models.list_mine", kind=SpanKind.INTERNAL) as span:
-            # RM-14: same admin:write carve-out used for the Playground's own
-            # inference calls — admin:write already implies full model
-            # management, so seeing every model here isn't a new privilege.
+        with _tracer.start_as_current_span("models.list", kind=SpanKind.INTERNAL) as span:
+            # RM-14: the same admin:write carve-out the Playground's own inference
+            # calls use — admin:write already implies full model management, so
+            # seeing every model here is not a new privilege.
             is_admin_bypass = claims.has_scope("admin:write")
-            # RM-57: filter on the routable name, so a client granted the
-            # catalog name sees it here even though no single instance is
-            # called that.
+            # RM-57: every routable name — instance ids as before, plus the catalog
+            # name that load-balances across replicas. `served_by` is how a client
+            # tells the two apart. Filtered on that name, so a client granted the
+            # catalog name sees it even though no single instance is called that.
             authorized = [
                 r
                 for r in registry.list_served_names()
@@ -893,14 +872,34 @@ def create_router(registry: ModelRegistry, pool: "BackendPool") -> APIRouter:
                         # answer it for a pass-through route, where the shape is
                         # the engine's — and Axonium refused the engine name,
                         # correctly, because it keys their dispatch table to our
-                        # implementation rather than to a contract. On both
-                        # catalogs: a consumer reading `mine` needs the shape as
-                        # much as one reading the public list.
+                        # implementation rather than to a contract.
                         "payload_schema": payload_schema_of(r),
                     }
                     for r in authorized
                 ],
             }
+
+    @router.get("/v1/models")
+    async def list_models(request: Request) -> Any:
+        """List the models this token may call.
+
+        **An empty `data` means this token has no `model:<id>` grants**, not that
+        the platform has no models. The two are different facts and only an
+        operator can tell them apart — ask for the grant rather than concluding the
+        catalog is empty (RM-98, on the other side of the same coin).
+        """
+        return await _catalog(request)
+
+    # ── GET /v1/models/mine ──────────────────────────────────────────────────
+    # RM-45 created this because `/v1/models` was the full public catalog and a
+    # token had no way to find out what it could actually call. PRM-166 made that
+    # the answer for both, so this is an alias — kept because it is in the guide
+    # and SDKs call it, and removing a documented endpoint to save one line would
+    # be a breaking change bought for nothing.
+    @router.get("/v1/models/mine")
+    async def list_my_models(request: Request) -> Any:
+        """Alias of `GET /v1/models` since PRM-166 — identical response."""
+        return await _catalog(request)
 
     # ── GET /v1/backends ────────────────────────────────────────────────────
     # Implements: memory/specs/006-multi-model-gateway.md — AC-14
