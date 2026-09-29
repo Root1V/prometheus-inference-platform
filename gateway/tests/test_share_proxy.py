@@ -13,6 +13,8 @@ import pytest
 import respx
 from httpx import ASGITransport, AsyncClient, Response
 
+from tests.conftest import dashboard_settings
+
 AUTH_TOKEN_URL = "https://auth.test/oauth2/token"
 AUTH_SHARE_URL = "https://auth.test/share"
 AUTH_ADMIN_URL = "https://auth.test/admin"
@@ -29,24 +31,16 @@ _SECURITY_HEADERS = {
 
 @pytest.fixture
 def share_settings(rsa_keys, tmp_path):
-    from prometheus_gateway.config import Settings
-
     key_file = tmp_path / "public.pem"
     key_file.write_text(rsa_keys["public"])
-    return Settings(
-        jwt_issuer="https://auth.test",
-        jwt_audience="prometheus-gateway",
-        jwt_public_key_file=str(key_file),
-        jwt_revocation_redis_url=None,
-        rate_limit_strict=False,
-        admin_dashboard_enabled=True,
-        manager_client_id="gw-service",
-        manager_client_secret="secret",
+    # Passed, not defaulted: this file's respx mocks use the same constants, and its
+    # token endpoint is /oauth2/token rather than the builder's default.
+    return dashboard_settings(
+        key_file,
         auth_service_token_url=AUTH_TOKEN_URL,
-        auth_service_share_url=AUTH_SHARE_URL,
         auth_service_admin_url=AUTH_ADMIN_URL,
-        auth_service_admin_api_key="test-admin-secret",
-        manager_fleet_url=FLEET_URL,  # PRM-134
+        auth_service_share_url=AUTH_SHARE_URL,
+        manager_fleet_url=FLEET_URL,
     )
 
 

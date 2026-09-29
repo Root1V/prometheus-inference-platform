@@ -15,7 +15,7 @@ from httpx import ASGITransport, AsyncClient, Response
 from prometheus_gateway.config import Settings
 from prometheus_gateway.models.registry import ModelRegistry
 from prometheus_gateway.rate_limiter import RateLimiter
-from tests.conftest import make_token
+from tests.conftest import dashboard_settings, make_token
 
 # ── Fixtures ───────────────────────────────────────────────────────────────
 
@@ -570,23 +570,14 @@ async def test_admin_api_route_uses_higher_admin_rpm(rsa_keys, tmp_path, fake_re
 
     key_file = tmp_path / "public.pem"
     key_file.write_text(rsa_keys["public"])
-    settings = Settings(
-        jwt_issuer="https://auth.test",
-        jwt_audience="prometheus-gateway",
-        jwt_public_key_file=str(key_file),
-        jwt_revocation_redis_url=None,
+    # Only the limits are this test's own; the URLs it mocks below are the
+    # builder's defaults.
+    settings = dashboard_settings(
+        key_file,
         rate_limit_rpm=1,  # global — a single admin request would trip this
         rate_limit_strict=True,
         rate_limit_rpm_admin=600,
-        admin_dashboard_enabled=True,
-        manager_client_id="gw-service",
-        manager_client_secret="secret",
-        auth_service_token_url="https://auth.test/token",
         auth_service_tls_verify=True,
-        auth_service_admin_url="https://auth.test/admin",
-        auth_service_admin_api_key="test-admin-secret",
-        manager_fleet_url="http://coordinator.test:8090",  # PRM-134
-        auth_service_share_url="https://auth.test/share",  # PRM-102
     )
     registry = ModelRegistry.__new__(ModelRegistry)
     registry._models = {}

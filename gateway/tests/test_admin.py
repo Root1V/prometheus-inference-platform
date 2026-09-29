@@ -11,7 +11,7 @@ import respx
 from httpx import ASGITransport, AsyncClient, Response
 
 from prometheus_gateway.auth.middleware import _is_exempt
-from tests.conftest import make_token
+from tests.conftest import dashboard_settings, make_token
 
 NODE_URL = "http://mac.local:8090"
 AUTH_TOKEN_URL = "https://auth.test/token"
@@ -52,25 +52,17 @@ class TestAdminExemption:
 
 @pytest.fixture
 def admin_settings(rsa_keys, tmp_path):
-    from prometheus_gateway.config import Settings
-
     key_file = tmp_path / "public.pem"
     key_file.write_text(rsa_keys["public"])
-    return Settings(
-        jwt_issuer="https://auth.test",
-        jwt_audience="prometheus-gateway",
-        jwt_public_key_file=str(key_file),
-        jwt_revocation_redis_url=None,
-        rate_limit_strict=False,
-        admin_dashboard_enabled=True,
-        manager_client_id="gw-service",
-        manager_client_secret="secret",
+    # The URLs are passed rather than left to the builder's defaults because this
+    # file's respx mocks are built from these same constants.
+    return dashboard_settings(
+        key_file,
         auth_service_token_url=AUTH_TOKEN_URL,
-        auth_service_tls_verify=True,
         auth_service_admin_url=AUTH_ADMIN_URL,
-        auth_service_admin_api_key="test-admin-secret",
-        manager_fleet_url=FLEET_URL,  # PRM-134
-        auth_service_share_url=AUTH_SHARE_URL,  # PRM-102
+        auth_service_share_url=AUTH_SHARE_URL,
+        manager_fleet_url=FLEET_URL,
+        auth_service_tls_verify=True,
     )
 
 

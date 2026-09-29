@@ -21,7 +21,7 @@ import respx
 from httpx import ASGITransport, AsyncClient, Response
 
 from prometheus_gateway import audit, db
-from tests.conftest import make_token
+from tests.conftest import dashboard_settings, make_token
 
 pytestmark = pytest.mark.asyncio
 
@@ -33,25 +33,16 @@ AUTH_SHARE_URL = "https://auth.test/share"
 
 @pytest.fixture
 def admin_settings(rsa_keys, tmp_path):
-    from prometheus_gateway.config import Settings
-
     key_file = tmp_path / "public.pem"
     key_file.write_text(rsa_keys["public"])
-    return Settings(
-        jwt_issuer="https://auth.test",
-        jwt_audience="prometheus-gateway",
-        jwt_public_key_file=str(key_file),
-        jwt_revocation_redis_url=None,
-        rate_limit_strict=False,
-        admin_dashboard_enabled=True,
-        auth_service_share_url=AUTH_SHARE_URL,  # PRM-102
-        manager_client_id="gw-service",
-        manager_client_secret="secret",
+    # Passed, not defaulted: this file's respx mocks use the same constants.
+    return dashboard_settings(
+        key_file,
         auth_service_token_url=AUTH_TOKEN_URL,
-        auth_service_tls_verify=True,
         auth_service_admin_url=AUTH_ADMIN_URL,
-        auth_service_admin_api_key="test-admin-secret",
+        auth_service_share_url=AUTH_SHARE_URL,
         manager_fleet_url=FLEET_URL,
+        auth_service_tls_verify=True,
     )
 
 

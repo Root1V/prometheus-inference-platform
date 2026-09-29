@@ -9,10 +9,9 @@ import pytest
 from httpx import ASGITransport, AsyncClient
 
 from prometheus_gateway import db
-from prometheus_gateway.config import Settings
 from prometheus_gateway.main import create_app
 from prometheus_gateway.models.registry import ModelRegistry
-from tests.conftest import make_token
+from tests.conftest import dashboard_settings, make_token
 
 
 @pytest.fixture
@@ -41,18 +40,9 @@ def settings(rsa_keys, tmp_path):
     key_file.write_text(rsa_keys["public"])
     admin_static = tmp_path / "admin-static"
     admin_static.mkdir()
-    return Settings(
-        jwt_issuer="https://auth.test",
-        jwt_audience="prometheus-gateway",
-        jwt_public_key_file=str(key_file),
-        jwt_revocation_redis_url=None,
-        rate_limit_strict=False,
-        admin_dashboard_enabled=True,
-        auth_service_admin_url="http://auth.test",
-        auth_service_admin_api_key="secret",
-        manager_fleet_url="http://coordinator.test:8090",  # PRM-134
-        auth_service_share_url="https://auth.test/share",  # PRM-102
-    )
+    # Nothing here mocks auth-service or the coordinator, so every URL is the
+    # builder's default.
+    return dashboard_settings(key_file)
 
 
 @pytest.fixture
@@ -422,19 +412,7 @@ async def test_get_pricing_reflects_yaml_and_db_sources(
         "models:\n  - id: yaml-only-model\n    prompt_price_per_1m: 1.0\n"
         "    completion_price_per_1m: 1.0\n"
     )
-    settings = Settings(
-        jwt_issuer="https://auth.test",
-        jwt_audience="prometheus-gateway",
-        jwt_public_key_file=str(key_file),
-        jwt_revocation_redis_url=None,
-        rate_limit_strict=False,
-        admin_dashboard_enabled=True,
-        auth_service_admin_url="http://auth.test",
-        auth_service_admin_api_key="secret",
-        manager_fleet_url="http://coordinator.test:8090",  # PRM-134
-        auth_service_share_url="https://auth.test/share",  # PRM-102
-        pricing_file=str(pricing_file),
-    )
+    settings = dashboard_settings(key_file, pricing_file=str(pricing_file))
     app = create_app(settings=settings, registry=registry, redis_client=fake_redis)
     await db.create_tables(db.get_engine())
 

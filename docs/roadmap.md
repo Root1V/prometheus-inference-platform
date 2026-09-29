@@ -6131,8 +6131,7 @@ the fields they were missing (`auth_service_share_url` in five, `manager_fleet_u
 with a different shape: it took the bare `settings` fixture, where the dashboard is off and
 `create_app` mounts no `/admin/api/` routes, so it found none and read as every declared type
 being unproduced — it now takes `admin_settings`. Out of scope: the six fixtures still
-duplicate a long kwargs list, which is what let their gaps drift apart; collapsing that is a
-separate change.
+duplicate a long kwargs list, which is what let their gaps drift apart; that is PRM-169.
 
 **Verified**: the failure was reproduced first in a worktree with no `.env` — `5 failed, 558
 passed, 123 errors`, matching CI's profile — and the same worktree now runs the full
@@ -6142,6 +6141,29 @@ against the run log, the 123 errors were 182 mentions of `AUTH_SERVICE_SHARE_URL
 (`ModuleNotFoundError: prometheus_manager_core` in `test_payload_schema`) was an artefact of
 running the gateway suite alone rather than through the hook, and does not occur in CI —
 checked against the run's own log before treating it as out of scope.
+
+## PRM-169 — One builder for the admin-dashboard test settings (done)
+
+**Why**: PRM-168 repaired six fixtures but left the shape that broke them. Each spelled the
+same dozen kwargs out by hand, so a validator added later had to be remembered in six places
+and was remembered in none — five had no `auth_service_share_url`, three no
+`manager_fleet_url`.
+
+**Scope**: `dashboard_settings(key_file, **overrides)` in `gateway/tests/conftest.py` supplies
+every field the dashboard's validators require; each of the six call sites now passes only
+what it genuinely needs — a URL its respx mocks are built from, the rate limits it exercises,
+a pricing file it reads. The canonical URLs are module constants beside it, since
+`test_rate_limiting.py`'s mocks match those literals. Tests only; no production code.
+
+**Verified**: not by the suite alone, which would pass on settings that quietly changed.
+Each site's `Settings` was rebuilt from the pre-refactor literals and compared field by field
+against what the builder produces: `test_admin`, `test_share_proxy` and `test_rate_limiting`
+are identical objects. `test_billing_router`'s two sites are deliberately not — they adopt the
+canonical admin URL and key in place of their own spellings, and gain the manager client
+fields they had left at `None` — which is inert because nothing in that file mocks
+auth-service or the coordinator, and the suite passing confirms it. A grep then confirmed no
+hand-rolled dashboard `Settings(...)` remains. Full `.githooks/pre-push` green with no `.env`
+present, which is CI's condition.
 
 Append a new row to the table with the next `RM-NN` id and a new `## RM-NN — ...` section
 below, following the same shape (Why / Scope). Re-sort the table if the new item's

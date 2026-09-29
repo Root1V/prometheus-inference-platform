@@ -101,6 +101,49 @@ def settings(rsa_keys, tmp_path):
     )
 
 
+# ── Admin-dashboard settings ────────────────────────────────────────────────
+
+# The canonical stand-ins for the services the dashboard talks to. respx mocks in
+# test_rate_limiting.py match these literals, so they are the values to change if a
+# test needs a different host rather than a different spelling of the same one.
+DASHBOARD_TOKEN_URL = "https://auth.test/token"
+DASHBOARD_ADMIN_URL = "https://auth.test/admin"
+DASHBOARD_SHARE_URL = "https://auth.test/share"
+DASHBOARD_FLEET_URL = "http://coordinator.test:8090"
+
+
+def dashboard_settings(key_file, **overrides) -> Settings:
+    """Settings with the admin dashboard on and every field its validators require.
+
+    PRM-168: six fixtures each spelled this list out by hand, and their gaps drifted
+    apart — five were missing `auth_service_share_url`, three `manager_fleet_url`.
+    Nothing caught it, because `Settings` reads the developer's gitignored
+    `gateway/.env`, which filled the holes locally and left CI to fail alone for 40+
+    runs. Adding a requirement is now one edit here instead of six nothing checks.
+
+    Pass `**overrides` for what a test genuinely needs different — a URL it mocks, a
+    rate limit it exercises, a pricing file it reads.
+    """
+    return Settings(
+        **{
+            "jwt_issuer": "https://auth.test",
+            "jwt_audience": "prometheus-gateway",
+            "jwt_public_key_file": str(key_file),
+            "jwt_revocation_redis_url": None,
+            "rate_limit_strict": False,
+            "admin_dashboard_enabled": True,
+            "manager_client_id": "gw-service",
+            "manager_client_secret": "secret",
+            "auth_service_token_url": DASHBOARD_TOKEN_URL,
+            "auth_service_admin_url": DASHBOARD_ADMIN_URL,
+            "auth_service_admin_api_key": "test-admin-secret",
+            "auth_service_share_url": DASHBOARD_SHARE_URL,
+            "manager_fleet_url": DASHBOARD_FLEET_URL,
+            **overrides,
+        }
+    )
+
+
 # ── Token factory ──────────────────────────────────────────────────────────
 
 
