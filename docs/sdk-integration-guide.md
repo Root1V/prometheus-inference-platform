@@ -1,6 +1,6 @@
 # Prometheus Gateway — SDK Integration Guide
 
-**Revision**: 2026-09-28 · `PRM-162/163`
+**Revision**: 2026-09-29 · `PRM-164/166`
 <!-- Consumers vendor this file and diff it. The date and commit above are what to quote
      when asking whether a copy is current; they change whenever this document does. -->
 
@@ -250,9 +250,30 @@ through from the backend verbatim** — the gateway does not reshape or validate
 what's documented here. Treat fields not explicitly guaranteed by this doc (e.g. `id`,
 `created`, `system_fingerprint`) as backend-dependent/optional, not a guaranteed contract.
 
-### 3.1 `GET /v1/models` — public catalog
+### 3.1 `GET /v1/models` — the models this token may call
 
-No authentication required. Returns every currently-deployed model:
+**Breaking change, 2026-09-29 (PRM-166).** This endpoint required no authentication and
+returned every deployed model. It now requires a Bearer token and returns only the models
+that token has `model:<id>` scope for — the same answer `/v1/models/mine` has always given,
+which is now an alias of this one.
+
+Two consequences an SDK has to handle, and the second is the quiet one:
+
+* **`401` without a token**, in the usual problem+json envelope. Nothing else changed about
+  the shape of a successful response.
+* **The list can be shorter than it used to be**, with no error. A client that rendered a
+  picker from this endpoint will now see only what it may actually call. That is the point
+  — model access has been deny-by-default since RM-07 while discovery was allow-all — but
+  it is a silent change in a number, so it is stated here rather than left to be noticed.
+
+**An empty `data` array means this token has no `model:<id>` grants**, not that the platform
+has no models. Those are different facts and only an operator can tell them apart: ask for
+the grant rather than concluding the catalog is empty.
+
+A token with `admin:write` sees every model regardless of individual grants — an
+internal-tooling carve-out (RM-14), not something to expect for a normal client integration.
+
+Returns:
 
 ```json
 {
@@ -313,13 +334,19 @@ The engine serving a model is deliberately **not** published, here or anywhere e
 your dispatch table to the name of our implementation, so an internal swap that preserves the
 contract would break you for no reason a caller could see.
 
-### 3.2 `GET /v1/models/mine` — what *this token* can actually call
+### 3.2 `GET /v1/models/mine` — an alias of §3.1
 
-Requires a valid Bearer token (`401` if missing). Same item shape as above — including
-`payload_schema` — but filtered to only the models this token has `model:<id>` scope for. A token with `admin:write` sees the
-full catalog regardless of individual model grants (an internal-tooling carve-out, not
-something to expect for a normal client SDK integration). A token with `inference:read` but no
-`model:*` grants gets an empty `data` array, not an error.
+Identical to `GET /v1/models` since PRM-166: same requirement, same filtering, same response.
+It is kept because it is documented and SDKs call it; there is no reason to migrate off it,
+and no reason to prefer it.
+
+It exists because §3.1 used to be the full public catalog and a token had no other way to
+find out what it could call.
+
+**This is the right endpoint behind a "Test connection" button.** It proves three things in
+one request that `GET /health` cannot prove at all: that the gateway is reachable, that the
+credential works, and that there is something this caller may actually send. A green light
+from `/health` means only that a process answered.
 
 Recommended SDK pattern: call this once at client initialization (or on-demand), cache the
 result, and use it to give a clear client-side error ("this token has no access to model X")
@@ -644,8 +671,10 @@ report perfect health while the other variant carried everything.
 
 ### 3.7 Headers
 
-**Required**: `Authorization: Bearer <token>` on every endpoint except `GET /v1/models`.
-`Content-Type: application/json` on every POST.
+**Required**: `Authorization: Bearer <token>` on **every** endpoint except `GET /health`
+and `POST /oauth2/token` (which carries its own credentials in the body, so demanding a
+token to obtain one would be circular). `GET /v1/models` was an exception until PRM-166 and
+is not one any more. `Content-Type: application/json` on every POST.
 
 **Optional request headers**:
 
@@ -675,8 +704,10 @@ label (`#2`). It never silently falls back to another replica — the reason to 
 rather than a quiet reassignment. Responses carry `X-Prometheus-Instance` and
 `X-Prometheus-Instance-Id` saying which replica actually answered.
 
-**Response headers worth reading** (all endpoints except `/health`, `/metrics`, `/v1/models`,
-`/v1/backends`, `/v1/usage`):
+**Response headers worth reading.** The rate-limit headers below are on the inference
+endpoints. `X-Request-ID` and `X-Trace-ID` are on **every** response including `/health` and
+`/v1/models` — this list previously excluded them, which Axonium measured and reported
+(`A-29`); they were there all along:
 
 ```
 X-Request-ID                       — fresh UUID per request, generated server-side

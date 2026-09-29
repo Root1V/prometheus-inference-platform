@@ -6333,3 +6333,54 @@ done all along. Now declared, same line as auth-service's.
 `argus.target.type=user` with the id their pipeline hashes — both with `argus.actor.kind=user`, the
 operator's `user.id`, and a `trace_id` matching the response header. The `user`-typed event is the
 real traffic A-34 §3 asked for to confirm the pseudonym against their store.
+
+
+## PRM-166 — One catalog, and it is the caller's
+
+**Why**: `GET /v1/models` needed no credential and returned every deployed model — ids, family,
+quantization, context length, replica count, payload schema — to anyone who could reach the port.
+Measured: a token holding `model:` grants for four models got all ten, because the handler took no
+`request` at all and so could not filter. Its entire stated rationale was one line in
+`memory/specs/001-gateway-core.md`: *"unauthenticated for discovery"*.
+
+**The inconsistency it sat on.** RM-07 made model access deny-by-default — a client with no
+`model:*` scope cannot call anything — while discovery was allow-all. That is PRM-163's shape
+again: one truth in two places with only one protected. And the principle was already accepted with
+Axonium in `A-27`, where we agreed an unauthenticated catalog must not name the engine; `family` +
+`quantization` and ids like `laya-decide` narrow it anyway, which they pointed out at the time.
+
+**What the industry does**, because this was a contract change and needed more than an internal
+argument. Authenticated and scoped to the caller: OpenAI, Anthropic, Azure OpenAI, Bedrock, Vertex,
+Groq, Together, Fireworks, Mistral. The closest analogue — a multi-tenant gateway in front of
+several engines — is LiteLLM's proxy, which requires its key and filters the list to what that key
+may call. The open catalogs belong to single-tenant engine processes meant to sit behind something
+(vLLM, llama.cpp, Ollama) or to a marketplace whose product *is* the catalog (OpenRouter). This
+platform is neither.
+
+**`/v1/models/mine` already did it right** (RM-45) — 401 without a token, exactly the granted models
+with one. So this converges rather than invents: one implementation, `/v1/models` answers it, and
+`mine` is an alias kept because it is documented and SDKs call it. The item shape was duplicated
+between the two handlers and now exists once.
+
+**The risk is the quiet half, and it was taken deliberately.** A caller that renders a picker from
+this endpoint now sees a shorter list with no error — a number that changes while nothing fails,
+which is the defect this codebase keeps cataloguing. It cannot be made loud from here, so it is
+announced instead: the guide's §3.1 states it as a breaking change with the date, and it goes to the
+SDK team in the channel. An empty `data` is documented as "this token has no grants", which is a
+different fact from "the platform has no models" and only an operator can tell them apart.
+
+**Verified live**: no token `401 missing-credentials`; the four-grant token gets exactly its four
+where it used to get ten; `/v1/models/mine` returns byte-identical JSON; the dashboard's session
+(`admin:write`, RM-14's carve-out) still sees all ten. The only internal consumer was the
+Playground, already on the authenticated client. Guards hold it: the catalog 401s without a token,
+answers the grants with one, `admin:write` still bypasses, the two paths agree, and `/v1/models` is
+asserted absent from `EXEMPT_PATHS` — which is where it lived and where it would come back.
+
+**A-29's `/health`, answered in the same change.** It stays liveness-only, unauthenticated,
+`{"status":"ok"}`, and must not grow to reflect the registry or redis: that would make it a small
+`/metrics` with no credential, which PRM-163 had just closed. The question behind their question —
+what an SDK should put behind a "Test connection" button — is `GET /v1/models`, which now proves
+reachability, credentials and entitlement in one request. A green light from `/health` means only
+that a process answered. Their point (a) was also right and is fixed: §3.7 listed `/health`,
+`/metrics` and `/v1/models` as carrying no useful response headers, and all three carry
+`X-Request-ID` and `X-Trace-ID` — measured on `/health`, which returns both.

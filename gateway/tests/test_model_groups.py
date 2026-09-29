@@ -344,8 +344,10 @@ async def test_context_limit_is_the_smallest_replica(gw, rsa_keys):
     assert "context-exceeded" in resp.json()["type"]
 
 
-async def test_models_list_shows_one_entry_per_model(gw):
-    resp = await gw.get("/v1/models")
+async def test_models_list_shows_one_entry_per_model(gw, rsa_keys):
+    # PRM-166: `admin:write` is the bypass that sees every model.
+    token = make_token(rsa_keys["private"], scope="admin:write")
+    resp = await gw.get("/v1/models", headers={"Authorization": f"Bearer {token}"})
 
     data = {m["id"]: m for m in resp.json()["data"]}
     assert set(data) == {"llama"}
@@ -683,6 +685,7 @@ async def test_an_image_model_advertises_no_context_window(gw, rsa_keys, setting
     }
     app = create_app(settings=settings, registry=registry)
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
-        resp = await client.get("/v1/models")
+        token = make_token(rsa_keys["private"], scope="admin:write")
+        resp = await client.get("/v1/models", headers={"Authorization": f"Bearer {token}"})
 
     assert resp.json()["data"][0]["context_length"] is None

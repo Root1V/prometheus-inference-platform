@@ -407,12 +407,23 @@ async def test_gateway_core_Q2_max_tokens_exceeds_context(gw, auth_headers):  # 
 # ==========================================================================
 
 
+def _catalog_headers(rsa_keys) -> dict[str, str]:
+    """PRM-166: the catalog answers what the token may call. `admin:write` is the
+    bypass that sees every model — the view these tests were written against."""
+    return {"Authorization": f"Bearer {make_token(rsa_keys['private'], scope='admin:write')}"}
+
+
 # ── AC-1: GET /v1/models returns only active models ───────────────────────
 
 
-async def test_multi_model_gateway_AC1_active_models_only(gw):  # memory/specs/006
-    """AC-1: GET /v1/models returns only models with backend_url set."""
-    resp = await gw.get("/v1/models")
+async def test_multi_model_gateway_AC1_active_models_only(gw, rsa_keys):  # memory/specs/006
+    """AC-1: GET /v1/models returns only models with backend_url set.
+
+    PRM-166 made the catalog the caller's, so this asks with `admin:write` — the
+    bypass that sees every model, which is what this test was measuring when the
+    endpoint was public.
+    """
+    resp = await gw.get("/v1/models", headers=_catalog_headers(rsa_keys))
     assert resp.status_code == 200
     ids = [m["id"] for m in resp.json()["data"]]
     assert "llama3-8b-q4" in ids
@@ -614,9 +625,10 @@ async def test_multi_model_gateway_AC8_log_contains_model_and_backend(  # memory
 # ── AC-9: Non-loopback backend_url rejected at load ───────────────────────
 
 
-async def test_multi_model_gateway_AC9_invalid_backend_absent(gw):  # memory/specs/006
+async def test_multi_model_gateway_AC9_invalid_backend_absent(gw, rsa_keys):  # memory/specs/006
     """AC-9: Model with non-loopback backend_url absent from GET /v1/models."""
-    ids = [m["id"] for m in (await gw.get("/v1/models")).json()["data"]]
+    resp = await gw.get("/v1/models", headers=_catalog_headers(rsa_keys))
+    ids = [m["id"] for m in resp.json()["data"]]
     assert "invalid-backend-model" not in ids
 
 
