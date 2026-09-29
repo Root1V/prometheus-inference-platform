@@ -187,7 +187,7 @@ async def test_unknown_model_returns_400_before_403(gw, rsa_keys):
     assert resp.json()["type"].endswith("unknown-model")
 
 
-# ── PRM-166: one catalog, and it is the caller's ─────────────────────────────
+# ── PRM-167: one catalog, and it is the caller's ─────────────────────────────
 
 
 async def test_the_catalog_needs_a_token(gw):

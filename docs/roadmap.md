@@ -6335,7 +6335,12 @@ operator's `user.id`, and a `trace_id` matching the response header. The `user`-
 real traffic A-34 §3 asked for to confirm the pseudonym against their store.
 
 
-## PRM-166 — One catalog, and it is the caller's
+## PRM-167 — One catalog, and it is the caller's
+
+> Renumbered from PRM-166, which two branches claimed at once; the other landed on
+> `main` first. This item's own commit and branch still say PRM-166 — same reasoning
+> as the RM-NN items in CLAUDE.md, where the number is the identity and history is
+> left alone.
 
 **Why**: `GET /v1/models` needed no credential and returned every deployed model — ids, family,
 quantization, context length, replica count, payload schema — to anyone who could reach the port.

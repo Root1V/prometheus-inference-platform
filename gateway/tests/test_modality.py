@@ -188,7 +188,7 @@ async def test_text_only_message_on_vision_model_still_works(gw, rsa_keys):
 
 
 async def test_list_models_includes_modality(gw, rsa_keys):
-    # PRM-166: the catalog is the caller's; `admin:write` is the bypass that sees
+    # PRM-167: the catalog is the caller's; `admin:write` is the bypass that sees
     # every model, which is what this asserts about.
     token = make_token(rsa_keys["private"], scope="admin:write")
     resp = await gw.get("/v1/models", headers={"Authorization": f"Bearer {token}"})

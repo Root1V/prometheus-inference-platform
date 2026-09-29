@@ -252,7 +252,7 @@ what's documented here. Treat fields not explicitly guaranteed by this doc (e.g.
 
 ### 3.1 `GET /v1/models` — the models this token may call
 
-**Breaking change, 2026-09-29 (PRM-166).** This endpoint required no authentication and
+**Breaking change, 2026-09-29 (PRM-167).** This endpoint required no authentication and
 returned every deployed model. It now requires a Bearer token and returns only the models
 that token has `model:<id>` scope for — the same answer `/v1/models/mine` has always given,
 which is now an alias of this one.
@@ -336,7 +336,7 @@ contract would break you for no reason a caller could see.
 
 ### 3.2 `GET /v1/models/mine` — an alias of §3.1
 
-Identical to `GET /v1/models` since PRM-166: same requirement, same filtering, same response.
+Identical to `GET /v1/models` since PRM-167: same requirement, same filtering, same response.
 It is kept because it is documented and SDKs call it; there is no reason to migrate off it,
 and no reason to prefer it.
 
@@ -673,7 +673,7 @@ report perfect health while the other variant carried everything.
 
 **Required**: `Authorization: Bearer <token>` on **every** endpoint except `GET /health`
 and `POST /oauth2/token` (which carries its own credentials in the body, so demanding a
-token to obtain one would be circular). `GET /v1/models` was an exception until PRM-166 and
+token to obtain one would be circular). `GET /v1/models` was an exception until PRM-167 and
 is not one any more. `Content-Type: application/json` on every POST.
 
 **Optional request headers**:

@@ -29,7 +29,7 @@ EXEMPT_PATHS: frozenset[str] = frozenset(
     # `/v1/backends` gates behind `admin:read`, and the SDK guide told consumers
     # that gate was what kept them private. Axonium measured it (A-31) and named
     # the shape: one truth in two places, only one of them protected.
-    # PRM-166: `/v1/models` was here too. It published the whole inventory to an
+    # PRM-167: `/v1/models` was here too. It published the whole inventory to an
     # unauthenticated GET while RM-07 made model access deny-by-default — discovery
     # allow-all beside inference deny-by-default. It now answers what the caller's
     # token may call, which is what every credentialed inference API does.

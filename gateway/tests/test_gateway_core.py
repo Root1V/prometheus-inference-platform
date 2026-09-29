@@ -408,7 +408,7 @@ async def test_gateway_core_Q2_max_tokens_exceeds_context(gw, auth_headers):  # 
 
 
 def _catalog_headers(rsa_keys) -> dict[str, str]:
-    """PRM-166: the catalog answers what the token may call. `admin:write` is the
+    """PRM-167: the catalog answers what the token may call. `admin:write` is the
     bypass that sees every model — the view these tests were written against."""
     return {"Authorization": f"Bearer {make_token(rsa_keys['private'], scope='admin:write')}"}
 
@@ -419,7 +419,7 @@ def _catalog_headers(rsa_keys) -> dict[str, str]:
 async def test_multi_model_gateway_AC1_active_models_only(gw, rsa_keys):  # memory/specs/006
     """AC-1: GET /v1/models returns only models with backend_url set.
 
-    PRM-166 made the catalog the caller's, so this asks with `admin:write` — the
+    PRM-167 made the catalog the caller's, so this asks with `admin:write` — the
     bypass that sees every model, which is what this test was measuring when the
     endpoint was public.
     """

@@ -345,7 +345,7 @@ async def test_context_limit_is_the_smallest_replica(gw, rsa_keys):
 
 
 async def test_models_list_shows_one_entry_per_model(gw, rsa_keys):
-    # PRM-166: `admin:write` is the bypass that sees every model.
+    # PRM-167: `admin:write` is the bypass that sees every model.
     token = make_token(rsa_keys["private"], scope="admin:write")
     resp = await gw.get("/v1/models", headers={"Authorization": f"Bearer {token}"})
 
