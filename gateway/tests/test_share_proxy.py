@@ -16,6 +16,7 @@ from httpx import ASGITransport, AsyncClient, Response
 AUTH_TOKEN_URL = "https://auth.test/oauth2/token"
 AUTH_SHARE_URL = "https://auth.test/share"
 AUTH_ADMIN_URL = "https://auth.test/admin"
+FLEET_URL = "http://coordinator.test:8090"
 
 _PAGE = "<html><body>pmt_live_s3cr3t</body></html>"
 _SECURITY_HEADERS = {
@@ -45,6 +46,7 @@ def share_settings(rsa_keys, tmp_path):
         auth_service_share_url=AUTH_SHARE_URL,
         auth_service_admin_url=AUTH_ADMIN_URL,
         auth_service_admin_api_key="test-admin-secret",
+        manager_fleet_url=FLEET_URL,  # PRM-134
     )
 
 
