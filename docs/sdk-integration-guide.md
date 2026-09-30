@@ -1,6 +1,6 @@
 # Prometheus Gateway — SDK Integration Guide
 
-**Revision**: 2026-09-29 · `PRM-164/166`
+**Revision**: 2026-09-29 · `PRM-164/166/167`
 <!-- Consumers vendor this file and diff it. The date and commit above are what to quote
      when asking whether a copy is current; they change whenever this document does. -->
 
@@ -221,6 +221,12 @@ discovering access model-by-model via failed requests.
 - **There is no client-certificate/mTLS requirement anywhere in this platform.** Authentication
   is purely the Bearer JWT described above. Do not build mTLS support into the SDK unless a
   specific deployment asks for it as a separate reverse-proxy-level concern.
+  - This holds for an internet-facing deployment too, and the reason is worth stating because
+    it is the question people arrive with: mTLS is not the answer to a *distributed* client.
+    A client certificate shipped inside an app someone downloads is a secret shipped inside an
+    app someone downloads — the same problem in a different encoding. What grows in front of an
+    internet-facing gateway is TLS termination, a WAF and per-address limits. See §2.7 for who
+    may hold a credential at all, which is the question underneath.
 - For a deployment using a **self-signed dev certificate** (the repo's own dev-cert generation
   scripts explicitly warn these are never for production use), the SDK's HTTP client needs to
   trust that certificate explicitly — this is standard TLS client configuration, not a
@@ -237,6 +243,41 @@ discovering access model-by-model via failed requests.
   SDK client trusts the gateway's own certificate.
 
 ---
+
+### 2.7 Client types — who may hold a credential
+
+**This platform issues credentials to confidential clients only.** A `client_id` is the
+principal: model grants are attached to it (`model:<id>`, §2.5) and every usage row and billing
+setting is keyed by it. So a credential identifies *an integration*, and it belongs on a machine
+that integration controls.
+
+**A distributed application must not hold one.** An App Store app, a downloadable desktop
+binary, a browser SPA — anything a person installs — is a **public client** in RFC 8252's terms
+and cannot keep a secret, whatever the platform keystore. The device keychain is the right place
+for a credential; it is not the right place for *this* credential, because the credential is not
+the user's: it is the integrator's, and a copy on every user's device is a copy of the identity
+that bills and is granted models.
+
+**What to build instead**: the app talks to a backend the integrator runs, and that backend holds
+the `client_id`/`client_secret` and calls this platform. The app's own users authenticate to that
+backend, which is where per-user identity belongs. This is what OpenAI and Anthropic tell their
+own customers about API keys in client applications, and it is the shape RFC 8252 implies.
+
+**Why not Authorization Code + PKCE**, which is the usual next question: PKCE is the correct flow
+for a public client, and the thing it produces — per-end-user identity in the token — is something
+this platform's authorization and billing model has nowhere to put. Supporting it would mean every
+end user becoming a principal here, with their own grants and their own billing rows. That is a
+different product rather than a grant flag, and a deployment that genuinely needs it should raise
+it as a platform question, not an SDK one.
+
+**What this means for an SDK, and it is the useful part**: the SDK never needs a credential store,
+a keychain integration or a certificate identity. It takes a token — or a callback that returns
+one — and that is the entire surface. Nothing about who obtained that token, or how, is the SDK's
+concern, so none of it can become a breaking change in the SDK's public API later.
+
+If direct device-to-gateway access is ever wanted, the modern answer is a **sender-constrained
+token** (DPoP, RFC 9449) plus platform attestation at the proxy, not mTLS and not a shared secret.
+Neither exists today and neither is planned; this section will say so when that changes.
 
 ## 3. Core API endpoints
 

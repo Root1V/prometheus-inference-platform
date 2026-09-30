@@ -6440,3 +6440,45 @@ reachability, credentials and entitlement in one request. A green light from `/h
 that a process answered. Their point (a) was also right and is fixed: §3.7 listed `/health`,
 `/metrics` and `/v1/models` as carrying no useful response headers, and all three carry
 `X-Request-ID` and `X-Trace-ID` — measured on `/health`, which returns both.
+
+
+## PRM-167 — Confidential clients only, in writing
+
+**Why**: Axonium asked (`A-30`) whether §2.6's *"no mTLS unless a specific deployment asks for
+it"* was about to fire. A fourth SDK is being written in Swift for Mundus, a commercially
+distributed macOS/iOS app, and they needed the answer **before** writing it: a Swift package that
+gains a `SecIdentity` in v2 is a breaking change in a binary that goes through App Store review.
+
+**It is not an mTLS question, and that is the finding.** A `client_id` is the principal this
+platform is built around: `model:<id>` grants attach to it, and `usage_daily`, `usage_events` and
+`client_billing_settings` are all keyed by it. So the `client_secret` on an end user's device is
+not "a secret in an awkward place" — it is **the integrator's identity, copied onto every user's
+machine**: the identity that is granted models and that bills. Not a shape to harden; a shape not
+to have. RFC 8252 says the same from the other side — a distributed app is a public client and
+cannot keep a secret, whatever the keystore — and it is what OpenAI and Anthropic tell their own
+customers about API keys in client applications.
+
+**And PKCE is not the alternative**, which is the answer they were probably expecting. PKCE is the
+correct flow for a public client, and what it produces is per-end-user identity in the token —
+which this platform's authorization and billing model has nowhere to put. Supporting it means every
+end user becoming a principal here, with their own grants and billing rows. That is a different
+product, not a grant flag.
+
+**mTLS would not have helped either**: a client certificate inside a downloaded app is a secret
+inside a downloaded app. §2.6 stands as written, and now says why rather than only what.
+
+**What unblocks them today**, which is the point of answering at all: the seam Mundus has to decide
+now is not the grant and not mTLS — it is whether the Swift package talks to this platform
+directly. Through a backend they run, the package never needs a credential store, a keychain
+integration or a certificate identity: it takes a token, or a callback returning one, and that is
+the whole surface. None of it can become a breaking change in its public API later, which is the
+risk they raised.
+
+**Scope**: §2.7 in the SDK guide — who may hold a credential, what to build instead, why not PKCE,
+and what it means for an SDK's surface. §2.6's mTLS bullet gains the internet-facing case and a
+pointer, because that is the sentence they quoted and where the next reader will look. Sender-
+constrained tokens (DPoP, RFC 9449) plus platform attestation are named as the answer *if* direct
+device access is ever wanted, so the next person does not arrive at mTLS again.
+
+Nothing was built: the correct answer costs no platform work, which is worth recording because the
+question read like a feature request.
