@@ -6442,7 +6442,7 @@ that a process answered. Their point (a) was also right and is fixed: §3.7 list
 `X-Request-ID` and `X-Trace-ID` — measured on `/health`, which returns both.
 
 
-## PRM-167 — Confidential clients only, in writing
+## PRM-170 — Confidential clients only, in writing
 
 **Why**: Axonium asked (`A-30`) whether §2.6's *"no mTLS unless a specific deployment asks for
 it"* was about to fire. A fourth SDK is being written in Swift for Mundus, a commercially
@@ -6482,3 +6482,10 @@ device access is ever wanted, so the next person does not arrive at mTLS again.
 
 Nothing was built: the correct answer costs no platform work, which is worth recording because the
 question read like a feature request.
+
+**Numbered 170, and it was written as 167.** Two other branches and a renumbering landed on `main`
+while this was in progress: `PRM-166` went to a dead-code removal in the manager, the catalog change
+that had been `PRM-166` became `PRM-167`, and 168 and 169 were taken. The branch name and the first
+commit here still say `PRM-167` — published or not, renaming them would leave the log unqualified,
+which is the same convention the catalog item's own renumbering used and the reason the `RM-NN`
+items kept their numbers. The roadmap is the record.
