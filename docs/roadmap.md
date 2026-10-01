@@ -6483,6 +6483,12 @@ device access is ever wanted, so the next person does not arrive at mTLS again.
 Nothing was built: the correct answer costs no platform work, which is worth recording because the
 question read like a feature request.
 
+**Superseded in substance by PRM-173.** Axonium took §2.7 to Mundus, who came back with the one
+architecture neither side had considered — a credential per *end client* rather than one for the
+integrator — which rebuts the reason this item gave rather than its letter. The rule that replaced
+it is narrower and truer: the question is not whether an app is distributed, it is whose credential
+it holds.
+
 **Numbered 170, and it was written as 167.** Two other branches and a renumbering landed on `main`
 while this was in progress: `PRM-166` went to a dead-code removal in the manager, the catalog change
 that had been `PRM-166` became `PRM-167`, and 168 and 169 were taken. The branch name and the first
@@ -6588,3 +6594,55 @@ line carries `action = POST /admin/api/nodes/{node}/instances/{model_id}/stop` w
 returns `404 application/problem+json` with `type: not-found`, and the two 404s are distinguishable
 by body: the real one comes from the manager (`prometheus.local`), the unknown one from the gateway
 (`prometheus.internal`).
+
+
+## PRM-173 — An end client's credential is their own, and a human issues it
+
+**Why**: PRM-170 answered `A-30` with *confidential clients only* — a distributed app must not hold
+a credential. Axonium took that to Mundus, and `A-34` came back with an architecture neither side
+had considered: **a `client_id` per end client**, issued by Mundus as operator, pasted into that
+client's own copy of the app.
+
+**It rebuts the reason rather than the letter, and the reason was the load-bearing part.** PRM-170
+argued the credential must not ship in a distributed app *because it is the integrator's* — one
+leak exposing the identity that is granted models and billed, for every user at once. If the
+credential belongs to the client, that argument stops applying: their grants, their bill, their
+blast radius. It is the "bring your own key" shape OpenAI's and Anthropic's own desktop apps use.
+
+Axonium were scrupulous about not deciding it for us: an app with a pasted secret is still a public
+client in RFC 8252's terms, and whether that matters is the rule-writer's call.
+
+**Accepted, and the business shape is why.** The integrator's product is their application; this
+platform's product is consumption of the models. A person can use Mundus's app without ever holding
+a credential here. The moment they want the model-backed features they are **our** customer, paying
+us per consumption, with their own credential, grants and bill. So the credential being on their
+laptop is the credential being where its owner is.
+
+**And the answer to their blocking question: no, there is no issuance API, and there will not be
+one.** Credential creation is a human administrator's act, always. Measured, because they had probed
+and misread it:
+
+```
+POST :8020/admin/clients   405      GET :8020/admin/clients   404 {"detail":"Not Found"}
+POST :9000/admin/clients   403      ← the real surface, platform admin key
+```
+
+Their reading was *"a handler exists and does not recognise that resource"*. It is the dashboard's
+static mount at `/admin` answering — a Mount matches every sub-path — which is the same hole PRM-172
+closed for `/admin/api/*` and left open one level up. There is nothing behind it.
+
+The two surfaces that create a principal are the dashboard (`admin:write`, behind a human login,
+guarded by `test_create_user_requires_admin_write`) and auth-service's admin API with the platform
+key. Neither is reachable by an integrator, and neither is proxied for one. Issuing a credential
+opens a billing account, which is a commercial act with a person on this side of it.
+
+**What that costs Mundus, said plainly rather than discovered**: a human step between *a person wants
+the AI features* and *their credential exists*. So the app has to treat "no credential yet" as a
+first-class state, and the request comes to us rather than to them. And one credential per client,
+on as many of that client's own devices as they like — which answers `A-34 §4`: the same secret on a
+Mac and an iPhone is that client's secret on that client's devices, and revocation is per client.
+Per-device issuance is not offered.
+
+**Scope**: §2.7 of the SDK guide, rewritten from *who may hold a credential* to *whose it is and who
+issues it*, with the onboarding consequence and the business shape that explains both. No code: the
+mechanical half of the rule was already guarded.

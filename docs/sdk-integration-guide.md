@@ -1,6 +1,6 @@
 # Prometheus Gateway — SDK Integration Guide
 
-**Revision**: 2026-09-29 · `PRM-164/167/170`
+**Revision**: 2026-10-01 · `PRM-164/167/173`
 <!-- Consumers vendor this file and diff it. The date and commit above are what to quote
      when asking whether a copy is current; they change whenever this document does. -->
 
@@ -244,40 +244,67 @@ discovering access model-by-model via failed requests.
 
 ---
 
-### 2.7 Client types — who may hold a credential
+### 2.7 Credentials — whose they are, and who issues them
 
-**This platform issues credentials to confidential clients only.** A `client_id` is the
-principal: model grants are attached to it (`model:<id>`, §2.5) and every usage row and billing
-setting is keyed by it. So a credential identifies *an integration*, and it belongs on a machine
-that integration controls.
+**A credential identifies whoever pays for consumption.** That is the whole rule, and
+the two questions people arrive with fall out of it.
 
-**A distributed application must not hold one.** An App Store app, a downloadable desktop
-binary, a browser SPA — anything a person installs — is a **public client** in RFC 8252's terms
-and cannot keep a secret, whatever the platform keystore. The device keychain is the right place
-for a credential; it is not the right place for *this* credential, because the credential is not
-the user's: it is the integrator's, and a copy on every user's device is a copy of the identity
-that bills and is granted models.
+#### Whose credential is it
 
-**What to build instead**: the app talks to a backend the integrator runs, and that backend holds
-the `client_id`/`client_secret` and calls this platform. The app's own users authenticate to that
-backend, which is where per-user identity belongs. This is what OpenAI and Anthropic tell their
-own customers about API keys in client applications, and it is the shape RFC 8252 implies.
+Model grants (`model:<id>`, §2.5) attach to a `client_id`, and every usage row and
+billing setting is keyed by it. So a credential is not a key to the platform — it is
+**an account**, and it belongs to whoever holds that account.
 
-**Why not Authorization Code + PKCE**, which is the usual next question: PKCE is the correct flow
-for a public client, and the thing it produces — per-end-user identity in the token — is something
-this platform's authorization and billing model has nowhere to put. Supporting it would mean every
-end user becoming a principal here, with their own grants and their own billing rows. That is a
-different product rather than a grant flag, and a deployment that genuinely needs it should raise
-it as a platform question, not an SDK one.
+* **An integrator's credential** belongs on a machine the integrator controls. It must
+  never be shipped inside a distributed application: a copy on every user's device is
+  a copy of the identity that is granted models and that is billed, and one leak
+  exposes every user's usage and the integrator's whole account.
+* **An end client's own credential** may live on that client's own devices, including
+  a desktop or mobile app they installed. The principal, the grants and the bill are
+  theirs, and the blast radius of a leak is their own account and nothing else. This
+  is the "bring your own key" shape, and it is supported.
 
-**What this means for an SDK, and it is the useful part**: the SDK never needs a credential store,
-a keychain integration or a certificate identity. It takes a token — or a callback that returns
-one — and that is the entire surface. Nothing about who obtained that token, or how, is the SDK's
-concern, so none of it can become a breaking change in the SDK's public API later.
+**The distinction is not where the secret sits — it is whose it is.** An app with a
+pasted secret is still a public client in RFC 8252's terms, and that is accepted here
+when the secret and the bill belong to the same person.
 
-If direct device-to-gateway access is ever wanted, the modern answer is a **sender-constrained
-token** (DPoP, RFC 9449) plus platform attestation at the proxy, not mTLS and not a shared secret.
-Neither exists today and neither is planned; this section will say so when that changes.
+#### Who issues them
+
+**A human administrator, always.** There is no self-service issuance, no registration
+endpoint, and no API an integrator can call to mint credentials for its users. This is
+a rule rather than a gap in the surface, so it will not appear later:
+
+* The two surfaces that create a principal are the admin dashboard (`admin:write`,
+  behind a human login) and auth-service's own admin API with the platform admin key.
+  Neither is reachable by an integrator or by a client, and neither is proxied for
+  them.
+* Probing for one will find a `405` or a bare `404` under `/admin/...`. That is the
+  dashboard's static mount answering, not a hidden endpoint — there is nothing behind
+  it.
+
+**Why it is a rule**: issuing a credential opens a billing account. A client asking to
+use the models is asking to become a customer, and that is a commercial act with a
+person on our side of it.
+
+#### What that means for an application's onboarding
+
+There is a human step between *a person wants the AI features* and *their credential
+exists*. Design for it rather than around it:
+
+* Treat **"no credential yet"** as a first-class state in the app, not an error. It is
+  where every new user starts.
+* The request goes to **this platform**, not to the integrator — the integrator cannot
+  create it, by design.
+* One credential per client, usable on as many of that client's own devices as they
+  like. Revocation is per client. Per-device credentials are not issued, so an app
+  that assumes one install per credential will be wrong for any user with a phone and
+  a laptop.
+
+**And the shape of the arrangement**, because it explains all of the above: the
+integrator's product is their application; this platform's product is consumption of
+the models. A person can use the application without ever holding a credential here.
+The moment they want the model-backed features, they are this platform's customer —
+with their own credential, their own grants and their own bill.
 
 ## 3. Core API endpoints
 
