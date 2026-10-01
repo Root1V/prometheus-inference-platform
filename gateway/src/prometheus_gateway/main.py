@@ -548,6 +548,34 @@ def create_app(
         # pricing table is models with no running instance.
         app.include_router(create_billing_router(manager_client))
 
+        # PRM-172: an unknown `/admin/api` path answers in the same envelope as
+        # everything else. Registered **here**, after both admin routers, and not
+        # at the end of either one: FastAPI matches in declaration order, so a
+        # catch-all last within `create_admin_router` still precedes every billing
+        # route and swallowed all of them — 25 tests, and it is the second time
+        # this ordering has been learned (PRM-100, on `/v1/usage/export`).
+        #
+        # It exists because the dashboard SPA is mounted at `/admin` and a Mount
+        # matches every sub-path: an `/admin/api/...` path no route claims used to
+        # fall through to the static handler and come back a `405` carrying
+        # Starlette's body rather than the RFC 9457 envelope PRM-130 established.
+        # Nothing noticed, because the only two routes that could reach it checked
+        # their own verb by hand. Splitting those into explicit verbs removed the
+        # checks and walked into the hole underneath.
+        @app.api_route(
+            "/admin/api/{rest:path}",
+            methods=["GET", "POST", "PUT", "PATCH", "DELETE"],
+            include_in_schema=False,
+        )
+        async def unknown_admin_path(rest: str, request: Request) -> Response:
+            return _problem(
+                request,
+                404,
+                "not-found",
+                "Not Found",
+                f"No admin endpoint at {request.method} /admin/api/{rest}.",
+            )
+
         _admin_static_dir = Path(__file__).parent / "admin" / "static"
         if _admin_static_dir.is_dir():
             # html=True serves index.html for /admin and /admin/ — the SPA uses

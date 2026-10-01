@@ -125,29 +125,33 @@ TARGET_TYPES: frozenset[str] = frozenset(
         "pricing",
         "traffic_split",
         "share",
+        # PRM-172: `client` says `client` again. It was emitted as `user` for a
+        # while, and the reason is worth keeping because it is why the override
+        # could be removed rather than forgotten.
+        #
+        # `client_id` is the same value under two resources —
+        # `/admin/api/users/{client_id}` administers the principal,
+        # `/admin/api/billing/clients/{client_id}/settings` configures its billing —
+        # and Argus's pipeline hashed only `user`. Emitting what each segment said
+        # would have left the same subject hashed in one row and in the clear in
+        # another, and a pseudonym is worth what the least protected place that
+        # subject's identifier appears is worth. So both said `user`, erring toward
+        # hashing a machine client's id rather than publishing a person's.
+        #
+        # Raised in P-33; A-36 answered that it was a hole on their side and
+        # `client` is now protected exactly like `user`. With both protected the
+        # override stops buying anything and costs the distinction, so it is gone
+        # and the type describes the id again.
+        "client",
     }
 )
 
-# One identifier, one treatment. `client_id` is the same value under two resources —
-# `/admin/api/users/{client_id}` administers the principal, and
-# `/admin/api/billing/clients/{client_id}/settings` configures its billing — so the
-# route segment would call it `user` in one place and `client` in the other, and
-# their pipeline hashes only `user`.
-#
-# The pseudonymisation of a subject is worth what the least protected place that
-# subject's identifier appears is worth: emitting one row with the hash and another
-# with the same id in the clear leaves the clear one, which is the whole thing the
-# rule exists to prevent. So both say `user`, which errs toward hashing a machine
-# client's id — a little query convenience — rather than toward publishing a
-# person's. Raised with them in P-33, because the rule's blind spot is theirs to
-# decide on and `client` is in their own example set.
-_TYPE_OVERRIDES: dict[str, str] = {"client": "user"}
-
-# Path parameters that are not objects. `{action}` is a verb in the path —
-# `/instances/{model_id}/{action}` is start, stop or restart — so it can never be
-# the thing acted upon. Declared rather than guessed at, and the only one: every
-# other parameter across the mutating admin routes identifies something.
-_NON_OBJECT_PARAMS: frozenset[str] = frozenset({"action"})
+# PRM-172: a `_NON_OBJECT_PARAMS` set stood here with one member, `{action}` — a
+# verb in the path, so never the thing acted upon. Those two routes are now seven
+# explicit verbs, so no parameter across the admin routes is anything but an
+# identifier, and an empty set plus the filter that read it was code with nothing
+# left to do. The guard over `TARGET_TYPES` is what will ask the question if a
+# route ever puts a verb in a parameter again.
 
 # These three are on the server span already, measured: `http.request.method` +
 # `http.route` (the route template A-32 pointed out we emit), and
@@ -254,7 +258,8 @@ def target_for(request: Request) -> tuple[str | None, str | None]:
 
     The **last** object parameter wins, because that is the most specific — A-34's
     rule. Where a route carries two that both matter, the outer one is lost from the
-    pair; the row keeps the full parameter set, and the case is raised in P-33.
+    pair; the row keeps the full parameter set, and `argus.target.parent.*` is
+    proposed for it in P-35.
     """
     route = request.scope.get("route")
     template = getattr(route, "path", None) or request.url.path
@@ -266,7 +271,11 @@ def target_for(request: Request) -> tuple[str | None, str | None]:
     names = [
         seg[1:-1]
         for seg in template.split("/")
-        if seg.startswith("{") and seg.endswith("}") and seg[1:-1] not in _NON_OBJECT_PARAMS
+        if seg.startswith("{")
+        and seg.endswith("}")
+        # A `:path` converter is a catch-all, not an identifier — PRM-172 added one
+        # for unknown `/admin/api` paths, and a 404 has no target to name.
+        and ":path" not in seg
     ]
     names = [n for n in names if n in params]
     if not names:
@@ -280,7 +289,6 @@ def target_for(request: Request) -> tuple[str | None, str | None]:
         return None, str(params[chosen])
     resource = segments[at - 1] if at > 0 else ""
     target_type = resource.rstrip("s").replace("-", "_") if resource else ""
-    target_type = _TYPE_OVERRIDES.get(target_type, target_type)
     return (target_type or None), str(params[chosen])
 
 

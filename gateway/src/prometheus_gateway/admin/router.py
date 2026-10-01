@@ -842,12 +842,16 @@ def create_admin_router(manager_client: ManagerApiClient) -> APIRouter:
             return _proxy_error_response(request, exc)
         return _passthrough(resp)
 
-    @router.post("/admin/api/nodes/{node}/models/downloads/{model_id}/{action}")
-    async def download_action_proxy(
-        node: str, model_id: str, action: str, request: Request
-    ) -> Response:
-        if action not in ("cancel", "pause", "resume", "retry"):
-            return _problem(request, 404, "not-found", "Not Found", f"Unknown action {action!r}.")
+    # PRM-172: four explicit routes rather than one `{action}`. The verb was a path
+    # parameter, so `http.route` — which is what an audit event's action is since
+    # PRM-162, and what Argus groups by — put cancel, pause, resume and retry in one
+    # bucket. Their own example of the use case was "how many deactivations this
+    # week", and that could not be counted. Told to them in P-35; splitting is ours
+    # and breaks nobody, because only the dashboard calls these.
+    #
+    # The unknown-action check went with it: a verb that is not a route is a 404
+    # from the router, which is what the hand-rolled check was reproducing.
+    async def _download_action(node: str, model_id: str, action: str, request: Request) -> Response:
         if (forbidden := _require_scope(request, "admin:write")) is not None:
             return forbidden
         node_url = await _resolve_node(request, node)
@@ -860,6 +864,22 @@ def create_admin_router(manager_client: ManagerApiClient) -> APIRouter:
         except Exception as exc:
             return _proxy_error_response(request, exc)
         return _passthrough(resp)
+
+    @router.post("/admin/api/nodes/{node}/models/downloads/{model_id}/cancel")
+    async def cancel_download(node: str, model_id: str, request: Request) -> Response:
+        return await _download_action(node, model_id, "cancel", request)
+
+    @router.post("/admin/api/nodes/{node}/models/downloads/{model_id}/pause")
+    async def pause_download(node: str, model_id: str, request: Request) -> Response:
+        return await _download_action(node, model_id, "pause", request)
+
+    @router.post("/admin/api/nodes/{node}/models/downloads/{model_id}/resume")
+    async def resume_download(node: str, model_id: str, request: Request) -> Response:
+        return await _download_action(node, model_id, "resume", request)
+
+    @router.post("/admin/api/nodes/{node}/models/downloads/{model_id}/retry")
+    async def retry_download(node: str, model_id: str, request: Request) -> Response:
+        return await _download_action(node, model_id, "retry", request)
 
     @router.delete("/admin/api/nodes/{node}/models/{model_id}/downloaded")
     async def delete_downloaded_model_proxy(node: str, model_id: str, request: Request) -> Response:
@@ -882,10 +902,11 @@ def create_admin_router(manager_client: ManagerApiClient) -> APIRouter:
             return _proxy_error_response(request, exc)
         return _passthrough(resp)
 
-    @router.post("/admin/api/nodes/{node}/instances/{model_id}/{action}")
-    async def control_instance(node: str, model_id: str, action: str, request: Request) -> Response:
-        if action not in ("start", "stop", "restart"):
-            return _problem(request, 404, "not-found", "Not Found", f"Unknown action {action!r}.")
+    # PRM-172: see the download actions above — three explicit routes, so starting,
+    # stopping and restarting an instance are three countable actions instead of one.
+    async def _control_instance(
+        node: str, model_id: str, action: str, request: Request
+    ) -> Response:
         if (forbidden := _require_scope(request, "admin:write")) is not None:
             return forbidden
         node_url = await _resolve_node(request, node)
@@ -904,6 +925,18 @@ def create_admin_router(manager_client: ManagerApiClient) -> APIRouter:
         except Exception as exc:
             return _proxy_error_response(request, exc)
         return _passthrough(resp)
+
+    @router.post("/admin/api/nodes/{node}/instances/{model_id}/start")
+    async def start_instance(node: str, model_id: str, request: Request) -> Response:
+        return await _control_instance(node, model_id, "start", request)
+
+    @router.post("/admin/api/nodes/{node}/instances/{model_id}/stop")
+    async def stop_instance(node: str, model_id: str, request: Request) -> Response:
+        return await _control_instance(node, model_id, "stop", request)
+
+    @router.post("/admin/api/nodes/{node}/instances/{model_id}/restart")
+    async def restart_instance(node: str, model_id: str, request: Request) -> Response:
+        return await _control_instance(node, model_id, "restart", request)
 
     @router.get("/admin/api/nodes/{node}/instances/{model_id}/logs")
     async def get_instance_logs(
