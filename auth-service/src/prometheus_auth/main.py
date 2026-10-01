@@ -19,6 +19,7 @@ from .routers.well_known import router as well_known_router
 from prometheus_telemetry import (
     TraceIDMiddleware,
     configure_logging,
+    configure_logs,
     configure_tracing,
     get_logger,
     instrument_fastapi,
@@ -39,6 +40,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     )
     # See memory/specs/022-opentelemetry-sdk-instrumentation.md — G-4, G-11 to G-35
     configure_tracing(service="auth-service")
+    # PRM-171: see the gateway's own call — this service logs the other half of
+    # what an auditor reads (who obtained a token, and who failed to).
+    configure_logs(service="auth-service")
     _logger = get_logger(__name__)
 
     # AC-18: rate limiter keyed on remote IP

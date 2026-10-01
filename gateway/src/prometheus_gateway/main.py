@@ -24,6 +24,7 @@ from .router import _problem, create_router
 from .telemetry import (
     TraceIDMiddleware,
     configure_logging,
+    configure_logs,
     configure_metrics,
     configure_tracing,
     get_logger,
@@ -67,6 +68,12 @@ def create_app(
     )
     # See memory/specs/022-opentelemetry-sdk-instrumentation.md — G-4, G-7, G-10
     configure_tracing(service="gateway", instrument_httpx=True)
+    # PRM-171: and the logs. Argus had zero log records in seven days against
+    # 45,066 spans (A-35) — the audit *event* reached them and the audit *line*
+    # did not, because structlog's PrintLoggerFactory writes to stdout and their
+    # agent has no file receiver. Gated on the same endpoint as tracing, so a
+    # process with no collector behaves exactly as before.
+    configure_logs(service="gateway")
     # PRM-131: the other half. Until now this process configured a
     # TracerProvider and no MeterProvider, so it emitted spans and not one
     # metric point — including the two numbers that do not come out of a span
