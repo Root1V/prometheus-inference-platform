@@ -6489,3 +6489,48 @@ that had been `PRM-166` became `PRM-167`, and 168 and 169 were taken. The branch
 commit here still say `PRM-167` — published or not, renaming them would leave the log unqualified,
 which is the same convention the catalog item's own renumbering used and the reason the `RM-NN`
 items kept their numbers. The roadmap is the record.
+
+
+## PRM-171 — The audit line leaves the process
+
+**Why**: Argus measured it (`A-35`) — **zero log records in seven days**, against 45,066 spans in
+the same window. The audit *event* reached them, because PRM-162 hung it off the server span. The
+audit *line* did not.
+
+Their hypothesis was right and the cause is one line of ours: `configure_logging` uses structlog's
+`PrintLoggerFactory`, so every `logger.info()` in this platform is written straight to stdout and
+never passes through stdlib `logging`. There was nothing for a handler to attach to, and their
+agent has no file receiver — so the line existed, was correct, and lived in the terminal of
+whoever started the process.
+
+**It emptied something built two days earlier.** PRM-164 put the correlation ids on that line
+*specifically* so it could be joined to a trace, and PRM-162 wrote down why the two payloads differ
+— the event hangs off its span, the log line reaches no span. A line that reaches no span and no
+collector reaches nobody. The row in the gateway's table is still the record of truth and that has
+not changed; what was missing is the half Argus is *for*: search, correlation, and alerting on
+patterns like a run of failures against one address.
+
+**A structlog processor, not their SDK's `init()`.** They offered `argus.init()`, which installs a
+stdlib logging handler. It would have seen nothing — `PrintLoggerFactory` again — and it configures
+providers this platform already configures by hand (RM-95). So the export is a processor in the
+chain that already exists: it sees the finished event, emits a copy, and returns the dict untouched.
+stdout keeps its exact format and the rotating file its exact content. It sits **last**, so what
+leaves is the event with its trace id and field order, the same one every other reader sees.
+
+**And the first implementation exported nothing while reporting success**, which is worth recording
+because of how it was found. It built `sdk._logs.LogRecord` directly; in `opentelemetry-sdk` 1.44
+that class is not public — it lives under `_internal` — so the import raised, the per-event
+`try/except` swallowed it, and `configure_logs` returned True over a bridge that carried nothing.
+Swallowing is right for a log line and wrong for a setup failure. Measuring the collector's own
+counter is what found it: a delta of zero. The export now goes through `LoggingHandler`, which is
+public, builds the record, maps the severity and attaches the current span's ids; setup failures
+raise.
+
+**Verified live, end to end**: the Argus agent's `otelcol_exporter_sent_log_records_total` moved
+974 → 979 for a dashboard login plus the two admin actions, and the node check carries trace
+`2e324e0852b1823ac2a3ac729ad0735b` — which is also the real traffic `A-34 §3` and `A-36` asked for,
+so they can confirm the `user`-typed target pseudonym against their store on our own events.
+
+Off unless a collector is configured, same gate as tracing. Wired into the gateway, auth-service
+and manager-api; the TUI is left out deliberately — it logs for the operator in front of it, not to
+an audit trail.

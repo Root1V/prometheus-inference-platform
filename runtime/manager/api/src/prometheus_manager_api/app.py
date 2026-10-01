@@ -15,6 +15,7 @@ from fastapi.responses import JSONResponse
 from prometheus_manager_core.telemetry import (
     TraceIDMiddleware,
     configure_logging,
+    configure_logs,
     configure_tracing,
     get_logger,
     instrument_fastapi,
@@ -30,6 +31,9 @@ from .routes import router
 # Configure structlog when the API module is first loaded (idempotent — AC-24)
 configure_logging(service="manager-api", component="api")
 configure_tracing(service="manager-api")
+# PRM-171: logs too, same gate. Fleet membership changes are administrative
+# actions and their lines belong where they can be searched.
+configure_logs(service="manager-api")
 
 logger = get_logger(__name__)
 

@@ -28,6 +28,8 @@ from typing import Any
 import structlog
 from starlette.types import ASGIApp, Receive, Scope, Send
 
+from . import logs as _logs
+
 # ── Module-level idempotency guard (AC-5) ─────────────────────────────────────
 _CONFIGURED = False
 
@@ -85,6 +87,17 @@ _SHARED_PROCESSORS: list[Any] = [
     structlog.processors.format_exc_info,
     _ensure_trace_id,
     _order_mandatory_fields,
+    # PRM-171: emit a copy to the collector, last — so what is exported is the
+    # finished event, with the trace id and the field order every other reader
+    # sees. Returns the dict untouched, and is a pass-through when no collector is
+    # configured, so stdout and the rotating file are unaffected either way.
+    #
+    # It is a processor because `logger_factory` is structlog's `PrintLoggerFactory`:
+    # our own events are written straight to stdout and never pass through stdlib
+    # `logging`, so a handler attached there would capture uvicorn and httpx and
+    # none of ours. Argus measured the consequence — zero log records in seven days
+    # against 45,066 spans (A-35).
+    _logs.export_to_otel,
 ]
 
 

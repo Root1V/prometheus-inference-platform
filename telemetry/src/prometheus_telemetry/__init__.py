@@ -23,6 +23,7 @@ from .core import (
     configure_logging,
     get_logger,
 )
+from .logs import configure_logs, logs_active
 from .metrics import configure_metrics
 from .tracing import (
     configure_tracing,
@@ -34,6 +35,8 @@ from .tracing import (
 __all__ = [
     "TraceIDMiddleware",
     "configure_logging",
+    "configure_logs",
+    "logs_active",
     "get_logger",
     "bind_contextvars",
     "clear_contextvars",
