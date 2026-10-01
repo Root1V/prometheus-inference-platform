@@ -257,15 +257,36 @@ async def test_the_most_specific_parameter_is_the_target():
     ) == ("model", "m-1")
 
 
-async def test_a_verb_in_the_path_is_never_the_target():
-    """`/instances/{model_id}/{action}` is start, stop or restart. The last
-    parameter is the most specific and this one is not an object at all."""
-    assert audit.target_for(
-        _req(
-            "/admin/api/nodes/{node}/instances/{model_id}/{action}",
-            {"node": "lab", "model_id": "m-1", "action": "start"},
-        )
-    ) == ("instance", "m-1")
+async def test_each_verb_is_its_own_action(admin_settings):
+    """PRM-172: the verb was a path parameter, so `http.route` — which is the audit
+    action since PRM-162 — put start, stop and restart in one bucket. Argus's own
+    example of the use case was "how many deactivations this week", and that could
+    not be counted. Seven explicit routes now, and the `{action}` template is gone.
+    """
+    from prometheus_gateway.main import create_app
+
+    app = create_app(settings=admin_settings)
+    paths = {getattr(r, "path", "") for r in app.routes}
+
+    assert not [p for p in paths if "{action}" in p], "a verb is a path parameter again"
+    for verb in ("start", "stop", "restart"):
+        assert f"/admin/api/nodes/{{node}}/instances/{{model_id}}/{verb}" in paths
+    for verb in ("cancel", "pause", "resume", "retry"):
+        assert f"/admin/api/nodes/{{node}}/models/downloads/{{model_id}}/{verb}" in paths
+
+
+async def test_a_catch_all_path_has_no_target():
+    """PRM-172 added `/admin/api/{rest:path}` so an unknown admin path is a 404 in
+    the usual envelope rather than whatever the SPA mount returns. A 404 has no
+    object, and a `:path` converter is not an identifier.
+
+    This replaces the test for `{action}`, which asserted that a verb in a path
+    parameter is never the target — there are no verb parameters left to exclude.
+    """
+    assert audit.target_for(_req("/admin/api/{rest:path}", {"rest": "no/such/thing"})) == (
+        None,
+        None,
+    )
 
 
 async def test_administering_a_principal_says_user_whatever_the_parameter_is_called():
@@ -279,16 +300,27 @@ async def test_administering_a_principal_says_user_whatever_the_parameter_is_cal
     )
 
 
-async def test_the_same_identifier_gets_the_same_treatment_everywhere():
-    """`client_id` appears under two resources. A pseudonym is worth what the least
-    protected place that subject's identifier appears is worth, so emitting the hash
-    in one row and the clear value in another would leave the clear one — which is
-    the whole thing the rule prevents."""
+async def test_the_type_says_what_the_resource_says(monkeypatch):
+    """This asserted the opposite until PRM-172, and the reason it changed is the
+    point.
+
+    `client_id` is the same value under two resources — `/users/{client_id}`
+    administers the principal, `/billing/clients/{client_id}/settings` configures
+    its billing. Argus's pipeline hashed only `user`, so emitting what each segment
+    said would have left the same subject hashed in one row and in the clear in
+    another, and a pseudonym is worth what the least protected place that subject
+    appears is worth. Both said `user` for a while, erring toward hashing.
+
+    A-36 answered that it was a hole on their side and `client` is now protected
+    exactly like `user`. With both protected the override bought nothing and cost
+    the distinction, so the type describes the id again.
+    """
     principal = audit.target_for(_req("/admin/api/users/{client_id}", {"client_id": "c-1"}))
     billing = audit.target_for(
         _req("/admin/api/billing/clients/{client_id}/settings", {"client_id": "c-1"})
     )
-    assert principal == billing == ("user", "c-1")
+    assert principal == ("user", "c-1")
+    assert billing == ("client", "c-1")
 
 
 async def test_a_route_with_no_parameters_has_no_target():

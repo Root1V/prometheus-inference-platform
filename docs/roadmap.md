@@ -6534,3 +6534,57 @@ so they can confirm the `user`-typed target pseudonym against their store on our
 Off unless a collector is configured, same gate as tracing. Wired into the gateway, auth-service
 and manager-api; the TUI is left out deliberately — it logs for the operator in front of it, not to
 an audit trail.
+
+
+## PRM-172 — `client` says `client`, and each verb is its own action
+
+**Why**: the two things `A-36` asked for, both consequences of findings we had sent them in `P-33`.
+
+**`client` again.** PRM-164 mapped the `client` segment to `user` because `client_id` is the same
+value under two resources — `/users/{client_id}` administers the principal,
+`/billing/clients/{client_id}/settings` configures its billing — and Argus's pipeline hashed only
+`user`. Emitting what each segment said would have left the same subject hashed in one row and in
+the clear in another, and a pseudonym is worth what the least protected place that subject's
+identifier appears is worth. `A-36` answered that this was a hole on their side and `client` is now
+protected exactly like `user`, so the override bought nothing and cost the distinction. Gone, and
+the type describes the id again.
+
+**Each verb is its own action.** `{action}` was a path parameter on two routes, so `http.route` —
+which has been the audit action since PRM-162 — put start, stop and restart in one bucket, and
+cancel, pause, resume and retry in another. Argus's own example of the use case was *"how many
+deactivations this week"*, and that could not be counted. Seven explicit routes now, sharing one
+implementation. Splitting is ours and breaks nobody: measured before proposing it, only the
+dashboard SPA calls them and the SDK guide does not mention `/admin/api` once.
+
+Two things fell out of it:
+
+* The hand-rolled `action not in (...)` checks are gone — a verb that is not a route is a 404 from
+  the router, which is what those checks were reproducing.
+* `_NON_OBJECT_PARAMS` had exactly one member, `{action}`, and is gone with it. An empty set plus
+  the filter that read it is code with nothing left to do; the guard over `TARGET_TYPES` is what
+  will ask the question if a route puts a verb in a parameter again.
+
+### And a hole underneath, which the split walked into
+
+The dashboard SPA is mounted at `/admin`, and a Mount matches **every** sub-path. So an
+`/admin/api/...` path that no route claimed fell through to the static-file handler and came back a
+`405` carrying Starlette's own body — not the RFC 9457 envelope PRM-130 established for every error
+this gateway returns. Nothing had noticed, because the only two routes that could reach it checked
+their own verb by hand and returned the envelope themselves. Removing those checks removed the
+cover.
+
+So `/admin/api/{rest:path}` now answers 404 in the usual envelope, naming the method and path. It
+covers every unknown admin path rather than the two verbs that exposed it.
+
+**And it was registered in the wrong place first**, which is worth recording because it is the
+second time: declared last inside `create_admin_router`, where it still precedes every billing
+route, because FastAPI matches in declaration order and "last in its own router" is not last in the
+app. Twenty-five billing tests went red at once. It lives in `main.py` after both admin routers now
+— the same lesson PRM-100 learned on `/v1/usage/export`, learned again one router up.
+
+**Verified live**: `POST /admin/api/nodes/local/instances/qwen3-0.6b/stop` proxies and its audit
+line carries `action = POST /admin/api/nodes/{node}/instances/{model_id}/stop` with
+`argus.target.type = instance` — the verb is in the template, so it can be counted. An unknown verb
+returns `404 application/problem+json` with `type: not-found`, and the two 404s are distinguishable
+by body: the real one comes from the manager (`prometheus.local`), the unknown one from the gateway
+(`prometheus.internal`).
