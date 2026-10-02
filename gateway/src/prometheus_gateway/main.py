@@ -9,6 +9,7 @@ from typing import Any
 from fastapi import FastAPI, Request, Response
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
+from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from . import audit, idempotency, rate_limits, traffic_split
 from .auth.middleware import JWTAuthMiddleware
@@ -34,6 +35,17 @@ from .telemetry import (
 
 # Logger initialised after configure_logging() is called inside create_app()
 logger = get_logger(__name__)
+
+# PRM-174: the two conditions Starlette's own router can refuse a request with.
+# `unknown-route` rather than reusing `not-found`, which the SDK guide documents
+# as one specific data condition — "no usage row with that id belonging to this
+# client". A URL that does not exist is a mistake in the caller's code, not a
+# fact about their data, and an SDK that cannot tell the two apart retries the
+# wrong one.
+_ROUTING_PROBLEMS: dict[int, tuple[str, str]] = {
+    404: ("unknown-route", "Unknown Route"),
+    405: ("method-not-allowed", "Method Not Allowed"),
+}
 
 
 def create_app(
@@ -409,6 +421,54 @@ def create_app(
             media_type="application/problem+json",
         )
 
+    @app.exception_handler(StarletteHTTPException)
+    async def _routing_error_handler(request: Request, exc: StarletteHTTPException) -> JSONResponse:
+        """PRM-174: a route that does not exist answers in the same envelope as one that does.
+
+        Same move RM-65 made for the 422, and for the same reason: an SDK that
+        types errors by `type` and correlates by `request_id` got neither. The
+        SDK guide already told readers to "treat any other 404 as a genuinely
+        unmapped route" without saying what shape one arrives in — this is what
+        makes that sentence true.
+
+        **What was actually broken was not `/admin`.** Axonium probed
+        `/admin/clients`, got a `405` and a bare `{"detail": "Not Found"}`, and
+        asked what was behind it. Measuring to answer them showed the boundary
+        is somewhere else entirely: `JWTAuthMiddleware` runs **before** routing,
+        so on every protected path an unmapped URL is a `401` in our own
+        envelope and the router's 404 is never reached. The leak was exactly the
+        middleware's complement — `/admin/<not-api>`, `/ui/*`, `/share/*`, and a
+        wrong verb on `/health` or `/oauth2/token`. The auth middleware had been
+        acting as the envelope's floor by accident, which is why nothing noticed:
+        the only paths that could show the defect were the ones nobody
+        authenticates to.
+
+        Scoping the fix to `/admin` would have fixed the instance and left the
+        class — and picked a boundary the measurement says is the wrong one.
+
+        Nothing in `gateway/src` raises `HTTPException` (checked, zero
+        occurrences), so this handler can only ever fire for one Starlette
+        itself raises: no route, wrong verb, or `StaticFiles` missing a file.
+        `/share/{token}`'s upstream HTML page is a *returned* response, not a
+        raised exception, so it is untouched — which is the point of not
+        reaching for a middleware here.
+        """
+        slug, title = _ROUTING_PROBLEMS.get(exc.status_code, ("http-error", "HTTP Error"))
+        if exc.status_code == 405:
+            detail = f"{request.method} is not allowed on {request.url.path}."
+        else:
+            detail = f"No endpoint at {request.method} {request.url.path}."
+        return _problem(
+            request,
+            exc.status_code,
+            slug,
+            title,
+            detail,
+            # Starlette's 405 carries `Allow`, and dropping it would answer the
+            # caller's "then what is?" with silence.
+            extra_headers=dict(exc.headers or {}),
+        )
+
     @app.get("/health")
     async def health() -> dict[str, str]:
         """Liveness probe — unauthenticated. See memory/specs/001-gateway-core.md AC-4."""
@@ -571,8 +631,11 @@ def create_app(
             return _problem(
                 request,
                 404,
-                "not-found",
-                "Not Found",
+                # PRM-174 unified this with the app-wide handler's slug: two
+                # routes that do not exist cannot answer with two different
+                # `type`s. This one survives only for its more specific detail.
+                "unknown-route",
+                "Unknown Route",
                 f"No admin endpoint at {request.method} /admin/api/{rest}.",
             )
 

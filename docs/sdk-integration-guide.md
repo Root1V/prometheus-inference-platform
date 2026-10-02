@@ -1,6 +1,6 @@
 # Prometheus Gateway — SDK Integration Guide
 
-**Revision**: 2026-10-01 · `PRM-164/167/173`
+**Revision**: 2026-10-02 · `PRM-167/173/174`
 <!-- Consumers vendor this file and diff it. The date and commit above are what to quote
      when asking whether a copy is current; they change whenever this document does. -->
 
@@ -1148,10 +1148,23 @@ model" as something only the SDK can catch.
 | 404 | `not-found` | Only on `GET /v1/usage/{request_id}` (§3.8) — no usage row with that id **belonging to this client**. Deliberately not a `403`: telling you which ids exist but aren't yours leaks other clients' traffic. | No |
 | 503 | `upstream-unavailable` | Only on `POST /oauth2/token` (§2.1) — the gateway could not reach the auth-service. Note this is the *only* problem+json a token request can produce; every other token outcome uses the OAuth2 error shape. | **Yes**, with backoff |
 | 503 | `not-configured` | Only on `POST /oauth2/token` — this deployment has no token endpoint wired up. | No — needs operator action |
+| 404 | `unknown-route` | **No route at that URL.** A mistake in the caller's code, not a fact about their data — deliberately a different `type` from `not-found` above, which an SDK may reasonably retry or treat as an empty result. `detail` names the method and path. | No (fix the URL) |
+| 405 | `method-not-allowed` | The URL exists, the verb does not. The `Allow` response header lists the verbs that do. | No (fix the method) |
 
 There is no `404` on the inference-family endpoints for "model not found" — that's a `400
 unknown-model`, not a `404`. The only `404` an SDK should expect from a client-facing endpoint
-is the `not-found` row above; treat any other one as a genuinely unmapped route.
+is the `not-found` row above; any other one is a genuinely unmapped route, and **since
+`PRM-174` it says so**: an unmapped route and a wrong verb both arrive in this same envelope,
+with `unknown-route` or `method-not-allowed` as the `type`.
+
+That is worth one line of history, because this paragraph used to end at "treat any other one
+as a genuinely unmapped route" without saying what shape one arrived in — and the shape was
+Starlette's bare `{"detail": "Not Found"}`, with no `type`, no `request_id` and no `trace_id`.
+It was invisible because the auth middleware runs **before** routing: on any endpoint that
+needs a token, an unmapped URL is a `401` in this envelope and the router's `404` is never
+reached. Only the unauthenticated surfaces could show it — which is exactly where Axonium
+found it, probing `/admin/...`. If your error handling has a branch for "a `404` that isn't
+problem+json", you can delete it.
 
 **`503 backend-unavailable`'s two causes, confirmed precisely (this is not the same code path
 in both cases)**:
