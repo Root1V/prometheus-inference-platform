@@ -6646,3 +6646,48 @@ Per-device issuance is not offered.
 **Scope**: §2.7 of the SDK guide, rewritten from *who may hold a credential* to *whose it is and who
 issues it*, with the onboarding consequence and the business shape that explains both. No code: the
 mechanical half of the rule was already guarded.
+
+## PRM-174 — An unmapped route answers in the gateway's own envelope
+
+**Why**: Axonium probed `/admin/clients` while working out how credentials are issued
+(`A-34`), got a `405` and a bare `{"detail": "Not Found"}`, and asked what was behind it —
+reasonably, because that body looks like a handler that exists and does not recognise the
+resource. Nothing was behind it. But the envelope was genuinely wrong: RFC 9457 everywhere
+else, Starlette's default there, so an SDK typing errors by `type` and correlating by
+`request_id` got neither.
+
+**The measurement moved the boundary, and that is the finding.** The report said `/admin`.
+`JWTAuthMiddleware` runs **before** routing, so on any protected path an unmapped URL is a
+`401` in our own envelope and the router's `404` never happens. What leaked was the
+middleware's exact complement — `/admin/<not-api>`, `/ui/*`, `/share/*`, and a wrong verb on
+`/health` or `/oauth2/token`. **The auth middleware had been acting as the envelope's floor by
+accident**, which is why nothing ever noticed: the only paths that could show the defect are
+the ones nobody authenticates to. Scoping the fix to `/admin` would have fixed the instance,
+left the class, and picked a boundary the measurement says is the wrong one.
+
+**Scope**
+- One app-wide `StarletteHTTPException` handler in `main.py` building the same `_problem`
+  envelope — the move RM-65 made for the `422`, for the same reason. Nothing in `gateway/src`
+  raises `HTTPException` (zero occurrences), so it can only fire for one Starlette itself
+  raises: no route, wrong verb, or `StaticFiles` missing a file. `/share/{token}`'s upstream
+  HTML page is a *returned* response, so it is untouched.
+- `unknown-route` rather than reusing `not-found`, which the SDK guide defines as one data
+  condition — "no usage row with that id belonging to this client". A bad URL is a mistake in
+  the caller's code, not a fact about their data, and an SDK that cannot tell them apart
+  retries the wrong one. PRM-172's `/admin/api` catch-all was moved onto the same slug; it
+  survives only for its more specific `detail`.
+- Starlette's `Allow` header is passed through, so a `405` still answers "then what is?".
+- Tests: the class first — every exempt path, refused by routing, must be in the envelope, so
+  the test fails if someone adds an exempt path and forgets. Plus the `401`-before-routing
+  behaviour, pinned as the reason the leak was invisible. PRM-172's catch-all shipped with no
+  test for its envelope at all; it has one now.
+- Out: the `401`-on-an-unmapped-protected-path behaviour. It is odd (a path that does not
+  exist demands credentials) but it hides nothing and changing it would weaken nothing.
+
+**A method note worth keeping.** The first in-process probe used conftest's `test_app`, which
+is a hand-built minimal FastAPI app with neither the handler nor the admin mount — it reported
+every surface as broken and would have reported the fix as ineffective. It also made RM-65's
+`422` handler look unregistered, and a stale dev process (started 95 seconds before `main.py`
+last changed) appeared to confirm it. Both were instrument errors, measured away against
+`create_app`. Same shape as A-37/A-39: **the instrument chosen decided the conclusion before
+the data did.**
