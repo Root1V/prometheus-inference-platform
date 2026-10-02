@@ -20,7 +20,7 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from prometheus_gateway.auth.middleware import _EXEMPT_PREFIXES, EXEMPT_PATHS
 from prometheus_gateway.main import _ROUTING_PROBLEMS
-from tests.conftest import make_token
+from tests.conftest import dashboard_settings, make_token
 
 PROBLEM = "application/problem+json"
 
@@ -34,6 +34,25 @@ def client(multi_model_app):
     ineffective. An instrument that cannot see the defect is not a measurement.
     """
     return TestClient(multi_model_app, raise_server_exceptions=False)
+
+
+@pytest.fixture
+def admin_client(rsa_keys, tmp_path):
+    """The dashboard-enabled app, which is the only one with PRM-172's catch-all.
+
+    Built from `dashboard_settings` (PRM-168's one place for this list) rather than
+    importing `test_admin`'s fixtures: taking an imported fixture as a parameter
+    shadows the import, and ruff rejects that.
+    """
+    from prometheus_gateway.main import create_app
+    from prometheus_gateway.models.registry import ModelRegistry
+
+    key_file = tmp_path / "public.pem"
+    key_file.write_text(rsa_keys["public"])
+    registry = ModelRegistry.__new__(ModelRegistry)
+    registry._models = {}
+    app = create_app(settings=dashboard_settings(key_file), registry=registry)
+    return TestClient(app, raise_server_exceptions=False)
 
 
 def _assert_envelope(resp, status: int, slug: str) -> None:
@@ -112,12 +131,21 @@ def test_the_detail_names_the_method_and_path(client):
     assert "/admin/typo-here" in body["detail"]
 
 
-def test_an_unknown_admin_api_path_answers_in_the_envelope(client, rsa_keys):
-    """PRM-172's catch-all shipped without a test for its envelope. This is it."""
+def test_an_unknown_admin_api_path_answers_in_the_envelope(admin_client, rsa_keys):
+    """PRM-172's catch-all shipped without a test for its envelope. This is it.
+
+    On `admin_client`, not `client`: `multi_model_app` has the dashboard **off**, so
+    `/admin/api/...` has no catch-all and no mount, and this assertion passed there
+    against the app-wide handler instead. It was green and it tested the wrong thing
+    — found while measuring routes for PRM-175, and the third time in two days that
+    the instrument, not the code, was the thing that was wrong.
+
+    The `detail` is what tells them apart: the catch-all says "No admin endpoint".
+    """
     token = make_token(rsa_keys["private"], scope="admin:write")
-    resp = client.get("/admin/api/nope", headers={"Authorization": f"Bearer {token}"})
+    resp = admin_client.get("/admin/api/nope", headers={"Authorization": f"Bearer {token}"})
     _assert_envelope(resp, 404, "unknown-route")
-    assert "/admin/api/nope" in resp.json()["detail"]
+    assert resp.json()["detail"] == "No admin endpoint at GET /admin/api/nope."
 
 
 # ── the slug ─────────────────────────────────────────────────────────────────
@@ -134,11 +162,13 @@ def test_unknown_route_is_not_the_same_type_as_a_missing_usage_row():
     assert _ROUTING_PROBLEMS[404][0] != "not-found"
 
 
-def test_the_two_routes_that_do_not_exist_agree_on_their_type(client, rsa_keys):
+def test_the_two_routes_that_do_not_exist_agree_on_their_type(admin_client, rsa_keys):
     """The catch-all and the app-wide handler cannot answer with two `type`s."""
     token = make_token(rsa_keys["private"], scope="admin:write")
-    via_catch_all = client.get("/admin/api/nope", headers={"Authorization": f"Bearer {token}"})
-    via_handler = client.get("/admin/nope")
+    hdr = {"Authorization": f"Bearer {token}"}
+    via_catch_all = admin_client.get("/admin/api/nope", headers=hdr)
+    via_handler = admin_client.get("/admin/nope")
+    assert via_catch_all.json()["detail"].startswith("No admin endpoint")
     assert via_catch_all.json()["type"] == via_handler.json()["type"]
 
 

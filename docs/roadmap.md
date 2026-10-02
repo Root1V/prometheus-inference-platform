@@ -6691,3 +6691,50 @@ every surface as broken and would have reported the fix as ineffective. It also 
 last changed) appeared to confirm it. Both were instrument errors, measured away against
 `create_app`. Same shape as A-37/A-39: **the instrument chosen decided the conclusion before
 the data did.**
+
+## PRM-175 — The audit target says where it lives
+
+**Why**: `argus.target.type`/`.id` name the object an admin action acted on, but twelve
+routes carry **two** objects — all of shape `/admin/api/nodes/{node}/<resource>/{model_id}`
+— and PRM-164 kept only the inner one, because the last parameter is the most specific.
+The outer id still reached Argus, but only inside the row's JSON parameter set, which is the
+route-template problem one level down: a reader had to know each route's shape to find it, so
+"every action on node X" was not a question the store could answer. Proposed in P-35 and
+accepted in A-41 §3 on the argument that settled the shape — *"they are not two peer objects;
+it is an object and the place it lives"*. A `target2` would have claimed two things of equal
+rank, and then grouping by "the object" is ambiguous.
+
+**Scope**
+- `parent_for(request)` — the next-outer object parameter, derived by the **same** helper as
+  the target. The derivation was duplicated in the first draft, which is this codebase's own
+  recurring defect wearing its own name, so `_pair_at(request, index)` serves both.
+- A-41 §3's two conditions, both tested. **The parent is classified from the first event**:
+  the type comes from the route segment, never the parameter name, so a parent that is a
+  principal says so and Argus's pipeline protects the id — their reason being that debuting
+  the attribute without it would repeat, on a brand-new field, the leak the two teams had
+  just fixed three times. **The pair goes together or it does not go**: half a pair is an
+  identifier nobody knows whether to protect, so it is better absent. Applied to the target
+  too — its two bare-id branches were unreachable, and the rule is the same rule.
+- `argus-obs-semconv` `1.0.0a8` → `1.0.0a17`, which condition 1 needs:
+  `ARGUS_TARGET_TYPE_PRINCIPALS` ships the principal set as data since `a14`. Every constant
+  this repo uses was checked to still exist and still hold the same value; the one change is
+  `ARGUS_OUTCOME_VALUES` gaining `denied` and `suspended`, additive, and read by index here.
+- **The comment that restated which types are principals is gone.** It said "`user`", then
+  PRM-172 came back and added "and now `client`" — a fact in prose beside the same fact in
+  code, which is the shape both teams have now been bitten by four times. The set is read
+  from the package and the tests compare against it.
+- The two parent attribute names are **literals**: the package ships no constant for them at
+  any published version. A test fails the moment it does, so the switch is forced rather than
+  remembered.
+- Out: mapping a 403 to `a17`'s new `denied` outcome. It is the right word and it changes how
+  every refused admin action groups in their store, which is a decision to take with them.
+
+**Verified live, which is what A-41 asked for**: a real `POST
+/admin/api/nodes/local/instances/qwen3-0.6b/stop` emits `argus.target.type=instance`,
+`.id=qwen3-0.6b`, `.parent.type=node`, `.parent.id=local`.
+
+**It also found a green test that tested nothing.** PRM-174's catch-all assertion ran against
+`multi_model_app`, which has the dashboard **off** — so there is no catch-all and no mount
+there, and the assertion passed against the app-wide handler instead. Now on the
+dashboard-enabled app and pinned to the catch-all's own `detail` string. Third time in two
+days that the instrument, not the code, was the thing that was wrong.

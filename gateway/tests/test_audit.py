@@ -20,6 +20,7 @@ import pytest
 import respx
 from httpx import ASGITransport, AsyncClient, Response
 
+from argus_semconv import attributes as argus
 from prometheus_gateway import audit, db
 from tests.conftest import dashboard_settings, make_token
 
@@ -604,3 +605,156 @@ async def test_reading_the_trail_needs_read_not_write(gw, rsa_keys):
 async def test_reading_the_trail_without_a_scope_is_refused(gw, rsa_keys):
     resp = await gw.get("/admin/api/audit", headers=_headers(rsa_keys, scope="inference:read"))
     assert resp.status_code == 403
+
+
+# ── PRM-175: where the target lives ──────────────────────────────────────────
+
+
+async def test_the_parent_is_the_next_outer_object():
+    """The twelve two-object routes are all a resource inside a node."""
+    assert audit.parent_for(
+        _req(
+            "/admin/api/nodes/{node}/instances/{model_id}/logs",
+            {"node": "lab", "model_id": "qwen3-0.6b"},
+        )
+    ) == ("node", "lab")
+
+
+async def test_the_target_still_wins_the_inner_object():
+    """`parent_for` must not change what the target is — only add where it lives."""
+    req = _req(
+        "/admin/api/nodes/{node}/models/{model_id}",
+        {"node": "lab", "model_id": "qwen3-0.6b"},
+    )
+    assert audit.target_for(req) == ("model", "qwen3-0.6b")
+    assert audit.parent_for(req) == ("node", "lab")
+
+
+async def test_a_single_object_route_has_no_parent():
+    """Which is most of them, and absent is the honest answer."""
+    assert audit.parent_for(_req("/admin/api/users/{client_id}", {"client_id": "c-1"})) == (
+        None,
+        None,
+    )
+    assert audit.parent_for(_req("/admin/api/nodes", {})) == (None, None)
+
+
+async def test_a_catch_all_path_has_no_parent_either():
+    """A `:path` converter is not an identifier — PRM-172's catch-all."""
+    assert audit.parent_for(_req("/admin/api/{rest:path}", {"rest": "no/such/thing"})) == (
+        None,
+        None,
+    )
+
+
+async def test_a_principal_parent_is_classified_like_a_target():
+    """A-41 §3's first condition, and the reason Argus asked for it.
+
+    The type comes from the route segment, never the parameter name, so a parent
+    that is a principal says so and their pipeline protects the id. Debuting the
+    attribute without this would repeat, on a brand-new field, the leak the two
+    teams had just fixed three times.
+
+    No route carries this shape today; the derivation is what is under test, so the
+    first one that does is already correct rather than needing to be noticed.
+    """
+    parent_type, parent_id = audit.parent_for(
+        _req(
+            "/admin/api/users/{client_id}/sessions/{session_id}",
+            {"client_id": "c-1", "session_id": "s-1"},
+        )
+    )
+    assert parent_type == "user"
+    assert parent_id == "c-1"
+    assert parent_type in argus.ARGUS_TARGET_TYPE_PRINCIPALS
+
+
+async def test_the_parent_pair_goes_together_or_not_at_all():
+    """A-41 §3's second condition: half a pair is an id nobody knows whether to
+    protect, so it is better absent. Asserted on what is emitted, not on the
+    deriver, because the emission is where the rule can actually be broken."""
+    captured: dict = {}
+
+    class _Span:
+        def add_event(self, name, attributes=None):
+            captured.update(attributes or {})
+
+    import prometheus_gateway.db as db
+    from opentelemetry import trace
+
+    async def _noop(**kwargs):
+        return None
+
+    orig_db, orig_span = db.record_audit_event, trace.get_current_span
+    db.record_audit_event = _noop
+    trace.get_current_span = lambda: _Span()
+    try:
+        await audit.record(
+            action="PATCH /x",
+            outcome="ok",
+            status_code=200,
+            parent_type=None,
+            parent_id="lab",  # an id with no type
+        )
+        assert audit.ATTR_TARGET_PARENT_ID not in captured
+        assert audit.ATTR_TARGET_PARENT_TYPE not in captured
+
+        captured.clear()
+        await audit.record(
+            action="PATCH /x",
+            outcome="ok",
+            status_code=200,
+            parent_type="node",
+            parent_id="lab",
+        )
+        assert captured[audit.ATTR_TARGET_PARENT_TYPE] == "node"
+        assert captured[audit.ATTR_TARGET_PARENT_ID] == "lab"
+    finally:
+        db.record_audit_event, trace.get_current_span = orig_db, orig_span
+
+
+async def test_every_two_object_route_yields_a_declared_parent_type(admin_settings):
+    """Same guard as the target's, for the parent: a closed set that nothing
+    enforces is not closed, and a parent type is a target type — same derivation,
+    same vocabulary, so it must already be declared."""
+    import re
+
+    from prometheus_gateway.main import create_app
+
+    app = create_app(settings=admin_settings)
+    produced: set[str] = set()
+    for route in app.routes:
+        path = getattr(route, "path", "")
+        if not path.startswith("/admin/api/"):
+            continue
+        names = re.findall(r"\{([^}]+)\}", path)
+        parent_type, _ = audit.parent_for(_req(path, {n: "x" for n in names}))
+        if parent_type is not None:
+            produced.add(parent_type)
+
+    assert produced, "no route produced a parent — the attribute would have no emitter"
+    assert produced <= audit.TARGET_TYPES, f"undeclared: {sorted(produced - audit.TARGET_TYPES)}"
+
+
+async def test_the_parent_names_are_literals_only_while_the_package_lacks_them():
+    """The two names in this module not read from `argus_semconv`.
+
+    Fails as soon as Argus ships the constants, which is the point: the switch is
+    forced rather than remembered, and a name kept in two places with only one
+    authoritative is the defect both teams have now hit four times.
+    """
+    assert not hasattr(argus, "ARGUS_TARGET_PARENT_TYPE"), (
+        "argus_semconv now ships the parent constants — read them from the package "
+        "and delete the literals in audit.py"
+    )
+    assert audit.ATTR_TARGET_PARENT_TYPE == "argus.target.parent.type"
+    assert audit.ATTR_TARGET_PARENT_ID == "argus.target.parent.id"
+
+
+async def test_the_principal_set_is_read_from_the_package_not_restated():
+    """It used to be prose in a comment, and PRM-172 had to come back and widen it.
+
+    Every type their pipeline protects must be one this gateway can actually emit —
+    otherwise the comment claiming protection describes nothing.
+    """
+    assert set(argus.ARGUS_TARGET_TYPE_PRINCIPALS) <= audit.TARGET_TYPES
