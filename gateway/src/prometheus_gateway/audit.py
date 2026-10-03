@@ -224,6 +224,11 @@ def outcome_for(status_code: int) -> str:
     A refusal is `error`: an action that was attempted and denied is exactly what
     an auditor is looking for, and calling a 403 "ok" because the system behaved
     correctly would hide the attempt.
+
+    `1.0.0a17` added `denied` and `a18` added `argus.denied_by` to attribute it, so
+    `error` is no longer the most precise word available for a 403 — but moving to
+    it changes how every refused admin action groups in Argus's store, which is
+    their dashboards and not ours. Proposed in P-36 rather than taken here.
     """
     return _OK if 200 <= status_code < 400 else _ERROR
 
@@ -394,6 +399,27 @@ async def record(
         source_ip=source_ip,
         user_agent=user_agent,
     )
+
+    # PRM-178: `argus.outcome` is a closed vocabulary and **nothing checked ours**
+    # — A-43's own finding, after they corrected a measurement that had said we
+    # emit no outcome at all. Their SDK validates it in `Step.outcome()`, which
+    # writes span attributes; this event is built by hand with `add_event`, so
+    # that validation never runs on it. Every caller here goes through
+    # `outcome_for` and is correct today; what was missing was anything that would
+    # say so on the day a third value is added.
+    #
+    # Warned and **sent anyway**, which is the part worth being deliberate about.
+    # It is the shape Aeon asked Argus for at ingest — rule, counter, value kept
+    # rather than discarded — because an audit record rewritten to fit a
+    # vocabulary is a record of something that did not happen. Dropping it would
+    # be worse still: a failure must not look like an absence (RM-98).
+    if outcome not in argus.ARGUS_OUTCOME_VALUES:
+        logger.warning(
+            "audit.outcome_outside_vocabulary",
+            outcome=outcome,
+            action=action,
+            allowed=list(argus.ARGUS_OUTCOME_VALUES),
+        )
 
     attributes: dict[str, Any] = {
         argus.ARGUS_EVENT: "audit.admin_action",

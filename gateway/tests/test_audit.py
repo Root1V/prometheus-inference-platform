@@ -758,3 +758,84 @@ async def test_the_principal_set_is_read_from_the_package_not_restated():
     otherwise the comment claiming protection describes nothing.
     """
     assert set(argus.ARGUS_TARGET_TYPE_PRINCIPALS) <= audit.TARGET_TYPES
+
+
+# ── PRM-178: the outcome cannot leave the vocabulary unnoticed ───────────────
+
+
+async def test_no_status_code_can_produce_an_outcome_outside_the_vocabulary():
+    """Exhaustive over the input domain, not two spot checks.
+
+    A-43 corrected their own measurement to find we emit `argus.outcome` 24 times
+    in fourteen days, both values in vocabulary — and then named the real gap:
+    their `Step.outcome()` validates the word but writes span attributes, and this
+    event is built by hand, so nothing validated ours.
+    """
+    for status in range(100, 600):
+        assert audit.outcome_for(status) in argus.ARGUS_OUTCOME_VALUES, status
+
+
+async def test_an_outcome_outside_the_vocabulary_warns_and_is_still_sent(monkeypatch):
+    """Warned, not rewritten and not dropped.
+
+    An audit record edited to fit a vocabulary is a record of something that did
+    not happen, and a dropped one makes a failure look like an absence (RM-98). So
+    the value goes as given and the warning is what makes it findable — the shape
+    Aeon asked Argus for at ingest: rule, counter, value kept.
+    """
+    warnings: list[tuple] = []
+    captured: dict = {}
+
+    class _Span:
+        def add_event(self, name, attributes=None):
+            captured.update(attributes or {})
+
+    from opentelemetry import trace
+
+    import prometheus_gateway.db as db
+
+    async def _noop(**kwargs):
+        return None
+
+    monkeypatch.setattr(db, "record_audit_event", _noop)
+    monkeypatch.setattr(trace, "get_current_span", lambda: _Span())
+    monkeypatch.setattr(audit.logger, "warning", lambda event, **kw: warnings.append((event, kw)))
+
+    await audit.record(action="PATCH /x", outcome="probably-fine", status_code=200)
+
+    assert captured[argus.ARGUS_OUTCOME] == "probably-fine", "the value must not be rewritten"
+    assert any(e == "audit.outcome_outside_vocabulary" for e, _ in warnings)
+
+
+async def test_a_vocabulary_outcome_warns_about_nothing():
+    """The guard must be silent on the path every caller actually takes."""
+    warnings: list[tuple] = []
+    captured: dict = {}
+
+    class _Span:
+        def add_event(self, name, attributes=None):
+            captured.update(attributes or {})
+
+    from opentelemetry import trace
+
+    import prometheus_gateway.db as db
+
+    async def _noop(**kwargs):
+        return None
+
+    orig_db, orig_span, orig_warn = (
+        db.record_audit_event,
+        trace.get_current_span,
+        audit.logger.warning,
+    )
+    db.record_audit_event = _noop
+    trace.get_current_span = lambda: _Span()
+    audit.logger.warning = lambda event, **kw: warnings.append((event, kw))
+    try:
+        await audit.record(action="PATCH /x", outcome=audit.outcome_for(403), status_code=403)
+    finally:
+        db.record_audit_event, trace.get_current_span = orig_db, orig_span
+        audit.logger.warning = orig_warn
+
+    assert not warnings
+    assert captured[argus.ARGUS_OUTCOME] in argus.ARGUS_OUTCOME_VALUES
