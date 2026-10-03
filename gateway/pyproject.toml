@@ -32,7 +32,7 @@ dependencies = [
     # drifts. Pinned exactly because it is a prerelease — A-29 asks for the
     # exact version or --pre, and an exact pin is the one that cannot move
     # under a lockfile refresh.
-    "argus-obs-semconv==1.0.0a8",
+    "argus-obs-semconv==1.0.0a17",
 ]
 
 [dependency-groups]

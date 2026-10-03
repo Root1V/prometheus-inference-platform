@@ -20,7 +20,8 @@ later.
 
 ## What reaches Argus, and the one thing still ours
 
-`argus_semconv` gives `argus.event`, `argus.outcome` (with its five values),
+`argus_semconv` gives `argus.event`, `argus.outcome` (with its own set of values —
+not counted here, because this line said "five" until `1.0.0a17` made it seven),
 `argus.app`, `argus.component.role`, `argus.feature` and `argus.tenant`. Those are
 used as they stand — the outcome word in the row and the outcome word Argus
 receives are the same string, taken from their tuple, so the two can never drift
@@ -105,15 +106,35 @@ ATTR_ACTOR_EMAIL = "user.email"
 ATTR_TARGET_TYPE = argus.ARGUS_TARGET_TYPE
 ATTR_TARGET_ID = argus.ARGUS_TARGET_ID
 
+# PRM-175: where the object lives, proposed in P-35 and accepted in A-41 §3 on the
+# argument that settled it — *"they are not two peer objects; it is an object and
+# the place it lives"*. A `target2` would have claimed two things of equal rank, and
+# then grouping by "the object" is ambiguous; `parent` says which is which.
+#
+# **Literals, and deliberately so**: `argus_semconv` ships no constant for this pair
+# at any published version (checked through `1.0.0a17`), and the alternative to a
+# literal is waiting for one. They are the only two attribute names in this module
+# not read from the package, which is a thing to undo rather than live with — a test
+# fails as soon as the package ships them, so the switch is forced rather than
+# remembered.
+ATTR_TARGET_PARENT_TYPE = "argus.target.parent.type"
+ATTR_TARGET_PARENT_ID = "argus.target.parent.id"
+
 # The type is closed cardinality — it exists to **group**. Declared here because a
 # closed set that nothing enforces is not closed: a guard test walks every mutating
 # admin route and fails when one yields a type that is not in this set, so a new
 # route is a decision rather than a new value appearing in their store.
 #
-# `user` is load-bearing beyond grouping: their pipeline hashes `argus.target.id`
-# where the type says `user`, so the type is what stands between a person's
+# Some of these are load-bearing beyond grouping: their pipeline hashes the id
+# where the type names a principal, so the type is what stands between a person's
 # identifier and their store (A-34 §2). Mislabelling one is the hole they had just
 # closed, one level down.
+#
+# **Which types those are is not restated here.** It used to be — this comment said
+# "`user`", then PRM-172 had to come back and add "and now `client`" — and a fact
+# kept in prose next to a fact kept in code is the shape both teams have now been
+# bitten by four times. `argus.ARGUS_TARGET_TYPE_PRINCIPALS` ships it as data since
+# `1.0.0a14`, so the set is read from there and the tests compare against it.
 TARGET_TYPES: frozenset[str] = frozenset(
     {
         "node",
@@ -257,9 +278,52 @@ def target_for(request: Request) -> tuple[str | None, str | None]:
     turns out to be a machine. The other direction costs an identifier in the clear.
 
     The **last** object parameter wins, because that is the most specific — A-34's
-    rule. Where a route carries two that both matter, the outer one is lost from the
-    pair; the row keeps the full parameter set, and `argus.target.parent.*` is
-    proposed for it in P-35.
+    rule. Where a route carries two that both matter, the outer one is `parent_for`'s
+    — `argus.target.parent.*`, proposed in P-35 and accepted in A-41 §3.
+    """
+    return _pair_at(request, -1)
+
+
+def parent_for(request: Request) -> tuple[str | None, str | None]:
+    """`(argus.target.parent.type, .parent.id)` — where the target lives — PRM-175.
+
+    The **next-outer** object parameter, derived exactly as the target is, because
+    it is the same question asked one segment out. Twelve routes carry two objects
+    today and all twelve are `/admin/api/nodes/{node}/<resource>/{model_id}...`, so
+    in practice this says which node an instance, model or download belongs to.
+
+    Until now that outer id reached Argus only inside the row's JSON parameter set,
+    which is the route-template problem one level down: a reader had to know each
+    route's shape to find it, so "every action on node X" could not be asked.
+
+    Two obligations came with A-41 §3 accepting it, and both are tested:
+
+    1. **The parent is classified like a target from the first event.** The type is
+       taken from the route segment, never the parameter name, so a parent that is a
+       principal says so and their pipeline protects it. Argus's reason is the one
+       that matters: debuting the attribute without this would repeat, on a new
+       field, the leak the two teams had just fixed three times.
+    2. **The pair goes together or it does not go.** A `parent.id` with no
+       `parent.type` is an identifier without knowing what of — and, more to the
+       point, without knowing whether it needs protecting.
+
+    Returns `(None, None)` for a single-object route, which is most of them.
+    """
+    return _pair_at(request, -2)
+
+
+def _pair_at(request: Request, index: int) -> tuple[str | None, str | None]:
+    """The `(type, id)` of the object parameter at *index* in route order.
+
+    One derivation serving both the target and its parent. It was duplicated in the
+    first draft of PRM-175 — two copies of "singularise the preceding segment",
+    which is the defect this codebase keeps meeting under its own name.
+
+    All-or-nothing, for the reason A-41 §3 gives about the parent, which is just as
+    true of the target: an id whose type is unknown is an id nobody knows whether to
+    protect. Both branches that used to return a bare id were unreachable anyway —
+    `names` is built from `segments`, so the lookup cannot fail, and a template
+    cannot begin with a parameter.
     """
     route = request.scope.get("route")
     template = getattr(route, "path", None) or request.url.path
@@ -267,10 +331,11 @@ def target_for(request: Request) -> tuple[str | None, str | None]:
     if not params:
         return None, None
 
+    segments = template.strip("/").split("/")
     # Walk the template so the order is the route's, not the dict's.
     names = [
         seg[1:-1]
-        for seg in template.split("/")
+        for seg in segments
         if seg.startswith("{")
         and seg.endswith("}")
         # A `:path` converter is a catch-all, not an identifier — PRM-172 added one
@@ -278,18 +343,19 @@ def target_for(request: Request) -> tuple[str | None, str | None]:
         and ":path" not in seg
     ]
     names = [n for n in names if n in params]
-    if not names:
+    if len(names) < abs(index):
         return None, None
-    chosen = names[-1]
+    chosen = names[index]
 
-    segments = template.strip("/").split("/")
     try:
         at = segments.index("{" + chosen + "}")
-    except ValueError:
-        return None, str(params[chosen])
+    except ValueError:  # pragma: no cover — names come from segments
+        return None, None
     resource = segments[at - 1] if at > 0 else ""
-    target_type = resource.rstrip("s").replace("-", "_") if resource else ""
-    return (target_type or None), str(params[chosen])
+    object_type = resource.rstrip("s").replace("-", "_") if resource else ""
+    if not object_type:
+        return None, None
+    return object_type, str(params[chosen])
 
 
 async def record(
@@ -303,6 +369,8 @@ async def record(
     target: str | None = None,
     target_type: str | None = None,
     target_id: str | None = None,
+    parent_type: str | None = None,
+    parent_id: str | None = None,
     request_id: str | None = None,
     trace_id: str | None = None,
     source_ip: str | None = None,
@@ -354,6 +422,12 @@ async def record(
         attributes[ATTR_TARGET_TYPE] = target_type
     if target_id:
         attributes[ATTR_TARGET_ID] = target_id
+    # PRM-175: and where it lives. `and` rather than two `if`s is the whole of
+    # A-41 §3's second condition — half a pair is an identifier nobody knows
+    # whether to protect, so it is better absent.
+    if parent_type and parent_id:
+        attributes[ATTR_TARGET_PARENT_TYPE] = parent_type
+        attributes[ATTR_TARGET_PARENT_ID] = parent_id
 
     # PRM-162: the event goes on the span that is **already current**, which is the
     # SERVER span the ASGI instrumentation opened for this request.
@@ -399,6 +473,7 @@ async def record_request(request: Request, status_code: int) -> None:
     claims = getattr(getattr(request, "state", None), "claims", None)
     action, target = action_for(request)
     target_type, target_id = target_for(request)
+    parent_type, parent_id = parent_for(request)
     await record(
         action=action,
         outcome=outcome_for(status_code),
@@ -408,6 +483,8 @@ async def record_request(request: Request, status_code: int) -> None:
         target=target,
         target_type=target_type,
         target_id=target_id,
+        parent_type=parent_type,
+        parent_id=parent_id,
         request_id=getattr(getattr(request, "state", None), "request_id", None),
         trace_id=getattr(getattr(request, "state", None), "trace_id", None),
         source_ip=(request.client.host if request.client else None),
