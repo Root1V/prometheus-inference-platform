@@ -6738,3 +6738,60 @@ rank, and then grouping by "the object" is ambiguous.
 there, and the assertion passed against the app-wide handler instead. Now on the
 dashboard-enabled app and pinned to the catch-all's own `detail` string. Third time in two
 days that the instrument, not the code, was the thing that was wrong.
+
+## PRM-176 — The environment says `development`, not `bare-metal`
+
+**Why**: `OTEL_RESOURCE_ATTRIBUTES` carried `deployment.environment.name=bare-metal`, which
+names the **hardware**. This stack runs bare-metal in development and would in production
+too, so as an *environment* the value distinguished nothing — and it sits outside the
+attribute's conventional vocabulary, which is why it was the single true warning Argus
+measured this platform getting when they checked `1.0.0a17` against all three teams' real
+configurations (A-42). Promised to them in P-35 and paid here.
+
+**Scope**
+- `deployment.environment.name=development`, in **both** copies: `runtime/telemetry.env`,
+  which the running stack reads, and `runtime/telemetry.env.example`, which the repo ships.
+  The live one is gitignored, so only the example is reviewed — changing one and not the
+  other leaves the stack on the old value with the repo claiming otherwise. No hook check for
+  the pair, because the live file does not exist in CI; the risk is named here instead.
+- The heading comment still says "bare-metal launch", and correctly: it is the launch that is
+  bare-metal, not the environment.
+- Out: `service.version=2.0.0`, which is also hand-maintained here and will drift from the
+  package versions. Worth its own look, not this one's.
+
+## PRM-177 — Platform-wide usage analytics on the dashboard
+
+**Why**: the dashboard can answer "what did *this client* cost" and cannot answer "who uses
+this platform, and for what". `Billing.tsx` has two charts — cost by model, and a daily cost
+trend — and both are scoped to one `client_id`, because RM-60 built them for an invoice. The
+questions an operator actually opens a dashboard with are comparative: which clients interact
+most, how many requests arrived over a window, which models are actually used, what each
+model and each client costs.
+
+**Scope**
+- Five views: most-active clients, request volume over a window, most-used models, cost per
+  model, cost per client. Platform-wide, with a date range.
+- **Four of the five need no new backend.** Measured: `query_daily_cost_range` and
+  `query_model_cost_range` both take `client_id: str | None = None`, both already return
+  `request_count`, and `client_id=None` already aggregates across the platform. "Most-used
+  models" is a sort by `request_count` on data the billing widget already fetches and charts
+  by cost.
+- **One new query**: there is no `group_by(UsageEvent.client_id)`, so per-client totals and
+  the activity ranking need `query_client_cost_range(start, end)` plus an endpoint.
+- **The real design question is naming.** `usage_events` holds `client_id` and nothing else;
+  a chart of UUIDs is not a chart anyone reads, and the name lives in auth-service
+  (`client_name`/`label`). The admin router already proxies the principal list, so the join
+  is available — but whether the dashboard joins per render, or the aggregate endpoint
+  resolves names server-side, decides how it behaves when auth-service is down. Decide that
+  before building, not during.
+- Recharts is already a dependency and already used by the two existing charts, so no new
+  library. Consult the `dataviz` skill before writing chart code.
+- Watch the unpriced case: both queries return `unpriced_requests` precisely because PRM-119
+  established that a period of entirely unpriced usage must not render as a confident zero. A
+  cost chart that drops it repeats that defect in a new place.
+- Out: anything per-end-user rather than per-client. A `client_id` is the only subject the
+  usage store has, and since PRM-173 a client may be one person or an integrator — so "users"
+  here means principals, and a real per-person view is a different item.
+
+**Data to build against, measured 2026-10-03**: 4,035 events, 11 clients, 12 models,
+2026-09-07 to 2026-10-03.
