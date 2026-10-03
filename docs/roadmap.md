@@ -6846,12 +6846,81 @@ so it fits the way this platform already launches binaries rather than container
 also answers their §2 observation about scores saturating near 1.0 — they were calibrating on
 top of a sigmoid that had already been applied.
 
+## Verified against a running TEI, 2026-10-03
+
+PRM-133's rule is that nothing joins `BACKENDS` without a node that can actually run it, and
+it cites `vllm`/`sglang` as what an unverified builder is worth. So the premise was tested
+before any wiring — `ghcr.io/huggingface/text-embeddings-inference:cpu-latest` under amd64
+emulation, serving `cross-encoder/nli-distilroberta-base`, which is the same shape of model as
+`von-decide`:
+
+```
+inputs: [["Un perro duerme en el sofá.", "Hay un perro en la imagen."]]
+  → [[{"score":0.88670063,"label":"entailment"},
+      {"score":0.083747655,"label":"neutral"},
+      {"score":0.02955178,"label":"contradiction"}]]
+
+inputs: [[p1,h1],[p2,h2]]        → one result per pair, in input order
+raw_scores: true                 → [2.0113802, -0.34831908, -1.3899833]   logits, not softmax
+64 pairs                         → 200, 64 results
+```
+
+Four things that settles:
+
+1. **A batch of pairs works, and it is both of Centinela's formats.** Format B is a list of
+   `[text, label]` pairs; format A is the same with the hypothesis repeated per text.
+2. **Batch results are identical to single calls** — `0.88670063` to the last digit, which is
+   their ±0.001 acceptance criterion met rather than argued.
+3. **`raw_scores` returns logits**, which is their §2 calibration request, and it is a boolean.
+4. **Labels come back as class names**, not indices.
+
+And four launch gotchas that only reading the flags and the logs produced:
+
+| gotcha | why it matters |
+|---|---|
+| `--max-client-batch-size` defaults to **32** | Centinela asks for 64. The default *refuses* their batch |
+| `--prometheus-port` defaults to **9000** | which is auth-service on this host. Every instance needs its own, explicitly |
+| `--hostname`, not `--host`; and it reads `HOSTNAME` from the environment | the container run logged `Invalid hostname, defaulting to 0.0.0.0` from Docker's own `HOSTNAME`. A shell that exports it would do the same, so it must be passed explicitly |
+| the backend logged `does not support a batch size > 8, forcing max_batch_requests=8` | the client batch and the *backend* batch are different numbers. Whether that cap is CPU-backend-only or applies to Metal is unmeasured, and it is what decides their latency targets |
+
+**Latency was not measured, deliberately.** 15 pairs took 443 ms and 64 took 12.4 s, but that
+is amd64 emulation on Apple Silicon with the CPU backend — a floor of the worst case, not a
+verdict on their ≤150 ms. Shape and correctness are verified; speed needs the Metal build.
+
+**And the open question got sharper.** TEI's softmax is across the **model's own three NLI
+classes** (0.887 + 0.084 + 0.030 = 1.0), not across the caller's candidate labels. Centinela's
+`{sequence, labels, scores}` needs entailment compared *between candidates*, which is a
+different normalisation that nothing upstream does. So the question in P-01 is not "who
+reshapes the response" but "who performs a normalisation that no engine performs" — and TEI
+handing back raw logits per pair is the cleanest input for whoever does.
+
+**Blocked on a host decision, and not worked around.** `brew install
+text-embeddings-inference` wants to upgrade `openssl@3` to `openssl@4` as a dependency, which
+is a shared library many formulae on this machine link against. The install was attempted
+twice and failed on a lock around that upgrade; forcing it, unlinking, or deleting lock files
+would be changing a system library as a side effect of adding an engine. That is the
+operator's call, so `tei` is **not** in `BACKENDS` yet — adding it unverified on this node is
+exactly what PRM-133 warns against.
+
 **Scope**
 - A command builder in `lifecycle.py` and a process signature in `scanner.py`, which is
   PRM-133's standing rule for adding an engine, on the `lab` node that exists for exactly this.
+  The verified flag set is `--model-id` (Hub id, so `hf_repo` as with `hf_serve`), `--revision`
+  (which the registry already has as `hf_sha`, and which is how a model stays pinned),
+  `--hostname`, `-p/--port`, `--max-client-batch-size`, `--max-batch-tokens`, `--dtype`, and
+  `--prometheus-port` from a second allocation.
+- **`rerank` on TEI needs a gateway change, and this is the part C-01 §2 actually waits on.**
+  Measured: `RerankRequest.to_llama_payload` emits `{model, query, documents}` to upstream
+  `/v1/rerank`, which is llama.cpp's shape. TEI's is `POST /rerank` with `{query, texts}`. So
+  the gateway needs the upstream rerank shape to be per-engine, the way `payload_schema`
+  already is per-engine on the way out. Until that exists, a TEI reranker cannot be reached
+  through `/v1/rerank` at all.
+- `payload_schema` for `("classification", "tei")` and, when the normalisation question is
+  answered, for `zero_shot` — `payload_schema_for` already keys on engine precisely so a
+  `zero_shot` model on a new engine is not assumed to be an `hf-inference` body.
 - `raw_scores` surfaced through the gateway for rerank, and documented in the catalogue along
   with the max documents and max tokens per document that C-01 §2 correctly points out are
-  missing today.
+  missing today. `--max-client-batch-size` is where that number comes from.
 
 **The open question, and it is the real one**: TEI returns per-pair class scores. The
 `{sequence, labels, scores}` shape Centinela gets today, with scores normalised across the
