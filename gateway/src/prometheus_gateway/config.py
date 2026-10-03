@@ -49,6 +49,17 @@ class Settings(BaseSettings):
     # external API consumer, so it gets its own, higher default.
     rate_limit_rpm_admin: int | None = 600
     rate_limit_tpm_admin: int | None = None
+    # PRM-182: `predict` has had its own bucket since PRM-136 — `X-RateLimit-Scope`
+    # says so — and no way to set it, so it fell to the generic 60. Centinela
+    # measured that: four searches exhausted it, because reordering 15 descriptions
+    # is 15 calls until PRM-179 lands. Left at None, which keeps today's behaviour;
+    # the point is that an operator can now raise it without raising chat and
+    # embeddings with it.
+    #
+    # It does not make the limit per-client, which is the gap C-01 §4 actually
+    # found and PRM-181 is about. Raising this still raises it for everyone.
+    rate_limit_rpm_predict: int | None = None
+    rate_limit_tpm_predict: int | None = None
 
     # ── Circuit Breaker — memory/specs/007-rate-limiting-and-throughput.md ──────────
     # AC-14, AC-15, AC-16
