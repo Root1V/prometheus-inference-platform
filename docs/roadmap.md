@@ -6822,3 +6822,102 @@ on the day a third value is added by hand.
 **A-44 needed nothing**: `argus.sampling.baseline_pct` is retired for
 `retained_pct`/`policy`, and measured here, nothing in this repo reads either — the attribute
 is written by their gateway, not by these services.
+
+## PRM-179 — TEI as the second new engine: batched pairs and raw scores
+
+**Why**: Centinela asked for batched `predict` on `von-decide` and batched reranking, both "on
+the GPU", and measuring the chain showed our API already sends what they ask — `/v1/rerank`
+makes **one** upstream call with every document, and `/v1/models/{m}/predict` forwards the body
+verbatim. The limit is inside the engines. `hf-serve` 0.1.6 types `inputs` as `str`, measured
+directly against the live instance: a list comes back `422` from its own pydantic
+(`loc: ["body","inputs"]`). So the batch is not a flag we failed to set.
+
+**TEI is the engine that already does both**, and PRM-133's own engine survey had it as one of
+the two strongest additions before any of this came up. From its OpenAPI, not inferred:
+
+| endpoint | request | what it gives Centinela |
+|---|---|---|
+| `/predict` | `inputs`: "a single string, a pair of strings or **a batch of mixed single and pairs**", plus `raw_scores` | C-01 §3's formats A **and** B in one call — zero-shot NLI *is* a batch of (premise, hypothesis) pairs |
+| `/rerank` | `{query, texts[], raw_scores, return_text}` | C-01 §2, with token-based dynamic batching (`--max-batch-tokens`, default 16384) |
+
+It serves **ModernBERT**, which is what `von-decide` is, and it has a native **Metal** build on
+Apple Silicon (`brew install text-embeddings-inference`, launched as `text-embeddings-router`),
+so it fits the way this platform already launches binaries rather than containers. `raw_scores`
+also answers their §2 observation about scores saturating near 1.0 — they were calibrating on
+top of a sigmoid that had already been applied.
+
+**Scope**
+- A command builder in `lifecycle.py` and a process signature in `scanner.py`, which is
+  PRM-133's standing rule for adding an engine, on the `lab` node that exists for exactly this.
+- `raw_scores` surfaced through the gateway for rerank, and documented in the catalogue along
+  with the max documents and max tokens per document that C-01 §2 correctly points out are
+  missing today.
+
+**The open question, and it is the real one**: TEI returns per-pair class scores. The
+`{sequence, labels, scores}` shape Centinela gets today, with scores normalised across the
+candidate labels, is the *transformers* zero-shot pipeline doing two extra things — building
+hypotheses from a template and normalising across labels. TEI does neither. So either the
+caller does that last step (and they are already asking for raw logits in §2, so this may be
+what they want), or this platform owns a transform on a route whose entire design is that the
+body and the answer are the engine's. **Switching `von-decide` from `hf-serve` to TEI would
+also change its response shape**, which breaks Centinela and the axonium SDK that already
+ships `predict`. Decide that before building: most likely answer is both engines coexisting,
+with the batch path as its own catalogue entry rather than a silent swap underneath the
+existing one.
+
+## PRM-180 — SigLIP 2 served as a multimodal embedding
+
+**Why**: Centinela runs `google/siglip2-base-patch16-256` locally on ONNX Runtime and wants it
+on the platform — not for latency (they measure 8-18 ms for text, better than the ≤30 ms they
+ask of us) but to get ~3 GB of text-encoder weights out of their API process. There is no
+modality here that takes an image as embedding input: `embedding` exists (`qwen3-embedding`,
+`minilm-hfserve`) and is text-only.
+
+**Researched 2026-10-03, and the distinction that decides it is SigLIP 1 versus SigLIP 2:**
+
+| engine | verdict |
+|---|---|
+| **Infinity** | **the candidate.** Serves `SiglipModel` with `/embed` and `/image_embed` plus an OpenAI-compatible `/embeddings`, runs on Apple **MPS**, and preprocesses with each model's own registered `AutoProcessor` |
+| TEI | text tower only — the SigLIP PR is titled "text embeddings only". No image path |
+| vLLM | its multimodal embedding support is SigLIP **1** (`google/siglip-base-patch16-224`); the SigLIP 2 image-embedding issue was **closed as not planned** |
+| ONNX Runtime directly | what Centinela already uses, and the one path guaranteed to reproduce their vectors, at the cost of a fifth engine that serves one model |
+
+**The AutoProcessor detail is the whole item.** Centinela's acceptance criterion is a cosine
+within 0.01 of their local ONNX vectors over 20 images and 20 texts, and their requirements —
+lowercase, Gemma tokenizer, fixed padding to 64 tokens, 256×256 bilinear, mean/std 0.5,
+L2-normalised 768 — are a *preprocessing contract*, not model config. An engine that runs the
+model's own AutoProcessor is reproducing the same preprocessing their ONNX export came from,
+which is why Infinity is plausible where a hand-rolled server would not be. It still has to be
+verified against their 20+20 set before anything is promised; their criterion is the test.
+
+**Scope**
+- Infinity on the `lab` node, with the command builder and scanner signature PRM-133 requires.
+- A modality that accepts image input. Whether that is a new `multimodal_embedding` or a
+  widening of `embedding` is not cosmetic: it decides the endpoint, the rate-limit bucket, the
+  `payload_schema`, and whether an existing `model:<id>` grant reaches it. Asked in P-01.
+- `logit_scale` (112.90) and `logit_bias` (-16.77) exposed in the catalogue. Small, ours,
+  independent of the engine work, and they need it to turn a cosine into a probability.
+- Out for now: `siglip2-so400m-patch16-384`, which would force them to reindex and changes
+  hardware planning. Asked whether it is a real need.
+
+## PRM-181 — Rate limits per client, not only per endpoint
+
+**Why**: Centinela asked for `predict` to go from 60 to ≥600 per window for *their* client.
+Measured: the counter key is `prometheus:rl:rpm:{identity}:{endpoint}:{bucket}`, so the budget
+is already **counted** per client, and the window is a fixed 60-second bucket
+(`int(time.time() // 60)`) — which answers the window question they asked. But the **value** is
+global configuration (`rate_limit_rpm = 60`) with per-endpoint overrides that exist only for
+`chat_completions` and `admin`. `predict` has none. So the limit cannot be raised for one
+client: raising it raises it for everyone.
+
+**Scope**
+- A per-client limit that overrides the endpoint default, which is what every comparable
+  gateway has: LiteLLM has per-key/per-team/per-user/per-customer RPM and TPM, and Kong's AI
+  rate-limiting plugin evaluates an ordered policy list over consumer, consumer group, model
+  and route. Per-customer is the industry default, not an exotic request.
+- A `predict` endpoint override, which is missing regardless of the per-client work and is the
+  cheap half.
+- The window length documented in the SDK guide — asked for, and currently nowhere.
+- Note for whoever builds it: the batch work in PRM-179 reduces the need (a refined search
+  goes from 15-30 requests to one) but does not remove the gap, and TPM still scales with the
+  batch even when RPM does not. Said in P-01 so a `429` on tokens is not a surprise.
