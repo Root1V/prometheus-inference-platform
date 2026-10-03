@@ -189,6 +189,7 @@ Status: `done` · `todo`
 | PRM-175 | The audit target says where it lives | done | `argus.target.parent.*` on the twelve `/admin/api/nodes/{node}/…/{model_id}` routes, proposed in P-35 and accepted in A-41 §3; the outer id used to reach Argus only inside the row's JSON, so "every action on node X" could not be asked. Carries the `a8`→`a17` bump, which the principal classification needs |
 | PRM-176 | The environment says `development`, not `bare-metal` | done | `deployment.environment.name` described the hardware, which is the same in development and production, so as an environment it distinguished nothing — and it was outside the attribute's vocabulary, the one true warning Argus measured us getting on `a17` (A-42) |
 | PRM-177 | Platform-wide usage analytics on the dashboard | todo | Who interacts most, requests over a window, most-used models, cost per model and per client. Today's two charts are per-client only. `usage_events` already answers four of the five with `client_id=None`; the gap is a `group_by(client_id)` and resolving a `client_id` to a name |
+| PRM-178 | The audit outcome cannot leave the vocabulary unnoticed | done | A-43 found that Argus's own `Step.outcome()` validates the word but writes span attributes, and our audit event is built by hand with `add_event`, so nothing checked ours. Warned and sent anyway — a record rewritten to fit a vocabulary records something that did not happen |
 
 Adding an item: append the next `RM-NN` row here with a one-liner, then add the full
 Why/Scope writeup to `docs/roadmap.md`.

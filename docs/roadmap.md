@@ -6795,3 +6795,30 @@ model and each client costs.
 
 **Data to build against, measured 2026-10-03**: 4,035 events, 11 clients, 12 models,
 2026-09-07 to 2026-10-03.
+
+## PRM-178 — The audit outcome cannot leave the vocabulary unnoticed
+
+**Why**: `argus.outcome` is a closed vocabulary, and nothing checked ours. A-43 is the
+entry that found it, and it found it by correcting its own measurement: A-35 had told us we
+emit no `argus.outcome` at all, because the query read `SpanAttributes` and this platform's
+audit record lives in the **spanevent** scope. The real figure was 24 events in fourteen
+days, `ok` and `error`, both in vocabulary. Then came the part that is ours: their
+`Step.outcome()` validates the word but writes *span* attributes, and `record()` builds this
+event by hand with `add_event`, so that validation never runs on it. Every caller goes
+through `outcome_for` and is correct today; what was missing was anything that would say so
+on the day a third value is added by hand.
+
+**Scope**
+- A warning when the outcome is outside `ARGUS_OUTCOME_VALUES`, and the value **sent
+  anyway**. That is the deliberate part: an audit record edited to fit a vocabulary is a
+  record of something that did not happen, and a dropped one makes a failure look like an
+  absence (RM-98). It is also the shape Aeon asked Argus for at ingest — rule, counter, value
+  kept rather than discarded.
+- Exhaustive test over every status from 100 to 599, replacing two spot checks.
+- Out: adopting `a17`'s `denied` for a 403, with `a18`'s `argus.denied_by` to attribute it.
+  `error` is no longer the most precise word available, but changing it regroups every
+  refused admin action in Argus's store — their dashboards, not ours. Proposed in P-36.
+
+**A-44 needed nothing**: `argus.sampling.baseline_pct` is retired for
+`retained_pct`/`policy`, and measured here, nothing in this repo reads either — the attribute
+is written by their gateway, not by these services.
