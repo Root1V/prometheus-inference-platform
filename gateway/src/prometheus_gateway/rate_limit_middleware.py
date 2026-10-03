@@ -15,6 +15,7 @@ from starlette.types import ASGIApp, Receive, Scope, Send
 
 from .config import Settings
 from .rate_limiter import RateLimiter
+from .rate_limits import ENDPOINT_LIMIT_FIELDS
 from .telemetry import get_logger
 
 logger = get_logger(__name__)
@@ -273,16 +274,16 @@ class RateLimitMiddleware:
         rpm = self.settings.rate_limit_rpm
         tpm = self.settings.rate_limit_tpm
 
-        if endpoint_slug == "chat_completions":
-            if self.settings.rate_limit_rpm_chat_completions is not None:
-                rpm = self.settings.rate_limit_rpm_chat_completions
-            if self.settings.rate_limit_tpm_chat_completions is not None:
-                tpm = self.settings.rate_limit_tpm_chat_completions
-        elif endpoint_slug == "admin":
-            if self.settings.rate_limit_rpm_admin is not None:
-                rpm = self.settings.rate_limit_rpm_admin
-            if self.settings.rate_limit_tpm_admin is not None:
-                tpm = self.settings.rate_limit_tpm_admin
+        # PRM-182: the slug-to-field map lives in `rate_limits` now, because the
+        # dashboard's editable-field list is built from the same fact and the two
+        # were separate chains that had to be remembered together.
+        fields = ENDPOINT_LIMIT_FIELDS.get(endpoint_slug)
+        if fields is not None:
+            rpm_field, tpm_field = fields
+            if (override := getattr(self.settings, rpm_field, None)) is not None:
+                rpm = override
+            if (override := getattr(self.settings, tpm_field, None)) is not None:
+                tpm = override
 
         return rpm, tpm
 

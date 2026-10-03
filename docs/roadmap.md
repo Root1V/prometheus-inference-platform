@@ -4745,7 +4745,7 @@ launch-flag editing.
 | `vllm`, `sglang` | keep in the list, CUDA-only; they are the two standard production answers |
 | **TGI** | **do not add.** Archived 2026-03-21 and in maintenance mode; its own README now sends users to vLLM, SGLang, llama.cpp and MLX |
 | `hf-serve` | candidate, experimental. The only one spanning Transformers + Diffusers + Sentence Transformers in a single server, which is our three modalities in one process |
-| `tei` / `infinity` | strongest additions for what we actually run. We serve embeddings and rerank on llama.cpp; both of these are purpose-built for it. TEI is one model per process with a Metal build; Infinity serves many models per process and covers rerank and CLIP |
+| `tei` / `infinity` | strongest additions for what we actually run. We serve embeddings and rerank on llama.cpp; both of these are purpose-built for it. TEI is one model per process with a Metal build; Infinity serves many models per process and covers rerank and CLIP. **Both now have their own items with measured requirements — `PRM-179` (TEI) and `PRM-180` (Infinity) — after Centinela's `C-01` asked for exactly what they do. This row stays as the survey that picked them; it is not the detail** |
 | `vllm-mlx` | worth watching: continuous batching on Apple Silicon, reported 3.4x throughput at 5 concurrent requests on an M4 Max. That is precisely the ceiling the copilot team hit in E-08 on this hardware |
 | `tensorrt_llm` | only meaningful once there is an NVIDIA node |
 | `ollama`, `lmdeploy`, `mlc-llm` | not now. Ollama wraps llama.cpp and would duplicate a backend we have; the other two earn a place only with hardware we do not have |
@@ -6921,3 +6921,46 @@ client: raising it raises it for everyone.
 - Note for whoever builds it: the batch work in PRM-179 reduces the need (a refined search
   goes from 15-30 requests to one) but does not remove the gap, and TPM still scales with the
   batch even when RPM does not. Said in P-01 so a `429` on tokens is not a surprise.
+
+## PRM-182 — The `predict` bucket becomes configurable, and the window gets written down
+
+**Why**: the two halves of Centinela's C-01 §4 that needed no engine. `predict` has had its own
+rate-limit bucket since PRM-136 — `X-RateLimit-Scope` answers `predict` — and no setting, so it
+resolved to the generic 60 and four of their searches exhausted it. And the window they asked us
+to document was in no document: the guide said "unix timestamp of the next window" without ever
+saying what the window is.
+
+**Scope**
+- `rate_limit_rpm_predict` / `rate_limit_tpm_predict`, defaulting to `None`, which keeps today's
+  behaviour exactly and lets an operator raise `predict` without raising chat and embeddings
+  with it.
+- `ENDPOINT_LIMIT_FIELDS`, one map from endpoint slug to its two Settings fields, replacing an
+  `if/elif` chain. A new endpoint is one entry.
+- The window in the SDK guide: **fixed 60-second buckets aligned to the wall clock**, not
+  sliding per request, with the two consequences that follow — a burst spanning a boundary
+  passes where the same burst seconds earlier would not, and each `X-RateLimit-Scope` is its own
+  bucket so a 429 on one says nothing about the others. Plus the distinction C-01 §4 surfaced:
+  the budget is **counted** per credential while the limit **value** is platform configuration.
+- Out, deliberately: making `predict` editable from the dashboard. That needs two columns on
+  `rate_limit_config`, a migration, the upsert signature and the Limits UI — the same work
+  PRM-181 carries for per-client limits, so it belongs in one change. `.env` plus a restart
+  raises it today, which is what was asked for.
+
+**The bug this nearly shipped, and it is the reason for one of the tests.** The slug-to-field
+relationship lived in two places — the middleware's `if/elif` and `RATE_LIMIT_FIELDS` — so
+collapsing them looked like removing a duplication. It is not: `RATE_LIMIT_FIELDS` is the list
+of fields the **dashboard persists**, every one of which is a column on `db.RateLimitConfig`,
+and `main.py` reads them off a row with `getattr`. Deriving it from the resolution map added
+`rate_limit_rpm_predict` to a list whose other consumer is a database that has no such column —
+an `AttributeError` at startup, and only on a deployment that had ever saved limits from the
+dashboard, which is the worst possible place for it to appear. Caught by reading the other
+consumer before shipping, not by a test. `test_every_dashboard_field_is_a_real_column` is that
+test now.
+
+**Two earlier answers corrected while here** — both the same shape, a fact written down once and
+then moved on without:
+- `lifecycle.py` said hf-serve was verified against `0.1.4`. Re-checked against `0.1.6`, and the
+  measured limit that matters now sits next to the launch command: `inputs` is typed `str`, so a
+  batch is refused by the server and not by anything this builder does.
+- PRM-133's engine survey picked `tei` and `infinity` in September on a one-line verdict each.
+  That row now points at PRM-179 and PRM-180 rather than being read as the detail.

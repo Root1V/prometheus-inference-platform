@@ -1,6 +1,6 @@
 # Prometheus Gateway — SDK Integration Guide
 
-**Revision**: 2026-10-02 · `PRM-167/173/174`
+**Revision**: 2026-10-03 · `PRM-174/182`
 <!-- Consumers vendor this file and diff it. The date and commit above are what to quote
      when asking whether a copy is current; they change whenever this document does. -->
 
@@ -793,6 +793,24 @@ X-Prometheus-Instance-Id           — the same replica's instance id
 Idempotent-Replay                  — "true" only on a replayed response
 X-Idempotent-Replay-Of             — on a replay: the request id that was actually billed
 ```
+
+**The rate-limit window, stated precisely (asked for in `C-01 §4`, and it was nowhere)**: the
+budget is a **fixed 60-second bucket aligned to the wall clock**, not a sliding window per
+request. A new bucket begins at second 0 of each minute and the whole allowance is available
+again at that instant — `X-RateLimit-Reset-Requests` is that timestamp. Two consequences worth
+designing for:
+
+- A burst can span a boundary and pass, where the same burst a few seconds earlier would be
+  refused. If you pace requests, pace against `X-RateLimit-Remaining-Requests` rather than
+  against an assumed rate.
+- **The budget is counted per credential**, so one client's traffic never consumes another's.
+  The *limit value*, however, is platform configuration per endpoint — not per client — so a
+  429 means your own credential exhausted its own bucket, and raising it is an operator action.
+
+Each **scope** in `X-RateLimit-Scope` is its own bucket with its own limit: today `default`,
+`chat_completions`, `admin` and `predict`. A 429 on one does not imply the others are
+exhausted, which is exactly what that header exists to tell you — back off the scope it names,
+not the whole API.
 
 **`X-Trace-ID` adoption rule, confirmed precisely (two deployment modes exist)**:
 - In deployments with a real tracing backend configured ("OTEL mode"), a client-supplied

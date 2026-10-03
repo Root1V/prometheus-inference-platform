@@ -193,6 +193,7 @@ Status: `done` · `todo`
 | PRM-179 | TEI as the second new engine: batched pairs and raw scores | todo | Centinela's C-01 §2 and §3. TEI's `/predict` takes "a batch of mixed single and pairs" and `/rerank` takes one query with many texts, both with `raw_scores` and token dynamic batching, and it serves ModernBERT with a Metal build. The open question is who owns zero-shot templating and cross-label normalisation, which TEI does not do |
 | PRM-180 | SigLIP 2 served as a multimodal embedding | todo | Centinela's C-01 §1. Infinity serves `SiglipModel` with `/embed` + `/image_embed` on MPS and preprocesses with the model's own AutoProcessor — which is what makes their ±0.01 cosine criterion reachable. TEI is text-tower only and vLLM closed SigLIP 2 as not planned |
 | PRM-181 | Rate limits per client, not only per endpoint | todo | Centinela's C-01 §4. The bucket is already keyed per identity but the *value* is global config with overrides only for `chat_completions` and `admin`, so raising `predict` for one client raises it for every client. Industry answer is per-key/per-customer limits |
+| PRM-182 | The `predict` bucket becomes configurable, and the window gets written down | done | The cheap halves of C-01 §4: `predict` had its own bucket since PRM-136 and no way to set it, so it fell to the generic 60. Plus the window — fixed 60-second buckets — documented in the SDK guide, where it was nowhere |
 
 Adding an item: append the next `RM-NN` row here with a one-liner, then add the full
 Why/Scope writeup to `docs/roadmap.md`.

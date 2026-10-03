@@ -249,9 +249,18 @@ _HF_SERVE_TASKS = {
 
 
 def _build_hf_serve_cmd(binary: str, entry: RegistryEntry, port: int, bind_host: str) -> list[str]:
-    """hf-serve — verified against `hf-serve --help` (hf-serve 0.1.4 on PyPI) and
-    against a running server: `/health` answers 200 and `/v1/embeddings` returns
-    a real vector, so the manager's existing start probe needs no special case.
+    """hf-serve — verified against `hf-serve --help` (re-checked against **0.1.6**
+    on 2026-10-03; the original note said 0.1.4) and against a running server:
+    `/health` answers 200 and `/v1/embeddings` returns a real vector, so the
+    manager's existing start probe needs no special case.
+
+    One limit of this engine is worth recording next to the launch command, since
+    it decides what can be asked of a model served here. Measured against the live
+    `von-decide` instance on 0.1.6: **`inputs` is typed `str`**, so a batch comes
+    back `422` from hf-serve's own validation (`loc: ["body","inputs"]`). Batching
+    is therefore not a flag this builder is failing to pass — it is absent from the
+    server. `PRM-179` is the path (TEI's `/predict` takes "a batch of mixed single
+    and pairs"), raised by Centinela in `C-01 §3`.
 
     PRM-135. Two things make it unlike the other four:
 
