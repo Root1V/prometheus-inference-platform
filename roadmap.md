@@ -194,6 +194,7 @@ Status: `done` · `todo`
 | PRM-180 | SigLIP 2 served as a multimodal embedding | todo | Centinela's C-01 §1. Infinity serves `SiglipModel` with `/embed` + `/image_embed` on MPS and preprocesses with the model's own AutoProcessor — which is what makes their ±0.01 cosine criterion reachable. TEI is text-tower only and vLLM closed SigLIP 2 as not planned |
 | PRM-181 | Rate limits per client, not only per endpoint | todo | Centinela's C-01 §4. The bucket is already keyed per identity but the *value* is global config with overrides only for `chat_completions` and `admin`, so raising `predict` for one client raises it for every client. Industry answer is per-key/per-customer limits |
 | PRM-182 | The `predict` bucket becomes configurable, and the window gets written down | done | The cheap halves of C-01 §4: `predict` had its own bucket since PRM-136 and no way to set it, so it fell to the generic 60. Plus the window — fixed 60-second buckets — documented in the SDK guide, where it was nowhere |
+| PRM-183 | The rerank upstream shape is the engine's | done | `/v1/rerank` forwarded llama.cpp's body verbatim, so a TEI reranker was unreachable (`{query, texts}` against `{query, documents}`) and would have been metered at zero tokens, since TEI reports no usage. Per-engine dialect, plus `raw_scores` for C-01 §2 |
 
 Adding an item: append the next `RM-NN` row here with a one-liner, then add the full
 Why/Scope writeup to `docs/roadmap.md`.

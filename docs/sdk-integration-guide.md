@@ -1,6 +1,6 @@
 # Prometheus Gateway — SDK Integration Guide
 
-**Revision**: 2026-10-03 · `PRM-174/182`
+**Revision**: 2026-10-03b · `PRM-174/182/183`
 <!-- Consumers vendor this file and diff it. The date and commit above are what to quote
      when asking whether a copy is current; they change whenever this document does. -->
 
@@ -1168,6 +1168,7 @@ model" as something only the SDK can catch.
 | 503 | `not-configured` | Only on `POST /oauth2/token` — this deployment has no token endpoint wired up. | No — needs operator action |
 | 404 | `unknown-route` | **No route at that URL.** A mistake in the caller's code, not a fact about their data — deliberately a different `type` from `not-found` above, which an SDK may reasonably retry or treat as an empty result. `detail` names the method and path. | No (fix the URL) |
 | 405 | `method-not-allowed` | The URL exists, the verb does not. The `Allow` response header lists the verbs that do. | No (fix the method) |
+| 503 | `rerank-dialect-unknown` | Only on `POST /v1/rerank` — the model is running, but on an engine whose rerank request shape this gateway has not recorded. Not a transient fault: a reranker on a new engine is not llama.cpp's shape just because the last one was, so the shape is recorded deliberately rather than assumed. | No — needs operator action |
 
 There is no `404` on the inference-family endpoints for "model not found" — that's a `400
 unknown-model`, not a `404`. The only `404` an SDK should expect from a client-facing endpoint

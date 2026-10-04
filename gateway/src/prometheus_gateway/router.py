@@ -33,6 +33,7 @@ from .budget import (
     parse_thresholds,
 )
 from .models.backends import TRANSIENT_STATUS_CODES
+from .models import rerank_dialects
 from .models.registry import ModelEntry, ModelRegistry, ModelResolution
 from .models.registry import payload_schema_of
 from .models.schemas import (
@@ -2423,6 +2424,63 @@ def create_router(registry: ModelRegistry, pool: "BackendPool") -> APIRouter:
         entry = health.usable[0]
         assert entry.backend_url is not None
 
+        # PRM-183: the upstream shape is the engine's. It always was; it was not
+        # in code, because this endpoint was built against llama.cpp and its body
+        # was forwarded verbatim.
+        #
+        # Resolved over **every usable replica**, not just the chosen one, because
+        # `forward_with_failover` may answer from another — and a payload built
+        # for one engine sent to another is not a degraded answer, it is a 422 at
+        # best and a wrong ranking at worst. Replicas of one model disagreeing on
+        # their engine's shape is the same class of misconfiguration
+        # `payload_schema_of` refuses to average over.
+        unknown_engines = sorted(
+            {m.backend for m in health.usable if rerank_dialects.dialect_for(m.backend) is None}
+        )
+        if unknown_engines:
+            return _problem(
+                request,
+                503,
+                "rerank-dialect-unknown",
+                "Rerank Dialect Unknown",
+                f"Model {body.model!r} is served by {', '.join(unknown_engines)}, and this "
+                "gateway has no recorded rerank request shape for it. A reranker on a new "
+                "engine is not llama.cpp's shape just because the last one was — the shape "
+                "has to be recorded before that engine can serve this route.",
+            )
+        dialects = {rerank_dialects.dialect_for(m.backend) for m in health.usable}
+        if len(dialects) > 1:
+            return _problem(
+                request,
+                503,
+                "inconsistent-model-group",
+                "Inconsistent Model Group",
+                f"The replicas of {body.model!r} are served by engines whose rerank shapes "
+                "differ, so no request can be built that is correct for whichever one "
+                "answers. Deploy one engine per rerank model.",
+            )
+        dialect = dialects.pop()
+        assert dialect is not None
+
+        # PRM-183: a parameter the chosen engine cannot honour. PRM-127's header
+        # was for fields *this gateway* does not act on; this is a field the engine
+        # behind it does not have — the same fact for a caller, and the same
+        # answer: named rather than dropped.
+        if body.raw_scores and not dialect.supports_raw_scores:
+            already = list(getattr(request.state, "ignored_parameters", []) or [])
+            request.state.ignored_parameters = sorted({*already, "raw_scores"})
+            if body.require_parameters:
+                return _problem(
+                    request,
+                    400,
+                    "unknown-parameter",
+                    "Unknown Parameter",
+                    f"raw_scores is not available on {dialect.engine}, which serves "
+                    f"{body.model!r}. Engines that have it: "
+                    f"{', '.join(sorted(rerank_dialects.engines_with_raw_scores()))}. "
+                    "You asked to be told with require_parameters.",
+                )
+
         # Spend cap: priced prompt-only, like embeddings. A reranker generates
         # no tokens — the query is re-encoded against every document, so the
         # estimate covers query plus all documents.
@@ -2487,10 +2545,13 @@ def create_router(registry: ModelRegistry, pool: "BackendPool") -> APIRouter:
 
         backend_start = time.monotonic()
         try:
+            upstream_payload = dialect.request(body)
+            if dialect.native:
+                upstream_payload["model"] = body.model
             resp, served_id = await pool.forward_with_failover(
                 _candidates(health.usable),
-                "/v1/rerank",
-                body.to_llama_payload(),
+                dialect.path,
+                upstream_payload,
                 extra_headers={"X-Trace-ID": trace_id},
             )
             entry = _served_by(health.usable, served_id, entry)
@@ -2551,6 +2612,36 @@ def create_router(registry: ModelRegistry, pool: "BackendPool") -> APIRouter:
                 media_type="application/json",
                 headers={**_served_by_headers(entry), **_variant_headers(served_variant)},
             )
+        # PRM-183: into this platform's shape before anything reads it. TEI answers
+        # a bare array with `score` and **no `usage` at all**, so the three lines
+        # below would have metered a real request at zero tokens and written the
+        # junk row PRM-142 exists to have stopped — "the backend's own usage
+        # object -> 0 tokens, a junk row", one engine later.
+        normalised = dialect.normalise(
+            resp_body,
+            model=body.model,
+            estimated_prompt_tokens=_estimate_text_tokens([body.query, *body.documents]),
+            top_n=body.top_n,
+        )
+        if normalised is None:
+            logger.error(
+                "rerank.unreadable_upstream_shape",
+                model=body.model,
+                engine=dialect.engine,
+                request_id=request_id,
+            )
+            return _problem(
+                request,
+                502,
+                "upstream-error",
+                "Upstream Error",
+                f"The {dialect.engine} backend serving {body.model!r} answered in a shape "
+                "this gateway does not recognise as a reranking, so no ranking is reported "
+                "rather than one being guessed from it.",
+                extensions={"backend_body": resp_body},
+            )
+        resp_body = normalised
+
         rerank_usage = resp_body.get("usage", {}) if isinstance(resp_body, dict) else {}
         rerank_prompt_tokens = rerank_usage.get("prompt_tokens", 0)
         rerank_latency_ms = int((time.monotonic() - backend_start) * 1000)

@@ -7033,3 +7033,56 @@ then moved on without:
   batch is refused by the server and not by anything this builder does.
 - PRM-133's engine survey picked `tei` and `infinity` in September on a one-line verdict each.
   That row now points at PRM-179 and PRM-180 rather than being read as the detail.
+
+## PRM-183 — The rerank upstream shape is the engine's
+
+**Why**: `/v1/rerank` was built against llama.cpp and forwarded its body verbatim, so the
+*upstream* shape was llama.cpp's by accident rather than by choice. That is what blocks
+Centinela's `C-01 §2`: TEI is the engine that batches rerank pairs on the GPU, and it cannot
+be reached at all through this route. Both shapes measured from running servers on 2026-10-03,
+llama.cpp through this gateway and TEI direct:
+
+```
+llama.cpp  POST /v1/rerank  {"model","query","documents","top_n"?}
+  → {"model":…,"object":"list","usage":{"prompt_tokens":176,…},
+     "results":[{"index":0,"relevance_score":0.9997715},…]}
+
+TEI        POST /rerank     {"query","texts","raw_scores"?,"return_text"?}
+  → [{"index":0,"score":0.9993574},{"index":1,"score":4.0859417e-05}]
+  raw_scores: [{"index":0,"score":7.349291},{"index":1,"score":-10.105332}]
+```
+
+**Four differences, and only the first is cosmetic.** `score` against `relevance_score`; TEI
+answers a **bare array** with no envelope; TEI has **no `top_n`**, so trimming is ours; and
+**TEI reports no `usage` at all**. That last one is the reason this is a module and not an
+`if engine == "tei"` at the call site: the handler meters and settles a budget reservation from
+`resp_body["usage"]["prompt_tokens"]`, so a real TEI reranking would have been billed as **zero
+tokens** and written a confident junk row — PRM-142's own finding ("the backend's own usage
+object → 0 tokens, a junk row") arriving again one engine later. The normaliser substitutes the
+estimate the route already computes for the spend cap, and marks it `prometheus_estimated` so
+it never passes as counted.
+
+**Scope**
+- `models/rerank_dialects.py`: per-engine path, request builder and response normaliser.
+  `llama_cpp` is `native`, meaning its body is still forwarded and returned untouched, so the
+  existing contract is byte-identical — its 11 tests pass unchanged.
+- The dialect is resolved over **every usable replica**, not the chosen one, because
+  `forward_with_failover` may answer from another; replicas disagreeing on their engine's shape
+  is refused as `inconsistent-model-group`, the same class `payload_schema_of` refuses to
+  average over.
+- An engine with no recorded dialect is a new `503 rerank-dialect-unknown` rather than a guess,
+  and an upstream body the dialect cannot read is a `502` carrying the body rather than an
+  empty ranking.
+- `raw_scores` on `RerankRequest`, which is C-01 §2's ask: a reranker's probabilities saturate
+  near 1.0 — they measured 0.99 for a loosely related document — and a saturated probability
+  cannot be calibrated while the logit behind it can. **Declared rather than left an extra**,
+  because an extra is reported by `ignored_parameters` on every engine including the one that
+  honours it. Where the engine lacks it, it is named in `X-Prometheus-Ignored-Parameters` and
+  refused under `require_parameters` — PRM-127's header for a second reason: not "this gateway
+  does not act on it" but "the engine behind it does not have it".
+- Out: registering a TEI reranker, which needs the engine installed (PRM-179) — so this is the
+  half of C-01 §2 that could be built today, and it is the half that was blocking.
+
+**A guard test caught the one thing I would have shipped wrong**:
+`test_every_error_the_gateway_raises_is_in_the_guide` failed on the new `rerank-dialect-unknown`
+until the SDK guide documented it. The contract is checked, not remembered.

@@ -205,8 +205,25 @@ class RerankRequest(BaseModel):
     require_parameters: bool = False
     # Cohere calls this top_n; keep the name callers already use. None = all.
     top_n: int | None = None
+    # PRM-183: the score before the sigmoid. Asked for in Centinela's `C-01 §2`,
+    # because a reranker's probabilities saturate near 1.0 — they measured 0.99
+    # for a document only loosely related — and a saturated probability cannot be
+    # calibrated while the logit behind it can.
+    #
+    # **Declared, not an extra, and that is a decision.** An undeclared field
+    # would be reported by `ignored_parameters` on every engine, including the one
+    # that honours it. Declared, it is honoured where the engine has it and named
+    # in `X-Prometheus-Ignored-Parameters` where it does not — see the engine-aware
+    # check in the handler, which is a second reason that header can fire.
+    raw_scores: bool | None = None
 
     def to_llama_payload(self) -> dict[str, object]:
+        """Deprecated by PRM-183 — `rerank_dialects` builds the upstream body now.
+
+        Kept because dropping a public method of a request model is a separate
+        change from making the upstream shape per-engine, and nothing in the
+        gateway calls it any more.
+        """
         payload: dict[str, object] = {
             "model": self.model,
             "query": self.query,
