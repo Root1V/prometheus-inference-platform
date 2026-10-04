@@ -7231,3 +7231,76 @@ tolerance.
   no schema, which would start fine and tell every caller "do not guess".
 - Out: a live request through the gateway for the two new models, which needs `model:nli-tei`
   and `model:emotions-tei` grants that only a human administrator issues.
+
+## PRM-185 — The blocking query promises wall seconds and counts awake ones
+
+**Why**: Argus's `A-45` found that **89 % of the error spans across their whole platform in
+seven days** — 663 of 747, over 48 services — were one pattern: `GET
+/v1/backends?index=…&wait=60` ending in a client `ReadTimeout`. They then cross-referenced
+`pmset -g log` and attributed 78 % of them to this Mac sleeping, concluding it was their
+environment and not a defect of ours.
+
+**Half of that conclusion is wrong, and the half that is wrong is ours.** Measured on this
+machine:
+
+```
+time.monotonic()      205.50 h   <- what the blocking query's deadline uses
+CLOCK_UPTIME_RAW      205.50 h   (excludes sleep)
+CLOCK_MONOTONIC       678.97 h   (counts sleep)
+wall since boot       678.97 h
+```
+
+`time.monotonic()` is `mach_absolute_time()` here, which tracks `CLOCK_UPTIME_RAW`: **474 hours
+of sleep are invisible to it.** So `routes.list_backends`'s
+
+```python
+deadline = time.monotonic() + wait
+while registry.index() == index and time.monotonic() < deadline:
+```
+
+measures a 60-second promise with a clock that stops. The machine sleeps mid-hold, wakes, and
+the loop still believes it has nearly all its 60 seconds left — so it keeps holding. Their two
+exact coincidences say the same thing from the other side: a span lasting 325.7 minutes against
+a sleep episode of 325.7 minutes, matching to the decimal.
+
+The sleep is their environment. **Failing to return within 60 wall-clock seconds is our bug**,
+because `wait` is stated in seconds to a caller whose clock does not pause, and we implemented
+it on one that does.
+
+**Scope**
+- Bound the hold by wall time as well as monotonic time, breaking on whichever expires first:
+  monotonic still protects against an NTP step, and wall time stops a sleep from extending the
+  hold. A hold that returns early is harmless — the contract is already "returns when the index
+  changes **or** `wait` passes", and the caller re-asks with the index it still holds.
+- It is the manager-api's route, not the gateway's. Worth saying because `A-45` attributes the
+  span to `gateway`, and the gateway's own `/v1/backends` has no `index`/`wait` at all.
+- Out: their remaining 143 failures with no sleep overlap. The same mechanism explains them if
+  anything paused the tick counter that `pmset` does not log as a sleep episode, and
+  `CLOCK_MONOTONIC - CLOCK_UPTIME_RAW` is the number that would settle it — but that is a
+  measurement on their side, and this fix removes our contribution either way.
+
+**And it is a third kind of instrument error**, after a test that ran against the wrong app and
+a probe whose parameters the engine discarded: here the instrument is a **clock**, and it was
+wrong about time rather than about data.
+
+**Done.** Both deadlines, and the span now records `blocking_query.expired_by` as `wall` or
+`monotonic` so a long hold in a trace does not have to be guessed at — and so Argus can tell a
+sleep from an ordinary expiry in their own store.
+
+The tests fake each clock in turn, since a sleep cannot be forced, and each one is scoped to
+`routes.time` rather than to the real `time` module. **The first version patched the real
+`time.monotonic` and deadlocked**: asyncio's event loop keeps its own clock there, so freezing it
+means `asyncio.sleep` never returns. The clock under test belongs to one module, so that is where
+it is replaced.
+
+Two more things about those tests are worth keeping, because both were defects in the test rather
+than the code:
+
+- With the fix reverted, the frozen-monotonic case does not fail — it **hangs for ever**, which
+  is exactly the symptom Argus reported. Verified by reverting. So each held request is bounded
+  by a client timeout: a regression returns a readable assertion instead of a stuck suite.
+- The override teardown lives in the fixture, not at the end of each test body. It was at the end
+  of each body first, `app` is a module-level singleton shared by every test in the package, and
+  a failing test leaked its auth override into `test_discovery.py::test_get_requires_auth` — a
+  test that touches none of this and went green-to-`200`-instead-of-`401`. A fixture's teardown
+  runs on failure; a line at the end of a function does not.
