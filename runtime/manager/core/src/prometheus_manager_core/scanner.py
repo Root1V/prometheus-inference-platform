@@ -96,6 +96,9 @@ _BACKEND_SIGNATURES: tuple[_BackendSignature, ...] = (
     # PRM-135: `--model-id` (a Hub id), not `--model` — hf-serve loads Hugging
     # Face format weights, so there is no path on its command line to match.
     _BackendSignature("hf_serve", ("hf-serve",), "--model-id"),
+    # PRM-179: `--hostname`, not `--host` — the only backend here whose host flag
+    # is spelled that way, which is why `host_flag` is per-signature at all.
+    _BackendSignature("tei", ("text-embeddings-router",), "--model-id", host_flag="--hostname"),
     # PRM-140: `laya-serve` takes no arguments whatsoever — host, port, device
     # and checkpoints are all environment. There is no model flag to match and
     # no port flag to read back, so identity comes from the PID file (as it

@@ -52,6 +52,13 @@ start_timeout_s = 300
 binary = "hf-serve"
 start_timeout_s = 300
 
+# PRM-179: text-embeddings-router — embeddings, rerank and sequence
+# classification, with token-based dynamic batching. Rust binary, so the start is
+# quick next to the Python servers; 120s covers a cold Hub download of the weights.
+[backends.tei]
+binary = "text-embeddings-router"
+start_timeout_s = 120
+
 # PRM-140: laya-serve — a System One decision model. Takes no flags at all;
 # everything is environment (see lifecycle._laya_env). Install as `laya[serve]`,
 # never plain `laya`: the bare package ships the entry point without fastapi or
@@ -153,6 +160,9 @@ class BackendsConfig:
     )
     hf_serve: BackendConfig = field(
         default_factory=lambda: BackendConfig(binary="hf-serve", start_timeout_s=300)
+    )
+    tei: BackendConfig = field(
+        default_factory=lambda: BackendConfig(binary="text-embeddings-router", start_timeout_s=120)
     )
     laya: BackendConfig = field(
         default_factory=lambda: BackendConfig(binary="laya-serve", start_timeout_s=300)
@@ -372,6 +382,7 @@ class ManagerConfig:
             "sglang": self.backends.sglang,
             "sd_cpp": self.backends.sd_cpp,
             "hf_serve": self.backends.hf_serve,
+            "tei": self.backends.tei,
             "laya": self.backends.laya,
         }
         cfg = by_name.get(backend)
@@ -417,6 +428,7 @@ def load_config(path: Path | None = None) -> ManagerConfig:
             sglang=BackendConfig(**backends_raw.get("sglang", {})),
             sd_cpp=BackendConfig(**backends_raw.get("sd_cpp", {})),
             hf_serve=BackendConfig(**backends_raw.get("hf_serve", {})),
+            tei=BackendConfig(**backends_raw.get("tei", {})),
             laya=BackendConfig(**backends_raw.get("laya", {})),
         ),
         registry=RegistryConfig(**raw.get("registry", {})),

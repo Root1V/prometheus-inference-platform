@@ -242,3 +242,39 @@ async def test_an_unreadable_upstream_body_is_a_502_not_an_empty_ranking(gw, rsa
     )
     assert r.status_code == 502
     assert r.json()["type"].endswith("/upstream-error")
+
+
+# ── the two places this path lives ───────────────────────────────────────────
+
+
+def test_the_manager_probes_the_same_rerank_path_the_gateway_forwards_to():
+    """One fact, two packages, and a test instead of a shared dependency.
+
+    The manager's readiness probe sends a real rerank to decide whether an
+    instance is ready, so it needs the engine's path — the same path this
+    gateway forwards to. Making manager-core import the gateway for two strings
+    would be the wrong dependency, so they are stated twice and tied here.
+
+    This is not hypothetical: the first TEI instance the manager launched came up
+    healthy and was reported `not_ready`, because the probe asked `/v1/rerank`
+    and TEI answers 404 there.
+    """
+    from prometheus_manager_core.readiness import _probe_body
+    from prometheus_manager_core.registry import RegistryEntry
+
+    for engine in ("llama_cpp", "tei"):
+        entry = RegistryEntry(
+            id="rr",
+            path="",
+            context_length=512,
+            port=1,
+            backend=engine,
+            modality="rerank",
+            model_slug="rr",
+        )
+        probe_path, _ = _probe_body(entry)
+        dialect = rerank_dialects.dialect_for(engine)
+        assert dialect is not None
+        assert probe_path == dialect.path, (
+            f"{engine}: the manager probes {probe_path} and the gateway forwards to {dialect.path}"
+        )

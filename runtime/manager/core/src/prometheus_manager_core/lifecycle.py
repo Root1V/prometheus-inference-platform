@@ -314,6 +314,92 @@ def _build_hf_serve_cmd(binary: str, entry: RegistryEntry, port: int, bind_host:
     ]
 
 
+# PRM-179: which modalities this platform has a *verified route* for on TEI. The
+# engine infers its own task from the model's config, so unlike `hf_serve` there
+# is no modality-to-task map to keep — this set exists to refuse the modalities
+# whose request shape has not been checked end to end, rather than launching a
+# server the gateway cannot then talk to.
+#
+# `rerank` is here because PRM-183 recorded TEI's rerank dialect (`/rerank` with
+# `texts`, not `/v1/rerank` with `documents`). `zero_shot` is deliberately absent:
+# TEI serves it, but its softmax is across the model's own classes and not across
+# the caller's candidate labels, so who performs that normalisation is an open
+# question with Centinela (`C-01 §3`) and launching it first would be answering it
+# by accident.
+_TEI_MODALITIES = frozenset({"embedding", "rerank"})
+
+# The metrics port TEI binds *in addition* to its serving port. Its default is
+# 9000, which on this platform is auth-service — and two TEI instances would
+# collide with each other besides. Offset well clear of the instance range the
+# registry assigns from, then probed like any other port.
+_TEI_PROMETHEUS_OFFSET = 10_000
+
+
+def _build_tei_cmd(binary: str, entry: RegistryEntry, port: int, bind_host: str) -> list[str]:
+    """text-embeddings-router — verified against `--help` (1.9.4) and a running server.
+
+    PRM-179. Four things about this one are not like the others, and all four were
+    found by reading the flags and then the server's own startup log rather than by
+    assuming the conventions the other backends follow:
+
+    `--hostname`, not `--host`. And it is read from the environment as `HOSTNAME`
+    when the flag is absent, which a container run proved by logging
+    `Invalid hostname, defaulting to 0.0.0.0` from Docker's own `HOSTNAME`. A shell
+    that exports it would do the same, so it is always passed explicitly.
+
+    `--prometheus-port` defaults to **9000**, which is auth-service here. Left
+    unset, the first instance would fight the identity service for the port and the
+    second would fight the first.
+
+    `--max-client-batch-size` defaults to **32**, and that is the cap on how many
+    inputs one request may carry. Centinela's `C-01 §3` asks for 64, so the default
+    silently refuses the thing the engine was added for. It is the number
+    `C-01 §2` asked us to publish in the catalogue, and it comes from here.
+
+    `--model-id` is a Hub id, like `hf_serve` and unlike every other backend, so a
+    model with no `hf_repo` cannot be served.
+
+    **`--revision` is not passed, and that is a finding rather than an omission.**
+    The flag exists and pinning it is the right thing — a reranker whose weights
+    move is a reranker whose scores move, and Centinela asked for exactly this for
+    SigLIP in `C-01 §1`. But this registry has no git revision to give it: the only
+    field close is `hf_sha256`, which is a *file content hash*, not a commit id or
+    a branch. Passing it would be a plausible-looking value from the wrong source,
+    which is the failure mode this codebase has met more than once. A revision
+    column is a registry change; until then every TEI instance tracks whatever the
+    Hub branch currently points at, and that is said out loud instead of being
+    papered over with a field that happens to be a hex string.
+    """
+    if not entry.hf_repo:
+        raise LifecycleError(
+            f"Model '{entry.id}' has no hf_repo, and text-embeddings-router loads Hugging "
+            "Face format weights by Hub id — a .gguf path is not something it can read. "
+            "Register the model with its Hub repository, or serve it with llama_cpp."
+        )
+    if entry.modality not in _TEI_MODALITIES:
+        raise LifecycleError(
+            f"Model '{entry.id}' has modality {entry.modality!r}, which this platform has no "
+            f"verified TEI route for. Verified: {', '.join(sorted(_TEI_MODALITIES))}. The "
+            "engine may well serve it — what is missing is a checked request shape on our "
+            "side, not a capability on its."
+        )
+    cmd = [
+        binary,
+        "--model-id",
+        entry.hf_repo,
+        "--hostname",
+        bind_host,
+        "--port",
+        str(port),
+        "--prometheus-port",
+        str(_find_free_port(port + _TEI_PROMETHEUS_OFFSET)),
+        # 64 is Centinela's asked-for batch; the default 32 would refuse it.
+        "--max-client-batch-size",
+        "64",
+    ]
+    return cmd
+
+
 def _build_laya_cmd(binary: str, entry: RegistryEntry, port: int, bind_host: str) -> list[str]:
     """laya-serve — verified against a running server (laya 0.3.7).
 
@@ -370,6 +456,7 @@ _COMMAND_BUILDERS = {
     "sglang": _build_sglang_cmd,
     "sd_cpp": _build_sd_cpp_cmd,
     "hf_serve": _build_hf_serve_cmd,
+    "tei": _build_tei_cmd,
     "laya": _build_laya_cmd,
 }
 

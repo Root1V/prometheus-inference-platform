@@ -18,6 +18,7 @@ from prometheus_manager_core.lifecycle import (
     _build_mlx_cmd,
     _build_sd_cpp_cmd,
     _build_sglang_cmd,
+    _build_tei_cmd,
     _build_vllm_cmd,
     _verify_pid_file,
     deregister_instance,
@@ -845,3 +846,98 @@ class TestDiscoveryAutoToggle:
             stop_instance("test-model", default_config, populated_registry)
 
         assert populated_registry.get("test-model").discovery is False
+
+
+# ── PRM-179: tei ─────────────────────────────────────────────────────────────
+
+
+class TestTeiCommandBuilder:
+    """`text-embeddings-router` — verified against the 1.9.4 binary, not its docs.
+
+    Three of these pin things the other backends' conventions would have got
+    wrong, and each was found by running the real thing rather than by reading
+    about it.
+    """
+
+    def _entry(self, **overrides):
+        base = dict(
+            id="rr-1",
+            path="",
+            context_length=512,
+            port=18095,
+            backend="tei",
+            modality="rerank",
+            hf_repo="BAAI/bge-reranker-base",
+        )
+        base.update(overrides)
+        return RegistryEntry(**base)
+
+    def test_the_host_flag_is_hostname_not_host(self):
+        """`--host` is rejected by the binary: `unexpected argument '--host' found`.
+
+        It is also read from the environment as `HOSTNAME` when absent, which a
+        container run exposed by logging `Invalid hostname, defaulting to 0.0.0.0`
+        from Docker's own hostname — so it is always passed, never left to default.
+        """
+        cmd = _build_tei_cmd("text-embeddings-router", self._entry(), 9090, "127.0.0.1")
+        assert "--hostname" in cmd
+        assert "--host" not in cmd
+        assert cmd[cmd.index("--hostname") + 1] == "127.0.0.1"
+
+    def test_the_metrics_port_is_never_left_to_default(self):
+        """Its default is 9000, which is auth-service on this platform — and two
+        instances would collide with each other besides."""
+        cmd = _build_tei_cmd("text-embeddings-router", self._entry(), 9090, "127.0.0.1")
+        assert "--prometheus-port" in cmd
+        metrics_port = int(cmd[cmd.index("--prometheus-port") + 1])
+        assert metrics_port != 9000
+        assert metrics_port != 9090, "the metrics port must not be the serving port"
+
+    def test_the_client_batch_size_is_raised_above_the_default(self):
+        """The default is 32, and it caps how many inputs **one request** may
+        carry. Centinela's C-01 §3 asks for 64, so the default silently refuses
+        the thing this engine was added for."""
+        cmd = _build_tei_cmd("text-embeddings-router", self._entry(), 9090, "127.0.0.1")
+        assert cmd[cmd.index("--max-client-batch-size") + 1] == "64"
+
+    def test_it_sends_the_hub_id_and_refuses_a_gguf(self):
+        cmd = _build_tei_cmd("text-embeddings-router", self._entry(), 9090, "127.0.0.1")
+        assert cmd[cmd.index("--model-id") + 1] == "BAAI/bge-reranker-base"
+        with pytest.raises(LifecycleError, match="no hf_repo"):
+            _build_tei_cmd(
+                "text-embeddings-router",
+                self._entry(hf_repo="", path="/models/thing-Q4_K_M.gguf"),
+                9090,
+                "127.0.0.1",
+            )
+
+    def test_no_revision_is_passed_because_there_is_none_to_pass(self):
+        """The flag exists and pinning it is right — Centinela asked for exactly
+        that in C-01 §1. But the nearest registry field is `hf_sha256`, a file
+        content hash rather than a commit id, and passing it would be a plausible
+        value from the wrong source. A revision column is a registry change.
+        """
+        cmd = _build_tei_cmd("text-embeddings-router", self._entry(), 9090, "127.0.0.1")
+        assert "--revision" not in cmd
+
+    def test_an_unverified_modality_is_refused_at_launch(self):
+        """The engine serves more than this platform has a checked route for. A
+        server the gateway cannot then talk to is worse than a clear refusal.
+
+        `zero_shot` is the pointed case: TEI serves it, but its softmax is across
+        the model's own classes rather than the caller's candidate labels, so who
+        normalises is still open with Centinela — launching it would answer that
+        by accident.
+        """
+        for modality in ("text", "vision", "image", "zero_shot", "classification"):
+            with pytest.raises(LifecycleError, match="no verified TEI route"):
+                _build_tei_cmd(
+                    "text-embeddings-router", self._entry(modality=modality), 9090, "127.0.0.1"
+                )
+
+    def test_embedding_and_rerank_are_the_two_that_launch(self):
+        for modality in ("embedding", "rerank"):
+            cmd = _build_tei_cmd(
+                "text-embeddings-router", self._entry(modality=modality), 9090, "127.0.0.1"
+            )
+            assert cmd[0] == "text-embeddings-router"
