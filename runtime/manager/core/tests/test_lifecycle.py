@@ -920,24 +920,49 @@ class TestTeiCommandBuilder:
         cmd = _build_tei_cmd("text-embeddings-router", self._entry(), 9090, "127.0.0.1")
         assert "--revision" not in cmd
 
-    def test_an_unverified_modality_is_refused_at_launch(self):
-        """The engine serves more than this platform has a checked route for. A
-        server the gateway cannot then talk to is worse than a clear refusal.
+    def test_a_modality_this_engine_cannot_serve_is_refused_at_launch(self):
+        """TEI is an embeddings and classification server: it has no text
+        generation at all, so these are not a restriction of ours.
+        `typed_decision` is laya's own API.
 
-        `zero_shot` is the pointed case: TEI serves it, but its softmax is across
-        the model's own classes rather than the caller's candidate labels, so who
-        normalises is still open with Centinela — launching it would answer that
-        by accident.
+        A server the gateway cannot then talk to is worse than a clear refusal.
         """
-        for modality in ("text", "vision", "image", "zero_shot", "classification"):
+        for modality in ("text", "vision", "image", "typed_decision"):
             with pytest.raises(LifecycleError, match="no verified TEI route"):
                 _build_tei_cmd(
                     "text-embeddings-router", self._entry(modality=modality), 9090, "127.0.0.1"
                 )
 
-    def test_embedding_and_rerank_are_the_two_that_launch(self):
-        for modality in ("embedding", "rerank"):
+    def test_the_four_modalities_that_launch(self):
+        """PRM-184 added `classification` and `zero_shot`; both reach `/predict`.
+
+        They are not converted into hf-serve's shape — `payload_schema` publishes
+        `tei.predict.v1` for them instead, because the two engines genuinely
+        answer different things and a conversion would hide that.
+        """
+        for modality in ("embedding", "rerank", "classification", "zero_shot"):
             cmd = _build_tei_cmd(
                 "text-embeddings-router", self._entry(modality=modality), 9090, "127.0.0.1"
             )
             assert cmd[0] == "text-embeddings-router"
+
+    def test_a_per_model_refusal_is_the_engines_to_make_and_it_says_why(self):
+        """The allow-set is about **modalities**; whether a given model loads is a
+        separate fact, and the engine reports it at launch. Three different
+        outcomes were measured on 2026-10-04, which is why the two are kept apart:
+
+          cross-encoder/nli-distilroberta-base            → serves
+          wfzyx/von-1.0 (von-decide)                      → "Model is not supported"
+          distilbert-...-sst-2-english (sst2-clf)         → "Could not download
+                                                             model artifacts", because
+                                                             the repo ships no
+                                                             tokenizer.json
+
+        The builder cannot know any of that, and must not pretend to: it refuses
+        on modality and lets the engine speak for the model. Both reasons reached
+        `runtime/logs/lab/<id>.log`, so the failure says why.
+        """
+        cmd = _build_tei_cmd(
+            "text-embeddings-router", self._entry(modality="zero_shot"), 9090, "127.0.0.1"
+        )
+        assert "--model-id" in cmd

@@ -132,8 +132,22 @@ def _probe_body(entry: RegistryEntry) -> tuple[str, dict[str, Any]] | None:
             return "/rerank", {"query": _TEXT, "texts": [_TEXT, "no"]}
         return "/v1/rerank", {"model": name, "query": _TEXT, "documents": [_TEXT, "no"]}
     if modality == "classification":
+        # The same path on both engines, and the same body: one text in, scored
+        # classes out. Nothing to key on here.
         return "/predict", {"inputs": _TEXT}
     if modality == "zero_shot":
+        # PRM-184: and this one *is* keyed on the engine, for a reason that only
+        # measuring showed. TEI answers hf-serve's body with **200** — it ignores
+        # `parameters` entirely rather than refusing it — so this probe passed
+        # against TEI while the `candidate_labels` were thrown away. A probe that
+        # proves "the engine responds" and not "the engine does this modality" is
+        # the shape of a failure that looks like a success, which is the defect
+        # this project keeps meeting under its own name.
+        #
+        # So for TEI the probe sends what a zero-shot request to TEI actually is:
+        # a (premise, hypothesis) pair, whose answer depends on the hypothesis.
+        if entry.backend == "tei":
+            return "/predict", {"inputs": [[_TEXT, "this is a sentence"]]}
         return "/predict", {
             "inputs": _TEXT,
             "parameters": {"candidate_labels": ["yes", "no"]},

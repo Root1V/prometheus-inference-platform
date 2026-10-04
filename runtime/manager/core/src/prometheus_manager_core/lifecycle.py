@@ -321,12 +321,22 @@ def _build_hf_serve_cmd(binary: str, entry: RegistryEntry, port: int, bind_host:
 # server the gateway cannot then talk to.
 #
 # `rerank` is here because PRM-183 recorded TEI's rerank dialect (`/rerank` with
-# `texts`, not `/v1/rerank` with `documents`). `zero_shot` is deliberately absent:
-# TEI serves it, but its softmax is across the model's own classes and not across
-# the caller's candidate labels, so who performs that normalisation is an open
-# question with Centinela (`C-01 §3`) and launching it first would be answering it
-# by accident.
-_TEI_MODALITIES = frozenset({"embedding", "rerank"})
+# `texts`, not `/v1/rerank` with `documents`). `embedding` because TEI's
+# OpenAI-compatible `/v1/embeddings` is the path this platform already calls —
+# verified end to end, and the vectors agree with `hf_serve`'s for the same model
+# to a cosine of 0.99999787.
+#
+# PRM-184 adds `classification` and `zero_shot`, both of which reach TEI's
+# `/predict`. They are **not** given hf-serve's response shape, and that is the
+# decision rather than a shortcut: TEI's softmax is across the model's own classes
+# and not across the caller's candidate labels, so the two engines genuinely
+# answer different things. `/v1/models/{m}/predict` is a pass-through whose shape
+# belongs to the engine, and `payload_schema` is how a caller tells which — so
+# `("zero_shot", "tei")` publishes `tei.predict.v1` and `("zero_shot",
+# "hf_serve")` keeps publishing its own. Nothing is converted into anything, and
+# Centinela's `C-01 §3` question is answered by *choosing an engine* rather than
+# by this platform picking for them.
+_TEI_MODALITIES = frozenset({"embedding", "rerank", "classification", "zero_shot"})
 
 # The metrics port TEI binds *in addition* to its serving port. Its default is
 # 9000, which on this platform is auth-service — and two TEI instances would

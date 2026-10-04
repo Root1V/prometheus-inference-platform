@@ -7162,3 +7162,72 @@ it never passes as counted.
 **A guard test caught the one thing I would have shipped wrong**:
 `test_every_error_the_gateway_raises_is_in_the_guide` failed on the new `rerank-dialect-unknown`
 until the SDK guide documented it. The contract is checked, not remembered.
+
+## PRM-184 — TEI serves classification and zero_shot, with its own contract
+
+**Why**: PRM-179 allowed TEI only `embedding` and `rerank`, and left `zero_shot` out because
+who normalises across candidate labels was an open question with Centinela. Asked to implement
+both, the question turned out to have an answer that does not require deciding for them:
+**publish a different contract and let the caller choose by choosing an engine.** That is what
+`payload_schema` has existed for since PRM-144, and this is the first time two engines serving
+one modality genuinely disagree.
+
+**They are not converted, and that is the decision.** hf-serve returns `{sequence, labels,
+scores}` normalised across the candidate labels the caller supplied; TEI returns scores across
+the **model's own** classes and has no notion of candidate labels at all — measured, it answers
+hf-serve's body with `200` and discards `parameters` rather than refusing them. Converting one
+into the other would mean this platform inventing a normalisation on a route whose whole design
+is that the shape belongs to the engine.
+
+**The body, measured against a running server, because one case is a trap:**
+
+```
+inputs: "a text"                     → one flat list of {label, score}
+inputs: ["premise", "hypothesis"]    → ONE PAIR, not a batch of two texts
+inputs: ["a", "b", "c"]              → 422
+inputs: [["a"], ["b"]]               → a batch of two single texts → two lists
+inputs: [["p1","h1"], ["p2","h2"]]   → a batch of two pairs → two lists
+```
+
+A batch is always a list of lists. The natural-looking "send my N texts as an array" is the one
+form that silently returns a single wrong answer at N=2 and a `422` at N≥3. It matters directly
+to Centinela: their `C-01 §3` format A is a flat array. Written down in the SDK guide under
+`tei.predict.v1`.
+
+**A probe that proved nothing, found by measuring rather than by it failing.** The readiness
+probe for `zero_shot` sent hf-serve's body to TEI and got `200`, so an instance was reported
+ready on evidence of nothing — the `candidate_labels` were discarded. It now sends a
+`(premise, hypothesis)` pair for that engine, which is the only body whose answer depends on the
+hypothesis: `entailment 0.982` against "a dog is sleeping", `contradiction 0.994` against "a car
+is parked outside". Third instance of the same shape in two days, after the gateway's rerank
+path and the manager's rerank probe.
+
+**Three different per-model outcomes, which is why modality and model support stay apart.** The
+allow-set is about modalities; whether a given model loads is the engine's to report:
+
+| model | outcome |
+|---|---|
+| `cross-engine/nli-distilroberta-base` | serves |
+| `wfzyx/von-1.0` (`von-decide`) | `Model is not supported` — architecture |
+| `distilbert-...-sst-2-english` (`sst2-clf`) | `Could not download model artifacts` — the repo ships no `tokenizer.json`, which TEI's Rust tokenizer requires |
+
+That last one will bite again: plenty of older Hub repos ship `vocab.txt` and no `tokenizer.json`.
+Both reasons reached `runtime/logs/lab/<id>.log`, so the failure says why rather than only that
+the process exited.
+
+**Also settled while here**: `embedding` on TEI is now verified end to end, which PRM-179 had
+allowed on a route-existence check — a weaker thing than it looked. Pinned to each replica of
+one model, TEI and hf-serve agree to a cosine of **0.99999787** (`1 - cos = 2.1e-06`), which is
+**4692x inside** the ±0.01 criterion Centinela set for SigLIP in `C-01 §1`. So the engine's own
+`hidden_act=gelu` approximation warning is real as a warning and numerically irrelevant at that
+tolerance.
+
+**Scope**
+- `_TEI_MODALITIES` gains `classification` and `zero_shot`; `text`, `vision`, `image` and
+  `typed_decision` stay refused, the first three because TEI has no text generation at all.
+- `("classification", "tei")` and `("zero_shot", "tei")` both publish `tei.predict.v1` — one id,
+  because one endpoint and one body genuinely serve both.
+- A guard test walks `_TEI_MODALITIES` and fails if a launchable pass-through modality publishes
+  no schema, which would start fine and tell every caller "do not guess".
+- Out: a live request through the gateway for the two new models, which needs `model:nli-tei`
+  and `model:emotions-tei` grants that only a human administrator issues.
