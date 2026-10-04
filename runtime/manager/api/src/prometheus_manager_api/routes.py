@@ -106,12 +106,50 @@ async def list_backends(
         registry.reload()
 
         if index and wait:
-            deadline = time.monotonic() + wait
+            # PRM-185: **two** deadlines, and the hold ends at whichever comes
+            # first. `wait` is promised to the caller in seconds, and a caller's
+            # clock does not pause — so it cannot be measured with one that does.
+            #
+            # `time.monotonic()` on macOS is `mach_absolute_time()`, which tracks
+            # `CLOCK_UPTIME_RAW` and **stops while the machine sleeps**. Measured
+            # on the development host: 205.50 h against 678.97 h of wall time
+            # since boot — 474 hours invisible to it. So a sleep mid-hold left the
+            # deadline believing it still had nearly all its 60 seconds, and the
+            # request kept being held for as long as the machine slept.
+            #
+            # Argus found this from the other end before we did: 663 client
+            # `ReadTimeout`s, **89 % of the error spans across their whole
+            # platform** in seven days, and a span lasting 325.7 minutes against a
+            # sleep episode of 325.7 minutes — matching to the decimal (`A-45`).
+            # They attributed it to their environment. The sleep is; the failure
+            # to return on time is ours.
+            #
+            # Each clock covers the other's failure, which is why both stay:
+            # monotonic is immune to an NTP step backwards (wall time jumping back
+            # would extend the hold), and wall time is immune to a sleep. Ending
+            # early is harmless — the contract is already "returns when the index
+            # changes **or** `wait` passes", and a caller re-asks with the index it
+            # still holds, so nothing can be missed.
+            mono_deadline = time.monotonic() + wait
+            wall_deadline = time.time() + wait
             span.set_attribute("blocking_query", True)
-            while registry.index() == index and time.monotonic() < deadline:
+            while (
+                registry.index() == index
+                and time.monotonic() < mono_deadline
+                and time.time() < wall_deadline
+            ):
                 await asyncio.sleep(_BLOCKING_POLL_S)
                 registry.reload()
-            span.set_attribute("blocking_query.changed", registry.index() != index)
+            changed = registry.index() != index
+            span.set_attribute("blocking_query.changed", changed)
+            if not changed:
+                # Which clock ended it, so the next person reading a long hold in
+                # a trace does not have to guess — and so Argus can tell a sleep
+                # from an ordinary expiry in their own store.
+                span.set_attribute(
+                    "blocking_query.expired_by",
+                    "wall" if time.time() >= wall_deadline else "monotonic",
+                )
 
         proxy_host: str = getattr(request.app.state, "proxy_host", "")
         # AC-18 (spec 010): only expose entries with discovery: true, unless the

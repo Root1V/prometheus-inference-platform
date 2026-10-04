@@ -7282,3 +7282,25 @@ it on one that does.
 **And it is a third kind of instrument error**, after a test that ran against the wrong app and
 a probe whose parameters the engine discarded: here the instrument is a **clock**, and it was
 wrong about time rather than about data.
+
+**Done.** Both deadlines, and the span now records `blocking_query.expired_by` as `wall` or
+`monotonic` so a long hold in a trace does not have to be guessed at — and so Argus can tell a
+sleep from an ordinary expiry in their own store.
+
+The tests fake each clock in turn, since a sleep cannot be forced, and each one is scoped to
+`routes.time` rather than to the real `time` module. **The first version patched the real
+`time.monotonic` and deadlocked**: asyncio's event loop keeps its own clock there, so freezing it
+means `asyncio.sleep` never returns. The clock under test belongs to one module, so that is where
+it is replaced.
+
+Two more things about those tests are worth keeping, because both were defects in the test rather
+than the code:
+
+- With the fix reverted, the frozen-monotonic case does not fail — it **hangs for ever**, which
+  is exactly the symptom Argus reported. Verified by reverting. So each held request is bounded
+  by a client timeout: a regression returns a readable assertion instead of a stuck suite.
+- The override teardown lives in the fixture, not at the end of each test body. It was at the end
+  of each body first, `app` is a module-level singleton shared by every test in the package, and
+  a failing test leaked its auth override into `test_discovery.py::test_get_requires_auth` — a
+  test that touches none of this and went green-to-`200`-instead-of-`401`. A fixture's teardown
+  runs on failure; a line at the end of a function does not.
