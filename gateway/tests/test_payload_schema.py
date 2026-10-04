@@ -145,3 +145,54 @@ def test_every_pass_through_modality_has_a_schema_for_every_engine_that_serves_i
     # the field is silently absent on exactly the models it exists for.
     unmapped = [m for m in _ENGINE_SHAPED if not any(k[0] == m for k in _PAYLOAD_SCHEMAS)]
     assert not unmapped, f"pass-through modalities with no engine mapped: {unmapped}"
+
+
+# ── PRM-184: TEI serves two pass-through modalities, with its own contract ────
+
+
+def test_tei_classification_and_zero_shot_share_one_contract():
+    """One endpoint, one body, so one id — and it says `tei`, not `hf-inference`."""
+    from prometheus_gateway.models.registry import payload_schema_for
+
+    assert payload_schema_for("classification", "tei") == "tei.predict.v1"
+    assert payload_schema_for("zero_shot", "tei") == "tei.predict.v1"
+
+
+def test_the_same_modality_on_two_engines_does_not_share_a_contract():
+    """The half `modality` cannot answer, with a real pair of engines behind it.
+
+    hf-serve returns `{sequence, labels, scores}` normalised across the candidate
+    labels the caller supplied. TEI returns scores across the **model's own**
+    classes and has no notion of candidate labels — measured: it answers
+    hf-serve's body with 200 and discards `parameters` entirely. A caller
+    dispatching on `modality` would read one as the other.
+    """
+    from prometheus_gateway.models.registry import payload_schema_for
+
+    assert payload_schema_for("zero_shot", "hf_serve") != payload_schema_for("zero_shot", "tei")
+    assert payload_schema_for("classification", "hf_serve") != payload_schema_for(
+        "classification", "tei"
+    )
+
+
+def test_every_modality_tei_may_serve_has_a_schema_or_needs_no_engine_key():
+    """The guard that stops a launchable modality from publishing `null`.
+
+    `_TEI_MODALITIES` is what the manager will start; a pass-through modality in
+    it with no recorded schema would launch fine and tell every caller "do not
+    guess".
+    """
+    from prometheus_manager_core.lifecycle import _TEI_MODALITIES
+
+    from prometheus_gateway.models.registry import _ENGINE_SHAPED, payload_schema_for
+
+    for modality in sorted(_TEI_MODALITIES):
+        schema = payload_schema_for(modality, "tei")
+        assert schema is not None, (
+            f"{modality} is in _TEI_MODALITIES but payload_schema_for({modality!r}, 'tei') "
+            "is None — it would launch and publish no contract"
+        )
+        if modality not in _ENGINE_SHAPED:
+            # Not engine-shaped: the gateway defines the body, so the id must be
+            # the platform's own and identical across engines.
+            assert schema == payload_schema_for(modality, "llama_cpp")

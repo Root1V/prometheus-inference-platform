@@ -193,3 +193,68 @@ def test_an_unknown_modality_is_skipped_not_passed():
     verdict = readiness.check(_entry("holographic_telepathy"), "127.0.0.1", 9099)
     assert verdict.skipped is True
     assert verdict.ready is False
+
+
+# ── PRM-184: the zero_shot probe has to prove the modality ───────────────────
+
+
+def test_the_zero_shot_probe_is_engine_shaped():
+    """A probe that proves "the engine responds" is not a probe of the modality.
+
+    Measured: TEI answers hf-serve's zero-shot body with **200**, discarding
+    `parameters` rather than refusing it — so this probe passed against TEI while
+    the `candidate_labels` were thrown away, and reported ready on evidence of
+    nothing. For TEI it now sends what a zero-shot request to TEI actually is, a
+    (premise, hypothesis) pair, whose answer depends on the hypothesis
+    (`entailment 0.982` against one, `contradiction 0.994` against another).
+    """
+    from prometheus_manager_core.readiness import _probe_body
+    from prometheus_manager_core.registry import RegistryEntry
+
+    def entry(backend: str) -> RegistryEntry:
+        return RegistryEntry(
+            id="zs",
+            path="",
+            context_length=512,
+            port=1,
+            backend=backend,
+            modality="zero_shot",
+            model_slug="zs",
+        )
+
+    hf_path, hf_body = _probe_body(entry("hf_serve"))
+    tei_path, tei_body = _probe_body(entry("tei"))
+
+    assert hf_path == tei_path == "/predict"
+    assert "parameters" in hf_body
+    # TEI has no candidate labels at all, so sending them would prove nothing.
+    assert "parameters" not in tei_body
+    inputs = tei_body["inputs"]
+    assert isinstance(inputs, list) and isinstance(inputs[0], list) and len(inputs[0]) == 2, (
+        "a zero-shot probe on TEI must be a (premise, hypothesis) pair, because that is "
+        "the only body whose answer depends on the hypothesis"
+    )
+
+
+def test_a_tei_batch_is_a_list_of_lists():
+    """Pins the trap in `tei.predict.v1`, so the probe never regresses into it.
+
+    Measured against a running server: a flat `["a","b"]` is read as one **pair**
+    and answered once, and `["a","b","c"]` is a 422. Only a list of lists batches.
+    So the probe's own body must be nested even for a single pair.
+    """
+    from prometheus_manager_core.readiness import _probe_body
+    from prometheus_manager_core.registry import RegistryEntry
+
+    _, body = _probe_body(
+        RegistryEntry(
+            id="zs",
+            path="",
+            context_length=512,
+            port=1,
+            backend="tei",
+            modality="zero_shot",
+            model_slug="zs",
+        )
+    )
+    assert all(isinstance(x, list) for x in body["inputs"])

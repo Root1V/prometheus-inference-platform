@@ -116,10 +116,38 @@ def _probe_body(entry: RegistryEntry) -> tuple[str, dict[str, Any]] | None:
     if modality == "rerank":
         # Two documents, because a reranker with one has nothing to order and
         # some implementations short-circuit.
+        #
+        # PRM-179: and keyed on the backend, which is what the docstring above
+        # already said about pass-through modalities and had never needed to be
+        # true of `rerank` — it had exactly one engine. TEI serves `/rerank` with
+        # `texts`; llama.cpp serves `/v1/rerank` with `documents`. Probing the
+        # wrong one gets a 404 and reports a working engine as not ready, which is
+        # exactly what the first TEI instance did.
+        #
+        # The path is stated here *and* in the gateway's `rerank_dialects`,
+        # because a manager that imports the gateway would be the wrong
+        # dependency for two strings. `test_rerank_dialects.py` imports both and
+        # fails if they stop agreeing.
+        if entry.backend == "tei":
+            return "/rerank", {"query": _TEXT, "texts": [_TEXT, "no"]}
         return "/v1/rerank", {"model": name, "query": _TEXT, "documents": [_TEXT, "no"]}
     if modality == "classification":
+        # The same path on both engines, and the same body: one text in, scored
+        # classes out. Nothing to key on here.
         return "/predict", {"inputs": _TEXT}
     if modality == "zero_shot":
+        # PRM-184: and this one *is* keyed on the engine, for a reason that only
+        # measuring showed. TEI answers hf-serve's body with **200** — it ignores
+        # `parameters` entirely rather than refusing it — so this probe passed
+        # against TEI while the `candidate_labels` were thrown away. A probe that
+        # proves "the engine responds" and not "the engine does this modality" is
+        # the shape of a failure that looks like a success, which is the defect
+        # this project keeps meeting under its own name.
+        #
+        # So for TEI the probe sends what a zero-shot request to TEI actually is:
+        # a (premise, hypothesis) pair, whose answer depends on the hypothesis.
+        if entry.backend == "tei":
+            return "/predict", {"inputs": [[_TEXT, "this is a sentence"]]}
         return "/predict", {
             "inputs": _TEXT,
             "parameters": {"candidate_labels": ["yes", "no"]},

@@ -6902,6 +6902,82 @@ would be changing a system library as a side effect of adding an engine. That is
 operator's call, so `tei` is **not** in `BACKENDS` yet — adding it unverified on this node is
 exactly what PRM-133 warns against.
 
+## Done, 2026-10-04 — and the install took a different road
+
+`brew install text-embeddings-inference` never completed. It is reproducible from a clean
+Cellar: brew pours `openssl@4`, then **deadlocks against its own lock** on
+`/opt/homebrew/Cellar/openssl@3`, because `openssl@4` is not keg-only and declares
+`link_overwrite` on `lib/libssl*`, `lib/libcrypto*`, `include/openssl/*`, `openssl.pc` and
+`bin/openssl` — the unversioned paths that today point at `openssl@3`. Two wrong diagnoses were
+written down before that one: "a system library upgrade" (it is not, the 16 dependents link
+against the versioned keg) and "my own interrupted pour left debris" (it did, and removing it
+changed nothing).
+
+So TEI was **built from source** — `cargo install --path router -F metal`, 4m42s, and the build
+uses `rustls`, so it links no openssl at all. The binary lives in `~/.cargo/bin`, which is the
+same shape as `llama-server` in `~/.local/bin`: a binary this platform launches, not a package
+it depends on.
+
+### Measured on Metal, which is the number that was missing
+
+`Starting Bert model on Metal(MetalDevice(DeviceId(1)))`, and **no** `max_batch_requests=8`
+warning — that cap was the CPU backend's alone, which answers the question P-02 had to leave
+open. Rerank, best of three:
+
+| documents | `ms-marco-MiniLM-L-6-v2` (22M) | `bge-reranker-base` (278M) | Centinela on llama.cpp |
+|---|---|---|---|
+| 15 | 88 ms | 162 ms | 450-660 ms |
+| 30 | **137 ms** | 328 ms | 1450-1540 ms |
+| 64 | 132 ms | — | — |
+
+Their C-01 §2 target is ≤200 ms for 30 documents. **The engine is no longer the limit; the
+model size is** — met on a 22M model, missed on a 278M one. That reframes their "optional:
+offer qwen3-reranker-0.6B" from a nice-to-have into the actual lever, pointing the other way:
+a *smaller* reranker is what gets them under the target.
+
+One caveat to carry forward: the engine warns that a `hidden_act=gelu` model is served with the
+**GeLU+tanh approximation** rather than exact GeLU, and says so may "lead to subtle differences
+with Transformers or Sentence Transformers outputs". That bears directly on PRM-180's ±0.01
+cosine criterion, and on any comparison between TEI's numbers and `hf_serve`'s.
+
+### Four things the real binary corrected
+
+- `--host` is **rejected** (`unexpected argument '--host' found`); the flag is `--hostname`, and
+  it is read from `HOSTNAME` in the environment when absent.
+- `--revision` is **not passed, and that is a finding**. Pinning is right and Centinela asked
+  for it, but this registry has no git revision: `hf_sha256` is a file content hash, not a
+  commit id. Passing it would be a plausible value from the wrong source. A revision column is
+  a registry change.
+- `--prometheus-port` defaults to 9000 — auth-service here — so it is allocated per instance.
+- `--max-client-batch-size` defaults to 32 and caps one request's inputs, so it is set to 64:
+  the default would have refused the batch the engine was added for.
+
+### The asymmetry this change created, and fixed
+
+The first instance came up **healthy and was reported `not_ready`**: the manager's readiness
+probe sends a real rerank, and it sent it to `/v1/rerank`, which TEI answers 404. PRM-183 had
+made the *gateway* engine-aware and left the *manager* llama.cpp-shaped — the same fact in two
+places, one updated. `readiness._probe_body` now keys `rerank` on the backend, which is what
+its own docstring already claimed about pass-through modalities and had never needed to be true
+of rerank. The path is stated twice, in two packages, and
+`test_the_manager_probes_the_same_rerank_path_the_gateway_forwards_to` imports both and fails
+if they diverge — a test instead of a dependency for two strings.
+
+Measured after: `lifecycle.ready — answered /rerank with 200 on attempt 1`.
+
+### Verified end to end, and the one seam that is not
+
+The manager registered and launched `bge-rr-tei` on the `lab` node with exactly the builder's
+command, the scanner sees the process, readiness passes, and the engine answers the shape
+PRM-183's dialect converts. Probing the running instance also settled which routes TEI serves:
+`/rerank`, `/predict`, `/embed`, `/v1/embeddings` and `/embeddings` all exist, and only
+`/v1/rerank` 404s — so **`embedding` needs no gateway change**, since the OpenAI-compatible
+path this platform already calls is there.
+
+**Not verified: a live rerank through the gateway**, because it needs a `model:bge-rr-tei`
+grant and only a human administrator issues those (PRM-173). The dialect is covered against
+the captured real response instead.
+
 **Scope**
 - A command builder in `lifecycle.py` and a process signature in `scanner.py`, which is
   PRM-133's standing rule for adding an engine, on the `lab` node that exists for exactly this.
@@ -7086,3 +7162,72 @@ it never passes as counted.
 **A guard test caught the one thing I would have shipped wrong**:
 `test_every_error_the_gateway_raises_is_in_the_guide` failed on the new `rerank-dialect-unknown`
 until the SDK guide documented it. The contract is checked, not remembered.
+
+## PRM-184 — TEI serves classification and zero_shot, with its own contract
+
+**Why**: PRM-179 allowed TEI only `embedding` and `rerank`, and left `zero_shot` out because
+who normalises across candidate labels was an open question with Centinela. Asked to implement
+both, the question turned out to have an answer that does not require deciding for them:
+**publish a different contract and let the caller choose by choosing an engine.** That is what
+`payload_schema` has existed for since PRM-144, and this is the first time two engines serving
+one modality genuinely disagree.
+
+**They are not converted, and that is the decision.** hf-serve returns `{sequence, labels,
+scores}` normalised across the candidate labels the caller supplied; TEI returns scores across
+the **model's own** classes and has no notion of candidate labels at all — measured, it answers
+hf-serve's body with `200` and discards `parameters` rather than refusing them. Converting one
+into the other would mean this platform inventing a normalisation on a route whose whole design
+is that the shape belongs to the engine.
+
+**The body, measured against a running server, because one case is a trap:**
+
+```
+inputs: "a text"                     → one flat list of {label, score}
+inputs: ["premise", "hypothesis"]    → ONE PAIR, not a batch of two texts
+inputs: ["a", "b", "c"]              → 422
+inputs: [["a"], ["b"]]               → a batch of two single texts → two lists
+inputs: [["p1","h1"], ["p2","h2"]]   → a batch of two pairs → two lists
+```
+
+A batch is always a list of lists. The natural-looking "send my N texts as an array" is the one
+form that silently returns a single wrong answer at N=2 and a `422` at N≥3. It matters directly
+to Centinela: their `C-01 §3` format A is a flat array. Written down in the SDK guide under
+`tei.predict.v1`.
+
+**A probe that proved nothing, found by measuring rather than by it failing.** The readiness
+probe for `zero_shot` sent hf-serve's body to TEI and got `200`, so an instance was reported
+ready on evidence of nothing — the `candidate_labels` were discarded. It now sends a
+`(premise, hypothesis)` pair for that engine, which is the only body whose answer depends on the
+hypothesis: `entailment 0.982` against "a dog is sleeping", `contradiction 0.994` against "a car
+is parked outside". Third instance of the same shape in two days, after the gateway's rerank
+path and the manager's rerank probe.
+
+**Three different per-model outcomes, which is why modality and model support stay apart.** The
+allow-set is about modalities; whether a given model loads is the engine's to report:
+
+| model | outcome |
+|---|---|
+| `cross-engine/nli-distilroberta-base` | serves |
+| `wfzyx/von-1.0` (`von-decide`) | `Model is not supported` — architecture |
+| `distilbert-...-sst-2-english` (`sst2-clf`) | `Could not download model artifacts` — the repo ships no `tokenizer.json`, which TEI's Rust tokenizer requires |
+
+That last one will bite again: plenty of older Hub repos ship `vocab.txt` and no `tokenizer.json`.
+Both reasons reached `runtime/logs/lab/<id>.log`, so the failure says why rather than only that
+the process exited.
+
+**Also settled while here**: `embedding` on TEI is now verified end to end, which PRM-179 had
+allowed on a route-existence check — a weaker thing than it looked. Pinned to each replica of
+one model, TEI and hf-serve agree to a cosine of **0.99999787** (`1 - cos = 2.1e-06`), which is
+**4692x inside** the ±0.01 criterion Centinela set for SigLIP in `C-01 §1`. So the engine's own
+`hidden_act=gelu` approximation warning is real as a warning and numerically irrelevant at that
+tolerance.
+
+**Scope**
+- `_TEI_MODALITIES` gains `classification` and `zero_shot`; `text`, `vision`, `image` and
+  `typed_decision` stay refused, the first three because TEI has no text generation at all.
+- `("classification", "tei")` and `("zero_shot", "tei")` both publish `tei.predict.v1` — one id,
+  because one endpoint and one body genuinely serve both.
+- A guard test walks `_TEI_MODALITIES` and fails if a launchable pass-through modality publishes
+  no schema, which would start fine and tell every caller "do not guess".
+- Out: a live request through the gateway for the two new models, which needs `model:nli-tei`
+  and `model:emotions-tei` grants that only a human administrator issues.

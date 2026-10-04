@@ -301,6 +301,18 @@ _PAYLOAD_SCHEMAS: dict[tuple[str, str], str] = {
     # Axonium asked for the field at all.
     ("classification", "hf_serve"): "hf-inference.text-classification.v1",
     ("zero_shot", "hf_serve"): "hf-inference.zero-shot-classification.v1",
+    # PRM-184: TEI serves both of these on one endpoint with one body — `inputs`
+    # takes a string, a pair of strings, or a batch of either, plus `raw_scores` —
+    # so both keys map to one contract id, because the body genuinely is the same.
+    #
+    # It is **not** `hf-inference.*`, and that is the point of keying on engine.
+    # The same `zero_shot` model answers differently here: hf-serve returns
+    # `{sequence, labels, scores}` normalised across the candidate labels, while
+    # TEI returns per-pair scores across the *model's own* classes. A caller that
+    # dispatched on `modality` alone would read one as the other — which is the
+    # defect Axonium asked this field to prevent, arriving for real.
+    ("classification", "tei"): "tei.predict.v1",
+    ("zero_shot", "tei"): "tei.predict.v1",
     ("typed_decision", "laya"): "typed-decision.v1",
 }
 

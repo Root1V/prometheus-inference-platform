@@ -1,6 +1,6 @@
 # Prometheus Gateway — SDK Integration Guide
 
-**Revision**: 2026-10-03b · `PRM-174/182/183`
+**Revision**: 2026-10-04 · `PRM-182/183/184`
 <!-- Consumers vendor this file and diff it. The date and commit above are what to quote
      when asking whether a copy is current; they change whenever this document does. -->
 
@@ -386,9 +386,35 @@ our contract (`prometheus.chat.v1`, `prometheus.embeddings.v1`, `prometheus.imag
 `prometheus.rerank.v1`) and does **not** change when a model moves between engines, because
 nothing a caller sends changes. For the pass-through route the body is the engine's, so it names
 the engine's contract (`hf-inference.text-classification.v1`,
-`hf-inference.zero-shot-classification.v1`, `typed-decision.v1`) and a different engine serving
-the same modality can mean a different shape — which is precisely the half `modality` cannot
-answer.
+`hf-inference.zero-shot-classification.v1`, `tei.predict.v1`, `typed-decision.v1`) and a
+different engine serving the same modality can mean a different shape — which is precisely the
+half `modality` cannot answer.
+
+**`tei.predict.v1` is the clearest example of why**, added in `PRM-184`. It covers both
+`classification` and `zero_shot` on that engine, because there one endpoint and one body serve
+both — and it is **not** convertible to `hf-inference.zero-shot-classification.v1`. The same
+model answers differently: hf-serve returns `{sequence, labels, scores}` normalised across the
+candidate labels you supplied, while TEI returns scores across the **model's own** classes and
+has no notion of candidate labels at all. A caller dispatching on `modality` would read one as
+the other.
+
+Its body, measured against a running server rather than read from a schema, because one case is
+a trap:
+
+```
+inputs: "a text"                     → one flat list of {label, score}
+inputs: ["premise", "hypothesis"]    → ONE PAIR, not a batch of two texts
+inputs: ["a", "b", "c"]              → 422
+inputs: [["a"], ["b"]]               → a batch of two single texts → two lists
+inputs: [["p1","h1"], ["p2","h2"]]   → a batch of two pairs → two lists
+raw_scores: true                     → logits instead of probabilities
+```
+
+**A batch is always a list of lists.** A flat array of two strings is silently read as a single
+pair and answers once; a flat array of three or more is a `422`. So the natural-looking "send me
+my N texts as an array" is the one form that will quietly return a single wrong answer, and
+`[[t] for t in texts]` is the form that batches. The cap on how many entries one request may
+carry is set per instance (64 on this deployment).
 
 The names are not `openai.chat.v1` on purpose: this gateway accepts an allowlisted subset of the
 OpenAI request fields (§3.3), so that name would promise a compatibility it does not have.
