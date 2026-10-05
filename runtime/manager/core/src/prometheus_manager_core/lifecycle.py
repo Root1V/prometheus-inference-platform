@@ -125,10 +125,50 @@ def _build_llama_cpp_cmd(binary: str, entry: RegistryEntry, port: int, bind_host
         # plausible-looking text. A client then has to reconstruct the score
         # from logprobs by hand, which is how this reached us as a bug report.
         cmd.append("--reranking")
-    elif entry.modality == "vision" and entry.mmproj_path:
-        cmd.extend(["--mmproj", entry.mmproj_path])
+    elif entry.modality == "vision":
+        cmd.extend(["--mmproj", _vision_projector(entry)])
 
     return cmd
+
+
+def _vision_projector(entry: RegistryEntry) -> str:
+    """The projector a vision model cannot serve images without. PRM-190.
+
+    Until this, `modality == "vision" and entry.mmproj_path` quietly dropped the
+    flag when the path was empty, and llama-server started happily as a text
+    model. Nothing failed at launch, the registry went on calling it `vision`, and
+    the readiness probe passed — because a text prompt is all a readiness probe
+    sends. The first image request got
+    `500 image input is not supported - hint: ... you may need to provide the
+    mmproj`, from a model that had been listed as healthy for months.
+
+    That is not hypothetical: `qwen3vl-32B-Q4` sat in this registry as `vision`
+    with no projector since July, and the CLI's own help has said `--mmproj-path`
+    is "required for --modality vision on llama_cpp" the whole time — while
+    nothing anywhere checked it. The claim existed; the enforcement did not.
+
+    Checked here rather than in `Registry.update`, which is deliberately
+    permissive and documents why — `start_instance` does its own downstream
+    checks. A missing file is refused as well as a missing field: a registry row
+    pointing at a projector that was deleted is the same outage with a longer
+    path to the answer, and an audit of this fleet found exactly that class of
+    drift between the registry and the disk.
+    """
+    if not entry.mmproj_path:
+        raise LifecycleError(
+            f"Model '{entry.id}' has modality 'vision' but no mmproj_path. llama-server "
+            "loads the vision projector from a separate file, and without it the weights "
+            "serve as a text-only model that answers every image request with "
+            "'image input is not supported'. Register it with --mmproj-path, or change the "
+            "modality to 'text'."
+        )
+    if not Path(entry.mmproj_path).is_file():
+        raise LifecycleError(
+            f"Model '{entry.id}' has mmproj_path '{entry.mmproj_path}', which is not a file. "
+            "The projector has to exist at launch — a vision model without it starts as a "
+            "text model and fails only once an image arrives."
+        )
+    return entry.mmproj_path
 
 
 def _build_mlx_cmd(binary: str, entry: RegistryEntry, port: int, bind_host: str) -> list[str]:
