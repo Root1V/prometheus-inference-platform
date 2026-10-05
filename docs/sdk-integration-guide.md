@@ -1,6 +1,6 @@
 # Prometheus Gateway — SDK Integration Guide
 
-**Revision**: 2026-10-04 · `PRM-182/183/184`
+**Revision**: 2026-10-04b · `PRM-183/184`
 <!-- Consumers vendor this file and diff it. The date and commit above are what to quote
      when asking whether a copy is current; they change whenever this document does. -->
 
@@ -692,6 +692,17 @@ Content-Type: application/json
 
 - `query`, `documents` — required. `documents` must be non-empty (`400 validation-error`).
 - `top_n` — optional; omit to get every document back.
+- `raw_scores` — optional boolean, **PRM-183**. `relevance_score` becomes the model's raw logit
+  instead of a probability. A reranker's probabilities saturate near 1.0 — Centinela measured
+  0.99 for a document only loosely related to the query — and a saturated probability cannot be
+  calibrated while the logit behind it can.
+
+  **Not every engine has it.** Where the engine serving the model does not, the request still
+  succeeds and the field is named in `X-Prometheus-Ignored-Parameters`; with
+  `require_parameters: true` it is a `400 unknown-parameter` whose `detail` names the engines
+  that do. So it is safe to send unconditionally and discoverable when it is dropped — the same
+  contract PRM-127 defines for every other parameter, for a second reason: not "this gateway does
+  not act on it" but "the engine behind it does not have it".
 
 **Response** (`200`) — real values from a live deployment:
 
@@ -833,10 +844,17 @@ designing for:
   The *limit value*, however, is platform configuration per endpoint — not per client — so a
   429 means your own credential exhausted its own bucket, and raising it is an operator action.
 
-Each **scope** in `X-RateLimit-Scope` is its own bucket with its own limit: today `default`,
-`chat_completions`, `admin` and `predict`. A 429 on one does not imply the others are
-exhausted, which is exactly what that header exists to tell you — back off the scope it names,
-not the whole API.
+Each **scope** in `X-RateLimit-Scope` is its own bucket with its own limit. A 429 on one does
+not imply the others are exhausted, which is exactly what that header exists to tell you — back
+off the scope it names, not the whole API.
+
+**Read the set from the header rather than from a list here.** The previous revision of this
+paragraph enumerated it and got it wrong: it said `default`, `chat_completions`, `admin` and
+`predict`, **omitting `embeddings` and `rerank`**, which have had their own buckets since
+PRM-129 — the paragraph further down says so, and that is the one that was right. Axonium caught
+the contradiction, and a caller who had indexed their quota accounting against the short list
+would have been missing two buckets. The header names the bucket that answered; that is the
+value to key on.
 
 **`X-Trace-ID` adoption rule, confirmed precisely (two deployment modes exist)**:
 - In deployments with a real tracing backend configured ("OTEL mode"), a client-supplied
