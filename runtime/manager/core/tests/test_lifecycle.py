@@ -903,13 +903,69 @@ class TestTeiCommandBuilder:
     def test_it_sends_the_hub_id_and_refuses_a_gguf(self):
         cmd = _build_tei_cmd("text-embeddings-router", self._entry(), 9090, "127.0.0.1")
         assert cmd[cmd.index("--model-id") + 1] == "BAAI/bge-reranker-base"
-        with pytest.raises(LifecycleError, match="no hf_repo"):
+        with pytest.raises(LifecycleError, match="neither a local weights directory"):
             _build_tei_cmd(
                 "text-embeddings-router",
                 self._entry(hf_repo="", path="/models/thing-Q4_K_M.gguf"),
                 9090,
                 "127.0.0.1",
             )
+
+    # ── PRM-189: the other half of what --model-id accepts ───────────────────
+
+    def test_a_local_directory_is_served_in_place_of_the_hub_id(self, tmp_path):
+        """Why this exists at all: Llama Prompt Guard 2 ships a `config.json` with
+        no `id2label`, and TEI refuses to start without one. The correction can
+        only live in a local copy, so a model that could only be named by Hub id
+        was unservable for a reason that had nothing to do with the engine."""
+        cmd = _build_tei_cmd(
+            "text-embeddings-router",
+            self._entry(path=str(tmp_path), modality="classification"),
+            9090,
+            "127.0.0.1",
+        )
+        assert cmd[cmd.index("--model-id") + 1] == str(tmp_path)
+
+    def test_the_local_directory_wins_over_the_hub_id(self, tmp_path):
+        """Order matters, and it is not arbitrary. A local copy is something an
+        operator made deliberately; preferring the Hub would quietly serve weights
+        that differ from the ones on disk — which is the whole failure this fixes,
+        just in the other direction."""
+        cmd = _build_tei_cmd(
+            "text-embeddings-router",
+            self._entry(path=str(tmp_path), hf_repo="BAAI/bge-reranker-base"),
+            9090,
+            "127.0.0.1",
+        )
+        assert cmd[cmd.index("--model-id") + 1] == str(tmp_path)
+
+    def test_a_gguf_path_still_falls_through_to_the_hub_id(self, tmp_path):
+        """Only a *directory* counts. A `.gguf` is a llama_cpp artefact that TEI
+        cannot read, so it must not shadow a perfectly good Hub id."""
+        gguf = tmp_path / "thing-Q4_K_M.gguf"
+        gguf.write_bytes(b"not really a gguf")
+        cmd = _build_tei_cmd(
+            "text-embeddings-router", self._entry(path=str(gguf)), 9090, "127.0.0.1"
+        )
+        assert cmd[cmd.index("--model-id") + 1] == "BAAI/bge-reranker-base"
+
+    def test_a_path_that_does_not_exist_falls_through_to_the_hub_id(self):
+        """A stale registry row must not take a working model offline — the Hub id
+        is still there and still correct."""
+        cmd = _build_tei_cmd(
+            "text-embeddings-router",
+            self._entry(path="/models/deleted-last-tuesday"),
+            9090,
+            "127.0.0.1",
+        )
+        assert cmd[cmd.index("--model-id") + 1] == "BAAI/bge-reranker-base"
+
+    def test_every_model_registered_before_this_launches_unchanged(self):
+        """The existing TEI rows all carry an empty `path`, so the new branch must
+        be unreachable for them. This is the backward-compatibility claim stated
+        as a test rather than asserted in a commit message."""
+        cmd = _build_tei_cmd("text-embeddings-router", self._entry(path=""), 9090, "127.0.0.1")
+        assert cmd[cmd.index("--model-id") + 1] == "BAAI/bge-reranker-base"
 
     def test_no_revision_is_passed_because_there_is_none_to_pass(self):
         """The flag exists and pinning it is right — Centinela asked for exactly
