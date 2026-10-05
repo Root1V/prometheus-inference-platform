@@ -7366,3 +7366,35 @@ unchanged so the fix is not paid for by the errors that already worked. Out: cha
 holds — the encoder renders the exception as `{}` and Pydantic has already copied the validator's
 text into `msg`, which is the field callers read.
 
+## PRM-187 — `logprobs` reaches the engine
+
+**Why**: Apeiron's `P2` #12 asks how confident the grounder was, so their agent can stop and ask
+a human instead of clicking on a guess. llama.cpp has answered that question all along — the
+gateway was the only thing in the way.
+
+Leaving it to `extra` was not an option, for the reason `raw_scores` was declared in PRM-183: an
+undeclared field is dropped and then named in `X-Prometheus-Ignored-Parameters` on *every*
+engine, including the one that honours it. The caller is told the opposite of what is true.
+
+**Both facts were measured against a running llama-server before anything was written.**
+`logprobs: true` with `top_logprobs: 3` returns an OpenAI-shaped `logprobs.content[]`, one entry
+per token, each with its `logprob` and its alternatives. And `top_logprobs` without
+`logprobs: true` is refused — `400 top_logprobs requires logprobs to be set to true` — with
+`logprobs: false` refused identically, so the flag must be present *and* true.
+
+**That second one is why this gateway checks a pairing instead of forwarding it**, which it
+almost never does. The 400 is llama.cpp's, in llama.cpp's error shape, and PRM-174 exists to stop
+errors leaving by a door other than the problem+json envelope. One comparison keeps every refusal
+in one shape.
+
+**It also found PRM-188.** The validator added here was the first `model_validator` on a request
+schema, and its refusal returned a 500 instead of a 422 — a handler defect reachable since long
+before, which had to be fixed first and landed on its own. See [[PRM-188]].
+
+**Scope**: in — both fields declared, forwarded only when set, the pairing rule, the 0–20 bound,
+and §3.3 of the SDK guide with the natural-log note (a caller reading `-7.6` as a probability
+gets a wrong answer silently). Out — emulating logprobs on engines that lack them, and the
+`x-prometheus-revision` header this branch was originally named for: it needs a real revision
+source, and there is not one yet (`pyproject.toml` says `0.1.0`, `telemetry.env` says `2.0.0`),
+so inventing one would be a plausible-looking value from the wrong source. Still open.
+
