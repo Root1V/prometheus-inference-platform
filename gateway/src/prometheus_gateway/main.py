@@ -7,6 +7,7 @@ from typing import Any
 
 
 from fastapi import FastAPI, Request, Response
+from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
@@ -398,7 +399,22 @@ def create_app(
         """
         request_id = getattr(getattr(request, "state", None), "request_id", "unknown")
         trace_id = getattr(getattr(request, "state", None), "trace_id", "none")
-        errors = exc.errors()
+        # PRM-188: `jsonable_encoder`, not `exc.errors()` raw. Pydantic puts the
+        # original exception object in `ctx.error` for every error raised by a
+        # validator — `{'ctx': {'error': ValueError('...')}}` — and a ValueError
+        # is not JSON-serialisable. Serialising it here failed *inside this
+        # handler*, so the request left as an unhandled exception: a 500, in no
+        # envelope at all, from the very code written to guarantee the envelope.
+        #
+        # Reachable before `logprobs` ever existed, by two validators this schema
+        # has carried for a long time: a `role` outside the four allowed ones, and
+        # RM-09's rule that an image must be a `data:` URI. The second one is the
+        # SSRF guard, so the gateway answered its own security refusal with a 500.
+        # It survived because every test of those two called the schema directly
+        # and asserted `pytest.raises(ValidationError)`; none sent the body over
+        # HTTP, and the handler only ever saw field-constraint errors, whose `ctx`
+        # happens to hold plain numbers.
+        errors = jsonable_encoder(exc.errors())
 
         detail = (
             "; ".join(
