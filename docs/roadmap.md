@@ -7428,3 +7428,36 @@ refuses to do with `--revision`.
 corrected where it states the old rule. Out — a `local_path` column; `path` already means this
 for every other backend.
 
+## PRM-190 — a vision model cannot start without its projector
+
+**Why**: `_build_llama_cpp_cmd` read `modality == "vision" and entry.mmproj_path`, and when the
+path was empty it quietly dropped the flag. llama-server then started as a **text** model under
+a `vision` label, and nothing anywhere said so:
+
+* the launch succeeded;
+* the readiness probe passed, because a readiness probe only sends text;
+* the registry went on listing the model as `vision`;
+* the first image request got `500 image input is not supported - hint: ... you may need to
+  provide the mmproj`, from a model listed healthy for months.
+
+**This is not hypothetical.** `qwen3vl-32B-Q4` has been in this fleet's registry as `vision`
+with no projector since July. It was found while triaging Apeiron's model request, by running
+it — not by reading the row — and the projector turned out to be sitting in the same official
+Hub repo the weights came from, never downloaded. `Fara-7B` arrived with the same gap on the
+same day, which is what made it a pattern rather than an accident.
+
+**The claim already existed; only the enforcement was missing.** The CLI's help for
+`--mmproj-path` has said "required for --modality vision on llama_cpp" the entire time, and no
+code path checked it. That is the recurring defect in this codebase stated in one line: the
+instrument asserted something it did not measure. The test suite agreed — a passing test named
+`..._without_mmproj_path_omits_flag` documented the silent drop as correct behaviour, which is
+how it survived review.
+
+**Checked at launch, not in the registry.** `Registry.update` is deliberately permissive and
+says why; `start_instance` does its own downstream checks, and this follows that.
+
+**Scope**: in — a missing field and a missing *file* both refused, with a message naming the
+symptom and the fix; the test that encoded the old behaviour replaced; other modalities pinned
+as unaffected. Out — validating at register time as well. One enforcement point covers the CLI,
+the API and the TUI alike, and a model can be registered before its weights finish downloading.
+

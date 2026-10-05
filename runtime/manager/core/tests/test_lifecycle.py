@@ -93,23 +93,61 @@ class TestBackendCommandBuilders:
         cmd = _build_llama_cpp_cmd("llama-server", self._entry(), 9090, "127.0.0.1")
         assert "--embedding" not in cmd
 
-    def test_llama_cpp_cmd_vision_modality_adds_mmproj_flag(self):
+    def test_llama_cpp_cmd_vision_modality_adds_mmproj_flag(self, tmp_path):
         """RM-09: modality="vision" + mmproj_path passes --mmproj to llama-server."""
+        mmproj = tmp_path / "mmproj.gguf"
+        mmproj.write_bytes(b"projector")
         cmd = _build_llama_cpp_cmd(
             "llama-server",
-            self._entry(modality="vision", mmproj_path="/models/mmproj.gguf"),
+            self._entry(modality="vision", mmproj_path=str(mmproj)),
             9090,
             "127.0.0.1",
         )
         assert "--mmproj" in cmd
-        assert "/models/mmproj.gguf" in cmd
+        assert str(mmproj) in cmd
 
-    def test_llama_cpp_cmd_vision_modality_without_mmproj_path_omits_flag(self):
-        """No mmproj_path configured — don't pass a broken --mmproj with no value."""
-        cmd = _build_llama_cpp_cmd(
-            "llama-server", self._entry(modality="vision"), 9090, "127.0.0.1"
-        )
-        assert "--mmproj" not in cmd
+    # ── PRM-190: the claim and the enforcement line up ───────────────────────
+
+    def test_a_vision_model_without_a_projector_is_refused_at_launch(self):
+        """This used to drop the flag and start a text model under a `vision` label.
+
+        Nothing failed: llama-server started, the readiness probe passed — it only
+        ever sends text — and the registry went on calling it vision. The first
+        image request got `500 image input is not supported`. `qwen3vl-32B-Q4` sat
+        in this fleet's registry exactly like that since July, while the CLI's own
+        help said `--mmproj-path` was "required for --modality vision".
+        """
+        with pytest.raises(LifecycleError, match="no mmproj_path"):
+            _build_llama_cpp_cmd("llama-server", self._entry(modality="vision"), 9090, "127.0.0.1")
+
+    def test_a_projector_path_that_is_not_there_is_refused_too(self):
+        """A row pointing at a deleted projector is the same outage with a longer
+        path to the answer — and an audit of this fleet found that drift."""
+        with pytest.raises(LifecycleError, match="not a file"):
+            _build_llama_cpp_cmd(
+                "llama-server",
+                self._entry(modality="vision", mmproj_path="/models/gone.gguf"),
+                9090,
+                "127.0.0.1",
+            )
+
+    def test_the_refusal_says_what_to_do_about_it(self):
+        """A launch error that names neither the fix nor the symptom sends someone
+        reading llama.cpp source instead of the registry row."""
+        with pytest.raises(LifecycleError) as exc:
+            _build_llama_cpp_cmd("llama-server", self._entry(modality="vision"), 9090, "127.0.0.1")
+        message = str(exc.value)
+        assert "--mmproj-path" in message
+        assert "image input is not supported" in message
+
+    def test_no_other_modality_is_made_to_carry_a_projector(self, tmp_path):
+        """The check belongs to vision alone — an embedding model has no projector
+        and must not start needing one."""
+        for modality in ("text", "embedding", "rerank"):
+            cmd = _build_llama_cpp_cmd(
+                "llama-server", self._entry(modality=modality), 9090, "127.0.0.1"
+            )
+            assert "--mmproj" not in cmd
 
     def test_mlx_and_vllm_and_sglang_cmds_ignore_modality(self):
         """Only llama_cpp dispatches on modality today — see registry.py RM-09 note."""
