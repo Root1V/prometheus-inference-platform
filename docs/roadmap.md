@@ -7398,3 +7398,33 @@ gets a wrong answer silently). Out — emulating logprobs on engines that lack t
 source, and there is not one yet (`pyproject.toml` says `0.1.0`, `telemetry.env` says `2.0.0`),
 so inventing one would be a plausible-looking value from the wrong source. Still open.
 
+## PRM-189 — TEI serves a local directory, not only a Hub id
+
+**Why**: PRM-179 recorded that TEI's `--model-id` is a Hub id, "so a model with no `hf_repo`
+cannot be served". That is half of what the flag accepts — it takes a local directory of
+HF-format weights just as readily, verified by serving one.
+
+The missing half was not a convenience. **Llama Prompt Guard 2 ships a `config.json` with no
+`id2label`**, and TEI exits rather than start without it. The label map can only be added in a
+local copy, so a model that could only be named by Hub id was unservable for a reason that had
+nothing to do with the engine, the registry, or the model's weights.
+
+The labels themselves were measured, not taken from convention: index 0 is `benign`, index 1 is
+`malicious`, p=0.0004 on a benign prompt against p=0.9994 on an injection — and it catches the
+Spanish injection too, which matters here.
+
+**The local path wins when it is a directory that exists.** A local copy is something an operator
+made on purpose, and silently preferring the Hub would serve weights that differ from the ones on
+disk — the same class of failure as the one being fixed, pointed the other way. A `path` that is
+absent, or that names a `.gguf`, falls through to `hf_repo`; every TEI row registered before this
+carries an empty `path`, so all of them launch byte-identically, and that is pinned as a test
+rather than claimed.
+
+**The alternative was worse.** Putting the directory in the `hf_repo` field would have worked
+today and is exactly the "plausible-looking value from the wrong source" this module already
+refuses to do with `--revision`.
+
+**Scope**: in — `_tei_model_id`, the five cases above as tests, and the PRM-179 docstring
+corrected where it states the old rule. Out — a `local_path` column; `path` already means this
+for every other backend.
+

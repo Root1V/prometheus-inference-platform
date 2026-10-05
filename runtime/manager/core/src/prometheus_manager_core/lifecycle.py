@@ -345,6 +345,45 @@ _TEI_MODALITIES = frozenset({"embedding", "rerank", "classification", "zero_shot
 _TEI_PROMETHEUS_OFFSET = 10_000
 
 
+def _tei_model_id(entry: RegistryEntry) -> str:
+    """What to pass as `--model-id`: a local directory if there is one, else the Hub id.
+
+    PRM-189. `--model-id` was read as "a Hub id and nothing else" when TEI was
+    added, which is half of what the flag accepts — it takes a local directory of
+    Hugging Face format weights just as readily, verified by serving one.
+
+    The half that was missing is not a convenience. Llama Prompt Guard 2 ships a
+    `config.json` with **no `id2label`**, and TEI refuses to start without it —
+    it exits with `config.json does not contain id2label`. The fix is a local
+    copy carrying the label map — measured against the model itself rather than
+    assumed from convention: index 0 is `benign` and index 1 is `malicious`,
+    p=0.0004 against a benign prompt and p=0.9994 against an injection. A model
+    that can only be named by Hub id can never carry that correction, so a working
+    model was unservable for a reason that had nothing to do with the engine.
+
+    **The local path wins when it is a directory that exists**, and that order is
+    deliberate: a local copy is something an operator made on purpose, and
+    silently preferring the Hub would serve weights that differ from the ones on
+    disk. A `path` that is absent, or a `.gguf` file, falls through to `hf_repo` —
+    so every model registered before this keeps launching exactly as it did.
+
+    The alternative was to put the directory in the `hf_repo` field, which would
+    have worked and is precisely the "plausible-looking value from the wrong
+    source" this module already refuses to do with `--revision`.
+    """
+    path = (entry.path or "").strip()
+    if path and Path(path).is_dir():
+        return path
+    if not entry.hf_repo:
+        raise LifecycleError(
+            f"Model '{entry.id}' has neither a local weights directory nor an hf_repo. "
+            "text-embeddings-router loads Hugging Face format weights, by Hub id or from a "
+            "directory — a .gguf path is not something it can read. Register the model with "
+            "its Hub repository or a directory of HF-format weights, or serve it with llama_cpp."
+        )
+    return entry.hf_repo
+
+
 def _build_tei_cmd(binary: str, entry: RegistryEntry, port: int, bind_host: str) -> list[str]:
     """text-embeddings-router — verified against `--help` (1.9.4) and a running server.
 
@@ -366,8 +405,10 @@ def _build_tei_cmd(binary: str, entry: RegistryEntry, port: int, bind_host: str)
     silently refuses the thing the engine was added for. It is the number
     `C-01 §2` asked us to publish in the catalogue, and it comes from here.
 
-    `--model-id` is a Hub id, like `hf_serve` and unlike every other backend, so a
-    model with no `hf_repo` cannot be served.
+    `--model-id` is a Hub id, like `hf_serve` and unlike every other backend —
+    **or a local directory of HF-format weights**, which PRM-189 added after
+    reading the flag's other half. See `_tei_model_id` for which wins and why a
+    model that can only be named by Hub id turned out to be unservable.
 
     **`--revision` is not passed, and that is a finding rather than an omission.**
     The flag exists and pinning it is the right thing — a reranker whose weights
@@ -380,12 +421,7 @@ def _build_tei_cmd(binary: str, entry: RegistryEntry, port: int, bind_host: str)
     Hub branch currently points at, and that is said out loud instead of being
     papered over with a field that happens to be a hex string.
     """
-    if not entry.hf_repo:
-        raise LifecycleError(
-            f"Model '{entry.id}' has no hf_repo, and text-embeddings-router loads Hugging "
-            "Face format weights by Hub id — a .gguf path is not something it can read. "
-            "Register the model with its Hub repository, or serve it with llama_cpp."
-        )
+    model_id = _tei_model_id(entry)
     if entry.modality not in _TEI_MODALITIES:
         raise LifecycleError(
             f"Model '{entry.id}' has modality {entry.modality!r}, which this platform has no "
@@ -396,7 +432,7 @@ def _build_tei_cmd(binary: str, entry: RegistryEntry, port: int, bind_host: str)
     cmd = [
         binary,
         "--model-id",
-        entry.hf_repo,
+        model_id,
         "--hostname",
         bind_host,
         "--port",
