@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from typing import Annotated, Literal, Union
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
 class TextContentPart(BaseModel):
@@ -122,6 +122,18 @@ class ChatCompletionRequest(BaseModel):
     # engine does the grammar work and validating the schema here would be a
     # second, drifting copy of its rules.
     response_format: dict[str, object] | None = None
+    # PRM-187: Apeiron's `P2` #12 — how confident the grounder was, so an agent can
+    # decide when to ask a human. llama.cpp implements both, so this is a
+    # forward, not a feature: `logprobs` turns them on and `top_logprobs` asks for
+    # the N alternatives per position.
+    #
+    # Declared rather than left to `extra`, for the reason `raw_scores` was: an
+    # undeclared field is reported as ignored on **every** engine, including the
+    # one that honours it. Where a backend does not implement it the engine's own
+    # answer stands — this gateway does not emulate it, and a caller who needs to
+    # know asks with `require_parameters`.
+    logprobs: bool | None = None
+    top_logprobs: int | None = Field(default=None, ge=0, le=20)
 
     # PRM-127: accepted and reported, not refused — OpenRouter's model rather
     # than OpenAI's. A gateway in front of engines that differ in what they
@@ -145,6 +157,26 @@ class ChatCompletionRequest(BaseModel):
     # reproducibility or structured extraction.
     require_parameters: bool = False
 
+    @model_validator(mode="after")
+    def top_logprobs_needs_logprobs(self) -> ChatCompletionRequest:
+        """PRM-187: the pairing rule is the engine's, and it is enforced here.
+
+        Measured against a running llama-server: `top_logprobs` without
+        `logprobs: true` is answered `400 top_logprobs requires logprobs to be
+        set to true` — and `logprobs: false` is rejected the same way, so the
+        flag must be present *and* true, not merely absent.
+
+        This is one of the few places the gateway checks a pairing instead of
+        forwarding and letting the engine answer. The reason is PRM-174: that
+        400 would reach the caller in llama.cpp's error shape, not this
+        gateway's problem+json envelope, and an error that leaves by a
+        different door is the thing PRM-174 closed. Rejecting here costs one
+        comparison and keeps every refusal in one shape.
+        """
+        if self.top_logprobs is not None and not self.logprobs:
+            raise ValueError("top_logprobs requires logprobs to be true")
+        return self
+
     def to_llama_payload(self) -> dict[str, object]:
         """Serialise to a dict suitable for forwarding — drops None fields."""
         payload: dict[str, object] = {
@@ -166,6 +198,10 @@ class ChatCompletionRequest(BaseModel):
             payload["tool_choice"] = self.tool_choice
         if self.response_format is not None:
             payload["response_format"] = self.response_format
+        if self.logprobs is not None:
+            payload["logprobs"] = self.logprobs
+        if self.top_logprobs is not None:
+            payload["top_logprobs"] = self.top_logprobs
         return payload
 
 
