@@ -7334,3 +7334,35 @@ five SDKs, already diverged, with TypeScript saying `chat` where the header says
 theirs by reconciling against ours; ours was wrong. No test on either side could have.
 
 **Revision `2026-10-04b`.**
+
+## PRM-188 — the envelope survives a validator's `ValueError`
+
+**Why**: RM-65's handler promised that every body-validation failure leaves in the RFC 9457
+envelope, so an SDK can type an error by `type` and correlate it by `request_id`. It kept that
+promise for the errors it was tested with and broke it for a class it was not.
+
+Pydantic attaches the original exception to every error raised by a *validator*:
+`{'type': 'value_error', 'ctx': {'error': ValueError('...')}}`. A `ValueError` is not
+JSON-serialisable, so `JSONResponse(content={... "errors": exc.errors()})` threw **inside the
+handler**, and the request left as an unhandled exception — a 500, in no envelope, from the code
+written to guarantee the envelope. A `ge=`/`le=` constraint carries `{'ge': 0}` instead, which
+serialises, and that is the whole reason the gap stayed invisible.
+
+**It was reachable before the change that found it**, by two validators `ChatCompletionRequest`
+has carried for a long time: a `role` outside the four allowed, and RM-09's rule that an image
+must be a `data:` URI. The second is the SSRF guard — so the gateway answered its own security
+refusal with a 500, which reads to a caller as "the gateway broke" rather than "the gateway
+protected itself."
+
+**What let it survive is the shape of the tests, not their absence.** Both validators were
+covered, directly, under `pytest.raises(ValidationError)`. That proves the *model* refuses; it
+cannot say what the *route* answers, and the route was the broken half. Same pattern as the
+`test_app` probe and the `candidate_labels` readiness check: the instrument asserted something it
+did not measure. Every test added here goes over HTTP for that reason.
+
+**Scope**: `jsonable_encoder(exc.errors())` in the handler — FastAPI's own default behaviour, one
+import. In: the two reachable paths pinned over HTTP, the field-constraint class pinned as
+unchanged so the fix is not paid for by the errors that already worked. Out: changing what `ctx`
+holds — the encoder renders the exception as `{}` and Pydantic has already copied the validator's
+text into `msg`, which is the field callers read.
+
