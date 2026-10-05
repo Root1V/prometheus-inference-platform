@@ -7304,3 +7304,33 @@ than the code:
   a failing test leaked its auth override into `test_discovery.py::test_get_requires_auth` — a
   test that touches none of this and went green-to-`200`-instead-of-`401`. A fixture's teardown
   runs on failure; a line at the end of a function does not.
+
+## PRM-186 — `raw_scores` reaches the contract, and the scope list comes out of it
+
+**Why**: both are Axonium's `A-38`, and both are the same defect in opposite directions.
+
+**`raw_scores` was described in a channel entry with measurements and never written into the
+guide.** Their reason for refusing to implement it from a message is better than the field: *"that
+is how a field ends up in five SDKs and in no allowlist check, and how a later re-vendoring
+deletes it without anyone noticing."* It is the fourteen-times-named "one truth in two places"
+defect, committed by us in the direction that costs most — the place we did not update is the only
+one they read. Now in §3.6 with all three states: honoured where the engine has it, named in
+`X-Prometheus-Ignored-Parameters` where it does not, and a `400` naming the engines that do.
+
+**And the scope list in §6.3 was wrong, mine, two days old.** It said `default`,
+`chat_completions`, `admin` and `predict`, omitting `embeddings` and `rerank` — which have had
+their own buckets since PRM-129, as the paragraph immediately below it still said. Measured
+against `_ENDPOINT_SLUG_MAP`: six scopes, and PRM-129 is not reverted. A caller indexing their
+quota accounting against the short list would have been missing two buckets, which is precisely
+what they said that list decides.
+
+**Fixed by removing the list, not correcting it.** The guide now says the set is read from
+`X-RateLimit-Scope`. A prose enumeration beside a map in code has exactly one future, and that is
+Axonium's own answer from the same entry — they had five hand-written copies of this list across
+five SDKs, already diverged, with TypeScript saying `chat` where the header says
+`chat_completions`, published to npm the same day.
+
+**Worth keeping**: two wrong copies of one truth, one per team, caught each other. They found
+theirs by reconciling against ours; ours was wrong. No test on either side could have.
+
+**Revision `2026-10-04b`.**
