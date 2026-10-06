@@ -8,7 +8,7 @@ version = "0.1.0"
 description = "Shared structured observability for the Prometheus platform"
 requires-python = ">=3.11"
 dependencies = [
-    "structlog>=25.5.0",
+    "structlog>=26.1.0",
     "starlette>=0.36",
     "opentelemetry-sdk>=1.25",
     "opentelemetry-exporter-otlp-proto-http>=1.44.0",
