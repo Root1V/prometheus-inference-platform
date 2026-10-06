@@ -1,0 +1,36 @@
+# Bare-metal overlay — the services run on this machine, the infrastructure does not.
+#
+# PRM-191. `podman-compose.yml` describes one deployment and `docs/local-stack.md`
+# describes another, and the mode actually used here every day is neither: the
+# gateway, auth-service and both managers run directly on macOS while Redis runs
+# in a container. That hybrid had no file, so its one infrastructure dependency
+# lived in whatever `docker run` somebody last typed — which is the exact thing
+# `docs/local-stack.md` opens by forbidding, and a container started that way
+# belongs to no compose project and is recreated by nothing.
+#
+# Usage — start only the infrastructure, then the services from the runbook:
+#
+#   docker compose -f podman-compose.yml -f compose.baremetal.yml up -d redis
+#
+# This file is an *overlay*, not a second definition: compose merges it onto the
+# `redis` service in the base file, so the image, command and healthcheck have
+# exactly one source. The only thing added is a host port.
+#
+# **It changes nothing about the all-container deployment.** That path never
+# passes `-f compose.baremetal.yml`, so Redis keeps no host binding there and
+# `AC-8` of memory/specs/004-podman-containerization.md continues to describe
+# `podman-compose.yml` truthfully — the containerised gateway reaches Redis by
+# service name on the internal network, as it always did.
+
+services:
+  redis:
+    ports:
+      # 127.0.0.1, never 0.0.0.0. The bare-metal gateway and auth-service read
+      # `redis://127.0.0.1:6379/0` from their own .env, so the port has to exist
+      # on the host — but only for this host. Binding 0.0.0.0 would publish the
+      # token-revocation list and the rate-limit counters to the local network,
+      # which is what AC-8 is protecting against and is still refused here.
+      #
+      # Both neighbouring teams on this machine bind the same way: Centinela's
+      # valkey at 127.0.0.1:6395 and Argus's collector at 127.0.0.1:4317-4318.
+      - "127.0.0.1:6379:6379"

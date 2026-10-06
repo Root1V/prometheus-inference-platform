@@ -7461,3 +7461,51 @@ symptom and the fix; the test that encoded the old behaviour replaced; other mod
 as unaffected. Out — validating at register time as well. One enforcement point covers the CLI,
 the API and the TUI alike, and a model can be registered before its weights finish downloading.
 
+## PRM-191 — the hybrid deployment gets a file
+
+**Why**: `podman-compose.yml` describes an all-container deployment and `docs/local-stack.md`
+describes an all-bare-metal one, framed there as a choice — *"Bare metal or containers — one
+choice, seven lines"*. **The mode this machine actually runs every day is neither**: gateway,
+auth-service and both managers run directly on macOS while Redis runs in a container.
+
+That hybrid had no file. So its one infrastructure dependency lived in whatever `docker run`
+somebody last typed — a container belonging to **no compose project**, recreated by nothing, and
+invisible to anyone reading the repository. `docs/local-stack.md` opens with the rule that exists
+to prevent this, after a two-hour outage: *"nothing the stack needs to start may live only in a
+shell."* A hand-typed container is worse than a shell variable, because it is not written down at
+all.
+
+**Redis is load-bearing, measured rather than assumed.** On the running stack: 12 connected
+clients, 478 `GET`, and the two that matter — `INCRBY` (the rate limiter) and `SMEMBERS` (the
+token-revocation list). Without it the gateway still starts and serves, logging
+`rate_limit.redis_not_configured_fail_open`, and **silently loses both controls**.
+
+**Why the base file could not simply gain the port.** Two reasons, one good and one not:
+
+* The good one is `AC-8` of `memory/specs/004-podman-containerization.md`: in the all-container
+  deployment Redis must not be reachable off-box, and that is correct.
+* The other is that `AC-8` is enforced as a **string match** —
+  `grep -v '^\s*#' podman-compose.yml | grep -q '6379:6379'`. A loopback binding is written
+  `127.0.0.1:6379:6379`, which *contains* that substring, so the check refuses the safe binding
+  for the same reason it refuses an unsafe one. It tests the spelling, not the property. Worth
+  naming: the same compose publishes `8000:8000` and `8090:8090`, which bind `0.0.0.0` — so two
+  services are on the LAN today while Redis is refused even on loopback.
+
+**Solved as an overlay rather than by touching either of those.** `compose.baremetal.yml` merges
+onto the base `redis` service and adds exactly one key, a `127.0.0.1:6379:6379` binding. The
+image, command and healthcheck keep one definition. The all-container path never passes
+`-f compose.baremetal.yml`, so Redis has no host binding there, the containerised gateway reaches
+it by service name as before, and `AC-8` keeps describing `podman-compose.yml` truthfully —
+verified by running `test_containerization.sh`, which still passes.
+
+Both neighbouring teams on this machine bind the same way: Centinela's valkey at
+`127.0.0.1:6395` and Argus's collector at `127.0.0.1:4317-4318`.
+
+**Scope**: in — the overlay, the runbook's launch sequence and its bare-metal/Podman table, and
+replacing the orphan container with the compose-managed one. Out, deliberately and recorded as a
+separate item — **nothing checks the overlay**. `test_containerization.sh` reads only
+`podman-compose.yml`, and it is not run by `.githooks/pre-push` at all, which is why `AC-8` has
+gone unexercised. Rewriting that check to assert the property (*no service publishes 6379 on
+anything but 127.0.0.1*, across both files) and wiring the suite into the hook is likely to wake
+other long-dormant criteria in the same file, so it is its own change.
+
