@@ -7638,3 +7638,50 @@ model's number, which is a RAM budget decision per deployment and belongs to who
 host; and KV-cache quantization (`--cache-type-k/v q8_0`), which halves the cost at a quality
 trade and deserves measuring on its own before it is offered.
 
+## PRM-195 — the template switch reaches the engine
+
+**Why**: repo2deck, building a repo-to-slides tool on this platform, measured `qwen36-35b-a3b-q4`
+spending **1,500 to 6,000 tokens thinking before every slide**, 80 to 140 seconds a call. They
+found the switch that turns it off, confirmed it worked against `:8201` directly, and found it had
+no effect through the gateway.
+
+It was `PRM-127` working exactly as designed: the request body is an allowlist, and
+`chat_template_kwargs` was not in it, so it was dropped and named in
+`X-Prometheus-Ignored-Parameters`. The mechanism told them; nobody was reading the header, which
+is the guide's failure before it is theirs.
+
+Reproduced independently before writing anything:
+
+```
+without                        215 tokens   6.91 s
+chat_template_kwargs            16 tokens   0.71 s     (enable_thinking: false)
+```
+
+Same useful answer. Tenfold, which is the difference between usable and not.
+
+**They asked for three fields and this forwards one, and that is the part worth keeping.**
+Against a running server, top-level `reasoning_effort` and `reasoning_budget` changed *nothing* —
+identical output and identical reasoning length with and without. Forwarding them would have moved
+them out of the ignored-parameters header and reported as honoured what the engine silently
+discards: the inverse of the bug being fixed, and harder to notice than the original. They stay
+dropped, and a test pins that.
+
+`reasoning_effort` does work — **inside** the mapping, where the template reads it. Measured on
+gpt-oss: 414 characters of reasoning becomes 23 on `low` and 583 on `high`, monotonic. So one
+field carries every case, and the answer to their request is smaller and more correct than the
+request.
+
+**Forwarded as an opaque mapping**, like `response_format` and `tools`: the keys belong to each
+model's own chat template, and a whitelist of them here would be a second copy of someone else's
+Jinja, going stale with no test able to notice.
+
+**What this does not fix**, said out loud in the guide: a key the template does not read is
+ignored *by the template*, silently, and the gateway cannot detect that. The honest boundary is
+that we guarantee delivery, not effect.
+
+**Scope**: in — the field, forwarding, ten tests, §3.3 of the SDK guide with the measurements and
+the explicit warning against the two top-level fields, and the note that reasoning is billed in
+`completion_tokens` with no separate count because the engine reports none. Out — `P2`
+(normalising `items: false`) and `P3` (cancellation on the non-streaming path), which are their
+own changes.
+
