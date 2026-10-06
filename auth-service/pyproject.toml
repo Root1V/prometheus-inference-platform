@@ -23,7 +23,7 @@ dependencies = [
     "greenlet>=3.0",
     "itsdangerous>=2.0",
     "jinja2>=3.0",
-    "structlog>=25.5.0",
+    "structlog>=26.1.0",
     "prometheus-telemetry",
 ]
 
