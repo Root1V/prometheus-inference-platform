@@ -7685,3 +7685,58 @@ the explicit warning against the two top-level fields, and the note that reasoni
 (normalising `items: false`) and `P3` (cancellation on the non-streaming path), which are their
 own changes.
 
+## PRM-196 — an abandoned request lets go of the engine
+
+**Why**: repo2deck stopped an exploration and found slots busy for minutes, generating answers for
+clients that no longer existed. Reproduced here: a caller cut at 4 s left the slot busy a further
+**~45 s** and the engine produced the full **3,000 tokens** for nobody.
+
+**The streamed path never had this**, and that contrast is what located the bug. A streamed
+response is a generator, so a hung-up caller raises `GeneratorExit` at a `yield`, the `finally`
+closes the upstream connection, and llama.cpp sees the socket go — measured at ~0 s. The
+non-streamed path simply awaits a complete response, and nothing in that await observes the
+caller at all.
+
+**Two wrong attempts preceded the right one, and both failed for reasons worth recording.**
+
+*Polling `request.is_disconnected()`* — the obvious approach, and it works in a bare uvicorn app
+(3.03 s after a cut at 3 s). Inside this gateway it polled **101 times returning False** while the
+engine generated 3,000 tokens. The handler's `_receive` turned out to be
+`BaseHTTPMiddleware...receive_or_disconnect`: Starlette's decorator-style middleware consumes
+`http.disconnect` for its own bookkeeping and never passes it inward. This app has two of them —
+`idempotency_middleware` and `request_id_middleware` — both written that way because they need to
+see the *response*, which is what that base class is for.
+
+*A passive tap in an outermost middleware* — never saw the message either, because ASGI is
+pull-based: `http.disconnect` is only delivered when something calls `receive()`, and during a
+long handler await nothing does. Making the tap poll actively did surface it, and broke the
+request: it consumed the body message, so nothing reached the backend at all.
+
+**The answer is vLLM's, and they met this exactly** — `vllm-project/vllm#10087`, fixed in `#11190`.
+Their `with_cancellation` carries the note *"This does not use request.is_disconnected, which does
+not work with middleware."* A dedicated task **awaits `request.receive()`** and is raced against
+the handler with `asyncio.wait(FIRST_COMPLETED)`. Awaiting works where polling does not, because
+`is_disconnected()` reads under an already-cancelled anyio scope and so only sees a message that
+is already sitting there.
+
+**Its precondition is the piece that explains the second failed attempt**: the body must already
+have been read, because the listener consumes and discards everything while it waits. FastAPI has
+parsed the body into a pydantic model before the handler runs, so at that point the only message
+left is the disconnect. In an outermost middleware that precondition does not hold.
+
+**Cancelling is not the same as not billing**, and RM-87 already settled which side we are on: a
+caller who walks away mid-generation is the case most worth charging for. `ClientGone` is raised
+rather than swallowed, and the call site accounts for the work through `_detach`, which survives
+the teardown. This matches where the industry has landed — a gateway that lets the upstream run to
+completion bills for tokens nobody received.
+
+**Verified live**: 0 tokens generated after the cut at +8 s, +16 s and +24 s, against 3,000 before
+the change, with `inference.client_disconnected` recorded once. Non-streamed, streamed and
+embeddings all still answer normally.
+
+**Scope**: in — the listener, the race, `499` at the chat route (nginx's convention; returning
+`None` is vLLM's `#42794`, where FastAPI serialises a 200 with a `null` body), 13 tests including
+guards against both wrong attempts. Out — embeddings, rerank and predict, which complete in
+milliseconds and would pay a listener task for no benefit; and `/v1/images/generations`, which is
+long enough to deserve the same treatment and is its own change.
+
