@@ -7840,3 +7840,49 @@ settled and the disconnect recorded; three tests pinning the wiring, the orderin
 catch-all, and the settle. Out — making sd-server abort, which it has no surface for; if it ever
 gains one, this side is already in place.
 
+## PRM-199 — a deleted client leaves its data behind
+
+**Why**: found while auditing the 23 credentials on this deployment for which could be removed.
+`DELETE /admin/clients/{id}?permanent=true` removes the principal and cascades
+`credential_share_tokens`, which share its database. **The gateway's tables are a different
+database with no foreign key to it**, so everything keyed by that `client_id` simply stays.
+
+Not a prediction. Counted in `gateway.db`:
+
+```
+usage_daily                19 client_ids with no credential
+usage_events                2
+client_billing_settings     1   — still carrying a $10 monthly cap and an 18% tax rate
+```
+
+That last one is the uncomfortable member. A billing *policy* survives the principal it governed,
+so a `client_id` reissued to someone else would inherit a cap and a tax rate nobody set for them.
+
+**Usage rows are a different question from settings.** Deleting them destroys billing history, and
+history is exactly what a usage ledger is for — the right answer there is probably to keep them
+and mark the owner gone, not to cascade. Settings and idempotency records have no such claim.
+
+**Scope**: in — decide per table whether a deletion should cascade, orphan-tolerate, or refuse;
+a purge path for what already exists; and a check that names orphans rather than leaving them to
+be discovered by an audit. Out — doing it as part of the credential cleanup that found it, which
+is an operational task rather than a change.
+
+## PRM-200 — three empty database files that are not the database
+
+**Why**: `auth.db`, `auth-service/auth.db` and `gateway/gateway.db` all exist and are all **0
+bytes**. The live databases are `data/auth-service/auth.db` and `gateway.db` at the repo root,
+established the way `docs/local-stack.md` insists — by asking the running processes which files
+they hold open, not by reading a config.
+
+A file named `auth-service/auth.db`, sitting beside the service, looks like the answer to "where
+is the auth database". It is empty, and anyone querying it finds a working system with no users.
+
+This is the exact shape of the failure `docs/local-stack.md` was written after: *"A value in the
+repo-root `.env` looks authoritative and is invisible to a bare-metal process. To find out what a
+service is actually using, ask the service, not a file."* That outage took two hours. These three
+files are the same trap in a different place, and they cost ten minutes during this audit.
+
+**Scope**: in — remove them, after establishing for each that nothing creates it on startup (an
+empty file that a service recreates is a symptom, not litter); and a line in the runbook's
+"Diagnosing" section naming the two real paths. Out — changing where either database lives.
+
