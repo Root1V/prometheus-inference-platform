@@ -156,16 +156,51 @@ def cmd_list(ctx: click.Context) -> None:
     table.add_column("Port")
     table.add_column("Downloaded")
     table.add_column("Running")
+    # PRM-194: shown because the registered number alone cannot be judged. The
+    # 35B sat at 4,096 of 262,144 for months and the row looked perfectly
+    # ordinary; what makes it legible is the model's own figure beside it.
+    table.add_column("Context", no_wrap=True)
     table.add_column("Path / HF Repo")
+
+    from prometheus_manager_core.hf_discovery import read_gguf_context_length
 
     for e in entries:
         running_mark = "[green]●[/green]" if e.id in running_aliases else "[dim]○[/dim]"
         dl_mark = "[green]✓[/green]" if e.downloaded else "[yellow]✗[/yellow]"
         hf_name = e.hf_filenames[0] if e.hf_filenames else ""
         location = e.path if e.path else (f"hf:{e.hf_repo}/{hf_name}" if e.hf_repo else "—")
-        table.add_row(e.id, e.backend, e.modality, str(e.port), dl_mark, running_mark, location)
+        table.add_row(
+            e.id,
+            e.backend,
+            e.modality,
+            str(e.port),
+            dl_mark,
+            running_mark,
+            _context_cell(e.context_length, read_gguf_context_length(e.path) if e.path else None),
+            location,
+        )
 
     console.print(table)
+
+
+def _context_cell(registered: int, native: int | None) -> str:
+    """The registered context, and the model's own when they differ.
+
+    Three states, because they mean three different things:
+
+    * **above** the trained length — llama.cpp RoPE-scales rather than refusing,
+      so the model answers worse with no error anywhere. Marked in red; this is
+      the one that is wrong.
+    * **far below** it — not wrong, context costs KV cache and small is a
+      legitimate answer. Marked dim, because what it usually means is that
+      nobody chose: the prompt used to offer a flat 4096.
+    * equal, or unreadable — just the number.
+    """
+    shown = f"{registered:,}"
+    if native is None or native == registered:
+        return shown
+    pair = f"{shown}[dim]/{native:,}[/dim]"
+    return f"[red]{shown}[/red][dim]/{native:,}[/dim]" if registered > native else pair
 
 
 # ── start ─────────────────────────────────────────────────────────────────────
@@ -337,7 +372,15 @@ def cmd_restart(ctx: click.Context, model_id: str) -> None:
     prompt="Model path (GGUF file, or HF repo id for mlx/vllm/sglang)",
 )
 @click.option("--port", type=int, prompt="Port", help="TCP port for the backend server.")
-@click.option("--context-length", type=int, default=4096, prompt="Context length")
+# PRM-194: no static default and no decorator prompt, because the right default
+# is the model's own trained length and click cannot compute one option's default
+# from another. Asked for in the body instead, once the GGUF has been read.
+@click.option(
+    "--context-length",
+    type=int,
+    default=None,
+    help="Tokens of context. Defaults to the model's own trained length, read from the GGUF.",
+)
 @click.option("--family", default="", prompt="Model family (e.g. llama, mistral)")
 @click.option("--quantization", default="", prompt="Quantization (e.g. Q4_0, mlx-4bit, awq)")
 @click.option(
@@ -380,7 +423,7 @@ def cmd_register(
     backend: str,
     model_path: str,
     port: int,
-    context_length: int,
+    context_length: int | None,
     family: str,
     quantization: str,
     modality: str,
@@ -403,6 +446,8 @@ def cmd_register(
     reg = _registry(cfg)
 
     from prometheus_manager_core.registry import RegistryEntry
+
+    context_length = _resolve_context_length(context_length, model_path)
 
     entry = RegistryEntry(
         id=model_id,
@@ -429,6 +474,48 @@ def cmd_register(
     except ValueError as exc:
         err_console.print(f"[error] {exc}")
         sys.exit(1)
+
+
+def _resolve_context_length(given: int | None, model_path: str) -> int:
+    """The context to register: the caller's, or the model's own.
+
+    PRM-194. This prompt used to offer a flat `4096`, and nothing anywhere
+    compared that number to the model. Nine of the ten `llama_cpp` rows in this
+    deployment were therefore a default somebody pressed enter on: six served a
+    fraction of what the weights support — the 35B at **1.6%**, 4,096 of
+    262,144 — and one asked for **320%** of its trained length.
+
+    That last direction is the one that fails invisibly. llama.cpp does not
+    refuse a context beyond training: it RoPE-scales and keeps answering, worse,
+    with no error and nothing in the registry to say so. It also held 18 GiB of
+    KV cache to do it, against 5.6 GiB at the real length.
+
+    So the default comes from the file. A value given on the command line is
+    still obeyed — exceeding the trained length is a real capability and
+    sometimes a deliberate choice — but it is *said out loud* rather than
+    accepted in silence.
+
+    Falls back to 4096 only when the file cannot be read, which is an ordinary
+    case here: a model may be registered before it is downloaded.
+    """
+    from prometheus_manager_core.hf_discovery import read_gguf_context_length
+
+    native = read_gguf_context_length(model_path) if model_path else None
+
+    if given is None:
+        default = native or 4096
+        if native:
+            console.print(f"[dim]The model reports {native:,} tokens of trained context.[/dim]")
+        return int(click.prompt("Context length", default=default, type=int))
+
+    if native and given > native:
+        console.print(
+            f"[yellow]Note:[/yellow] {given:,} is above this model's trained context of "
+            f"{native:,}. llama.cpp will not refuse it — it RoPE-scales and keeps "
+            f"answering, with quality degrading past the trained length and the KV cache "
+            f"sized for the larger number."
+        )
+    return given
 
 
 # ── unregister ────────────────────────────────────────────────────────────────
