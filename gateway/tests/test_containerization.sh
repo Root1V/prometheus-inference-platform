@@ -64,22 +64,28 @@ else
     pass "AC-3: no 'uv sync' in runtime stage"
 fi
 
-# ── AC-8: Redis has no host port binding ─────────────────────────────────────
+# ── AC-8: Redis is not reachable off this host ───────────────────────────────
+#
+# PRM-192. This used to grep the compose file for the substring `6379:6379`. A
+# loopback-only binding is spelled `127.0.0.1:6379:6379` and *contains* that
+# substring, so the check refused the safest binding available for the same
+# reason it refused the most dangerous one — it tested the spelling, not the
+# property. PRM-191 had to route around it with an overlay file, which nothing
+# then checked.
+#
+# `check_compose_ports.py` parses every compose file in the repo with PyYAML —
+# already in each project venv, and no container daemon, which keeps these
+# checks static as this file promises at the top. It fails when Redis is
+# published anywhere but loopback, fails when the all-container deployment
+# publishes it at all, and *names without failing* every other binding that is
+# reachable from the local network.
 echo ""
-echo "--- AC-8: Redis internal-only (no 6379:6379 binding) ---"
+echo "--- AC-8: Redis internal-only (property, not spelling) ---"
 
-if grep -v '^\s*#' "${COMPOSE_FILE}" | grep -q '6379:6379'; then
-    fail "AC-8: podman-compose.yml exposes Redis port 6379 to host — must be internal only"
+if (cd "${REPO_ROOT}/gateway" && uv run python tests/check_compose_ports.py "${REPO_ROOT}"); then
+    PASS=$((PASS + 2))
 else
-    pass "AC-8: Redis port 6379 not exposed to host"
-fi
-
-# Double-check: redis service has no ports section with host binding
-REDIS_SECTION=$(awk '/^  redis:/,/^  [a-z]/' "${COMPOSE_FILE}")
-if echo "${REDIS_SECTION}" | grep -qE '^\s+- "?[0-9]+:[0-9]+"?'; then
-    fail "AC-8: Redis service has a host:container port mapping"
-else
-    pass "AC-8: Redis service has no host port mapping"
+    fail "AC-8: a compose file publishes Redis beyond this host — see above"
 fi
 
 # ── AC-9: No secrets baked into Dockerfile layers ────────────────────────────
