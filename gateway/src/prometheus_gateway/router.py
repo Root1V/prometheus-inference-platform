@@ -9,6 +9,7 @@ Implements: memory/specs/018-observability-telemetry.md — AC-8, AC-10, AC-23, 
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import csv
 import io
 import json
@@ -307,6 +308,89 @@ async def _healthy_members(
 # strong reference, because the loop only holds a weak one and an unreferenced
 # task can be collected before it runs.
 _detached: set["asyncio.Task[None]"] = set()
+
+
+class ClientGone(Exception):
+    """The caller hung up while the backend was still working — PRM-196."""
+
+
+async def _listen_for_disconnect(request: Request) -> None:
+    """Block until the caller hangs up.
+
+    **Not** `request.is_disconnected()`, and that is the whole finding. Two
+    things make it useless here, both measured rather than reasoned:
+
+    1. Starlette's decorator-style middleware (`@app.middleware("http")`, which
+       is `BaseHTTPMiddleware`) wraps `receive` and consumes `http.disconnect`
+       for its own bookkeeping without passing it inward. This app has two of
+       them, both of which need to see the *response*, which is what that base
+       class is for. Inside them the flag is never set: a poll ran 101 times
+       returning False while the engine generated 3,000 tokens for a caller who
+       had left 30 seconds earlier.
+    2. `is_disconnected()` reads with an already-cancelled anyio scope, so it
+       only sees a message that is *immediately* available. A dedicated listener
+       that simply awaits does not need the message to be sitting there.
+
+    vLLM met this exactly — `vllm-project/vllm#10087`, fixed in `#11190` — and
+    their `with_cancellation` carries the same note: *"This does not use
+    request.is_disconnected, which does not work with middleware."* This is that
+    pattern, which is in turn Starlette's own `StreamingResponse` pattern.
+
+    **The precondition is that the body has already been read**, because this
+    consumes and discards every message while it waits. FastAPI has parsed the
+    body into a pydantic model before the handler runs, so the only message left
+    is the disconnect. Using this before the body is parsed swallows the body —
+    which is not a hypothetical: an earlier attempt put the listener in an
+    outermost middleware and requests stopped reaching the backend at all.
+    """
+    while True:
+        message = await request.receive()
+        if message["type"] == "http.disconnect":
+            return
+
+
+async def _forward_or_abandon(request: Request, coro: "Any") -> "Any":
+    """Await the backend, but stop paying for an answer nobody will read.
+
+    PRM-196, from repo2deck: after they stopped an exploration, slots stayed busy
+    for minutes serving requests whose clients were long gone.
+
+    The streamed path never had this, and the reason is why only this one needed
+    fixing. There the response is a generator, so a hung-up caller raises
+    `GeneratorExit` at a `yield`, the `finally` closes the upstream connection,
+    and llama.cpp sees the socket go. Here the handler simply awaits a complete
+    response, and nothing in that await observes the caller at all. Measured: a
+    client cut at 4 s left the slot busy a further ~45 s, against ~0 s streamed.
+
+    That cancelling the httpx task really releases the *engine*, rather than
+    merely our end of it, was measured too: four concurrent generations showed
+    `requests_processing=4, deferred=1`, and cancelling them left zero deferred
+    with a fifth request served at once.
+
+    **Cancelling is not the same as not billing.** RM-87 already holds that a
+    caller who walks away mid-generation is the case most worth charging for, so
+    this raises `ClientGone` rather than swallowing it, and the call site accounts
+    for the work through `_detach`. It is also where the industry has landed: a
+    gateway that lets the upstream run to completion bills for tokens nobody
+    received.
+    """
+    work = asyncio.ensure_future(coro)
+    listener = asyncio.ensure_future(_listen_for_disconnect(request))
+    try:
+        done, _ = await asyncio.wait({work, listener}, return_when=asyncio.FIRST_COMPLETED)
+    except asyncio.CancelledError:
+        work.cancel()
+        listener.cancel()
+        raise
+
+    if work in done:
+        listener.cancel()
+        return work.result()
+
+    work.cancel()
+    with contextlib.suppress(BaseException):
+        await work
+    raise ClientGone
 
 
 def _detach(coro: "Any", *, what: str) -> None:
@@ -1710,15 +1794,57 @@ def create_router(registry: ModelRegistry, pool: "BackendPool") -> APIRouter:
                         # AC-8 (018): forward X-Trace-ID header to backend
                         # RM-69: and failover to the next healthy replica if
                         # this one is gone rather than merely slow.
-                        resp, served_id = await pool.forward_with_failover(
-                            _candidates(health.usable),
-                            "/v1/chat/completions",
-                            payload,
-                            extra_headers={"X-Trace-ID": trace_id},
+                        # PRM-196: raced against the caller's connection. A
+                        # non-streamed await observes nothing about the client,
+                        # so without this the engine generates to `max_tokens`
+                        # for somebody who left — measured at ~45 s a time.
+                        resp, served_id = await _forward_or_abandon(
+                            request,
+                            pool.forward_with_failover(
+                                _candidates(health.usable),
+                                "/v1/chat/completions",
+                                payload,
+                                extra_headers={"X-Trace-ID": trace_id},
+                            ),
                         )
                         entry = _served_by(health.usable, served_id, entry)
                         backend_latency_ms = int((time.monotonic() - backend_start) * 1000)
                         backend_end_ns = time.time_ns()
+                    except ClientGone:
+                        # RM-87's rule reaching the case it did not cover: the
+                        # work happened, so it is billed and metered. Detached,
+                        # because this task is about to be torn down along with
+                        # the connection that no longer exists.
+                        abandoned_ms = int((time.monotonic() - backend_start) * 1000)
+                        logger.info(
+                            "inference.client_disconnected",
+                            backend_id=entry.id,
+                            request_id=request_id,
+                            latency_ms=abandoned_ms,
+                            client_id=claims.client_id if claims else "unknown",
+                        )
+                        inf_span.set_attribute(
+                            "gen_ai.response.finish_reasons", ["client_disconnected"]
+                        )
+                        abandoned_messages: list[dict[str, Any]] = body.model_dump(
+                            exclude_none=True
+                        )["messages"]
+                        _detach(
+                            metrics_store.record_inference(
+                                prompt_tokens=_estimate_tokens(abandoned_messages),
+                                completion_tokens=0,
+                                latency_ms=abandoned_ms,
+                                backend_id=entry.id,
+                                model_id=entry.model_id,
+                                error=False,
+                            ),
+                            what="client_disconnected_metrics",
+                        )
+                        # 499, nginx's convention for "the client went away before
+                        # a response" and what gateways converge on. Returning
+                        # `None` here is the trap vLLM hit in #42794: FastAPI
+                        # serialises it as a 200 with a `null` body.
+                        return Response(status_code=499)
                     finally:
                         await metrics_store.dec_requests_active()
 
