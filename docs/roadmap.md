@@ -7509,3 +7509,42 @@ gone unexercised. Rewriting that check to assert the property (*no service publi
 anything but 127.0.0.1*, across both files) and wiring the suite into the hook is likely to wake
 other long-dormant criteria in the same file, so it is its own change.
 
+## PRM-192 — the port check asks the real question, and the hook asks it
+
+**Why**: two defects, and the second is why the first survived.
+
+**The check tested the spelling.** `AC-8` of `memory/specs/004-podman-containerization.md` says
+Redis is internal-only, and `test_containerization.sh` enforced it with
+`grep -q '6379:6379'` against `podman-compose.yml`. A loopback-only binding is written
+`127.0.0.1:6379:6379` — which *contains* that substring. So the check refused the safest binding
+available for precisely the same reason it refused the most dangerous one, and PRM-191 had to
+route around it with an overlay file that nothing then checked.
+
+**And nothing ran the suite.** It was in neither `.githooks/pre-push` nor any CI phase, which is
+how a broken criterion stayed broken without anyone noticing. A check nobody runs is a claim.
+
+**What replaces it**: `gateway/tests/check_compose_ports.py` parses **every** compose file in the
+repo root with PyYAML — already present in each project venv, and needing no container daemon,
+which keeps the suite static as its own header promises. It asserts three things:
+
+* Redis published anywhere but loopback is a failure, in any file;
+* `podman-compose.yml` publishing Redis *at all* is a failure — the all-container deployment runs
+  every service as a container on one internal network, where a host binding buys nothing and
+  widens the surface. That is AC-8's original and correct intent, kept;
+* every other binding reachable from the local network is **named and not failed**.
+
+That last one is deliberate. `podman-compose.yml` publishes `8000:8000` and `8090:8090`, which
+bind `0.0.0.0` — so the gateway and the manager API are on the LAN today while Redis was refused
+even on loopback. Whether that should change is a security decision for a person, not something
+to alter inside a test-fixing change, so it is printed on every push until someone decides.
+
+**Globbed, not named.** The old check named one file, which is exactly how PRM-191's overlay
+escaped it. A compose file added tomorrow is covered the day it lands.
+
+**Scope**: in — the checker, 18 tests pinning it (including the four spellings of `ports:`, where
+an omitted host address means *every* interface and reading it as restrictive would pass the very
+bindings this catches), the bash suite rewired, and the suite added to `pre-push` as phase 11 of
+12. Out — changing the two `0.0.0.0` bindings, which is the open decision above. The spec is
+unedited: `memory/specs/` is a historical record, so this entry supersedes AC-8's *verification*
+while AC-8's *intent* is kept intact.
+
