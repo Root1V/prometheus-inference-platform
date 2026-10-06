@@ -50,8 +50,36 @@ _GGUF_ARRAY = 9
 UNKNOWN_FAMILY = "unknown"
 
 
+#: The struct format for each fixed-width GGUF type, so a scalar can be
+#: returned rather than merely stepped over. PRM-194 needs `context_length`,
+#: which is a number — before that every caller wanted strings, and the reader
+#: skipped the rest.
+_GGUF_SCALAR_FORMATS = {
+    0: "<B",
+    1: "<b",
+    2: "<H",
+    3: "<h",
+    4: "<I",
+    5: "<i",
+    6: "<f",
+    7: "<?",
+    10: "<Q",
+    11: "<q",
+    12: "<d",
+}
+
+
 def _gguf_read_value(fh: Any, value_type: int) -> Any:
-    """Consume one metadata value, returning it only when it is a string."""
+    """Consume one metadata value and return it. Arrays return None.
+
+    PRM-194 widened this: it used to decode strings and merely step over every
+    other type, which was all `read_gguf_architecture` needed. Reading a number
+    is the same bytes either way, and the three existing callers are unaffected
+    — two discard the result and one checks `isinstance(value, str)`.
+
+    Arrays are still stepped over rather than collected. Nothing here needs one,
+    and a token list would be megabytes.
+    """
     import struct
 
     if value_type == _GGUF_STRING:
@@ -68,7 +96,57 @@ def _gguf_read_value(fh: Any, value_type: int) -> Any:
         # An unknown type means we can no longer trust our position in the
         # file, so stop rather than read garbage from an arbitrary offset.
         raise ValueError(f"unknown GGUF value type {value_type}")
-    fh.read(width)
+    raw = fh.read(width)
+    fmt = _GGUF_SCALAR_FORMATS.get(value_type)
+    if fmt is None:
+        return None
+    (value,) = struct.unpack(fmt, raw)
+    return value
+
+
+def read_gguf_context_length(path: str | Path) -> int | None:
+    """The context length the model was **trained** for, or None if unreadable.
+
+    PRM-194. `pmgr register` prompts `Context length [4096]` and nothing
+    compared that number to the model, so nine of ten `llama_cpp` rows in this
+    deployment were a default somebody pressed enter on. Six served a fraction
+    of what the weights support — the 35B at **1.6%** — and one asked for
+    **320%** of its trained length, which llama.cpp does not refuse: it
+    RoPE-scales and keeps answering, worse, with nothing to say so.
+
+    The key is `<arch>.context_length`, so the architecture has to be read
+    first; it is the first entry in practice but not by specification, hence the
+    full scan rather than an assumption about ordering.
+
+    Returns None rather than raising, like the readers above: a model can be
+    registered before its file exists, and a missing file is an ordinary
+    situation here rather than an error.
+    """
+    import struct
+
+    try:
+        with open(path, "rb") as fh:
+            if fh.read(4) != b"GGUF":
+                return None
+            fh.read(4)  # version
+            fh.read(8)  # tensor count
+            (kv_count,) = struct.unpack("<Q", fh.read(8))
+            architecture = ""
+            pending: dict[str, int] = {}
+            for _ in range(kv_count):
+                (key_length,) = struct.unpack("<Q", fh.read(8))
+                key = fh.read(key_length).decode("utf-8", errors="replace")
+                (value_type,) = struct.unpack("<I", fh.read(4))
+                value = _gguf_read_value(fh, value_type)
+                if key == "general.architecture" and isinstance(value, str):
+                    architecture = value
+                elif key.endswith(".context_length") and isinstance(value, int):
+                    pending[key] = value
+                found = pending.get(f"{architecture}.context_length")
+                if architecture and found:
+                    return found
+    except (OSError, ValueError, struct.error):
+        return None
     return None
 
 

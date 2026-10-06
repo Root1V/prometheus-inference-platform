@@ -7631,12 +7631,30 @@ The 35B is the clearest case. It has **2 KV heads**, so its cache is the cheapes
 every large model here — 0.08 GiB per 1K against 0.14 for an 8B. It can hold 131,072 tokens for
 10 GiB, a 32× increase for less RAM than the 8B currently wastes.
 
-**Scope**: in — read `*.context_length` from the GGUF at registration and use it as the default
-instead of 4,096; refuse (or require an explicit override for) a value above it, with the message
-naming the trained length; surface native-vs-registered in `pmgr list`. Out — picking each
-model's number, which is a RAM budget decision per deployment and belongs to whoever owns the
-host; and KV-cache quantization (`--cache-type-k/v q8_0`), which halves the cost at a quality
-trade and deserves measuring on its own before it is offered.
+**Scope**: in — `read_gguf_context_length` reusing the GGUF reader `hf_discovery` already had
+rather than adding a second one; the `register` prompt defaulting to the model's own figure;
+`pmgr list` showing `registered/native` so an existing row can be judged at a glance. Out —
+picking each model's number, which is a RAM budget decision per deployment; and KV-cache
+quantization (`--cache-type-k/v q8_0`), which halves the cost at a quality trade and deserves
+measuring on its own.
+
+**Delivered, and one decision inside it worth recording: it warns, it does not refuse.** PRM-190
+refused a vision model with no projector, and that was right because such a model *cannot* serve
+an image. This is different in kind — a context beyond the trained length **works**, just worse,
+and RoPE scaling is a capability llama.cpp offers deliberately. Refusing would make this platform
+unable to do something the engine can. So an explicit `--context-length` is obeyed and the
+over-commitment is said out loud, with both numbers in the message.
+
+The reader was widened rather than duplicated: `_gguf_read_value` decoded strings and stepped over
+everything else, which was all `read_gguf_architecture` ever needed. It now returns scalars too.
+Its three existing callers are unaffected — two discard the result and one checks
+`isinstance(value, str)` — and that is pinned by a test, because "one truth in two places" is the
+defect this repository meets most.
+
+`pmgr list` gained the column because fixing registration fixes nothing already registered. The
+35B sat at 4,096 of 262,144 for months and the row looked entirely ordinary; what makes it legible
+is the model's own figure printed beside it, with the over-committed case the only one coloured —
+it is the only one that is wrong.
 
 ## PRM-195 — the template switch reaches the engine
 
