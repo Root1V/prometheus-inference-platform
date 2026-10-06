@@ -1,6 +1,6 @@
 # Prometheus Gateway — SDK Integration Guide
 
-**Revision**: 2026-10-06a · `PRM-195`
+**Revision**: 2026-10-06b · `PRM-196/197`
 <!-- Consumers vendor this file and diff it. The date and commit above are what to quote
      when asking whether a copy is current; they change whenever this document does. -->
 
@@ -504,6 +504,31 @@ engine rather than by prompting:
 
 `{"type": "json_object"}` and `{"type": "text"}` work too. The content comes back as a JSON
 **string** in `choices[0].message.content` — parse it; it is not a nested object.
+
+**Tuples, and the one keyword the grammar cannot read (PRM-197).** llama.cpp's schema-to-grammar
+converter refuses a **boolean** `items` — `400 JSON schema conversion failed: Unrecognized schema:
+false` — which is exactly how zod 4 closes a tuple:
+
+```json
+{ "type": "array", "prefixItems": [{"type":"string"}, {"type":"integer"}], "items": false }
+```
+
+**Send it anyway.** The gateway translates it before forwarding, into the schema that means the
+same thing: `items: false` becomes `maxItems: <length of prefixItems>`, and `items: true` is
+dropped because an absent `items` already permits anything. Nested tuples are reached too — inside
+`properties`, `$defs`, `anyOf`, or another array.
+
+`minItems` is deliberately **not** added. A tuple schema does not require its elements to be
+present, so adding it would make your schema stricter than you wrote it. If you need exactly *n*
+elements, say `minItems` yourself.
+
+Do not work around this by widening the tuple to `items: {"type": "string"}`: that is what people
+reached for before, and it throws away the per-position types that make it a tuple.
+
+Measured: sixteen schema features were probed against the engine and only `items` fails as a
+boolean. `additionalProperties`, `propertyNames`, `contains` and `not` all accept one, as do
+`enum`, `oneOf`/`anyOf`/`allOf`, `$ref`/`$defs`, `pattern`, `format`, `const`,
+`minimum`/`maximum`, `uniqueItems` and `minItems`/`maxItems`.
 
 **`logprobs` — how confident the model was (PRM-187).** Ask for the per-token probability
 behind the answer, so an agent can decide when to escalate to a human instead of acting on a

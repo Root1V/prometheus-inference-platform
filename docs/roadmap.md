@@ -7740,3 +7740,41 @@ guards against both wrong attempts. Out — embeddings, rerank and predict, whic
 milliseconds and would pay a listener task for no benefit; and `/v1/images/generations`, which is
 long enough to deserve the same treatment and is its own change.
 
+## PRM-197 — a tuple schema survives the grammar converter
+
+**Why**: repo2deck sent valid JSON Schema and got
+`400 JSON schema conversion failed: Unrecognized schema: false`. llama.cpp's schema-to-grammar
+converter does not implement **boolean** subschemas, and a boolean `items` is exactly how zod 4
+closes a tuple.
+
+Their workaround was to widen the tuple into `items: {"type": "string"}`, which costs the thing a
+tuple is for: the second element stops being an integer. A client rewriting their data model to
+get past our converter is the signal that this belonged here.
+
+**The scope is one keyword, and that is a measurement.** Sixteen features were probed against a
+running server. Only `items` fails when given a boolean — for `true` as well as `false`.
+`additionalProperties`, `propertyNames`, `contains` and `not` all take one happily, as do `enum`,
+`oneOf`/`anyOf`/`allOf`, `$ref`/`$defs`, `pattern`, `format`, `const`, `minimum`/`maximum`,
+`uniqueItems` and `minItems`/`maxItems`. Normalising more would be a second, drifting copy of
+someone else's validator.
+
+**Nesting was measured too**: the same tuple fails inside `properties` and inside `$defs`, so a
+top-level fix would have repaired the example and left the real schemas broken.
+
+**It is a translation, not a relaxation.** In draft 2020-12 `items` applies to elements after
+`prefixItems`, so `items: false` forbids anything past the prefix — which is a maximum length —
+and `items: true` permits anything, which is what an absent `items` already means.
+
+**`minItems` is deliberately not added**, and that is the easy mistake. A tuple schema does not
+require its elements to be present: `["Ana"]` satisfies `prefixItems: [string, integer]`. Adding
+`minItems` would hand the engine a stricter schema than the caller wrote, and a gateway that
+quietly tightens a contract is worse than one that rejects it.
+
+Verified live through the gateway with repo2deck's exact schema: `["Ana", 30]`, `finish_reason:
+stop` — string and integer kept by position.
+
+**Scope**: in — the normaliser as a pure function with 16 tests, wired in `to_llama_payload`,
+returning new containers so the caller's own `response_format` is never mutated; §3.3 of the SDK
+guide with the measured feature list and the warning against widening tuples. Out — the other
+boolean positions, which the engine accepts; and any broader schema rewriting.
+
