@@ -22,7 +22,7 @@ import textwrap
 
 import pytest
 
-from tests.check_compose_ports import Binding, bindings_in, compose_files, main
+from tests.check_compose_ports import Binding, bindings_in, compose_files, main, resolve_defaults
 
 
 def _write(tmp_path, name, body):
@@ -268,3 +268,81 @@ def test_the_repos_own_compose_files_pass(tmp_path):
 def test_binding_renders_readably():
     b = Binding(file="x.yml", service="redis", host_ip="127.0.0.1", published="6379", target="6379")
     assert str(b) == "x.yml:redis 127.0.0.1:6379->6379"
+
+
+# ── PRM-193: compose's own variable syntax ─────────────────────────────────
+
+
+@pytest.mark.parametrize(
+    ("spec", "expected"),
+    [
+        ("${MANAGER_BIND_IP:-127.0.0.1}:8090:8090", "127.0.0.1:8090:8090"),
+        ("${IP-0.0.0.0}:1:1", "0.0.0.0:1:1"),
+        ("8000:8000", "8000:8000"),
+    ],
+)
+def test_a_variables_default_is_substituted_before_parsing(spec, expected):
+    """Found by running it, not by reading it: without this the splitter meets
+    the colons *inside* the braces and reports nonsense."""
+    assert resolve_defaults(spec) == expected
+
+
+@pytest.mark.parametrize("spec", ["${IP}:8090:8090", "${IP:?required}:8090:8090"])
+def test_a_variable_with_no_default_stays_permissive(spec):
+    """It could be anything at runtime, and for a check about exposure the
+    unknown case has to fall on the cautious side — the same direction as an
+    omitted host address."""
+    assert resolve_defaults(spec) == spec
+
+
+def test_the_defaulted_binding_reads_as_loopback(tmp_path):
+    """End to end: the spelling PRM-193 puts in the compose file has to be
+    understood as safe, or the check that guards it would block the fix."""
+    f = _write(
+        tmp_path,
+        "compose.yml",
+        """
+        services:
+          manager:
+            ports:
+              - "${MANAGER_BIND_IP:-127.0.0.1}:8090:8090"
+    """,
+    )
+    (b,) = bindings_in(f)
+    assert b.is_loopback
+    assert (b.published, b.target) == ("8090", "8090")
+
+
+def test_a_variable_without_a_default_is_reported_not_hidden(tmp_path, capsys):
+    _write(
+        tmp_path,
+        "podman-compose.yml",
+        """
+        services:
+          redis:
+            image: redis:7-alpine
+          manager:
+            ports:
+              - "${IP}:8090:8090"
+    """,
+    )
+    assert main(tmp_path) == 0
+    assert "NOTE:" in capsys.readouterr().out
+
+
+def test_the_checker_describes_the_shipped_default_not_the_runtime(tmp_path):
+    """The honest limit, stated as a test so nobody reads more into a green run
+    than it means. An operator exporting MANAGER_BIND_IP=0.0.0.0 widens it in
+    their own environment; this file still ships loopback, and that is all this
+    asserts."""
+    f = _write(
+        tmp_path,
+        "compose.yml",
+        """
+        services:
+          manager:
+            ports:
+              - "${MANAGER_BIND_IP:-127.0.0.1}:8090:8090"
+    """,
+    )
+    assert bindings_in(f)[0].is_loopback

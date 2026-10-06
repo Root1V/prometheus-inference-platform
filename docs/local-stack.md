@@ -207,6 +207,26 @@ uv run --env-file runtime/manager/lab.env --project runtime/manager/api \
   pmgr-api --config runtime/manager/manager-lab.toml
 ```
 
+**On a multi-host fleet, the coordinator's 8090 has to be reachable from the other
+nodes — and since PRM-193 it is not, by default.** `podman-compose.yml` binds it to
+`127.0.0.1`, because the two consumers named in that file need nothing wider: the
+gateway reaches the manager by service name on the internal network, and the `pmgr`
+CLI runs on the host. The control plane starts and stops models, registers and deletes
+nodes, and launches downloads, and no installer in this repository configures a
+firewall — so it ships closed.
+
+When nodes live on separate machines, set this in the **coordinator's** environment:
+
+```
+MANAGER_BIND_IP=0.0.0.0        # or the specific interface the fleet reaches it on
+```
+
+Prefer the specific address over `0.0.0.0`. Either way the exposure is then declared
+in one deployment's environment rather than shipped to every deployment that never
+needed it. `gateway/tests/check_compose_ports.py`, which runs in `pre-push`, reports
+what the repository's own files bind — it cannot see what you export, and does not
+try to.
+
 Missing any of the three disables the heartbeat and logs
 `fleet.heartbeat_disabled` naming what is absent; the node keeps serving
 inference. `fleet.heartbeat_started` on startup and

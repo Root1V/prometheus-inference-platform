@@ -16,6 +16,7 @@ with no container daemon, and on a host where none is installed.
 
 from __future__ import annotations
 
+import re
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -23,6 +24,37 @@ from pathlib import Path
 import yaml
 
 LOOPBACK = {"127.0.0.1", "::1", "localhost"}
+
+# `${NAME}`, `${NAME:-default}`, `${NAME-default}`, `${NAME:?err}`, `${NAME?err}`
+_VAR = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)(?:(:?[-?])([^}]*))?\}")
+
+
+def resolve_defaults(spec: str) -> str:
+    """Substitute compose's `${VAR:-default}` with the default, before parsing.
+
+    PRM-193. Without this the splitter meets `${MANAGER_BIND_IP:-127.0.0.1}`,
+    splits it on the colons inside the braces, and reports nonsense — found by
+    running it rather than by reading it.
+
+    **A form with no default is left as-is and therefore reads as permissive.**
+    `${VAR}` could be anything at runtime, and for a check about exposure the
+    unknown case has to fall on the cautious side, exactly as an omitted host
+    address does.
+
+    What this does *not* do is resolve the variable's actual runtime value, and
+    that is the honest limit of this whole checker: it tells you the posture the
+    repository ships with. An operator who exports `MANAGER_BIND_IP=0.0.0.0` has
+    widened it deliberately, in their own environment, and this says nothing
+    about that — which is the point of making it a variable.
+    """
+
+    def sub(m: re.Match[str]) -> str:
+        operator, default = m.group(2), m.group(3)
+        if operator in (":-", "-"):
+            return default
+        return m.group(0)
+
+    return _VAR.sub(sub, spec)
 
 
 @dataclass(frozen=True)
@@ -58,7 +90,7 @@ def _parse_short(spec: str) -> tuple[str, str, str]:
     case, and reading it as restrictive is how a check passes a binding it should
     have caught.
     """
-    spec = str(spec).split("/")[0]  # drop a /tcp or /udp suffix
+    spec = resolve_defaults(str(spec)).split("/")[0]  # defaults first, then /tcp
 
     host_ip = ""
     if spec.startswith("["):  # bracketed IPv6 literal
@@ -89,7 +121,7 @@ def bindings_in(path: Path) -> list[Binding]:
                     Binding(
                         file=path.name,
                         service=service,
-                        host_ip=str(entry.get("host_ip") or "0.0.0.0"),
+                        host_ip=resolve_defaults(str(entry.get("host_ip") or "0.0.0.0")),
                         published=str(entry.get("published") or ""),
                         target=str(entry.get("target") or ""),
                     )
@@ -151,7 +183,12 @@ def main(repo_root: Path) -> int:
         print(f"  NOTE: {len(exposed)} binding(s) reachable from the local network:")
         for b in exposed:
             print(f"        {b}")
-        print("        See PRM-192 — a decision, not a finding; not failed here.")
+        print(
+            "        Reviewed in PRM-193. The gateway's 8000 is required to be "
+            "reachable\n        from another machine by AC-10 of spec 004 and is "
+            "deliberate. Anything\n        else appearing here has not been "
+            "reviewed — check it."
+        )
 
     return 1 if failures else 0
 
