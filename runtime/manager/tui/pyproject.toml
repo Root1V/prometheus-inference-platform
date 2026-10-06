@@ -4,7 +4,7 @@ version = "0.1.0"
 description = "pmgr — Prometheus Manager CLI & Textual TUI, packaged for bare-metal install"
 requires-python = ">=3.11"
 dependencies = [
-    "click>=8.1",
+    "click>=8.5.0",
     "rich>=13.7",
     "textual>=8.2.8",
     "psutil>=5.9",
