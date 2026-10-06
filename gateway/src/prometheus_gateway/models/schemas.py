@@ -10,6 +10,8 @@ from typing import Annotated, Literal, Union
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from .json_schema_compat import normalise_response_format
+
 
 class TextContentPart(BaseModel):
     type: Literal["text"]
@@ -217,7 +219,11 @@ class ChatCompletionRequest(BaseModel):
         if self.tool_choice is not None:
             payload["tool_choice"] = self.tool_choice
         if self.response_format is not None:
-            payload["response_format"] = self.response_format
+            # PRM-197: llama.cpp's grammar converter refuses a *boolean* `items`,
+            # which is how zod 4 closes a tuple. Translated rather than relaxed —
+            # see `json_schema_compat`. Everything else is forwarded untouched,
+            # as it always was.
+            payload["response_format"] = normalise_response_format(self.response_format)
         if self.logprobs is not None:
             payload["logprobs"] = self.logprobs
         if self.top_logprobs is not None:
