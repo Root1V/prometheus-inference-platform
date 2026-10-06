@@ -7597,3 +7597,44 @@ is intended, so a future reader does not re-litigate it and anything *new* appea
 out. Out — `8000`, decided above; and TLS or a reverse proxy in front of the gateway, which is a
 larger question than a port binding.
 
+## PRM-194 — the context length is nobody's decision
+
+**Why**: `pmgr register` prompts `Context length [4096]`, and **nothing anywhere compares that
+number to the model**. Nine of the ten `llama_cpp` rows in this registry are therefore a default
+somebody pressed enter on, not a decision — audited by reading `*.context_length` out of each
+GGUF rather than trusting the registry:
+
+| model | registered | native | serving |
+|---|---|---|---|
+| `qwen36-35b-a3b-q4` | 4,096 | 262,144 | **1.6%** |
+| `qwen3vl-8b-q4` | 8,192 | 262,144 | 3.1% |
+| `qwen3-0-6b` (×2) | 4,096 | 40,960 | 10% |
+| `qwen3-reranker` | 4,096 | 40,960 | 10% |
+| `qwen3-embedding` | 4,096 | 32,768 | 12.5% |
+| `qwen3vl-30b-a3b` | 32,768 | 262,144 | 12.5% |
+| `fara-7b` | 32,768 | 128,000 | 25.6% |
+| `gpt-oss-20b-mxfp4` | 131,072 | 131,072 | 100% |
+| **`qwen3-8b-q6`** | **131,072** | **40,960** | **320%** |
+
+**The last row is the one that is actually wrong**, and it fails in the direction nobody notices.
+llama.cpp does not refuse a context beyond the trained length — it RoPE-scales and keeps serving,
+so the model answers *worse* with no error, no warning in the response, and nothing in the
+registry to say so. It also holds **18.0 GiB of KV cache** to do it, against 5.6 GiB at its real
+40,960. The same request pattern costs 12.4 GiB more and returns lower quality.
+
+**The ones serving a fraction are not wrong, they are unchosen.** Context costs KV cache and
+small is a legitimate answer; what is missing is that anyone chose. The cost is per model and far
+from uniform — computed from each GGUF's own attention geometry, validated against measured RSS
+(35B: 20.9 GiB predicted vs 21.5 measured; fara-7b 7.4 vs 7.9; 30B-A3B 21.3 vs 20.1):
+
+The 35B is the clearest case. It has **2 KV heads**, so its cache is the cheapest per token of
+every large model here — 0.08 GiB per 1K against 0.14 for an 8B. It can hold 131,072 tokens for
+10 GiB, a 32× increase for less RAM than the 8B currently wastes.
+
+**Scope**: in — read `*.context_length` from the GGUF at registration and use it as the default
+instead of 4,096; refuse (or require an explicit override for) a value above it, with the message
+naming the trained length; surface native-vs-registered in `pmgr list`. Out — picking each
+model's number, which is a RAM budget decision per deployment and belongs to whoever owns the
+host; and KV-cache quantization (`--cache-type-k/v q8_0`), which halves the cost at a quality
+trade and deserves measuring on its own before it is offered.
+
