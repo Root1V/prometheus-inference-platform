@@ -245,9 +245,28 @@ services:
       prometheus.service: manager
 
     ports:
-      # Manager API on 8090 — reachable by the gateway container on the internal network
-      # and from the host for debugging (pmgr CLI / manual curl)
-      - "8090:8090"
+      # Manager API on 8090 — PRM-193: loopback by default, widened deliberately.
+      #
+      # The two consumers this comment used to name need no wider binding than
+      # this. The gateway reaches the manager by service name on the internal
+      # network (`MANAGER_URL=http://manager:8090`), which does not travel
+      # through a host port at all; and "from the host for debugging" — the
+      # `pmgr` CLI and manual curl — is served by 127.0.0.1. The old `8090:8090`
+      # bound 0.0.0.0, so the **control plane** (start and stop models, register
+      # and delete fleet nodes, launch downloads) sat on the local network,
+      # wider than its own stated purpose and with no firewall anywhere in the
+      # installers to narrow it.
+      #
+      # It is a variable rather than a constant because one deployment does need
+      # it wider: PRM-152 has every node report liveness to the coordinator every
+      # 10 s, so a multi-host fleet must reach the coordinator's 8090 from other
+      # machines. Set MANAGER_BIND_IP to the coordinator's address there — then
+      # the exposure is declared, in that deployment's own environment, instead
+      # of shipped to everyone who never needed it.
+      #
+      # Severity, measured rather than assumed: every route answers 401 without
+      # a token except /health, so this is defence in depth, not an open door.
+      - "${MANAGER_BIND_IP:-127.0.0.1}:8090:8090"
 
     environment:
       # RM-93: how this process identifies itself to whoever collects telemetry

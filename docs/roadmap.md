@@ -7548,3 +7548,52 @@ bindings this catches), the bash suite rewired, and the suite added to `pre-push
 unedited: `memory/specs/` is a historical record, so this entry supersedes AC-8's *verification*
 while AC-8's *intent* is kept intact.
 
+## PRM-193 — the control plane is loopback by default
+
+**Why**: PRM-192 made the port checker print, on every push, the two bindings in
+`podman-compose.yml` that reach the local network. Reviewing them gave two different answers, and
+the difference is the point.
+
+**`8000` (gateway) is not a defect.** `AC-10` of `memory/specs/004-podman-containerization.md`
+requires `curl http://<server-ip>:8000/health` **from another machine**. It is the product's
+entry point and the exposure is specified. Unchanged.
+
+**`8090` (manager) was wider than its own justification.** The comment above it named two
+consumers: the gateway "on the internal network" — which reaches it by service name,
+`MANAGER_URL=http://manager:8090`, never through a host port — and "from the host for debugging",
+which `127.0.0.1` serves. Neither needs `0.0.0.0`. What sat there instead is the **control
+plane**: start and stop models, register and delete fleet nodes, launch downloads.
+
+Two facts decided it. No installer in this repository configures a firewall — `install-rhel.sh`
+and `install-ubuntu-dgx.sh` touch neither `firewalld` nor `iptables` — so the compose binding *is*
+the control. And the repository already holds this exact instinct for a sibling service, in
+`docs/local-stack.md`: *"`auth-service/start.sh` also works but binds `0.0.0.0`, which publishes
+the identity service to the local network."* The manager never got the same treatment.
+
+**Severity is moderate and was measured, not assumed.** Every route answers `401` without a
+token; only `/health` does not. This is defence in depth, not an open door — which is why it is
+hygiene rather than an incident.
+
+**Why a variable and not a constant.** One deployment genuinely needs it wider: PRM-152 has every
+node report liveness to the coordinator every 10 s, so on a multi-host fleet the coordinator's
+8090 must be reachable from other machines. `${MANAGER_BIND_IP:-127.0.0.1}` ships closed and is
+widened by declaring it in that deployment's own environment — the standard shape, and the only
+option that leaves neither deployment insecure by omission.
+
+**It also required fixing PRM-192's own checker**, found by running it rather than reading it: it
+split `${MANAGER_BIND_IP:-127.0.0.1}` on the colons *inside* the braces and reported nonsense. It
+now resolves `${VAR:-default}` and `${VAR-default}` before parsing, and leaves a form with no
+default unresolved — so the unknown case reads as permissive, the same cautious direction as an
+omitted host address.
+
+**The honest limit, pinned as a test**: this reports the posture the repository *ships*. An
+operator exporting `MANAGER_BIND_IP=0.0.0.0` has widened it deliberately in their own
+environment, and the checker says nothing about that — which is the entire point of making it a
+variable.
+
+**Scope**: in — the binding, the runbook's fleet section with the multi-host instruction, the
+interpolation fix, and the checker's note rewritten to say the remaining `8000` was reviewed and
+is intended, so a future reader does not re-litigate it and anything *new* appearing there stands
+out. Out — `8000`, decided above; and TLS or a reverse proxy in front of the gateway, which is a
+larger question than a port binding.
+
