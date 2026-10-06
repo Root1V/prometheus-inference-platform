@@ -1,6 +1,6 @@
 # Prometheus Gateway — SDK Integration Guide
 
-**Revision**: 2026-10-05a · `PRM-187/188`
+**Revision**: 2026-10-06a · `PRM-195`
 <!-- Consumers vendor this file and diff it. The date and commit above are what to quote
      when asking whether a copy is current; they change whenever this document does. -->
 
@@ -478,7 +478,7 @@ instead of always waiting for a `403` from the actual inference call.
 Fields: `model`, `messages` required; `stream` (default `false`); `max_tokens` (>0 if set);
 `temperature` (0.0–2.0); `top_p` (0.0 < p ≤ 1.0); `stop` (string or list); `tools` /
 `tool_choice` / `response_format` (forwarded as-is, no gateway-side validation of their
-schemas); `logprobs` / `top_logprobs` (see below).
+schemas); `logprobs` / `top_logprobs` and `chat_template_kwargs` (see below).
 
 **`response_format` — structured outputs (PRM-126).** Now supported, and constrained by the
 engine rather than by prompting:
@@ -539,6 +539,43 @@ problem+json envelope as everything else (§7) rather than in llama.cpp's own er
 Supported on `llama_cpp`, which is where it was measured. On an engine without it the engine's
 own answer stands — the gateway does not emulate it. Send `require_parameters: true` if you
 need to be told rather than quietly given a response with no `logprobs` key.
+
+**`chat_template_kwargs` — turning the model's thinking down (PRM-195).** Some models reason
+before answering, always, and charge you for it. These are the variables llama.cpp hands to the
+model's own chat template, forwarded as an opaque mapping:
+
+```json
+{
+  "model": "qwen36-35b-a3b-q4",
+  "messages": [{ "role": "user", "content": "Write the slide title." }],
+  "chat_template_kwargs": { "enable_thinking": false }
+}
+```
+
+Measured on this platform, same question, same answer:
+
+```
+qwen36-35b-a3b-q4   without                            215 tokens   6.91 s
+qwen36-35b-a3b-q4   enable_thinking: false              16 tokens   0.71 s
+gpt-oss-20b-mxfp4   reasoning_effort: "low"    414 -> 23 characters of reasoning
+gpt-oss-20b-mxfp4   reasoning_effort: "high"   414 -> 583 characters of reasoning
+```
+
+**The keys belong to each model's template, not to this gateway**, so the mapping is passed
+through unexamined and the set differs per model — `enable_thinking` for the Qwen3.6 family,
+`reasoning_effort` for gpt-oss. Check the model card; a key the template does not read is
+ignored by the template, silently, and the gateway cannot tell you that.
+
+**Do not send `reasoning_effort` or `reasoning_budget` at the top level.** They look like they
+should work and they do nothing — measured against a running server, byte-identical output with
+and without. They stay outside the accepted set deliberately, so they keep appearing in
+`X-Prometheus-Ignored-Parameters` rather than being quietly accepted and quietly dropped.
+`reasoning_effort` goes *inside* `chat_template_kwargs`, where the template reads it.
+
+Reasoning that does happen comes back in `choices[0].message.reasoning_content`, separate from
+`content`. **It is billed in `completion_tokens` and there is no separate count** — the engine
+does not report one. Measured on one small request: 38 completion tokens, of which the useful
+answer was a single character.
 
 **Anything else is accepted, ignored, and named back to you (PRM-127).** This endpoint takes an
 OpenAI-compatible *subset*. A field outside it — `n`, `presence_penalty`, `frequency_penalty`,

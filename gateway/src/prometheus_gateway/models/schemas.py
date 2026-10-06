@@ -134,6 +134,26 @@ class ChatCompletionRequest(BaseModel):
     # know asks with `require_parameters`.
     logprobs: bool | None = None
     top_logprobs: int | None = Field(default=None, ge=0, le=20)
+    # PRM-195: the variables llama.cpp hands to the model's own chat template.
+    # repo2deck measured `qwen36-35b-a3b-q4` spending 1,500-6,000 tokens thinking
+    # before every slide, 80-140 s a call, and found the switch that turns it off
+    # — then found it worked against the engine and not through here, because an
+    # allowlist drops what it does not name.
+    #
+    # Forwarded as an opaque mapping, like `response_format` and `tools`: its keys
+    # belong to each model's template, not to this gateway, and a whitelist of
+    # them here would be a second copy of someone else's Jinja that goes stale
+    # without anyone noticing.
+    #
+    # **Only this one field, and that is a measurement rather than a shortcut.**
+    # They asked for three. Against a running server, top-level `reasoning_effort`
+    # and `reasoning_budget` changed nothing at all — byte-identical output and
+    # reasoning length to a request without them. Declaring those two would have
+    # moved them out of `X-Prometheus-Ignored-Parameters` and reported as honoured
+    # what the engine silently discards, which is worse than dropping them.
+    # `reasoning_effort` *does* work, inside this mapping, where the template
+    # reads it: 414 -> 23 characters of reasoning on `low`, 583 on `high`.
+    chat_template_kwargs: dict[str, object] | None = None
 
     # PRM-127: accepted and reported, not refused — OpenRouter's model rather
     # than OpenAI's. A gateway in front of engines that differ in what they
@@ -202,6 +222,8 @@ class ChatCompletionRequest(BaseModel):
             payload["logprobs"] = self.logprobs
         if self.top_logprobs is not None:
             payload["top_logprobs"] = self.top_logprobs
+        if self.chat_template_kwargs is not None:
+            payload["chat_template_kwargs"] = self.chat_template_kwargs
         return payload
 
 
