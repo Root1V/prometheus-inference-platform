@@ -7796,3 +7796,47 @@ returning new containers so the caller's own `response_format` is never mutated;
 guide with the measured feature list and the warning against widening tuples. Out — the other
 boolean positions, which the engine accepts; and any broader schema rewriting.
 
+## PRM-198 — an abandoned image lets go of what it can
+
+**Start with what this does not do.** `/v1/images/generations` is the longest blocking call this
+gateway makes, so it looked like the place where PRM-196's race would pay most. It does not,
+because **sd-server does not abort on connection close**. Measured, with a warm baseline:
+
+```
+calentamiento              12.7 s
+referencia (caliente)      12.9 s
+>>> cancelled at 1.0 s
+next request               24.6 s     <- queued behind the cancelled job
+```
+
+The cancelled generation ran to completion and the next request waited for it. llama.cpp watches
+the socket and stops; sd-server does not, and it offers nothing to ask with — `/cancel`, `/abort`,
+`/slots` and `/metrics` are all 404 on it. **The GPU is not freed, and PRM-196's headline does not
+transfer to this route.**
+
+**What it does do is still worth having**, and all three are real:
+
+* **The budget reservation is released.** RM-60 debits the caller's monthly cap *before*
+  forwarding. Without this the cap stayed debited for an image they never received until the
+  period rolled over — a caller silently losing spend for nothing.
+* **A hang-up stops being reported as a backend failure.** The route's `except Exception`
+  catch-all sits below, and it would have logged `images_generations.upstream_error` and fed the
+  circuit breaker. A caller closing a tab is not a sick replica, and opening a breaker over it
+  would take a healthy backend out of rotation.
+* **The gateway stops waiting**, so its own worker and connection are returned.
+
+Settled at **zero** cost, which is a decision rather than an omission: an image is all-or-nothing.
+Chat bills what was streamed because those tokens reached the caller; here nothing was delivered
+and there is no partial image to price.
+
+**A correction to PRM-196's own record.** Its commit message says the abandoned work "is billed and
+metered". Only the second half is true: that path calls `metrics_store.record_inference`, not
+`_record_usage`, so there is no billing row. Which is right, and consistent with RM-83 — the
+streamed path bills what was *sent*, and on an abandoned non-streamed request nothing was sent.
+The claim was wrong, not the code.
+
+**Scope**: in — the race on the image route, placed above the catch-all, with the reservation
+settled and the disconnect recorded; three tests pinning the wiring, the ordering against the
+catch-all, and the settle. Out — making sd-server abort, which it has no surface for; if it ever
+gains one, this side is already in place.
+

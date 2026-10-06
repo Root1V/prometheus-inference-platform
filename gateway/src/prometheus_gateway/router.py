@@ -3198,13 +3198,61 @@ def create_router(registry: ModelRegistry, pool: "BackendPool") -> APIRouter:
         backend_start = time.monotonic()
         try:
             # RM-69: failover across replicas, same as the other two routes.
-            resp, served_id = await pool.forward_with_failover(
-                _candidates(health.usable),
-                "/v1/images/generations",
-                body.to_backend_payload(),
-                extra_headers={"X-Trace-ID": trace_id},
+            # PRM-198: and raced against the caller, like chat. Diffusion is the
+            # longest blocking call this gateway makes, so it is the route where
+            # an abandoned request wastes most.
+            resp, served_id = await _forward_or_abandon(
+                request,
+                pool.forward_with_failover(
+                    _candidates(health.usable),
+                    "/v1/images/generations",
+                    body.to_backend_payload(),
+                    extra_headers={"X-Trace-ID": trace_id},
+                ),
             )
             entry = _served_by(health.usable, served_id, entry)
+        except ClientGone:
+            # Listed before the catch-all below, which would otherwise swallow
+            # this into `images_generations.upstream_error` — an abandoned
+            # request is not a backend failure and must not open the breaker.
+            abandoned_ms = int((time.monotonic() - backend_start) * 1000)
+            logger.info(
+                "images_generations.client_disconnected",
+                model=body.model,
+                backend_id=entry.id,
+                request_id=request_id,
+                latency_ms=abandoned_ms,
+                client_id=claims.client_id if claims else "unknown",
+            )
+            # RM-60: the reserve has to be released, or the caller's monthly cap
+            # stays debited for an image they never received until the period
+            # rolls over. Settled at zero cost rather than written off silently:
+            # **an image is all-or-nothing**. Chat bills what was streamed
+            # because those tokens reached the caller; here nothing was
+            # delivered and there is no partial image to price.
+            if budget_redis is not None and reservation is not None and reservation.allowed:
+                _detach(
+                    BudgetTracker(budget_redis).settle(
+                        claims.client_id if claims else "unknown",
+                        reservation.reserved_usd,
+                        0.0,
+                        cap_usd=reservation.cap_usd,
+                        alert_thresholds_percent=alert_thresholds_percent,
+                    ),
+                    what="client_disconnected_settle",
+                )
+            _detach(
+                metrics_store.record_inference(
+                    prompt_tokens=0,
+                    completion_tokens=0,
+                    latency_ms=abandoned_ms,
+                    backend_id=entry.id,
+                    model_id=resolution.model_key,
+                    error=False,
+                ),
+                what="client_disconnected_image_metrics",
+            )
+            return Response(status_code=499)
         except (httpx.ConnectError, httpx.ConnectTimeout, httpx.RemoteProtocolError) as exc:
             logger.error(
                 "images_generations.unreachable",

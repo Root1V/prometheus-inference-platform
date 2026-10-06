@@ -158,6 +158,51 @@ async def test_an_outright_cancellation_also_releases_the_backend():
 # ── the wiring, so a revert is noticed ─────────────────────────────────────
 
 
+def test_the_image_path_is_guarded():
+    """PRM-198. Diffusion is the longest blocking call this gateway makes, so
+    it is where an abandoned request wastes most — and the one route whose
+    `except Exception` catch-all would have swallowed `ClientGone` into an
+    upstream error, opening the circuit breaker over a caller hanging up."""
+    import inspect
+
+    from prometheus_gateway import router
+
+    src = inspect.getsource(router)
+    i = src.index('"/v1/images/generations",\n                    body.to_backend_payload(),')
+    window = src[max(0, i - 700) : i]
+    assert "_forward_or_abandon" in window, (
+        "the image forward is no longer raced against the caller"
+    )
+
+
+def test_the_image_guard_precedes_the_catch_all():
+    """Order is the correctness here: `except Exception` sits below and would
+    report an abandoned request as a backend failure."""
+    import inspect
+
+    from prometheus_gateway import router
+
+    src = inspect.getsource(router)
+    gone = src.index("except ClientGone:", src.index("images_generations.forwarding"))
+    catch_all = src.index("except Exception as exc:", src.index("images_generations.forwarding"))
+    assert gone < catch_all
+
+
+def test_an_abandoned_image_releases_its_budget_reservation():
+    """RM-60 debits the monthly cap before forwarding. Returning without
+    settling leaves the caller charged for an image they never received until
+    the period rolls over."""
+    import inspect
+
+    from prometheus_gateway import router
+
+    src = inspect.getsource(router)
+    i = src.index("images_generations.client_disconnected")
+    block = src[i : i + 2000]
+    assert "settle(" in block
+    assert "0.0," in block, "an image is all-or-nothing; nothing was delivered"
+
+
 def test_the_chat_path_is_guarded():
     """If someone unwraps this call the tests above keep passing, because they
     exercise the helper and not the route. This reads the source so that the
