@@ -26,7 +26,7 @@ dependencies = [
     # "the greenlet library is required to use this function". auth-service has
     # always declared it; this is the same line.
     "greenlet>=3.0",
-    "alembic>=1.13",
+    "alembic>=1.20.0",
     # PRM-131: Argus's own GenAI instruments, so our metric names, units,
     # instrument kinds and scope are theirs rather than a hand-copy that
     # drifts. Pinned exactly because it is a prerelease — A-29 asks for the
