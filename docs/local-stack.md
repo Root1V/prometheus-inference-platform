@@ -29,6 +29,24 @@ process environment at launch. A process started without it runs **dark**: no
 spans leave it, and `instrument_fastapi` becomes a no-op, so there is no server
 span and no `http.route` either.
 
+**Start Redis first — it is infrastructure, and it is a container even here (PRM-191):**
+
+```bash
+docker compose -f podman-compose.yml -f compose.baremetal.yml up -d redis
+```
+
+That overlay exists because this machine runs **neither** of the two deployments this
+repository describes. The services below run on macOS; Redis does not. The base file keeps
+Redis internal-only, which is right for the all-container deployment and leaves it
+unreachable from a process on the host — so the overlay adds one host binding,
+`127.0.0.1:6379:6379`, and nothing else. The all-container path never passes
+`-f compose.baremetal.yml` and is unchanged by it.
+
+Skipping it does not stop the stack: the gateway starts, logs
+`rate_limit.redis_not_configured_fail_open`, and serves. **It loses two controls silently** —
+rate limiting and token revocation — which is the failure this file exists to prevent, so
+start it first and check it is there (`docker exec prometheus-redis redis-cli ping`).
+
 ```bash
 uv run --env-file runtime/telemetry.env uvicorn prometheus_auth.asgi:app    --host 127.0.0.1 --port 9000
 ```
@@ -116,6 +134,13 @@ JWT. That is filed, not done.
 hostname below is the same decision, and mixing them is the failure mode: the
 service starts, reports healthy, and fails on the first call that crosses a
 network.
+
+**Redis is the exception to this either/or**, and PRM-191 is why it has its own file: the
+bare-metal rows below point at `127.0.0.1:6379`, which only exists if
+`compose.baremetal.yml` is in the command. Before that file, the only way to satisfy this
+row was a hand-typed `docker run` — a container belonging to no compose project, recreated
+by nothing, and invisible to anyone reading this repository. Exactly what the rule at the
+top of this file forbids.
 
 | variable | bare metal | Podman |
 |---|---|---|
