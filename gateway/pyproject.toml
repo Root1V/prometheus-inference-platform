@@ -46,7 +46,7 @@ dev = [
     "ruff>=0.4",
     "mypy>=1.10",
     "types-pyyaml>=6.0.12.20250915",
-    "fakeredis>=2.34.1",
+    "fakeredis>=2.39.0",
     "types-python-jose>=3.5.0.20260408",
 ]
 
