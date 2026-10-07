@@ -1,11 +1,16 @@
-import { ChevronDown, ChevronRight, Download, Percent, Receipt } from "lucide-react";
+import {
+  ChevronDown,
+  ChevronRight,
+  Download,
+  Percent,
+  Receipt,
+} from "lucide-react";
 import { Fragment, useState, type CSSProperties } from "react";
 import {
-  Area,
-  AreaChart,
   Bar,
   BarChart,
   CartesianGrid,
+  LabelList,
   ResponsiveContainer,
   Tooltip,
   XAxis,
@@ -23,6 +28,15 @@ import { useToast } from "../context/ToastContext";
 import { getErrorMessage } from "../lib/errors";
 import { formatCurrency, formatUsdCost } from "../lib/format";
 import type { BillingPeriodSummary } from "../types/billing";
+
+/** Eight million tokens does not fit on a card, and `8,143,022` truncated to
+ *  `8,143,0…` is worse than a rounded figure. The exact count is on the card's
+ *  own tooltip, and in the period history below it. */
+function compactTokens(n: number): string {
+  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
+  if (n >= 1_000) return `${Math.round(n / 1_000)}k`;
+  return n.toLocaleString();
+}
 
 const CHART_COLOR = "var(--color-primary)";
 const GRID_COLOR = "var(--color-border)";
@@ -61,7 +75,9 @@ const PERIOD_MONTH_FORMATTER = new Intl.DateTimeFormat(undefined, {
 function recentPeriods(count: number): { value: string; label: string }[] {
   const now = new Date();
   return Array.from({ length: count }, (_, i) => {
-    const d = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() - i, 1));
+    const d = new Date(
+      Date.UTC(now.getUTCFullYear(), now.getUTCMonth() - i, 1),
+    );
     const value = `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, "0")}`;
     return { value, label: PERIOD_MONTH_FORMATTER.format(d) };
   });
@@ -78,12 +94,15 @@ function CapIndicator({ summary }: { summary: BillingPeriodSummary }) {
   if (summary.total_usd === null) {
     return (
       <span className="text-xs text-text-muted">
-        Cap {formatUsdCost(summary.monthly_spend_cap_usd)} · spend unknown — nothing this period
-        had a configured price
+        Cap {formatUsdCost(summary.monthly_spend_cap_usd)} · spend unknown —
+        nothing this period had a configured price
       </span>
     );
   }
-  const percent = Math.min(100, (summary.total_usd / summary.monthly_spend_cap_usd) * 100);
+  const percent = Math.min(
+    100,
+    (summary.total_usd / summary.monthly_spend_cap_usd) * 100,
+  );
   const isOver = summary.total_usd >= summary.monthly_spend_cap_usd;
   return (
     <div className="mt-1">
@@ -94,7 +113,8 @@ function CapIndicator({ summary }: { summary: BillingPeriodSummary }) {
         />
       </div>
       <span className="mt-1 block text-xs text-text-muted">
-        {percent.toFixed(0)}% of {formatUsdCost(summary.monthly_spend_cap_usd)} cap
+        {percent.toFixed(0)}% of {formatUsdCost(summary.monthly_spend_cap_usd)}{" "}
+        cap
       </span>
     </div>
   );
@@ -119,7 +139,11 @@ function PeriodHistoryRow({
 }) {
   const [expanded, setExpanded] = useState(false);
   const detailQuery = useUsageExportRows(
-    { start: periodSummary.period_start, end: periodSummary.period_end, client_id: clientId },
+    {
+      start: periodSummary.period_start,
+      end: periodSummary.period_end,
+      client_id: clientId,
+    },
     expanded,
   );
   const rows = detailQuery.data ?? [];
@@ -156,7 +180,9 @@ function PeriodHistoryRow({
         <td className="px-4 py-3 text-text-muted">
           {formatUsdCost(periodSummary.tax_amount_usd)}
         </td>
-        <td className="px-4 py-3 text-text-muted">{formatUsdCost(periodSummary.total_usd)}</td>
+        <td className="px-4 py-3 text-text-muted">
+          {formatUsdCost(periodSummary.total_usd)}
+        </td>
         <td className="px-4 py-3 text-text-muted">
           {periodSummary.request_count.toLocaleString()}
         </td>
@@ -179,9 +205,13 @@ function PeriodHistoryRow({
         <tr className="border-b border-border bg-background/30 last:border-0">
           <td colSpan={6} className="p-0">
             {detailQuery.isLoading ? (
-              <div className="p-4 text-center text-xs text-text-muted">Loading detail…</div>
+              <div className="p-4 text-center text-xs text-text-muted">
+                Loading detail…
+              </div>
             ) : rows.length === 0 ? (
-              <div className="p-4 text-center text-xs text-text-muted">No usage this period.</div>
+              <div className="p-4 text-center text-xs text-text-muted">
+                No usage this period.
+              </div>
             ) : (
               <div className="max-h-64 overflow-y-auto overflow-x-auto">
                 <table className="w-full min-w-[560px] text-left text-xs">
@@ -202,10 +232,15 @@ function PeriodHistoryRow({
                         <td className="px-4 py-1.5 text-text-muted">
                           {new Date(row.recorded_at).toLocaleString()}
                         </td>
-                        <td className="px-4 py-1.5 text-text" title={row.model_id}>
+                        <td
+                          className="px-4 py-1.5 text-text"
+                          title={row.model_id}
+                        >
                           {row.model_slug}
                         </td>
-                        <td className="px-4 py-1.5 text-text-muted">{row.request_kind}</td>
+                        <td className="px-4 py-1.5 text-text-muted">
+                          {row.request_kind}
+                        </td>
                         <td className="px-4 py-1.5 text-text-muted">
                           {row.prompt_tokens.toLocaleString()}
                         </td>
@@ -240,17 +275,24 @@ export default function Billing() {
   const [exportingPeriod, setExportingPeriod] = useState<string | null>(null);
 
   const effectiveClientId = clientId || users[0]?.client_id || "";
-  const summaryQuery = useBillingSummary(effectiveClientId, period || undefined);
+  const summaryQuery = useBillingSummary(
+    effectiveClientId,
+    period || undefined,
+  );
   const historyQuery = useBillingHistory(effectiveClientId, 6);
   const periodOptions = recentPeriods(12);
 
   const summary = summaryQuery.data;
-  const modelBreakdown = (summary?.by_model ?? []).map((m) => ({
-    ...m,
-    label: m.model_id,
-    cost: m.cost_usd ?? 0,
+  const modelBreakdown = (summary?.by_model ?? [])
+    .map((m) => ({ ...m, label: m.model_id, cost: m.cost_usd ?? 0 }))
+    // Dearest first: a horizontal bar chart is read top-down, and the order
+    // the group-by happened to produce is not an answer to "where did the
+    // money go".
+    .sort((a, b) => b.cost - a.cost);
+  const dailyTrend = (summary?.daily ?? []).map((d) => ({
+    ...d,
+    cost: d.cost_usd ?? 0,
   }));
-  const dailyTrend = (summary?.daily ?? []).map((d) => ({ ...d, cost: d.cost_usd ?? 0 }));
 
   async function handleExportPeriod(periodSummary: BillingPeriodSummary) {
     setExportingPeriod(periodSummary.period);
@@ -275,7 +317,8 @@ export default function Billing() {
           <div>
             <h1 className="text-2xl font-semibold text-text">Billing</h1>
             <p className="mt-1 text-sm text-text-muted">
-              Per-client cost, spend cap, and export — informative only, no card charging.
+              Per-client cost, spend cap, and export — informative only, no card
+              charging.
             </p>
           </div>
           <div className="flex items-end gap-3">
@@ -326,9 +369,17 @@ export default function Billing() {
         ) : (
           <>
             <div className="mt-6 grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
+              {/* PRM-220: the period is already named in the selector above,
+                  so repeating it here only made the label wrap to two lines in
+                  its own card. What the subtotal was missing is what it bought:
+                  8,143,022 tokens across 1,182 requests sat in this response
+                  and were rendered nowhere, so the figure had no unit of work
+                  behind it. */}
               <StatCard
-                label={`Subtotal (${summary.period})`}
+                label="Subtotal"
                 value={formatUsdCost(summary.subtotal_usd)}
+                sub={`${compactTokens(summary.total_tokens)} tokens · ${summary.request_count.toLocaleString()} requests`}
+                toneReason={`${summary.total_tokens.toLocaleString()} tokens across ${summary.request_count.toLocaleString()} requests`}
                 icon={Receipt}
               />
               <StatCard
@@ -347,14 +398,23 @@ export default function Billing() {
                 </p>
                 {summary.preferred_currency !== "USD" && (
                   <p className="text-xs text-text-muted">
-                    {formatUsdCost(summary.total_usd)} at {summary.exchange_rate_used}{" "}
-                    {summary.preferred_currency}/USD
+                    {formatUsdCost(summary.total_usd)} at{" "}
+                    {summary.exchange_rate_used} {summary.preferred_currency}
+                    /USD
                   </p>
                 )}
               </div>
+              {/* A card that says "No cap configured" and nothing else is a
+                  card explaining its own emptiness. Where there is no cap, it
+                  says what that means instead. */}
               <div className="flex flex-col justify-center rounded-xl border border-border bg-surface p-5 shadow-sm">
                 <p className="text-sm text-text-muted">Spend cap</p>
                 <CapIndicator summary={summary} />
+                {summary.monthly_spend_cap_usd === null && (
+                  <p className="mt-1 text-xs text-text-muted">
+                    Requests are never refused for cost on this client.
+                  </p>
+                )}
               </div>
             </div>
 
@@ -370,26 +430,51 @@ export default function Billing() {
                     </p>
                   ) : (
                     <ResponsiveContainer width="100%" height="100%">
-                      <BarChart data={modelBreakdown}>
-                        <CartesianGrid strokeDasharray="3 3" stroke={GRID_COLOR} vertical={false} />
-                        <XAxis
-                          dataKey="label"
-                          tick={{ fill: AXIS_COLOR, fontSize: 12 }}
-                          axisLine={{ stroke: GRID_COLOR }}
-                          tickLine={false}
+                      {/* PRM-220: horizontal, and the reason is measurable.
+                          Vertically, Recharts drops a tick when labels collide:
+                          three models rendered three bars and two names, so the
+                          middle one — qwen36-35b-a3b-q4 at USD 0.5043 — was a
+                          quantity nobody could name, on a billing page. Turned
+                          on its side, a model slug has a whole row to sit in.
+                          It also sorts by cost, which a category axis cannot. */}
+                      <BarChart
+                        data={modelBreakdown}
+                        layout="vertical"
+                        margin={{ top: 4, right: 56, bottom: 4, left: 0 }}
+                      >
+                        <CartesianGrid
+                          strokeDasharray="3 3"
+                          stroke={GRID_COLOR}
+                          horizontal={false}
                         />
+                        <XAxis type="number" hide />
                         <YAxis
-                          tick={{ fill: AXIS_COLOR, fontSize: 12 }}
+                          type="category"
+                          dataKey="label"
+                          tick={{ fill: AXIS_COLOR, fontSize: 11 }}
                           axisLine={false}
                           tickLine={false}
-                          tickFormatter={(v: number) => formatUsdCost(v)}
-                          width={70}
+                          width={150}
                         />
                         <Tooltip
+                          cursor={{ fill: GRID_COLOR, fillOpacity: 0.25 }}
                           contentStyle={tooltipStyle()}
                           formatter={tooltipCostFormatter}
                         />
-                        <Bar dataKey="cost" fill={CHART_COLOR} radius={[4, 4, 0, 0]} />
+                        <Bar
+                          dataKey="cost"
+                          fill={CHART_COLOR}
+                          radius={[0, 4, 4, 0]}
+                          barSize={18}
+                        >
+                          <LabelList
+                            dataKey="cost"
+                            position="right"
+                            className="fill-text-muted"
+                            fontSize={11}
+                            formatter={(v: unknown) => formatUsdCost(Number(v))}
+                          />
+                        </Bar>
                       </BarChart>
                     </ResponsiveContainer>
                   )}
@@ -407,14 +492,22 @@ export default function Billing() {
                     </p>
                   ) : (
                     <ResponsiveContainer width="100%" height="100%">
-                      <AreaChart data={dailyTrend}>
-                        <defs>
-                          <linearGradient id="dailySpendFill" x1="0" y1="0" x2="0" y2="1">
-                            <stop offset="0%" stopColor={CHART_COLOR} stopOpacity={0.35} />
-                            <stop offset="100%" stopColor={CHART_COLOR} stopOpacity={0} />
-                          </linearGradient>
-                        </defs>
-                        <CartesianGrid strokeDasharray="3 3" stroke={GRID_COLOR} vertical={false} />
+                      {/* PRM-220: bars, because a day's spend is one number
+                          and not a process.
+
+                          It was `type="monotone"`, a spline through the daily
+                          totals: on this client's three days — 0.0861, 3.3055,
+                          0.1743 — it drew a gradual rise and fall that never
+                          happened, and a curve through so few points can leave
+                          the range of the data entirely. What occurred was a
+                          spike on the 6th. One bar per day says that and
+                          nothing else. */}
+                      <BarChart data={dailyTrend}>
+                        <CartesianGrid
+                          strokeDasharray="3 3"
+                          stroke={GRID_COLOR}
+                          vertical={false}
+                        />
                         <XAxis
                           dataKey="day"
                           tick={{ fill: AXIS_COLOR, fontSize: 12 }}
@@ -429,17 +522,16 @@ export default function Billing() {
                           width={70}
                         />
                         <Tooltip
+                          cursor={{ fill: GRID_COLOR, fillOpacity: 0.25 }}
                           contentStyle={tooltipStyle()}
                           formatter={tooltipCostFormatter}
                         />
-                        <Area
-                          type="monotone"
+                        <Bar
                           dataKey="cost"
-                          stroke={CHART_COLOR}
-                          fill="url(#dailySpendFill)"
-                          strokeWidth={2}
+                          fill={CHART_COLOR}
+                          radius={[4, 4, 0, 0]}
                         />
-                      </AreaChart>
+                      </BarChart>
                     </ResponsiveContainer>
                   )}
                 </div>
@@ -452,7 +544,9 @@ export default function Billing() {
               </h2>
               <div className="mt-3 overflow-x-auto rounded-xl border border-border bg-surface">
                 {historyQuery.isLoading ? (
-                  <div className="p-8 text-center text-text-muted">Loading…</div>
+                  <div className="p-8 text-center text-text-muted">
+                    Loading…
+                  </div>
                 ) : (
                   <table className="w-full min-w-[560px] text-left text-sm">
                     <thead>
@@ -492,8 +586,8 @@ export default function Billing() {
             Model pricing
           </h2>
           <p className="mt-1 text-xs text-text-muted">
-            Replaces hand-editing pricing.yaml — a saved price applies to the next request
-            immediately, no restart needed.
+            Replaces hand-editing pricing.yaml — a saved price applies to the
+            next request immediately, no restart needed.
           </p>
           <div className="mt-3 rounded-xl border border-border bg-surface">
             <div className="max-h-[35rem] overflow-y-auto overflow-x-auto">

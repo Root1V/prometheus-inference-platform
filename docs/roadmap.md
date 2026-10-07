@@ -8484,3 +8484,30 @@ say so where it is used, not in a commit message.
 pass-through set and payload contract, pricing, the picker group, the two-field composer and its
 examples, and re-registering `nli-tei`. Out — a zero-shot *pipeline* over NLI models, which would
 let a checkpoint like this back `von-decide`'s modality properly; that is its own item.
+
+
+## PRM-220 — Billing charts say what happened
+
+**Why**: three things, and the first two are the same defect this repo keeps meeting — a picture
+asserting more than was measured.
+
+**Daily spend was a `monotone` spline.** A day's spend is one number; the curve interpolated every
+instant between days and drew a smooth rise and fall. On this client's three days — 0.0861, 3.3055,
+0.1743 — what happened was a spike on the 6th, and a monotone curve through so few points can
+overshoot past the data's own range. One bar per day says that and nothing more.
+
+**`Cost by model` rendered three bars and two labels.** Recharts drops a category tick when labels
+collide, so `qwen36-35b-a3b-q4` at USD 0.5043 appeared as an unnamed quantity on a page about money.
+Horizontal bars give each slug a row of its own, sorted dearest first — which a category axis cannot
+do and which is the order the question is actually asked in.
+
+**The subtotal never said what it bought.** `total_tokens` and `request_count` are both in the
+summary response; only the second was rendered, and only in the history table. The card now reads
+`8.1M tokens · 1,183 requests`, with the exact figures on its tooltip.
+
+*Worth recording*: two findings from the review turned out to be wrong, and the source said so.
+`unpriced_requests` **is** rendered, in the history row, with a good explanation of what it means;
+`request_count` is there too. Reading the page is not reading the code.
+
+**Scope**: in — the two charts, the subtotal's sub-line, the repeated period in a card label, and
+the empty spend-cap card. Out — the page's structure, which is PRM-221.
