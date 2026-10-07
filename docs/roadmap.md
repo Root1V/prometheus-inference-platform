@@ -8275,3 +8275,23 @@ downloading would otherwise push the search off the page.
 **Scope**: in — the two states of the tab, the row and card treatments, the button, and the
 Downloads placement. Out — clearing completed downloads, which belongs to the manager rather than
 the page.
+
+
+## PRM-212 — A download row that shows the download
+
+**Why**: the bar was conditional on `isActive || isPaused`, so the two states anyone actually asks
+about — *did it finish?* and *where did it stop?* — were the two with no bar at all. A cancelled
+download at 43% and a completed one rendered the same shape, and telling them apart meant reading
+two byte counts and dividing. The bar is now always drawn, and its colour carries the outcome:
+green full, amber paused, red failed, grey cancelled, primary in flight. A full bar means all of it
+is here; a half bar means it is not.
+
+**Four fields the response carried and the row threw away** — the same pattern as PRM-201, PRM-204
+and PRM-206. `hf_filename`, so two quantizations of one repo downloading at once are not two
+identical rows. `speed_bps` and `eta_seconds`, shown **only while `downloading`**, because both are
+stale the instant a transfer pauses and a stale rate presented as current is this repo's recurring
+defect. And the `[n/total]` shard suffix the manager appends to `model_id`, which was rendered
+inside the name where it reads as part of it rather than as "file 2 of 3".
+
+**Scope**: in — the bar, its colours, the recovered fields, and `… remaining` while incomplete.
+Out — clearing finished entries, which belongs to the manager.
