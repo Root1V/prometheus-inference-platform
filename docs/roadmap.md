@@ -8244,3 +8244,34 @@ snapshot and the node is the authority, so the UI warns and lets the node refuse
 
 *Note: the "larger than free space" warning is untested against real data — the volume has 2.4 TB
 free and no file in the catalog approaches it.*
+
+
+## PRM-211 — Discover looks like it works
+
+**Why**: PRM-210 corrected what the tab *said* — the shard arithmetic, the truncated names, the
+missing free-space figure — and changed almost nothing about how it *looked*. Reported back as
+"ugly and not intuitive", which was fair: that item did information design and called it done.
+
+Five concrete faults, each visible in a screenshot:
+
+- **The grid stretched both columns to the taller one.** Three file rows sat at the top of a panel
+  seven hundred pixels deep. `items-start` is the whole fix.
+- **The empty state spent the screen on nothing.** Before a search there is exactly one thing to do,
+  and it was a small box in a corner with a blank panel beside it. It is now a centred affordance
+  sized like the only action it is, with the example repo id spelled out.
+- **The download control was a bare icon at the far edge of a very wide panel** — roughly a thousand
+  pixels from the filename it acted on. It is now a labelled, bordered button inside the row.
+- **Result rows were borderless text in a column.** Nothing said a row was a thing you could pick.
+  They are bordered cards now, with the counts as pills rather than grey runs of digits.
+- **The disabled search button was a washed-out primary**, which reads as a rendering fault rather
+  than "not yet". Disabled is now neutral and inert.
+
+`Downloads` also moved from the foot of the page to directly under the disk bar: it is progress on
+the thing you just clicked, and it used to render below everything else, off-screen at the moment it
+mattered. That gives finished entries a good seat, so in-flight ones sort first and the block is
+capped at `max-h-60` — the manager keeps completed entries for the session, and a morning of
+downloading would otherwise push the search off the page.
+
+**Scope**: in — the two states of the tab, the row and card treatments, the button, and the
+Downloads placement. Out — clearing completed downloads, which belongs to the manager rather than
+the page.
