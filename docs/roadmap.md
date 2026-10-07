@@ -8692,3 +8692,42 @@ backend was never called, which is the actual property a gate has and a meter do
 **Scope**: in — the counter, the headroom check, the handler gate, `rate_limit_ipm`, and three
 tests. Out — per-client tiers, the last item from the limits review, and the fixed-to-sliding window
 change.
+
+
+## PRM-227 — Three layers, and a request passes all of them
+
+**Why**: the established practice layers limits by purpose — a platform ceiling that protects the
+hardware, a consumer entitlement that expresses what a client bought, and per-route micro-limits on
+expensive operations — and evaluates them as a **conjunction**: a request passes every applicable
+layer, not whichever is most specific. Only the third existed here. Measured on live data, one
+client reached **112 requests in a minute** — 56 embeddings, 52 rerank, 4 chat — without a single
+refusal, because six counters of 60 never see each other.
+
+**Expressed in the key scheme that already existed.** A client-wide counter is the same key with `*`
+where the endpoint goes; the platform's is `*` in both positions under a reserved identity. No
+schema, no migration, one INCR per layer.
+
+**Layer 2 is always enforced and layer 1 is opt-in**, for different reasons. A deployment whose
+consumer layer is absent is the configuration the practice calls wrong, so shipping it behind a
+switch would be shipping the bug with the switch beside it. Layer 1 is sized against the hardware,
+and a number chosen in a config default rather than by the operator would be invented.
+
+**Two tests forced two corrections, and both were design errors rather than test errors.**
+
+The first ordering was platform → consumer → endpoint, on the reasoning that no client should spend
+its budget on a request the platform would not serve. But while the two carry the same value, the
+consumer layer always fires first and the endpoint layer becomes unreachable — a client hammering
+one route was told `scope: client` when `scope: embeddings` was the useful answer. Most specific
+reason wins where both apply.
+
+The second was giving the consumer layer the per-endpoint value as its default. That re-merges every
+route into one budget, which is precisely the bug PRM-129 fixed when a copilot using embeddings and
+rerank hit its ceiling 5% short of nine users. The default is the **sum** of the per-endpoint
+allowances instead: it bounds a client at full tilt on every route at once without undoing a
+separation that was deliberate. A real, tighter number per client is PRM-228's job, chosen rather
+than invented.
+
+**Scope**: in — the two layers, the scope constants, the client-wide and platform token counters,
+the shared refusal with its `scope` field, and three tests. Out — the tiers that give layer 2 a
+per-client value (PRM-228), a pre-auth IP throttle, and per-model limits, which is the axis both
+vendors actually use and a better one than per-endpoint.

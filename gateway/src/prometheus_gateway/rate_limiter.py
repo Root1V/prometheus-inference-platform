@@ -50,6 +50,16 @@ _TPD_KEY = "prometheus:rl:tpd:{identity}:{endpoint}:{bucket}"
 # generated, where the size of a completion is not. So this is checked ahead of
 # the work and counted from what actually came back.
 _IPM_KEY = "prometheus:rl:ipm:{identity}:{endpoint}:{bucket}"
+
+# PRM-227: the two broader layers, expressed in the key scheme that already
+# exists rather than a new one.
+#
+# A client-wide counter is the same key with `*` where the endpoint goes, and
+# the platform's is `*` in both positions under a reserved identity. Client ids
+# are UUIDs, so the reserved name cannot collide with one. No schema, no
+# migration, one extra INCR per layer.
+ALL_ENDPOINTS = "*"
+PLATFORM_IDENTITY = "*platform*"
 _COUNTER_TTL = 90  # seconds — covers current + previous minute
 # PRM-225: a day plus two hours, for the same reason the minute gets ninety
 # seconds — the key must outlive its own window so a request landing in the
