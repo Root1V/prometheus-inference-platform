@@ -1127,7 +1127,15 @@ export default function Playground() {
           )}
 
           <div className="mt-4 min-h-0 flex-1 space-y-4 overflow-y-auto rounded-xl border border-border bg-surface p-4">
-            {entries.length === 0 ? (
+            {/* `!isBusy`, not just "no entries yet".
+                A chat entry is only appended once the response completes, so
+                `entries` stays empty for the whole request. The waiting
+                indicator is a sibling of this branch rather than part of it,
+                and PRM-214 gave the empty state `h-full` — which pushed that
+                indicator below the fold and left no sign the message had been
+                sent at all. The guide is for before you ask; the moment you
+                ask, it goes. */}
+            {entries.length === 0 && !isBusy ? (
               /* PRM-214: 538px of panel used to carry one grey line. The
                  panel is empty exactly when someone does not yet know what
                  this model does, so that is what it says now — and the
