@@ -29,6 +29,7 @@ TUI's DownloadsView polls it on a refresh tick.
 from __future__ import annotations
 
 import asyncio
+import shutil
 from pathlib import Path
 from typing import Annotated, Any
 
@@ -175,11 +176,40 @@ async def search_card(
 # ── GET/PATCH /v1/models/config ──────────────────────────────────────────────
 
 
+def _disk_usage(path: Path) -> tuple[int | None, int | None]:
+    """Free and total bytes on the volume holding `path` — PRM-210.
+
+    The admin UI offers downloads measured in tens of gigabytes and had no way
+    to say whether one would fit: the model catalog reports how much the
+    weights occupy, never how much room is left. That is a question only the
+    node can answer, so it answers it here.
+
+    Walks up to the nearest existing ancestor, because a downloads directory
+    that has not been created yet still sits on a volume with a real amount of
+    free space, and "unknown" would be a worse answer than the true one.
+
+    Returns `(None, None)` rather than raising. A node that cannot stat its own
+    volume must still serve its config, and the UI distinguishes a figure it
+    does not have from one it does.
+    """
+    try:
+        probe = path
+        while not probe.exists() and probe != probe.parent:
+            probe = probe.parent
+        usage = shutil.disk_usage(probe)
+        return usage.free, usage.total
+    except OSError:
+        return None, None
+
+
 def _serialize_config(config: ManagerConfig) -> dict[str, Any]:
+    free, total = _disk_usage(config.resolved_downloads_dir)
     return {
         "downloads_dir": config.downloads.dir,
         "hf_token_env": config.downloads.hf_token_env,
         "ca_bundle": config.downloads.ca_bundle,
+        "disk_free_bytes": free,
+        "disk_total_bytes": total,
     }
 
 

@@ -26,6 +26,7 @@ from prometheus_manager_api.auth import (
     require_backend_registry_read,
     require_backend_registry_write,
 )
+from prometheus_manager_api.discovery import _disk_usage
 
 # ── Setup ──────────────────────────────────────────────────────────────────────
 
@@ -102,6 +103,33 @@ class TestModelsConfig:
             _clear_overrides()
         assert resp.status_code == 200
         assert resp.json()["downloads_dir"] == str(tmp_path / "models")
+
+    def test_get_reports_free_space_on_the_downloads_volume(self, tmp_path: Path):
+        """PRM-210: the UI offers 60 GB downloads and could not say if one fit."""
+        client = _authed_read(_make_client(tmp_path))
+        try:
+            resp = client.get("/v1/models/config", headers=_HEADERS)
+        finally:
+            _clear_overrides()
+        body = resp.json()
+        assert body["disk_free_bytes"] > 0
+        assert body["disk_total_bytes"] >= body["disk_free_bytes"]
+
+    def test_free_space_resolves_through_a_dir_that_does_not_exist_yet(self):
+        """A downloads dir not yet created still sits on a real volume, and the
+        true figure beats "unknown" — so the probe walks up to an ancestor."""
+        free, total = _disk_usage(Path("/") / "nope-a" / "nope-b" / "nope-c")
+        assert free is not None and total is not None
+        assert 0 < free <= total
+
+    def test_free_space_is_unknown_rather_than_raising(self, monkeypatch):
+        """A node that cannot stat its own volume must still serve its config."""
+
+        def boom(_: object) -> None:
+            raise OSError("no such device")
+
+        monkeypatch.setattr("prometheus_manager_api.discovery.shutil.disk_usage", boom)
+        assert _disk_usage(Path("/")) == (None, None)
 
     def test_patch_requires_auth(self, tmp_path: Path):
         client = _make_client(tmp_path)

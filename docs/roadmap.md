@@ -8212,3 +8212,35 @@ so the header is where it belongs. It was simply never labelled.
 363 MB model and an idle 77.6 GB one are not the same finding), the `n/a`/`?` split, the corrected
 description, a labelled node selector, and dropping the row-number column. Out — bulk delete from
 the filtered view, and any change to what the catalog reports.
+
+
+## PRM-210 — Discover says what a download costs
+
+**Why**: the tab understated its own primary action by two and a half times. `shard_filenames()`
+in `hf_discovery.py` takes the file you picked and collects every sibling shard, so choosing one
+part downloads the whole set — while the UI listed each part separately with its individual size.
+Measured on a live repo: four quantizations, each two shards, rendered as eight rows reading 36.5,
+26.8, 51.1, 26.8, 43.8, 26.8, 35.0 and 26.8 GB. Clicking the 26.8 GB row fetched **68.0 GB**. Shards
+now collapse into one row per set, named with a `-*` wildcard and labelled with the part count, and
+the size shown is the sum. A set with any unsized member reports no size at all rather than a
+partial sum presented as a whole.
+
+**And nothing said whether it would fit.** The catalog reports what weights occupy, never what is
+left on the volume — a question only the node can answer, so `/v1/models/config` now answers it.
+`_disk_usage` walks up to the nearest existing ancestor (a downloads directory not yet created still
+sits on a real volume) and returns `(None, None)` rather than raising, so a node that cannot stat
+its own volume still serves its config and the UI says "unknown" instead of guessing.
+
+**The rest was space spent backwards.** Three equal columns gave a third of the width, permanently,
+to a panel reading "No downloads yet", while repo ids wrapped to five lines in the column beside it
+and every filename was truncated — hiding the one segment that distinguishes two quantizations of
+the same repo. Two columns now, 2:3, `Downloads` appears only when there is something in it, and
+nothing that identifies a thing is cut off. A result already downloaded on the node says so.
+
+**Scope**: in — shard grouping mirroring `_SHARD_RE`, the summed size, `disk_free_bytes` /
+`disk_total_bytes` on the node's config, the free-space line, the fit warning, the `in library`
+mark, full names, and the layout. Out — blocking a download that does not fit: the figures are a
+snapshot and the node is the authority, so the UI warns and lets the node refuse.
+
+*Note: the "larger than free space" warning is untested against real data — the volume has 2.4 TB
+free and no file in the catalog approaches it.*
