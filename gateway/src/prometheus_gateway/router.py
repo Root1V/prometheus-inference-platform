@@ -430,7 +430,7 @@ _ENGINE_PROVIDERS = {
 # are forwarded to. `/predict` is hf-serve's, and it is the only engine in
 # BACKENDS that serves one of these today — when a second one arrives with a
 # different path, this becomes a per-engine lookup rather than a constant.
-_PASS_THROUGH_MODALITIES = frozenset({"classification", "zero_shot", "typed_decision"})
+_PASS_THROUGH_MODALITIES = frozenset({"classification", "zero_shot", "typed_decision", "nli"})
 # PRM-140: per engine now. PRM-136 shipped this as a constant and said so —
 # "when a second one arrives with a different path, this becomes a per-engine
 # lookup rather than a constant". `laya-serve` answers on /v1/systemone.

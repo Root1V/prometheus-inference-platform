@@ -178,6 +178,9 @@ def test_every_modality_is_either_probed_or_explicitly_skipped():
         "rerank",
         "classification",
         "zero_shot",
+        # PRM-219: probed with a pair, because the pair is the modality. A
+        # single-text probe would pass against a model that cannot do this.
+        "nli",
         "typed_decision",
     }
     skipped = {"image"}

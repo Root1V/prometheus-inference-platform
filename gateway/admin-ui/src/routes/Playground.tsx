@@ -20,6 +20,7 @@ import { useInstances } from "../api/instances";
 import {
   streamPlaygroundChat,
   useEmbeddings,
+  useNli,
   useZeroShot,
   useClassify,
   useRerank,
@@ -130,6 +131,19 @@ const MODALITY_GUIDE: Partial<
         text: "Mi factura de marzo me cobr\u00f3 el doble de lo habitual.",
         companion:
           "facturaci\u00f3n, soporte t\u00e9cnico, ventas, cancelaci\u00f3n",
+      },
+    ],
+  },
+  nli: {
+    what: "Judges whether a hypothesis follows from a premise \u2014 entailment, contradiction, or neither. Single-shot, and English only.",
+    examples: [
+      {
+        text: "The customer cancelled the subscription yesterday.",
+        companion: "The customer is no longer a subscriber.",
+      },
+      {
+        text: "The customer renewed for two more years.",
+        companion: "The customer cancelled the contract.",
       },
     ],
   },
@@ -408,6 +422,7 @@ export default function Playground() {
   const instancesQuery = useInstances();
   const chat = usePlaygroundChat();
   const embeddings = useEmbeddings();
+  const nli = useNli();
   const zeroShot = useZeroShot();
   const classify = useClassify();
   const rerank = useRerank();
@@ -518,6 +533,7 @@ export default function Playground() {
   const isClassification = modality === "classification";
   const isRerank = modality === "rerank";
   const isTypedDecision = modality === "typed_decision";
+  const isNli = modality === "nli";
   // PRM-137 follow-up: the three that answer with a ranked distribution rather
   // than text. They share one log entry shape and one renderer — what differs
   // is only what the request carries.
@@ -532,11 +548,13 @@ export default function Playground() {
     zeroShot.isPending ||
     classify.isPending ||
     rerank.isPending ||
-    typedDecision.isPending;
+    typedDecision.isPending ||
+    nli.isPending;
   const canSendDraft =
     modality === "embedding" ||
     modality === "image" ||
     isRanked ||
+    isNli ||
     isTypedDecision
       ? draft.trim().length > 0
       : draft.trim().length > 0 || attachedImage !== null;
@@ -696,6 +714,45 @@ export default function Playground() {
           latencyMs: Math.round(performance.now() - startedAt),
           model: selectedModel,
           ignoredParameters: data.ignoredParameters,
+        },
+      ]);
+    } catch (error) {
+      setEmbedError(getErrorMessage(error));
+    }
+  }
+
+  async function handleNli() {
+    if (!selectedModel || !draft.trim() || nli.isPending) return;
+    const hypothesis = candidateLabels.trim();
+    if (!hypothesis) {
+      setEmbedError(
+        "Give a hypothesis in the panel — entailment is a judgement about a pair, " +
+          "so one sentence on its own has nothing to be judged against.",
+      );
+      return;
+    }
+    setEmbedError(null);
+    const premise = draft;
+    composerHistory.record(premise);
+    setDraft("");
+    const startedAt = performance.now();
+    try {
+      const scored = await nli.mutateAsync({
+        model: selectedModel,
+        premise,
+        hypothesis,
+      });
+      setEntries((prev) => [
+        ...prev,
+        {
+          // The same shape the ranked modalities already render: labels with
+          // scores, sorted. Nothing about NLI needs a second renderer.
+          kind: "zero_shot",
+          input: `${premise}\n\u2192 ${hypothesis}`,
+          labels: scored.map((r) => r.label),
+          scores: scored.map((r) => r.score),
+          latencyMs: Math.round(performance.now() - startedAt),
+          model: selectedModel,
         },
       ]);
     } catch (error) {
@@ -1010,6 +1067,7 @@ export default function Playground() {
     if (isZeroShot) return void handleZeroShot();
     if (isClassification) return void handleClassify();
     if (isRerank) return void handleRerank();
+    if (isNli) return void handleNli();
     if (isTypedDecision) return void handleTypedDecision();
     if (!draft.trim() && !attachedImage) return;
     const userMessage: ChatMessage = {
@@ -1132,6 +1190,8 @@ export default function Playground() {
       return "Text to classify… (Enter to send, Shift+Enter for a new line)";
     if (isRerank)
       return "The query to score documents against… (Enter to send)";
+    if (isNli)
+      return "The premise… (Enter to send, Shift+Enter for a new line)";
     if (isTypedDecision)
       return "The state to decide about — an email, a ticket… (Enter to send)";
     return "Ask something… (Enter to send, Shift+Enter for a new line)";
@@ -1875,6 +1935,39 @@ export default function Playground() {
                 </span>
               </span>
             </label>
+          )}
+
+          {isNli && (
+            <div>
+              <label
+                htmlFor="playground-hypothesis"
+                className="mb-1.5 block text-sm font-medium text-text"
+              >
+                Hypothesis
+              </label>
+              <textarea
+                id="playground-hypothesis"
+                rows={3}
+                value={candidateLabels}
+                onChange={(e) => setCandidateLabels(e.target.value)}
+                placeholder="The customer is no longer a subscriber."
+                className={inputClass}
+              />
+              <p className="mt-1 text-xs text-text-muted">
+                The box on the left is the premise; this is the statement judged
+                against it. Both are needed — entailment is a property of the
+                pair, which is why a single text cannot have one.
+              </p>
+              {/* Measured, not guessed: cross-encoder/nli-distilroberta-base is
+                  English-trained, and on Spanish pairs it is confidently wrong —
+                  "canceló ayer" → "ya no es suscriptor" came back contradiction
+                  at 0.94, the exact inverse of the right answer. */}
+              <p className="mt-2 rounded-lg bg-amber-500/10 px-2 py-1.5 text-xs text-amber-700 dark:text-amber-400">
+                English only. On Spanish pairs this checkpoint answers
+                confidently and wrongly — measured here inverting a clear
+                entailment at 0.94.
+              </p>
+            </div>
           )}
 
           {isRerank && (

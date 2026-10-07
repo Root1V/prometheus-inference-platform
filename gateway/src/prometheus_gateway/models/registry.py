@@ -314,12 +314,15 @@ _PAYLOAD_SCHEMAS: dict[tuple[str, str], str] = {
     ("classification", "tei"): "tei.predict.v1",
     ("zero_shot", "tei"): "tei.predict.v1",
     ("typed_decision", "laya"): "typed-decision.v1",
+    # PRM-219: the same TEI body as the two above — a pair of strings in, the
+    # model's own classes out. It gets its own modality, not its own contract.
+    ("nli", "tei"): "tei.predict.v1",
 }
 
 # The modalities whose body is the engine's, so their schema is keyed by engine.
 # Mirrors the gateway router's `_PASS_THROUGH_MODALITIES`; the guard test in
 # tests/test_payload_schema.py fails if the two drift.
-_ENGINE_SHAPED = frozenset({"classification", "zero_shot", "typed_decision"})
+_ENGINE_SHAPED = frozenset({"classification", "zero_shot", "typed_decision", "nli"})
 
 
 def payload_schema_for(modality: str, engine: str) -> str | None:
