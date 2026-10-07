@@ -8,7 +8,7 @@ import { cn } from "../lib/cn";
 import { getErrorMessage } from "../lib/errors";
 import type { Node } from "../types/node";
 import { ConfirmDialog } from "./ConfirmDialog";
-import { UserStatusBadge } from "./UserStatusBadge";
+import { NodeLivenessBadge } from "./NodeLiveness";
 
 const actionButtonClass =
   "rounded-md p-1.5 transition-colors disabled:cursor-not-allowed disabled:opacity-30";
@@ -26,10 +26,16 @@ export function NodeRow({ node, onEdit }: { node: Node; onEdit: (node: Node) => 
   return (
     <>
       <tr className="border-b border-border last:border-0">
-        <td className="px-4 py-3 font-medium text-text">{node.name}</td>
-        <td className="px-4 py-3 text-text-muted">{node.manager_url}</td>
-        <td className="px-4 py-3 text-text-muted capitalize">{node.node_type}</td>
-        <td className="px-4 py-3 text-text-muted">{node.tag ?? "—"}</td>
+        <td className="px-4 py-3">
+          <div className="font-medium text-text">{node.name}</div>
+          <div className="mt-0.5 text-xs text-text-muted">
+            <span className="capitalize">{node.node_type}</span>
+            {node.tag && ` · ${node.tag}`}
+          </div>
+        </td>
+        <td className="px-4 py-3">
+          <code className="text-xs text-text-muted">{node.manager_url}</code>
+        </td>
         {/* PRM-133: "—" would read as "none", and this column's whole job is
             the difference. An undeclared node says so. */}
         <td className="px-4 py-3 text-text-muted">
@@ -41,10 +47,23 @@ export function NodeRow({ node, onEdit }: { node: Node; onEdit: (node: Node) => 
             node.engines.map((e) => ENGINE_LABELS[e as Backend] ?? e).join(", ")
           )}
         </td>
-        <td className="px-4 py-3 text-text-muted">${node.hourly_cost_usd.toFixed(4)}</td>
-        <td className="px-4 py-3 text-text-muted">{node.price_margin_multiplier}×</td>
+        {/* PRM-206: these were two bare numbers. `$0.3228` and `1.3×` mean
+            nothing without saying what they are — and nothing in this codebase
+            can derive them, so they are an operator's input that only this page
+            ever shows back. */}
+        <td className="px-4 py-3 text-xs text-text-muted">
+          <div title="Hardware amortization + electricity, entered when the node was registered">
+            ${node.hourly_cost_usd.toFixed(4)}/h to run
+          </div>
+          <div
+            className="mt-0.5"
+            title="Multiplier the Model Pricing page's suggested price is calculated with"
+          >
+            {node.price_margin_multiplier}× pricing margin
+          </div>
+        </td>
         <td className="px-4 py-3">
-          <UserStatusBadge isActive={node.is_active} />
+          <NodeLivenessBadge node={node} />
         </td>
         <td className="px-4 py-3">
           <div className="flex items-center gap-1.5">

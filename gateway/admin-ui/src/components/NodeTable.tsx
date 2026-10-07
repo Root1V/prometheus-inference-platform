@@ -1,7 +1,14 @@
 import type { Node } from "../types/node";
 import { NodeRow } from "./NodeRow";
 
-const COLUMNS = ["Name", "Manager URL", "Type", "Tag", "Engines", "$/hour", "Margin", "Status", "Actions"];
+const COLUMNS = [
+  "Node",
+  "Manager URL",
+  "Engines",
+  "Cost basis",
+  "Liveness",
+  "Actions",
+];
 
 export function NodeTable({
   nodes,
