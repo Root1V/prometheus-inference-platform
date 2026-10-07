@@ -165,7 +165,25 @@ export function useZeroShot() {
           },
         )
       ).data;
-      return Array.isArray(raw) ? raw[0] : raw;
+      const first = Array.isArray(raw) ? raw[0] : raw;
+      /**
+       * PRM-218: a registered `zero_shot` model whose endpoint is not one.
+       *
+       * `von-decide` answers `{sequence, labels, scores}` — the zero-shot
+       * pipeline. `nli-tei` answers `[{label: "entailment", score}, …]`: a raw
+       * NLI classifier with no pipeline wrapped around it, registered under
+       * the same modality. Taking `raw[0]` left `labels` undefined and the
+       * renderer mapped over it, blanking the whole page — a white screen is
+       * the worst possible way to say "this model is not what it claims".
+       */
+      if (!first || !Array.isArray(first.labels) || !Array.isArray(first.scores)) {
+        throw new Error(
+          "This model is registered as zero-shot but did not answer like one — " +
+            "no labels or scores came back. It is most likely a plain classifier " +
+            "registered under the wrong modality; check its entry on the Models page.",
+        );
+      }
+      return first;
     },
   });
 }
