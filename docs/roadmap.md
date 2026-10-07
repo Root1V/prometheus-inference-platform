@@ -8020,3 +8020,34 @@ builds were genuine, the standalone typecheck claims were not.
 **Scope**: in — the two views, the slug, the discarded fields, bulk actions, the action menu. Out —
 grouping by node, which the filter already serves.
 
+## PRM-205 — the landing page says when something is wrong
+
+**Why**: every number on Overview rendered identically. `Error rate 33.3%`, `Latency p50 12,004 ms`
+and `Nodes 2 / 2 active` were the same grey, in the same card, with the same orange icon tile. The
+page a person lands on could not tell them anything was wrong.
+
+**`tone` is set only where the judgement is unambiguous**, and the restraint is the design rather
+than a gap:
+
+* **Circuits open** — a tripped breaker means the gateway has stopped sending traffic to a backend.
+  There is no reading of that which is fine.
+* **Nodes active vs configured** — a configured node that is not active is capacity the platform
+  believes it has and does not.
+* **Latency — deliberately uncoloured.** A p50 of twelve seconds is alarming for an embedding and
+  entirely normal for a 20B model writing three thousand tokens. A threshold invented here would
+  manufacture alarms, and a colour that cries wolf stops being read.
+
+**The error rate needed its denominator before it needed a colour.** The dashboard was reading
+`33.3%` while the gateway had served **three requests** — one failure out of three, after a
+restart. Colouring that red would have been a false alarm about a platform that was fine. So the
+card now carries `of 3 requests`, and below a usable sample it stays neutral and explains on hover
+that the rate is not worth reading. Above it, 1% warns and 10% is bad.
+
+**Every tone carries a reason.** A colour that cannot explain itself is a question rather than an
+answer, so each coloured card says on hover what made it that colour — including the uncoloured
+latency, which explains why it is staying out of it.
+
+**Scope**: in — `StatTone` on `StatCard`, and the three Overview judgements. Out — thresholds for
+latency or tokens, which are deployment- and model-specific and belong in `Limits` with real
+configuration behind them rather than hardcoded in a card.
+

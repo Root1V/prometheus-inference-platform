@@ -55,6 +55,36 @@ export default function Overview() {
       ? `${((inference.errors_total / inference.requests_total) * 100).toFixed(1)}%`
       : "0.0%";
 
+  /**
+   * PRM-205: a rate needs its denominator before it means anything.
+   *
+   * This dashboard read `33.3%` while the gateway had served **three
+   * requests** — one failure out of three, after a restart. Colouring that red
+   * is a false alarm, and false alarms are how a colour stops being read. Below
+   * a usable sample the card stays neutral and says how many requests it is
+   * talking about, so the number can be dismissed rather than believed.
+   */
+  const MEANINGFUL_SAMPLE = 20;
+  const requestsSeen = inference?.requests_total ?? 0;
+  const errorFraction =
+    inference && requestsSeen > 0 ? inference.errors_total / requestsSeen : 0;
+  const errorTone =
+    requestsSeen < MEANINGFUL_SAMPLE
+      ? "neutral"
+      : errorFraction >= 0.1
+        ? "bad"
+        : errorFraction >= 0.01
+          ? "warn"
+          : "good";
+  const errorReason =
+    requestsSeen < MEANINGFUL_SAMPLE
+      ? `Only ${requestsSeen} request${requestsSeen === 1 ? "" : "s"} since the gateway started — too few to read a rate from.`
+      : errorTone === "bad"
+        ? `${inference?.errors_total} of ${requestsSeen} requests failed.`
+        : errorTone === "warn"
+          ? `${inference?.errors_total} of ${requestsSeen} requests failed.`
+          : `${requestsSeen} requests, essentially none failing.`;
+
   const backends = metricsQuery.data?.backends ?? {};
   const attentionEntries: AttentionEntry[] = instances
     .map((instance) => ({ instance, circuitState: backends[instance.id]?.circuit_state }))
@@ -105,6 +135,16 @@ export default function Overview() {
             label="Nodes"
             value={`${activeNodes} / ${nodes.length}`}
             sub="active"
+            // Also unambiguous: a configured node that is not active is capacity
+            // the platform believes it has and does not.
+            tone={nodes.length === 0 ? "neutral" : activeNodes < nodes.length ? "bad" : "good"}
+            toneReason={
+              nodes.length === 0
+                ? undefined
+                : activeNodes < nodes.length
+                  ? `${nodes.length - activeNodes} configured node${nodes.length - activeNodes === 1 ? " is" : "s are"} not active.`
+                  : "Every configured node is active."
+            }
             icon={HardDrive}
           />
           <StatCard
@@ -131,11 +171,19 @@ export default function Overview() {
             sub={inference ? `active now · ${inference.requests_total} total` : undefined}
             icon={Activity}
           />
-          <StatCard label="Error rate" value={inference ? errorRate : "—"} icon={AlertTriangle} />
+          <StatCard
+            label="Error rate"
+            value={inference ? errorRate : "—"}
+            sub={requestsSeen > 0 ? `of ${requestsSeen.toLocaleString()} requests` : undefined}
+            tone={errorTone}
+            toneReason={errorReason}
+            icon={AlertTriangle}
+          />
           <StatCard
             label="Latency (p50)"
             value={inference ? `${inference.latency_p50_ms} ms` : "—"}
             sub={inference ? `p95 ${inference.latency_p95_ms}ms · p99 ${inference.latency_p99_ms}ms` : undefined}
+            toneReason="Deliberately uncoloured: what counts as slow depends entirely on the model and the request. A threshold here would invent alarms."
             icon={Gauge}
           />
           <StatCard
@@ -145,6 +193,17 @@ export default function Overview() {
             // "of N models" was simply wrong — two instances of one model read
             // as two models.
             sub={`of ${backendEntries.length} instance${backendEntries.length === 1 ? "" : "s"}${halfOpenCircuits > 0 ? ` · ${halfOpenCircuits} half-open` : ""}`}
+            // Unambiguous, unlike latency: a tripped breaker means the gateway
+            // has stopped sending traffic to a backend. There is no reading of
+            // that which is fine.
+            tone={openCircuits > 0 ? "bad" : halfOpenCircuits > 0 ? "warn" : "good"}
+            toneReason={
+              openCircuits > 0
+                ? `${openCircuits} backend${openCircuits === 1 ? " is" : "s are"} being skipped because its circuit tripped.`
+                : halfOpenCircuits > 0
+                  ? `${halfOpenCircuits} backend${halfOpenCircuits === 1 ? " is" : "s are"} being probed after a trip.`
+                  : "Every backend is taking traffic."
+            }
             icon={AlertOctagon}
           />
         </div>
