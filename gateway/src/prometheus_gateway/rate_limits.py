@@ -74,5 +74,94 @@ def apply_limits(settings: Any, values: dict[str, int | None]) -> None:
             setattr(settings, field, values[field])
 
 
+# PRM-229: every limit there is, grouped by the layer it belongs to.
+#
+# A separate fact from `RATE_LIMIT_FIELDS`, and for the reason PRM-182 wrote
+# down: that list is what the dashboard may *edit*, so each name is a column on
+# `db.RateLimitConfig` and a name it lacks breaks startup. This one is what the
+# dashboard may *show*, which is everything — including the eleven that
+# PRM-224 through PRM-228 added and that are `.env`-only until the migration
+# that makes them editable.
+#
+# The grouping is the point. Before this the page showed two dimensions of one
+# layer and called the per-endpoint value "per client", which is what a reader
+# would then believe a client could consume.
+LIMIT_LAYERS: tuple[tuple[str, str, tuple[str, ...]], ...] = (
+    (
+        "platform",
+        "Everyone at once. Protects the hardware; nobody's entitlement.",
+        ("rate_limit_rpm_platform", "rate_limit_tpm_platform"),
+    ),
+    (
+        "client",
+        "One consumer, across every endpoint. What a client may use.",
+        (
+            "rate_limit_rpm_client",
+            "rate_limit_tpm_client",
+            "rate_limit_tpm_input",
+            "rate_limit_tpm_output",
+            "rate_limit_rpd",
+            "rate_limit_tpd",
+            "rate_limit_ipm",
+        ),
+    ),
+    (
+        "endpoint",
+        "One consumer on one route. Tighter where a route is expensive.",
+        (
+            "rate_limit_rpm",
+            "rate_limit_tpm",
+            "rate_limit_rpm_chat_completions",
+            "rate_limit_tpm_chat_completions",
+            "rate_limit_rpm_predict",
+            "rate_limit_tpm_predict",
+            "rate_limit_rpm_admin",
+            "rate_limit_tpm_admin",
+        ),
+    ),
+)
+
+
+# PRM-227 left the consumer layer always enforced with a value derived from
+# the per-endpoint allowances, so `rate_limit_rpm_client` being None does not
+# mean "no ceiling" — it means "this one, computed". Reporting the raw setting
+# would have the page say a layer refuses nothing while it refuses at 360.
+_DERIVED_CLIENT_DEFAULTS = {
+    "rate_limit_rpm_client": "rate_limit_rpm",
+    "rate_limit_tpm_client": "rate_limit_tpm",
+}
+
+
+def limits_by_layer(settings: Any, *, endpoint_count: int) -> list[dict[str, Any]]:
+    """Every limit, by layer, with the value actually in force.
+
+    `source` is the part worth having: `set` is a number someone chose,
+    `derived` is one PRM-227 computes and enforces all the same, and `unset`
+    is a dimension that genuinely refuses nothing. Collapsing the last two
+    would make an enforced ceiling look like an absent one.
+    """
+    editable = set(RATE_LIMIT_FIELDS)
+    layers: list[dict[str, Any]] = []
+    for layer, what, fields in LIMIT_LAYERS:
+        entries = []
+        for field in fields:
+            raw = getattr(settings, field, None)
+            source = "set" if raw is not None else "unset"
+            value = raw
+            if raw is None and (base := _DERIVED_CLIENT_DEFAULTS.get(field)):
+                value = getattr(settings, base, 0) * endpoint_count
+                source = "derived"
+            entries.append(
+                {
+                    "field": field,
+                    "value": value,
+                    "source": source,
+                    "editable": field in editable,
+                }
+            )
+        layers.append({"layer": layer, "what": what, "fields": entries})
+    return layers
+
+
 def current_limits(settings: Any) -> dict[str, int | None]:
     return {field: getattr(settings, field) for field in RATE_LIMIT_FIELDS}

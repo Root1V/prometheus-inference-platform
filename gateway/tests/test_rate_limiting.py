@@ -626,8 +626,14 @@ async def test_a_daily_request_ceiling_refuses_and_says_when_it_resets(
 
     assert r.status_code == 429
     assert "daily request limit" in r.json()["detail"]
-    # A day away, not a minute — a daily budget that reset sooner would not be one.
-    assert int(r.headers["Retry-After"]) > 3_600
+    # Exactly the seconds left to the next UTC midnight, not merely "a lot".
+    #
+    # This first asserted `> 3600` on the reasoning that a daily budget resets
+    # a day away — which is false for one hour in every twenty-four, and the
+    # clock proved it: the test passed all morning and failed at 23:25 UTC with
+    # 2,085 seconds left. A time-dependent assertion has to compute the time.
+    expected = (day + 1) * 86_400 - int(_time.time())
+    assert abs(int(r.headers["Retry-After"]) - expected) <= 2
 
 
 async def test_the_day_is_not_counted_when_no_daily_limit_is_set(

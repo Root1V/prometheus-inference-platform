@@ -65,7 +65,12 @@ export function RateLimitsForm() {
     );
   }
 
-  return <RateLimitsFormLoaded key={String(limitsQuery.data.is_overridden)} data={limitsQuery.data} />;
+  return (
+    <RateLimitsFormLoaded
+      key={String(limitsQuery.data.is_overridden)}
+      data={limitsQuery.data}
+    />
+  );
 }
 
 function RateLimitsFormLoaded({ data }: { data: RateLimitsResponse }) {
@@ -76,10 +81,18 @@ function RateLimitsFormLoaded({ data }: { data: RateLimitsResponse }) {
   const asText = (v: number | null) => (v === null ? "" : String(v));
   const [rpm, setRpm] = useState(asText(data.limits.rate_limit_rpm));
   const [tpm, setTpm] = useState(asText(data.limits.rate_limit_tpm));
-  const [chatRpm, setChatRpm] = useState(asText(data.limits.rate_limit_rpm_chat_completions));
-  const [chatTpm, setChatTpm] = useState(asText(data.limits.rate_limit_tpm_chat_completions));
-  const [adminRpm, setAdminRpm] = useState(asText(data.limits.rate_limit_rpm_admin));
-  const [adminTpm, setAdminTpm] = useState(asText(data.limits.rate_limit_tpm_admin));
+  const [chatRpm, setChatRpm] = useState(
+    asText(data.limits.rate_limit_rpm_chat_completions),
+  );
+  const [chatTpm, setChatTpm] = useState(
+    asText(data.limits.rate_limit_tpm_chat_completions),
+  );
+  const [adminRpm, setAdminRpm] = useState(
+    asText(data.limits.rate_limit_rpm_admin),
+  );
+  const [adminTpm, setAdminTpm] = useState(
+    asText(data.limits.rate_limit_tpm_admin),
+  );
 
   const isBusy = update.isPending || reset.isPending;
 
@@ -93,7 +106,10 @@ function RateLimitsFormLoaded({ data }: { data: RateLimitsResponse }) {
       rate_limit_tpm_admin: parseLimit(adminTpm),
     };
     if (Object.values(parsed).includes("invalid")) {
-      showToast("Limits must be whole numbers of 1 or more, or blank.", "error");
+      showToast(
+        "Limits must be whole numbers of 1 or more, or blank.",
+        "error",
+      );
       return;
     }
     if (parsed.rate_limit_rpm === null || parsed.rate_limit_tpm === null) {
@@ -101,7 +117,8 @@ function RateLimitsFormLoaded({ data }: { data: RateLimitsResponse }) {
       return;
     }
     update.mutate(parsed as RateLimitValues, {
-      onSuccess: () => showToast("Rate limits saved — applied to the next request", "success"),
+      onSuccess: () =>
+        showToast("Rate limits saved — applied to the next request", "success"),
       onError: (e) => showToast(getErrorMessage(e), "error"),
     });
   }
@@ -119,9 +136,10 @@ function RateLimitsFormLoaded({ data }: { data: RateLimitsResponse }) {
         <div>
           <h3 className="text-sm font-medium text-text">Edit limits</h3>
           <p className="mt-1 text-xs text-text-muted">
-            Applied to the very next request — no restart. Per-endpoint fields are optional:
-            blank means that endpoint uses the global limit. The admin API can't go below{" "}
-            {data.min_admin_rpm} RPM, so a mistake here can never lock you out of this page.
+            Applied to the very next request — no restart. Per-endpoint fields
+            are optional: blank means that endpoint uses the global limit. The
+            admin API can't go below {data.min_admin_rpm} RPM, so a mistake here
+            can never lock you out of this page.
           </p>
           {data.capacity?.reporting > 0 && (
             <p className="mt-2 text-xs text-text-muted">
@@ -130,17 +148,19 @@ function RateLimitsFormLoaded({ data }: { data: RateLimitsResponse }) {
                 {data.capacity.slots} concurrent slots
               </span>{" "}
               across {data.capacity.reporting} instance
-              {data.capacity.reporting === 1 ? "" : "s"} — what the hardware can genuinely work
-              on at once. It isn&rsquo;t a suggested limit: how many requests a slot absorbs
-              depends on the model and the prompt. It&rsquo;s here so the number above
-              isn&rsquo;t set blind.
+              {data.capacity.reporting === 1 ? "" : "s"} — what the hardware can
+              genuinely work on at once. It isn&rsquo;t a suggested limit: how
+              many requests a slot absorbs depends on the model and the prompt.
+              It&rsquo;s here so the number above isn&rsquo;t set blind.
             </p>
           )}
         </div>
         <span
           className={
             "shrink-0 rounded-full px-2 py-0.5 text-xs " +
-            (data.is_overridden ? "bg-primary/10 text-primary" : "bg-background text-text-muted")
+            (data.is_overridden
+              ? "bg-primary/10 text-primary"
+              : "bg-background text-text-muted")
           }
         >
           {data.is_overridden ? "custom" : "from .env"}
@@ -150,13 +170,13 @@ function RateLimitsFormLoaded({ data }: { data: RateLimitsResponse }) {
       <div className="mt-4 grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
         <Field
           label="Global RPM"
-          hint={`requests/min per client · .env: ${data.env_defaults.rate_limit_rpm}`}
+          hint={`requests/min per client, per endpoint · .env: ${data.env_defaults.rate_limit_rpm}`}
           value={rpm}
           onChange={setRpm}
         />
         <Field
           label="Global TPM"
-          hint={`tokens/min per client · .env: ${data.env_defaults.rate_limit_tpm.toLocaleString()}`}
+          hint={`tokens/min per client, per endpoint · .env: ${data.env_defaults.rate_limit_tpm.toLocaleString()}`}
           value={tpm}
           onChange={setTpm}
         />
