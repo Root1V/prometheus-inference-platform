@@ -55,6 +55,11 @@ class Settings(BaseSettings):
     # pays no Redis traffic for them.
     rate_limit_rpd: int | None = None
     rate_limit_tpd: int | None = None
+    # PRM-226: images per minute, and the only dimension that is a gate rather
+    # than a meter — `n` says how many are coming before any are made, so a
+    # request that would not fit is refused instead of noticed afterwards.
+    # Optional like the rest; unset means unmeasured.
+    rate_limit_ipm: int | None = None
     rate_limit_strict: bool = True  # fail-closed when Redis unavailable for rate limiting
     # Per-endpoint overrides (AC-13)
     rate_limit_rpm_chat_completions: int | None = None

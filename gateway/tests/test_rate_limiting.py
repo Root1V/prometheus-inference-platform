@@ -680,6 +680,106 @@ async def test_increment_tpd_carries_a_ttl_past_its_own_window(fake_redis):
     assert await fake_redis.ttl(key) > 86_400
 
 
+async def test_the_images_gate_refuses_before_the_backend_is_called(
+    rl_settings, fake_redis, rsa_keys, tmp_path
+):
+    """PRM-226: the point of a gate rather than a meter.
+
+    The backend must never be asked to generate images that would exceed the
+    minute's ceiling — which is what distinguishes this from TPM, where the
+    work has to happen before its size is known.
+    """
+    import time as _time
+
+    from prometheus_gateway.main import create_app
+
+    f = tmp_path / "image-registry.yaml"
+    f.write_text(
+        """models:
+  - id: sd
+    path: /dev/null
+    context_length: 0
+    family: test
+    quantization: Q4_0
+    modality: image
+    backend_url: "http://127.0.0.1:18082"
+"""
+    )
+    registry = ModelRegistry(f)
+
+    rl_settings.rate_limit_ipm = 2
+    app = create_app(settings=rl_settings, registry=registry, redis_client=fake_redis)
+    token = make_token(
+        rsa_keys["private"],
+        scope="inference:read inference:stream model:sd",
+        sub="user-x",
+        azp="client-a",
+    )
+    bucket = int(_time.time() // 60)
+    await fake_redis.set(f"prometheus:rl:ipm:client-a:images:{bucket}", 1)
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
+        with respx.mock:
+            backend = respx.post("http://127.0.0.1:18082/v1/images/generations").mock(
+                return_value=Response(200, json={"created": 0, "data": [{"b64_json": "x"}]})
+            )
+            r = await c.post(
+                "/v1/images/generations",
+                json={"model": "sd", "prompt": "a lighthouse", "n": 3},
+                headers={"Authorization": f"Bearer {token}"},
+            )
+
+    assert r.status_code == 429
+    assert "asked for 3 image(s)" in r.json()["detail"]
+    assert not backend.called, "the gate let the request through to the backend"
+
+
+async def test_ipm_refuses_the_batch_that_would_not_fit(fake_redis):
+    """PRM-226: the one dimension that is a gate. `n` is known before anything
+    is generated, so a request for more images than are left is refused rather
+    than noticed afterwards — a single n=10 cannot overshoot a ceiling of 5."""
+    import time as _time
+
+    from prometheus_gateway.rate_limiter import RateLimiter
+
+    limiter = RateLimiter(fake_redis)
+    bucket = int(_time.time() // 60)
+    await fake_redis.set(f"prometheus:rl:ipm:client-a:images:{bucket}", 3)
+
+    fits = await limiter.check_ipm_headroom("client-a", "images", 5, 2)
+    assert fits.allowed and fits.remaining == 2
+
+    does_not = await limiter.check_ipm_headroom("client-a", "images", 5, 3)
+    assert not does_not.allowed
+
+
+async def test_ipm_counts_what_came_back_not_what_was_asked_for(fake_redis):
+    """A generation that produced fewer images than requested must not spend a
+    minute's budget for images nobody received."""
+    import time as _time
+    from types import SimpleNamespace
+
+    from prometheus_gateway.router import _record_usage
+
+    claims = SimpleNamespace(client_id="client-a", user_id="client-a")
+    await _record_usage(
+        claims,
+        "sd-turbo",
+        0,
+        0,
+        rl_redis=fake_redis,
+        endpoint_slug="images",
+        request_kind="image",
+        image_count=2,
+    )
+
+    bucket = int(_time.time() // 60)
+    assert int(await fake_redis.get(f"prometheus:rl:ipm:client-a:images:{bucket}")) == 2
+    # An image request carries no tokens, and a counter at zero with a TTL is a
+    # key that exists and says nothing.
+    assert await fake_redis.get(f"prometheus:rl:tpm:client-a:images:{bucket}") is None
+
+
 def test_endpoint_slug_maps_admin_api_prefix():
     """Every /admin/api/* path — including dynamic segments like
     {node}/{model_id} — must resolve to the "admin" slug, not "default"."""

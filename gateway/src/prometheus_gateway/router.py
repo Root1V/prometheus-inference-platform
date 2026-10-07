@@ -3217,6 +3217,40 @@ def create_router(registry: ModelRegistry, pool: "BackendPool") -> APIRouter:
         # binding it states that invariant for the type checker.
         assert entry.backend_url is not None
 
+        # PRM-226: the images gate, before the money gate and for the same
+        # reason RM-60 put that one in this handler — the middleware runs
+        # before the body is parsed, so `n` is only knowable from here on.
+        #
+        # Unlike every other dimension this refuses the request that would
+        # exceed the limit rather than the one after it, because a single
+        # `n: 10` can overshoot a ceiling of 5 and here, uniquely, that is
+        # avoidable.
+        #
+        # It sat inside `if cap_usd is not None` first, which meant the image
+        # limit applied only to clients who happened to have a monthly spend
+        # cap. A test asserting the backend is never called caught it.
+        ipm_settings = getattr(getattr(request.app, "state", None), "settings", None)
+        ipm_limit = getattr(ipm_settings, "rate_limit_ipm", None) if ipm_settings else None
+        rl_redis_images = getattr(pool, "_redis", None)
+        if ipm_limit is not None and rl_redis_images is not None and claims is not None:
+            requested_images = body.n or 1
+            ipm_limiter = RateLimiter(rl_redis_images)
+            for identity in filter(None, {claims.client_id, claims.user_id}):
+                headroom = await ipm_limiter.check_ipm_headroom(
+                    identity, "images", ipm_limit, requested_images
+                )
+                if not headroom.allowed:
+                    retry_after = max(1, headroom.reset_at - int(time.time()))
+                    return _problem(
+                        request,
+                        429,
+                        "rate-limit-exceeded-images",
+                        "Rate Limit Exceeded",
+                        f"'{identity}' asked for {requested_images} image(s) with "
+                        f"{headroom.remaining} left of {ipm_limit} per minute. "
+                        f"Reset in {retry_after} seconds.",
+                    )
+
         # RM-60: hard spend-cap reserve, before forwarding — worst-case
         # estimate priced per requested image (`n`, default 1).
         budget_redis = getattr(pool, "_redis", None)
@@ -3584,8 +3618,9 @@ async def _record_usage(
     elif prompt_tokens + completion_tokens == 0:
         return
 
-    # The token budget, for every kind of request rather than one of them.
-    if rl_redis is not None and prompt_tokens + completion_tokens > 0:
+    # The token budget, for every kind of request rather than one of them —
+    # and the image counter, which has no tokens at all to gate on.
+    if rl_redis is not None and (prompt_tokens + completion_tokens > 0 or image_count > 0):
         try:
             limiter = RateLimiter(rl_redis)
             identities = [claims.client_id]
@@ -3593,16 +3628,25 @@ async def _record_usage(
             # spending its token budget twice.
             if claims.user_id and claims.user_id != claims.client_id:
                 identities.append(claims.user_id)
+            total_tokens_for_rl = prompt_tokens + completion_tokens
             for identity in identities:
-                await limiter.increment_tpm(
-                    identity, endpoint_slug, prompt_tokens, completion_tokens
-                )
-                # PRM-225: the day's counter, from the same place and the same
-                # loop — a dimension added anywhere else is a dimension that
-                # covers some paths and not others, which is what PRM-224 was.
-                await limiter.increment_tpd(
-                    identity, endpoint_slug, prompt_tokens + completion_tokens
-                )
+                # Guarded, because an image request has no tokens at all and
+                # incrementing by zero would leave three counters sitting at 0
+                # with a TTL — a key that exists and says nothing.
+                if total_tokens_for_rl > 0:
+                    await limiter.increment_tpm(
+                        identity, endpoint_slug, prompt_tokens, completion_tokens
+                    )
+                    # PRM-225: the day's counter, from the same place and the same
+                    # loop — a dimension added anywhere else is a dimension that
+                    # covers some paths and not others, which is what PRM-224 was.
+                    await limiter.increment_tpd(identity, endpoint_slug, total_tokens_for_rl)
+                # PRM-226: counted from what the backend returned, not from
+                # what was asked for — `n` is the request, `image_count` is
+                # the result, and a generation that produced fewer should not
+                # spend a minute's budget for images nobody got.
+                if image_count > 0:
+                    await limiter.increment_ipm(identity, endpoint_slug, image_count)
         except Exception as exc:
             logger.warning("tpm.increment_error", error=str(exc))
     cost_usd: float | None = None

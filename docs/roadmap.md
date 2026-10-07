@@ -8663,3 +8663,32 @@ honestly is not.
 **Scope**: in — the two dimensions, their keys and TTLs, the shared 429, counting TPD from the same
 place PRM-224 moved TPM to, three tests, and the docstring. Out — IPM and per-client tiers, the two
 items left from the limits review, and the fixed-to-sliding window change.
+
+
+## PRM-226 — Images per minute
+
+**Why**: the last of the five dimensions the industry publishes, and the only one that can be a gate
+rather than a meter. How many tokens a completion will produce is unknowable until it exists, which
+is why TPM/TPD spend the budget and refuse the *next* caller. How many images a request will produce
+is `n`, in the body, before anything is generated — so a request that would not fit is refused
+before the backend is asked to do the work, and a single `n: 10` cannot overshoot a ceiling of 5.
+
+**Checked in the handler, counted in `_record_usage`.** The handler is where `n` is knowable at all,
+which is the same reason RM-60 put the spend reserve there rather than in the middleware. The
+counter is then incremented from `image_count` — what the backend actually returned — because a
+generation that produced fewer should not spend a minute's budget for images nobody received.
+
+**The headroom check is a read, and the race it allows is deliberate.** Two requests arriving
+together can both pass and overshoot by one batch. RM-60 chose atomic reserve-and-roll-back for
+*money*, where an overshoot is a real charge; here the counter follows actual output, so the error
+is bounded by concurrency and clears within the minute. Reserving `n` and settling the difference on
+every request would buy back a bounded, self-healing error at the cost of a second write path.
+
+**Worth recording: the first attempt was wrong in a way only a test could show.** The gate landed
+inside `if cap_usd is not None` — the branch that runs when a client has a monthly spend cap — so
+the image limit silently applied to some clients and not others. The test that caught it asserts the
+backend was never called, which is the actual property a gate has and a meter does not.
+
+**Scope**: in — the counter, the headroom check, the handler gate, `rate_limit_ipm`, and three
+tests. Out — per-client tiers, the last item from the limits review, and the fixed-to-sliding window
+change.
