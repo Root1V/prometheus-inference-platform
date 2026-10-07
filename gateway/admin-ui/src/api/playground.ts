@@ -58,7 +58,11 @@ interface ChatCompletionResponse {
     };
     finish_reason: string | null;
   }[];
-  usage: { prompt_tokens: number; completion_tokens: number; total_tokens: number };
+  usage: {
+    prompt_tokens: number;
+    completion_tokens: number;
+    total_tokens: number;
+  };
 }
 
 /**
@@ -104,7 +108,12 @@ interface EmbeddingsResponse {
 export function useEmbeddings() {
   return useMutation({
     mutationFn: async ({ model, input }: { model: string; input: string }) =>
-      (await rootClient.post<EmbeddingsResponse>("/v1/embeddings", { model, input })).data,
+      (
+        await rootClient.post<EmbeddingsResponse>("/v1/embeddings", {
+          model,
+          input,
+        })
+      ).data,
   });
 }
 
@@ -127,11 +136,33 @@ interface ZeroShotResponse {
  */
 export function useZeroShot() {
   return useMutation({
-    mutationFn: async ({ model, input, labels }: { model: string; input: string; labels: string[] }) => {
+    mutationFn: async ({
+      model,
+      input,
+      labels,
+      multiLabel,
+    }: {
+      model: string;
+      input: string;
+      labels: string[];
+      /**
+       * PRM-217: softmax across the labels, or an independent sigmoid each.
+       *
+       * Not cosmetic. Measured on `von-decide` with the same four labels: off,
+       * the scores sum to 1.0 and `ventas` leads; on, they are independent
+       * (0.499 / 0.450 / 0.423 / 0.421) and `facturación` leads. It decides
+       * whether the labels are mutually exclusive, and the Playground never
+       * offered it.
+       */
+      multiLabel: boolean;
+    }) => {
       const raw = (
         await rootClient.post<ZeroShotResponse | ZeroShotResponse[]>(
           `/v1/models/${encodeURIComponent(model)}/predict`,
-          { inputs: input, parameters: { candidate_labels: labels } },
+          {
+            inputs: input,
+            parameters: { candidate_labels: labels, multi_label: multiLabel },
+          },
         )
       ).data;
       return Array.isArray(raw) ? raw[0] : raw;
@@ -150,10 +181,9 @@ export function useClassify() {
   return useMutation({
     mutationFn: async ({ model, input }: { model: string; input: string }) => {
       const raw = (
-        await rootClient.post<{ label: string; score: number }[] | { label: string; score: number }>(
-          `/v1/models/${encodeURIComponent(model)}/predict`,
-          { inputs: input },
-        )
+        await rootClient.post<
+          { label: string; score: number }[] | { label: string; score: number }
+        >(`/v1/models/${encodeURIComponent(model)}/predict`, { inputs: input })
       ).data;
       return Array.isArray(raw) ? raw : [raw];
     },
@@ -217,11 +247,47 @@ export function useRerank() {
       model,
       query,
       documents,
+      topN,
+      rawScores,
     }: {
       model: string;
       query: string;
       documents: string[];
-    }) => (await rootClient.post<RerankResponse>("/v1/rerank", { model, query, documents })).data,
+      /** Cohere's name, and the gateway's. null = return every document. */
+      topN: number | null;
+      /**
+       * PRM-183 added this to the gateway and nothing in the UI ever sent it.
+       * A reranker's probabilities saturate near 1.0 — Centinela measured 0.99
+       * for a loosely related document — and a saturated probability cannot be
+       * calibrated while the logit behind it can.
+       */
+      rawScores: boolean;
+    }) => {
+      const response = await rootClient.post<RerankResponse>("/v1/rerank", {
+        model,
+        query,
+        documents,
+        ...(topN !== null ? { top_n: topN } : {}),
+        ...(rawScores ? { raw_scores: true } : {}),
+      });
+      /**
+       * PRM-217: which of those the engine threw away.
+       *
+       * `raw_scores` is declared on the gateway and honoured only by engines
+       * that have it — measured here, `qwen3-reranker-0-6-q4` returns byte-
+       * identical scores with and without it and the gateway answers
+       * `X-Prometheus-Ignored-Parameters: raw_scores`. PRM-183 added that
+       * header so a caller could tell; no caller ever read it, so a control
+       * that does nothing would have looked exactly like one that worked.
+       */
+      const ignored = String(
+        response.headers["x-prometheus-ignored-parameters"] ?? "",
+      )
+        .split(",")
+        .map((name) => name.trim())
+        .filter(Boolean);
+      return { ...response.data, ignoredParameters: ignored };
+    },
   });
 }
 
@@ -238,9 +304,30 @@ interface ImageGenerationResponse {
  */
 export function useImageGenerations() {
   return useMutation({
-    mutationFn: async ({ model, prompt }: { model: string; prompt: string }) =>
-      (await rootClient.post<ImageGenerationResponse>("/v1/images/generations", { model, prompt }))
-        .data,
+    mutationFn: async ({
+      model,
+      prompt,
+      n,
+      size,
+    }: {
+      model: string;
+      prompt: string;
+      /** Both are declared on the gateway's ImageGenerationRequest and neither
+       *  was ever reachable from the Playground. */
+      n: number | null;
+      size: string;
+    }) =>
+      (
+        await rootClient.post<ImageGenerationResponse>(
+          "/v1/images/generations",
+          {
+            model,
+            prompt,
+            ...(n !== null && n > 1 ? { n } : {}),
+            ...(size.trim() ? { size: size.trim() } : {}),
+          },
+        )
+      ).data,
   });
 }
 
@@ -282,7 +369,11 @@ export interface StreamUsage {
  * estimate — just under a llama.cpp-specific field, not the OpenAI one.
  */
 export async function streamPlaygroundChat(
-  { model, messages, params }: { model: string; messages: ChatMessage[]; params: PlaygroundParams },
+  {
+    model,
+    messages,
+    params,
+  }: { model: string; messages: ChatMessage[]; params: PlaygroundParams },
   onDelta: (delta: StreamDelta) => void,
 ): Promise<{ finishReason: string | null; usage: StreamUsage | null }> {
   const token = getStoredToken();
@@ -306,7 +397,9 @@ export async function streamPlaygroundChat(
     } catch {
       /* ignore — keep the generic message */
     }
-    throw new Error(typeof detail === "string" ? detail : JSON.stringify(detail));
+    throw new Error(
+      typeof detail === "string" ? detail : JSON.stringify(detail),
+    );
   }
 
   const reader = response.body.getReader();
@@ -350,8 +443,12 @@ export async function streamPlaygroundChat(
       } catch {
         continue;
       }
-      if (chunk.timings?.prompt_n !== undefined && chunk.timings.predicted_n !== undefined) {
-        const promptTokens = (chunk.timings.cache_n ?? 0) + chunk.timings.prompt_n;
+      if (
+        chunk.timings?.prompt_n !== undefined &&
+        chunk.timings.predicted_n !== undefined
+      ) {
+        const promptTokens =
+          (chunk.timings.cache_n ?? 0) + chunk.timings.prompt_n;
         const completionTokens = chunk.timings.predicted_n;
         usage = {
           prompt_tokens: promptTokens,

@@ -292,6 +292,11 @@ interface ZeroShotLogEntry {
   scores: number[];
   latencyMs: number;
   model: string;
+  /** PRM-217: parameters the engine was sent and threw away, from
+   *  `X-Prometheus-Ignored-Parameters`. A control that silently does nothing
+   *  is indistinguishable from one that works, which is the whole reason
+   *  PRM-183 added that header. */
+  ignoredParameters?: string[];
 }
 
 // PRM-140: the schema laya-serve actually accepts, which is not the one its
@@ -393,6 +398,12 @@ export default function Playground() {
   // PRM-137: the options this model is asked to choose between. They belong
   // to the request, not the checkpoint, so they live beside the prompt
   // rather than in the model picker.
+  /** PRM-217: the parameters every non-chat modality turned out to have. */
+  const [multiLabel, setMultiLabel] = useState(false);
+  const [rerankTopN, setRerankTopN] = useState("");
+  const [rerankRawScores, setRerankRawScores] = useState(false);
+  const [imageCount, setImageCount] = useState("1");
+  const [imageSize, setImageSize] = useState("");
   const [candidateLabels, setCandidateLabels] = useState("");
   const [imageError, setImageError] = useState<string | null>(null);
   const [expandedImage, setExpandedImage] = useState<ImageLogEntry | null>(
@@ -554,6 +565,7 @@ export default function Playground() {
         model: selectedModel,
         input,
         labels,
+        multiLabel,
       });
       setEntries((prev) => [
         ...prev,
@@ -619,10 +631,13 @@ export default function Playground() {
     setCandidateLabels("");
     const startedAt = performance.now();
     try {
+      const parsedTopN = Number.parseInt(rerankTopN, 10);
       const data = await rerank.mutateAsync({
         model: selectedModel,
         query,
         documents,
+        topN: Number.isFinite(parsedTopN) && parsedTopN > 0 ? parsedTopN : null,
+        rawScores: rerankRawScores,
       });
       // Sorted by score, like the other two — the endpoint returns original
       // indices, and a ranking shown in input order is not a ranking.
@@ -638,6 +653,7 @@ export default function Playground() {
           scores: ranked.map((r) => r.relevance_score),
           latencyMs: Math.round(performance.now() - startedAt),
           model: selectedModel,
+          ignoredParameters: data.ignoredParameters,
         },
       ]);
     } catch (error) {
@@ -714,9 +730,12 @@ export default function Playground() {
     setDraft("");
     const startedAt = performance.now();
     try {
+      const parsedCount = Number.parseInt(imageCount, 10);
       const data = await imageGenerations.mutateAsync({
         model: selectedModel,
         prompt,
+        n: Number.isFinite(parsedCount) && parsedCount > 0 ? parsedCount : null,
+        size: imageSize,
       });
       setEntries((prev) => [
         ...prev,
@@ -1439,6 +1458,17 @@ export default function Playground() {
                             {entry.model}
                           </span>
                         </div>
+                        {entry.ignoredParameters &&
+                          entry.ignoredParameters.length > 0 && (
+                            <p className="mt-2 text-xs text-amber-600 dark:text-amber-400">
+                              This engine ignored{" "}
+                              <span className="font-mono">
+                                {entry.ignoredParameters.join(", ")}
+                              </span>{" "}
+                              — the result above is the same as if you had left
+                              it off.
+                            </p>
+                          )}
                       </div>
                     </div>
                   );
@@ -1649,93 +1679,6 @@ export default function Playground() {
               never looked like they belonged to anything, which is what made
               configuration appear to live in two arbitrary places. */}
           <div className="mt-4 rounded-xl border border-border bg-surface p-3">
-            {isZeroShot && (
-              <div className="mt-3">
-                <label className="block text-xs font-medium text-text-muted">
-                  Options to choose between
-                </label>
-                <input
-                  value={candidateLabels}
-                  onChange={(e) => setCandidateLabels(e.target.value)}
-                  placeholder="facturación, soporte técnico, ventas, cancelación"
-                  className="mt-1 w-full rounded-lg border border-border bg-surface px-3 py-2 text-sm text-text focus:border-primary focus:outline-none"
-                />
-                <p className="mt-1 text-xs text-text-muted">
-                  Comma-separated, and set per request — this model is not
-                  trained on a fixed label set, which is what makes the options
-                  yours to choose.
-                </p>
-              </div>
-            )}
-
-            {isRerank && (
-              <div className="mt-3">
-                <label className="block text-xs font-medium text-text-muted">
-                  Documents to score, one per line
-                </label>
-                <textarea
-                  value={candidateLabels}
-                  onChange={(e) => setCandidateLabels(e.target.value)}
-                  rows={4}
-                  placeholder={
-                    "La membresía anual de la Tarjeta Oro cuesta S/ 45.00.\nEl horario de atención es de 9 a 18h.\nPara bloquear una tarjeta, llame al 0800-1234."
-                  }
-                  className="mt-1 w-full rounded-lg border border-border bg-surface px-3 py-2 text-sm text-text focus:border-primary focus:outline-none"
-                />
-                <p className="mt-1 text-xs text-text-muted">
-                  The box above is the query; these are the candidates it scores
-                  against.
-                </p>
-              </div>
-            )}
-
-            {isTypedDecision && (
-              <div className="mt-3">
-                <label className="block text-xs font-medium text-text-muted">
-                  Questions to answer, as JSON
-                </label>
-                <textarea
-                  value={candidateLabels}
-                  onChange={(e) => setCandidateLabels(e.target.value)}
-                  rows={6}
-                  spellCheck={false}
-                  placeholder={TYPED_DECISION_EXAMPLE}
-                  className="mt-1 w-full rounded-lg border border-border bg-surface px-3 py-2 font-mono text-xs text-text focus:border-primary focus:outline-none"
-                />
-                <p className="mt-1 text-xs text-text-muted">
-                  One forward pass answers all of them.{" "}
-                  <span className="font-mono">choice</span> picks from{" "}
-                  <span className="font-mono">criteria</span>,{" "}
-                  <span className="font-mono">score</span> places it on that
-                  ordered scale, and <span className="font-mono">noul</span>{" "}
-                  returns P(true) with no criteria.
-                  <br />
-                  <strong>Word the question the way the text does.</strong> This
-                  model matches vocabulary more than meaning: on an email saying
-                  “cancelamos el plan”, asking “amenaza con cancelar” answers
-                  yes at 0.98 and asking “amenaza con irse” — the same question
-                  in synonyms — answers no at 0.17.
-                </p>
-                {!candidateLabels && (
-                  <button
-                    type="button"
-                    onClick={() => setCandidateLabels(TYPED_DECISION_EXAMPLE)}
-                    className="mt-1 text-xs text-primary hover:underline"
-                  >
-                    Fill the example
-                  </button>
-                )}
-              </div>
-            )}
-
-            {isClassification && (
-              <p className="mt-3 text-xs text-text-muted">
-                This model's labels come from the checkpoint, not from the
-                request — nothing to choose. For labels you set per call, pick a
-                model under “Decision (zero-shot)”.
-              </p>
-            )}
-
             {attachedImage && (
               <div className="mt-3 flex items-center gap-2 rounded-lg border border-border bg-surface p-2">
                 <img
@@ -1807,186 +1750,376 @@ export default function Playground() {
           </div>
         </div>
 
-        {/* PRM-214: rendered only when it has parameters to hold. Every
-            modality but text and vision left it a 288px column containing a
-            label and 590px of nothing. The notes it used to carry for
-            embedding and image moved to the empty state, where they are read
-            before the request rather than beside it. */}
-        {isTextLike && (
-          <aside className="w-72 shrink-0 space-y-5 overflow-y-auto border-l border-border bg-surface px-5 py-8">
-            {/* Named, so the split reads as a rule rather than an accident:
+        {/* PRM-217: unconditional again. PRM-214 hid this rail for every
+            modality but text and vision, on the evidence that it held nothing
+            for them — but the evidence was the UI's own omission, not the
+            API's. `/v1/rerank` has had `top_n` and `raw_scores` since PRM-183,
+            `/v1/images/generations` has `n` and `size`, and TEI honours
+            `multi_label`. Settings live in one place now, whatever the model. */}
+        <aside className="w-72 shrink-0 space-y-5 overflow-y-auto border-l border-border bg-surface px-5 py-8">
+          {/* Named, so the split reads as a rule rather than an accident:
                 settings that persist across requests live here, and the
                 inputs that change per request live with the composer. */}
-            <p className="text-xs font-medium uppercase tracking-wide text-text-muted">
-              Model settings
-            </p>
-            {isTextLike && (
-              <>
-                <div>
-                  <label
-                    htmlFor="playground-system"
-                    className="mb-1.5 block text-sm font-medium text-text"
-                  >
-                    System prompt
-                  </label>
-                  <textarea
-                    id="playground-system"
-                    rows={3}
-                    value={systemPrompt}
-                    onChange={(e) => setSystemPrompt(e.target.value)}
-                    placeholder="Optional — sets the assistant's behavior for this conversation."
-                    className={inputClass}
-                  />
-                </div>
+          <p className="text-xs font-medium uppercase tracking-wide text-text-muted">
+            Model settings
+          </p>
 
-                <label className="flex items-center gap-2 text-sm text-text">
-                  <input
-                    type="checkbox"
-                    checked={streamingEnabled}
-                    onChange={(e) => setStreamingEnabled(e.target.checked)}
-                  />
-                  Stream response
+          {/* PRM-217: the parameters the other modalities turned out to have,
+                and nobody could reach. `/v1/rerank` has declared `top_n` and
+                `raw_scores` since PRM-183; `/v1/images/generations` has `n` and
+                `size`; and TEI honours `multi_label`, measured here changing
+                both the scores and the winner. Embedding genuinely has none —
+                its schema is model+input, and `dimensions`/`encoding_format`
+                are documented as unsupported — so it says so rather than
+                showing an empty panel. */}
+          {isZeroShot && (
+            <label className="flex items-start gap-2 text-sm text-text">
+              <input
+                type="checkbox"
+                checked={multiLabel}
+                onChange={(e) => setMultiLabel(e.target.checked)}
+                className="mt-0.5 accent-primary"
+              />
+              <span>
+                Labels can overlap
+                <span className="mt-0.5 block text-xs text-text-muted">
+                  Off, the scores are a softmax across the options and sum to 1
+                  — the options are mutually exclusive. On, each gets an
+                  independent probability.
+                </span>
+              </span>
+            </label>
+          )}
+
+          {isRerank && (
+            <>
+              <div>
+                <label
+                  htmlFor="playground-top-n"
+                  className="mb-1.5 block text-sm font-medium text-text"
+                >
+                  Top N
                 </label>
+                <input
+                  id="playground-top-n"
+                  value={rerankTopN}
+                  onChange={(e) => setRerankTopN(e.target.value)}
+                  placeholder="All documents"
+                  className={inputClass}
+                />
+              </div>
+              <label className="flex items-start gap-2 text-sm text-text">
+                <input
+                  type="checkbox"
+                  checked={rerankRawScores}
+                  onChange={(e) => setRerankRawScores(e.target.checked)}
+                  className="mt-0.5 accent-primary"
+                />
+                <span>
+                  Raw scores
+                  <span className="mt-0.5 block text-xs text-text-muted">
+                    The logit before the sigmoid. A reranker's probabilities
+                    saturate near 1.0, and a saturated probability cannot be
+                    calibrated while the logit behind it can.
+                  </span>
+                </span>
+              </label>
+            </>
+          )}
 
-                <h2 className="text-xs font-medium uppercase tracking-wide text-text-muted">
-                  Parameters
-                </h2>
+          {modality === "image" && (
+            <>
+              <div>
+                <label
+                  htmlFor="playground-image-n"
+                  className="mb-1.5 block text-sm font-medium text-text"
+                >
+                  Images per prompt
+                </label>
+                <input
+                  id="playground-image-n"
+                  value={imageCount}
+                  onChange={(e) => setImageCount(e.target.value)}
+                  className={inputClass}
+                />
+              </div>
+              <div>
+                <label
+                  htmlFor="playground-image-size"
+                  className="mb-1.5 block text-sm font-medium text-text"
+                >
+                  Size
+                </label>
+                <input
+                  id="playground-image-size"
+                  value={imageSize}
+                  onChange={(e) => setImageSize(e.target.value)}
+                  placeholder="The engine's default"
+                  className={inputClass}
+                />
+              </div>
+            </>
+          )}
 
-                <div>
-                  <div className="mb-1.5 flex items-center justify-between text-sm text-text">
-                    <label htmlFor="playground-temperature">Temperature</label>
-                    <span className="text-text-muted">
-                      {temperature.toFixed(1)}
-                    </span>
-                  </div>
-                  <input
-                    id="playground-temperature"
-                    type="range"
-                    min={0}
-                    max={2}
-                    step={0.1}
-                    value={temperature}
-                    onChange={(e) => setTemperature(Number(e.target.value))}
-                    className="w-full accent-primary"
-                  />
+          {modality === "embedding" && (
+            <p className="text-xs text-text-muted">
+              No parameters. The gateway's embeddings schema is model and input
+              only — the <span className="font-mono">dimensions</span> and{" "}
+              <span className="font-mono">encoding_format</span> options some
+              providers add are not supported, so there is nothing here to set.
+            </p>
+          )}
+
+          {isZeroShot && (
+            <div className="mt-3">
+              <label className="block text-xs font-medium text-text-muted">
+                Options to choose between
+              </label>
+              <input
+                value={candidateLabels}
+                onChange={(e) => setCandidateLabels(e.target.value)}
+                placeholder="facturación, soporte técnico, ventas, cancelación"
+                className="mt-1 w-full rounded-lg border border-border bg-surface px-3 py-2 text-sm text-text focus:border-primary focus:outline-none"
+              />
+              <p className="mt-1 text-xs text-text-muted">
+                Comma-separated, and set per request — this model is not trained
+                on a fixed label set, which is what makes the options yours to
+                choose.
+              </p>
+            </div>
+          )}
+
+          {isRerank && (
+            <div className="mt-3">
+              <label className="block text-xs font-medium text-text-muted">
+                Documents to score, one per line
+              </label>
+              <textarea
+                value={candidateLabels}
+                onChange={(e) => setCandidateLabels(e.target.value)}
+                rows={4}
+                placeholder={
+                  "La membresía anual de la Tarjeta Oro cuesta S/ 45.00.\nEl horario de atención es de 9 a 18h.\nPara bloquear una tarjeta, llame al 0800-1234."
+                }
+                className="mt-1 w-full rounded-lg border border-border bg-surface px-3 py-2 text-sm text-text focus:border-primary focus:outline-none"
+              />
+              <p className="mt-1 text-xs text-text-muted">
+                The box above is the query; these are the candidates it scores
+                against.
+              </p>
+            </div>
+          )}
+
+          {isTypedDecision && (
+            <div className="mt-3">
+              <label className="block text-xs font-medium text-text-muted">
+                Questions to answer, as JSON
+              </label>
+              <textarea
+                value={candidateLabels}
+                onChange={(e) => setCandidateLabels(e.target.value)}
+                rows={6}
+                spellCheck={false}
+                placeholder={TYPED_DECISION_EXAMPLE}
+                className="mt-1 w-full rounded-lg border border-border bg-surface px-3 py-2 font-mono text-xs text-text focus:border-primary focus:outline-none"
+              />
+              <p className="mt-1 text-xs text-text-muted">
+                One forward pass answers all of them.{" "}
+                <span className="font-mono">choice</span> picks from{" "}
+                <span className="font-mono">criteria</span>,{" "}
+                <span className="font-mono">score</span> places it on that
+                ordered scale, and <span className="font-mono">noul</span>{" "}
+                returns P(true) with no criteria.
+                <br />
+                <strong>Word the question the way the text does.</strong> This
+                model matches vocabulary more than meaning: on an email saying
+                “cancelamos el plan”, asking “amenaza con cancelar” answers yes
+                at 0.98 and asking “amenaza con irse” — the same question in
+                synonyms — answers no at 0.17.
+              </p>
+              {!candidateLabels && (
+                <button
+                  type="button"
+                  onClick={() => setCandidateLabels(TYPED_DECISION_EXAMPLE)}
+                  className="mt-1 text-xs text-primary hover:underline"
+                >
+                  Fill the example
+                </button>
+              )}
+            </div>
+          )}
+
+          {isClassification && (
+            <p className="mt-3 text-xs text-text-muted">
+              This model's labels come from the checkpoint, not from the request
+              — nothing to choose. For labels you set per call, pick a model
+              under “Decision (zero-shot)”.
+            </p>
+          )}
+
+          {isTextLike && (
+            <>
+              <div>
+                <label
+                  htmlFor="playground-system"
+                  className="mb-1.5 block text-sm font-medium text-text"
+                >
+                  System prompt
+                </label>
+                <textarea
+                  id="playground-system"
+                  rows={3}
+                  value={systemPrompt}
+                  onChange={(e) => setSystemPrompt(e.target.value)}
+                  placeholder="Optional — sets the assistant's behavior for this conversation."
+                  className={inputClass}
+                />
+              </div>
+
+              <label className="flex items-center gap-2 text-sm text-text">
+                <input
+                  type="checkbox"
+                  checked={streamingEnabled}
+                  onChange={(e) => setStreamingEnabled(e.target.checked)}
+                />
+                Stream response
+              </label>
+
+              <h2 className="text-xs font-medium uppercase tracking-wide text-text-muted">
+                Parameters
+              </h2>
+
+              <div>
+                <div className="mb-1.5 flex items-center justify-between text-sm text-text">
+                  <label htmlFor="playground-temperature">Temperature</label>
+                  <span className="text-text-muted">
+                    {temperature.toFixed(1)}
+                  </span>
                 </div>
+                <input
+                  id="playground-temperature"
+                  type="range"
+                  min={0}
+                  max={2}
+                  step={0.1}
+                  value={temperature}
+                  onChange={(e) => setTemperature(Number(e.target.value))}
+                  className="w-full accent-primary"
+                />
+              </div>
 
-                <div>
-                  <div className="mb-1.5 flex items-center justify-between text-sm text-text">
-                    <label htmlFor="playground-top-p">Top P</label>
-                    <span className="text-text-muted">{topP.toFixed(2)}</span>
-                  </div>
-                  <input
-                    id="playground-top-p"
-                    type="range"
-                    min={0.05}
-                    max={1}
-                    step={0.05}
-                    value={topP}
-                    onChange={(e) => setTopP(Number(e.target.value))}
-                    className="w-full accent-primary"
-                  />
+              <div>
+                <div className="mb-1.5 flex items-center justify-between text-sm text-text">
+                  <label htmlFor="playground-top-p">Top P</label>
+                  <span className="text-text-muted">{topP.toFixed(2)}</span>
                 </div>
+                <input
+                  id="playground-top-p"
+                  type="range"
+                  min={0.05}
+                  max={1}
+                  step={0.05}
+                  value={topP}
+                  onChange={(e) => setTopP(Number(e.target.value))}
+                  className="w-full accent-primary"
+                />
+              </div>
 
-                <div>
-                  <label
-                    htmlFor="playground-max-tokens"
-                    className="mb-1.5 block text-sm text-text"
-                  >
-                    Max tokens
-                  </label>
-                  <input
-                    id="playground-max-tokens"
-                    type="number"
-                    min={1}
-                    value={maxTokens}
-                    onChange={(e) =>
-                      setMaxTokens(Math.max(1, Number(e.target.value) || 1))
-                    }
-                    className={inputClass}
-                  />
-                </div>
+              <div>
+                <label
+                  htmlFor="playground-max-tokens"
+                  className="mb-1.5 block text-sm text-text"
+                >
+                  Max tokens
+                </label>
+                <input
+                  id="playground-max-tokens"
+                  type="number"
+                  min={1}
+                  value={maxTokens}
+                  onChange={(e) =>
+                    setMaxTokens(Math.max(1, Number(e.target.value) || 1))
+                  }
+                  className={inputClass}
+                />
+              </div>
 
-                <div>
-                  <label
-                    htmlFor="playground-stop"
-                    className="mb-1.5 block text-sm text-text"
-                  >
-                    Stop sequences
-                  </label>
-                  <input
-                    id="playground-stop"
-                    type="text"
-                    value={stopInput}
-                    onChange={(e) => setStopInput(e.target.value)}
-                    placeholder="Comma-separated, optional"
-                    className={inputClass}
-                  />
-                </div>
+              <div>
+                <label
+                  htmlFor="playground-stop"
+                  className="mb-1.5 block text-sm text-text"
+                >
+                  Stop sequences
+                </label>
+                <input
+                  id="playground-stop"
+                  type="text"
+                  value={stopInput}
+                  onChange={(e) => setStopInput(e.target.value)}
+                  placeholder="Comma-separated, optional"
+                  className={inputClass}
+                />
+              </div>
 
-                <h2 className="text-xs font-medium uppercase tracking-wide text-text-muted">
-                  Tools (function calling)
-                </h2>
+              <h2 className="text-xs font-medium uppercase tracking-wide text-text-muted">
+                Tools (function calling)
+              </h2>
 
-                <div>
-                  <label
-                    htmlFor="playground-tools"
-                    className="mb-1.5 block text-sm text-text"
-                  >
-                    Tool definitions (JSON)
-                  </label>
-                  <textarea
-                    id="playground-tools"
-                    rows={6}
-                    value={toolsInput}
-                    onChange={(e) => setToolsInput(e.target.value)}
-                    placeholder={
-                      'Optional — an OpenAI-style tools array, e.g.\n[\n  {\n    "type": "function",\n    "function": {\n      "name": "get_weather",\n      "parameters": {"type": "object", "properties": {"city": {"type": "string"}}}\n    }\n  }\n]'
-                    }
-                    className={cn(inputClass, "font-mono text-xs")}
-                  />
-                  {toolsError && (
-                    <p className="mt-1 text-xs text-red-600">{toolsError}</p>
-                  )}
-                </div>
+              <div>
+                <label
+                  htmlFor="playground-tools"
+                  className="mb-1.5 block text-sm text-text"
+                >
+                  Tool definitions (JSON)
+                </label>
+                <textarea
+                  id="playground-tools"
+                  rows={6}
+                  value={toolsInput}
+                  onChange={(e) => setToolsInput(e.target.value)}
+                  placeholder={
+                    'Optional — an OpenAI-style tools array, e.g.\n[\n  {\n    "type": "function",\n    "function": {\n      "name": "get_weather",\n      "parameters": {"type": "object", "properties": {"city": {"type": "string"}}}\n    }\n  }\n]'
+                  }
+                  className={cn(inputClass, "font-mono text-xs")}
+                />
+                {toolsError && (
+                  <p className="mt-1 text-xs text-red-600">{toolsError}</p>
+                )}
+              </div>
 
-                <div>
-                  <label
-                    htmlFor="playground-tool-choice"
-                    className="mb-1.5 block text-sm text-text"
-                  >
-                    Tool choice
-                  </label>
-                  <select
-                    id="playground-tool-choice"
-                    value={toolChoice}
-                    onChange={(e) =>
-                      setToolChoice(
-                        e.target.value as "auto" | "required" | "none",
-                      )
-                    }
-                    disabled={!toolsInput.trim()}
-                    className={cn(
-                      inputClass,
-                      !toolsInput.trim() && "opacity-40",
-                    )}
-                  >
-                    <option value="auto">auto</option>
-                    <option value="required">required</option>
-                    <option value="none">none</option>
-                  </select>
-                  {toolChoice === "required" && (
-                    <p className="mt-1 text-xs text-text-muted">
-                      "required" forces a tool call every turn — switch to
-                      "auto" after submitting a result if you want the model's
-                      final text answer instead of another call.
-                    </p>
-                  )}
-                </div>
-              </>
-            )}
-          </aside>
-        )}
+              <div>
+                <label
+                  htmlFor="playground-tool-choice"
+                  className="mb-1.5 block text-sm text-text"
+                >
+                  Tool choice
+                </label>
+                <select
+                  id="playground-tool-choice"
+                  value={toolChoice}
+                  onChange={(e) =>
+                    setToolChoice(
+                      e.target.value as "auto" | "required" | "none",
+                    )
+                  }
+                  disabled={!toolsInput.trim()}
+                  className={cn(inputClass, !toolsInput.trim() && "opacity-40")}
+                >
+                  <option value="auto">auto</option>
+                  <option value="required">required</option>
+                  <option value="none">none</option>
+                </select>
+                {toolChoice === "required" && (
+                  <p className="mt-1 text-xs text-text-muted">
+                    "required" forces a tool call every turn — switch to "auto"
+                    after submitting a result if you want the model's final text
+                    answer instead of another call.
+                  </p>
+                )}
+              </div>
+            </>
+          )}
+        </aside>
       </main>
       {expandedImage &&
         createPortal(

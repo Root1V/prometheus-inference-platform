@@ -8392,3 +8392,38 @@ improve a dashboard.
 **Scope**: in — the catalogue, the two locales, the switch and its persistence, and every string the
 admin renders. Out — the backend's error bodies, model output, the roadmap and docs, and machine
 translation of either locale (both are written, not generated).
+
+
+## PRM-217 — Every model has its settings in one place
+
+**Why**: two things, and the second decided the first. The split between a right-hand rail and
+controls above the composer was reported as uncomfortable twice; I argued it was principled
+(per-request inputs versus persistent settings) and was asked again, so settings now live in one
+place whatever the model.
+
+**Then the research question: do only text and vision models have parameters?** No, and the answer
+is why PRM-214 was wrong to hide the rail — it read the UI's omissions as the API's limits.
+
+| Modality | Parameters the gateway accepts | Reachable before |
+|---|---|---|
+| text / vision | temperature, top_p, max_tokens, stop, tools, tool_choice, stream, system | all |
+| rerank | `top_n`, `raw_scores` (PRM-183) | none |
+| image | `n`, `size` | none |
+| zero-shot | `candidate_labels`, `multi_label` | labels only |
+| classification | none — labels are baked into the checkpoint | n/a |
+| embedding | **none** — the schema is model+input, and `dimensions`/`encoding_format` are documented as unsupported | n/a |
+
+`multi_label` was measured rather than assumed: on `von-decide` with four labels, off gives a
+softmax summing to 1.0 (`ventas` leads at 0.319); on gives independent sigmoids (0.499/0.450/0.423/
+0.421) and `facturación` leads. Different scores, different winner.
+
+**And one of the four is ignored by the engine it is offered on.** `qwen3-reranker-0-6-q4` returns
+byte-identical scores with and without `raw_scores`, and the gateway says so in
+`X-Prometheus-Ignored-Parameters` — a header PRM-183 added for exactly this and that no client had
+ever read. Shipping the control without reading it would have been a switch that does nothing,
+indistinguishable from one that works. The rerank result now names what the engine threw away.
+
+**Scope**: in — the rail made unconditional, the per-modality settings moved into it, the four
+parameters wired through, embedding's "no parameters" note, and reading the ignored-parameters
+header for rerank. Out — reading that header on the other endpoints, which deserves to be done
+uniformly rather than one modality at a time.
