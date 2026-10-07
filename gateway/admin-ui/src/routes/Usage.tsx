@@ -3,7 +3,11 @@ import { Fragment, useMemo, useState } from "react";
 import {
   Area,
   AreaChart,
+  Bar,
+  BarChart,
   CartesianGrid,
+  Cell,
+  LabelList,
   ResponsiveContainer,
   Tooltip,
   XAxis,
@@ -45,6 +49,15 @@ const KIND_STYLE: Record<string, string> = {
   image: "bg-amber-500/15 text-amber-600 dark:text-amber-400",
 };
 
+/** The same five, as the chart needs real colours rather than classes. */
+const KIND_COLOR: Record<string, string> = {
+  chat: "var(--color-primary)",
+  embedding: "#0ea5e9",
+  rerank: "#8b5cf6",
+  predict: "#14b8a6",
+  image: "#f59e0b",
+};
+
 function KindBadge({ kind }: { kind: string }) {
   return (
     <span
@@ -67,7 +80,10 @@ function KindBadge({ kind }: { kind: string }) {
  * client has a real cost and no token denominator, and a rate printed there
  * would be arithmetic rather than information.
  */
-function ratePerMillionTokens(costUsd: number | null, tokens: number): number | null {
+function ratePerMillionTokens(
+  costUsd: number | null,
+  tokens: number,
+): number | null {
   if (costUsd === null || tokens <= 0) return null;
   return (costUsd / tokens) * 1_000_000;
 }
@@ -90,7 +106,9 @@ export default function Usage() {
   const { showToast } = useToast();
 
   const users = usersQuery.data ?? [];
-  const nameByClientId = new Map(users.map((u) => [u.client_id, u.client_name]));
+  const nameByClientId = new Map(
+    users.map((u) => [u.client_id, u.client_name]),
+  );
   /**
    * The label is the human sentence about what a credential is *for* — "Argus
    * monitoring collector" rather than `d14c79a6`. Without it the ranking names
@@ -103,7 +121,9 @@ export default function Usage() {
   const rangeClients: UsageRangeClient[] = useMemo(
     () =>
       [...(rangeQuery.data?.by_client ?? [])].sort(
-        (a, b) => (b.cost_usd ?? 0) - (a.cost_usd ?? 0) || b.total_tokens - a.total_tokens,
+        (a, b) =>
+          (b.cost_usd ?? 0) - (a.cost_usd ?? 0) ||
+          b.total_tokens - a.total_tokens,
       ),
     [rangeQuery.data],
   );
@@ -129,9 +149,59 @@ export default function Usage() {
    * next to a cost of $1.54. The table is sorted by cost; the bar now measures
    * the same thing the sort does.
    */
-  const rangeCostTotal = rangeClients.reduce((n, c) => n + (c.cost_usd ?? 0), 0);
+  const rangeCostTotal = rangeClients.reduce(
+    (n, c) => n + (c.cost_usd ?? 0),
+    0,
+  );
+  /**
+   * Kind mix and the busiest model, both folded out of `by_model` rather than
+   * asked for again. The range response already carries every
+   * (client, model, kind) row, so a second endpoint for the same numbers would
+   * be a round trip bought with nothing.
+   *
+   * Counted in **requests**, which is what "how much is this used" means for a
+   * mix: tokens would erase images entirely (they have none) and cost would
+   * turn the chart into a second copy of the share column. The money is on the
+   * tooltip, where it answers the follow-up question rather than replacing the
+   * first one.
+   */
+  const { kindMix, topModel } = useMemo(() => {
+    const kinds = new Map<string, { requests: number; cost: number }>();
+    const models = new Map<
+      string,
+      { requests: number; tokens: number; cost: number }
+    >();
+    for (const client of rangeClients) {
+      for (const m of client.by_model) {
+        const k = kinds.get(m.request_kind) ?? { requests: 0, cost: 0 };
+        k.requests += m.request_count;
+        k.cost += m.cost_usd ?? 0;
+        kinds.set(m.request_kind, k);
+
+        const mod = models.get(m.model_id) ?? {
+          requests: 0,
+          tokens: 0,
+          cost: 0,
+        };
+        mod.requests += m.request_count;
+        mod.tokens += m.total_tokens;
+        mod.cost += m.cost_usd ?? 0;
+        models.set(m.model_id, mod);
+      }
+    }
+    return {
+      kindMix: [...kinds.entries()]
+        .map(([kind, v]) => ({ kind, ...v }))
+        .sort((a, b) => b.requests - a.requests),
+      topModel: [...models.entries()]
+        .map(([model_id, v]) => ({ model_id, ...v }))
+        .sort((a, b) => b.requests - a.requests)[0],
+    };
+  }, [rangeClients]);
+
   /** Stated in the UI so the cap column cannot be mistaken for range data. */
-  const monthToDateStart = rangeQuery.data?.month_to_date_start ?? monthStartUtc();
+  const monthToDateStart =
+    rangeQuery.data?.month_to_date_start ?? monthStartUtc();
 
   /** Presets, because "the last 7 days" is the question people actually have
    * and typing two ISO dates to ask it is friction with no payoff. */
@@ -230,14 +300,15 @@ export default function Usage() {
             `unpriced` earns its place — RM-33 never bills an unpriced model as
             $0, so a cost figure that omitted some requests has to say how many,
             or it is a confident number that is quietly incomplete. */}
-        <div className="mt-4 grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
+        <div className="mt-4 grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-5">
           <div className="rounded-xl border border-border bg-surface p-4">
             <p className="text-sm text-text-muted">Requests</p>
             <p className="text-2xl font-semibold text-text">
               {rangeTotals.requests.toLocaleString()}
             </p>
             <p className="text-xs text-text-muted">
-              over {daily.length} day{daily.length === 1 ? "" : "s"} with traffic
+              over {daily.length} day{daily.length === 1 ? "" : "s"} with
+              traffic
             </p>
           </div>
           <div className="rounded-xl border border-border bg-surface p-4">
@@ -245,11 +316,15 @@ export default function Usage() {
             <p className="text-2xl font-semibold text-text">
               {rangeTotals.tokens.toLocaleString()}
             </p>
-            <p className="text-xs text-text-muted">prompt and completion combined</p>
+            <p className="text-xs text-text-muted">
+              prompt and completion combined
+            </p>
           </div>
           <div className="rounded-xl border border-border bg-surface p-4">
             <p className="text-sm text-text-muted">Estimated cost</p>
-            <p className="text-2xl font-semibold text-text">{formatUsdCost(rangeTotals.cost)}</p>
+            <p className="text-2xl font-semibold text-text">
+              {formatUsdCost(rangeTotals.cost)}
+            </p>
             <p className="text-xs text-text-muted">
               {rangeTotals.unpriced > 0
                 ? `excludes ${rangeTotals.unpriced.toLocaleString()} unpriced request${rangeTotals.unpriced === 1 ? "" : "s"}`
@@ -258,10 +333,31 @@ export default function Usage() {
           </div>
           <div className="rounded-xl border border-border bg-surface p-4">
             <p className="text-sm text-text-muted">Clients</p>
-            <p className="text-2xl font-semibold text-text">{rangeClients.length}</p>
+            <p className="text-2xl font-semibold text-text">
+              {rangeClients.length}
+            </p>
             <p className="text-xs text-text-muted">
               {rangeClients[0]
                 ? `${nameByClientId.get(rangeClients[0].client_id) ?? "top client"} leads`
+                : "no usage in range"}
+            </p>
+          </div>
+          {/* Busiest model. The four cards beside it describe the range in the
+              abstract — volume, tokens, money, headcount — and none of them
+              names a single thing you could act on. `truncate` with the full id
+              on hover because a model slug is long by nature and a card that
+              reflows to three lines stops being a card. */}
+          <div className="min-w-0 rounded-xl border border-border bg-surface p-4">
+            <p className="text-sm text-text-muted">Busiest model</p>
+            {/* `text-lg`, not the `text-2xl` of the four numeric cards: this
+                value is a slug, and a size chosen for four-digit numbers cuts
+                it off mid-word. */}
+            <p className="truncate text-lg font-semibold text-text" title={topModel?.model_id}>
+              {topModel ? topModel.model_id : "\u2014"}
+            </p>
+            <p className="text-xs text-text-muted">
+              {topModel
+                ? `${topModel.requests.toLocaleString()} requests \u00b7 ${formatUsdCost(topModel.cost)}`
                 : "no usage in range"}
             </p>
           </div>
@@ -270,67 +366,167 @@ export default function Usage() {
         {/* The trend. Billing has one of these per client; "every client over
             time" was answerable nowhere, which is what left this page showing
             two rows and half a screen of nothing. */}
-        <div className="mt-4 rounded-xl border border-border bg-surface p-4">
-          <p className="text-xs font-medium uppercase tracking-wide text-text-muted">
-            Tokens per day
-          </p>
-          <div className="mt-3 h-56">
-            {rangeQuery.isLoading ? (
-              <div className="flex h-full items-center justify-center text-sm text-text-muted">
-                Loading…
-              </div>
-            ) : daily.length === 0 ? (
-              <div className="flex h-full items-center justify-center text-sm text-text-muted">
-                No usage in this range.
-              </div>
-            ) : (
-              <ResponsiveContainer width="100%" height="100%">
-                <AreaChart data={daily}>
-                  <defs>
-                    <linearGradient id="usageTokensFill" x1="0" y1="0" x2="0" y2="1">
-                      <stop offset="0%" stopColor="var(--color-primary)" stopOpacity={0.35} />
-                      <stop offset="100%" stopColor="var(--color-primary)" stopOpacity={0} />
-                    </linearGradient>
-                  </defs>
-                  <CartesianGrid
-                    strokeDasharray="3 3"
-                    stroke="var(--color-border)"
-                    vertical={false}
-                  />
-                  <XAxis
-                    dataKey="day"
-                    tick={{ fill: "var(--color-text-muted)", fontSize: 12 }}
-                    axisLine={{ stroke: "var(--color-border)" }}
-                    tickLine={false}
-                  />
-                  <YAxis
-                    tick={{ fill: "var(--color-text-muted)", fontSize: 12 }}
-                    axisLine={false}
-                    tickLine={false}
-                    width={60}
-                    tickFormatter={(v: number) =>
-                      v >= 1_000_000 ? `${(v / 1_000_000).toFixed(1)}M` : `${Math.round(v / 1000)}k`
-                    }
-                  />
-                  <Tooltip
-                    contentStyle={{
-                      background: "var(--color-surface)",
-                      border: "1px solid var(--color-border)",
-                      borderRadius: "0.5rem",
-                      color: "var(--color-text)",
-                    }}
-                    formatter={(v: unknown) => [Number(v).toLocaleString(), "tokens"]}
-                  />
-                  <Area
-                    type="monotone"
-                    dataKey="tokens"
-                    stroke="var(--color-primary)"
-                    fill="url(#usageTokensFill)"
-                    strokeWidth={2}
-                  />
-                </AreaChart>
-              </ResponsiveContainer>
-            )}
+        <div className="mt-4 grid gap-4 lg:grid-cols-3">
+          <div className="rounded-xl border border-border bg-surface p-4 lg:col-span-2">
+            <p className="text-xs font-medium uppercase tracking-wide text-text-muted">
+              Tokens per day
+            </p>
+            <div className="mt-3 h-56">
+              {rangeQuery.isLoading ? (
+                <div className="flex h-full items-center justify-center text-sm text-text-muted">
+                  Loading…
+                </div>
+              ) : daily.length === 0 ? (
+                <div className="flex h-full items-center justify-center text-sm text-text-muted">
+                  No usage in this range.
+                </div>
+              ) : (
+                <ResponsiveContainer width="100%" height="100%">
+                  <AreaChart data={daily}>
+                    <defs>
+                      <linearGradient
+                        id="usageTokensFill"
+                        x1="0"
+                        y1="0"
+                        x2="0"
+                        y2="1"
+                      >
+                        <stop
+                          offset="0%"
+                          stopColor="var(--color-primary)"
+                          stopOpacity={0.35}
+                        />
+                        <stop
+                          offset="100%"
+                          stopColor="var(--color-primary)"
+                          stopOpacity={0}
+                        />
+                      </linearGradient>
+                    </defs>
+                    <CartesianGrid
+                      strokeDasharray="3 3"
+                      stroke="var(--color-border)"
+                      vertical={false}
+                    />
+                    <XAxis
+                      dataKey="day"
+                      tick={{ fill: "var(--color-text-muted)", fontSize: 12 }}
+                      axisLine={{ stroke: "var(--color-border)" }}
+                      tickLine={false}
+                    />
+                    <YAxis
+                      tick={{ fill: "var(--color-text-muted)", fontSize: 12 }}
+                      axisLine={false}
+                      tickLine={false}
+                      width={60}
+                      tickFormatter={(v: number) =>
+                        v >= 1_000_000
+                          ? `${(v / 1_000_000).toFixed(1)}M`
+                          : `${Math.round(v / 1000)}k`
+                      }
+                    />
+                    <Tooltip
+                      contentStyle={{
+                        background: "var(--color-surface)",
+                        border: "1px solid var(--color-border)",
+                        borderRadius: "0.5rem",
+                        color: "var(--color-text)",
+                      }}
+                      formatter={(v: unknown) => [
+                        Number(v).toLocaleString(),
+                        "tokens",
+                      ]}
+                    />
+                    <Area
+                      type="monotone"
+                      dataKey="tokens"
+                      stroke="var(--color-primary)"
+                      fill="url(#usageTokensFill)"
+                      strokeWidth={2}
+                    />
+                  </AreaChart>
+                </ResponsiveContainer>
+              )}
+            </div>
+          </div>
+
+          {/*
+          The mix of work, which until now was visible only by expanding a
+          client row. Counted in requests — tokens would erase images, which
+          have none, and cost would make this a second copy of the share
+          column. `minPointSize` so a kind with eight requests beside one with
+          nine thousand still draws something: a bar at literally zero pixels
+          reads as "not used" rather than "barely used", and those are
+          different answers.
+        */}
+          <div className="rounded-xl border border-border bg-surface p-4">
+            <p className="text-xs font-medium uppercase tracking-wide text-text-muted">
+              Requests by kind
+            </p>
+            <div className="mt-3 h-56">
+              {kindMix.length === 0 ? (
+                <div className="flex h-full items-center justify-center text-sm text-text-muted">
+                  No usage in this range.
+                </div>
+              ) : (
+                <ResponsiveContainer width="100%" height="100%">
+                  <BarChart
+                    data={kindMix}
+                    layout="vertical"
+                    margin={{ top: 4, right: 44, bottom: 4, left: 0 }}
+                  >
+                    <XAxis type="number" hide />
+                    <YAxis
+                      type="category"
+                      dataKey="kind"
+                      width={76}
+                      tick={{ fill: "var(--color-text-muted)", fontSize: 12 }}
+                      axisLine={false}
+                      tickLine={false}
+                    />
+                    <Tooltip
+                      cursor={{ fill: "var(--color-background)" }}
+                      contentStyle={{
+                        background: "var(--color-surface)",
+                        border: "1px solid var(--color-border)",
+                        borderRadius: "0.5rem",
+                        color: "var(--color-text)",
+                      }}
+                      formatter={(
+                        v: unknown,
+                        _n: unknown,
+                        item: { payload?: { cost?: number } },
+                      ) => [
+                        `${Number(v).toLocaleString()} requests · ${formatUsdCost(
+                          item?.payload?.cost ?? 0,
+                        )}`,
+                        "",
+                      ]}
+                    />
+                    <Bar
+                      dataKey="requests"
+                      minPointSize={2}
+                      radius={[0, 3, 3, 0]}
+                      barSize={16}
+                    >
+                      {kindMix.map((k) => (
+                        <Cell
+                          key={k.kind}
+                          fill={KIND_COLOR[k.kind] ?? "var(--color-text-muted)"}
+                        />
+                      ))}
+                      <LabelList
+                        dataKey="requests"
+                        position="right"
+                        className="fill-text-muted"
+                        fontSize={11}
+                        formatter={(v: unknown) => Number(v).toLocaleString()}
+                      />
+                    </Bar>
+                  </BarChart>
+                </ResponsiveContainer>
+              )}
+            </div>
           </div>
         </div>
 
@@ -348,7 +544,9 @@ export default function Usage() {
             Clients in this range
           </p>
           {rangeQuery.isLoading ? (
-            <div className="p-12 text-center text-text-muted">Loading usage…</div>
+            <div className="p-12 text-center text-text-muted">
+              Loading usage…
+            </div>
           ) : rangeQuery.isError ? (
             <div className="p-12 text-center text-red-600">
               {getErrorMessage(rangeQuery.error)}
@@ -386,13 +584,22 @@ export default function Usage() {
                     const isExpanded = expanded.has(c.client_id);
                     const hasBreakdown = c.by_model.length > 0;
                     const label = labelByClientId.get(c.client_id);
-                    const rate = ratePerMillionTokens(c.cost_usd, c.total_tokens);
+                    const rate = ratePerMillionTokens(
+                      c.cost_usd,
+                      c.total_tokens,
+                    );
                     const avgTokens =
-                      c.request_count > 0 ? Math.round(c.total_tokens / c.request_count) : 0;
+                      c.request_count > 0
+                        ? Math.round(c.total_tokens / c.request_count)
+                        : 0;
                     const promptShare =
-                      c.total_tokens > 0 ? (c.prompt_tokens / c.total_tokens) * 100 : null;
+                      c.total_tokens > 0
+                        ? (c.prompt_tokens / c.total_tokens) * 100
+                        : null;
                     const costShare =
-                      rangeCostTotal > 0 ? ((c.cost_usd ?? 0) / rangeCostTotal) * 100 : 0;
+                      rangeCostTotal > 0
+                        ? ((c.cost_usd ?? 0) / rangeCostTotal) * 100
+                        : 0;
                     const cap = c.monthly_spend_cap_usd;
                     const mtd = c.month_to_date_cost_usd ?? 0;
                     const capUsed = cap && cap > 0 ? (mtd / cap) * 100 : null;
@@ -400,15 +607,24 @@ export default function Usage() {
                       <Fragment key={c.client_id}>
                         <tr
                           className={`border-b border-border last:border-0 ${
-                            hasBreakdown ? "cursor-pointer hover:bg-background/50" : ""
+                            hasBreakdown
+                              ? "cursor-pointer hover:bg-background/50"
+                              : ""
                           }`}
-                          onClick={hasBreakdown ? () => toggleExpanded(c.client_id) : undefined}
+                          onClick={
+                            hasBreakdown
+                              ? () => toggleExpanded(c.client_id)
+                              : undefined
+                          }
                         >
                           <td className="px-4 py-2">
                             <div className="flex items-start gap-1.5">
                               {hasBreakdown ? (
                                 isExpanded ? (
-                                  <ChevronDown size={14} className="mt-1 shrink-0 text-text-muted" />
+                                  <ChevronDown
+                                    size={14}
+                                    className="mt-1 shrink-0 text-text-muted"
+                                  />
                                 ) : (
                                   <ChevronRight
                                     size={14}
@@ -420,10 +636,14 @@ export default function Usage() {
                               )}
                               <div className="min-w-0">
                                 <p className="font-medium text-text">
-                                  {nameByClientId.get(c.client_id) ?? c.client_id}
+                                  {nameByClientId.get(c.client_id) ??
+                                    c.client_id}
                                 </p>
                                 {label && (
-                                  <p className="truncate text-xs text-text-muted" title={label}>
+                                  <p
+                                    className="truncate text-xs text-text-muted"
+                                    title={label}
+                                  >
                                     {label}
                                   </p>
                                 )}
@@ -472,7 +692,10 @@ export default function Usage() {
                           </td>
                           <td className="px-4 py-2 tabular-nums">
                             {cap === null ? (
-                              <span className="text-text-muted/60" title="No monthly cap configured">
+                              <span
+                                className="text-text-muted/60"
+                                title="No monthly cap configured"
+                              >
                                 —
                               </span>
                             ) : (
@@ -489,7 +712,9 @@ export default function Usage() {
                                   {formatUsdCost(mtd)} / {formatUsdCost(cap)}
                                 </p>
                                 <p className="text-xs text-text-muted/70">
-                                  {capUsed === null ? "—" : `${capUsed.toFixed(0)}% of cap`}
+                                  {capUsed === null
+                                    ? "—"
+                                    : `${capUsed.toFixed(0)}% of cap`}
                                 </p>
                               </>
                             )}
@@ -525,7 +750,9 @@ export default function Usage() {
                             >
                               <td className="px-4 py-2 pl-10">
                                 <div className="flex items-center gap-2">
-                                  <span className="text-text-muted">{m.model_id}</span>
+                                  <span className="text-text-muted">
+                                    {m.model_id}
+                                  </span>
                                   <KindBadge kind={m.request_kind} />
                                 </div>
                               </td>
@@ -549,7 +776,10 @@ export default function Usage() {
                               </td>
                               <td className="px-4 py-2 tabular-nums text-text-muted">
                                 {(() => {
-                                  const r = ratePerMillionTokens(m.cost_usd, m.total_tokens);
+                                  const r = ratePerMillionTokens(
+                                    m.cost_usd,
+                                    m.total_tokens,
+                                  );
                                   return r === null ? "—" : `$${r.toFixed(2)}`;
                                 })()}
                               </td>

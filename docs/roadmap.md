@@ -8165,8 +8165,16 @@ about what to do, so five things were added, each measured against live data fir
   recurring defect — the instrument asserting something it did not measure. The fields carry their
   period in their names and the column header states it.
 
+**The kind mix and the busiest model** close the last gap: the five kinds were readable only by
+expanding a client row, and four cards describing the range in the abstract — volume, tokens, money,
+headcount — named nothing you could act on. Both are folded out of `by_model`, which the range
+response already carries, so neither costs a request. The mix is counted in **requests**: tokens
+would erase images, which have none, and cost would make the chart a second copy of the share
+column. `minPointSize` keeps a kind with one request visible beside one with eight thousand —
+a bar at zero pixels reads as "not used" rather than "barely used", and those are different answers.
+
 **Scope**: in — `GET /v1/usage/range` (per-day, per-client, per-(client, model, kind), plus
 month-to-date and caps), `query_client_cost_range` and `query_client_model_cost_range`, the presets,
-the trend chart, the one expandable table, and the five columns above. Out — error rate and latency
-per client: `usage_events` records neither, so the page cannot answer "who is failing" or "who is
-slow" and does not pretend to.
+the trend chart, the kind-mix chart, the busiest-model card, the one expandable table, and the five
+columns above. Out — error rate and latency per client: `usage_events` records neither, so the page
+cannot answer "who is failing" or "who is slow" and does not pretend to.
