@@ -98,6 +98,11 @@ export interface ModelsConfig {
   downloads_dir: string;
   hf_token_env: string;
   ca_bundle: string;
+  /** PRM-210: free/total bytes on the volume holding `downloads_dir`. Null
+   * when the node could not stat it — the UI says "unknown" rather than
+   * guessing, and never blocks a download on a figure it does not have. */
+  disk_free_bytes: number | null;
+  disk_total_bytes: number | null;
 }
 
 export type UpdateModelsConfigRequest = Partial<ModelsConfig>;

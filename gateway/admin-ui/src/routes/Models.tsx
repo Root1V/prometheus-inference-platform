@@ -16,6 +16,7 @@ import {
   useDownloads,
   useModelCatalog,
   useModelFiles,
+  useModelsConfig,
   useModelSearch,
   usePauseDownload,
   useResumeDownload,
@@ -34,7 +35,7 @@ import { useToast } from "../context/ToastContext";
 import { cn } from "../lib/cn";
 import { getErrorMessage } from "../lib/errors";
 import { formatBytes } from "../lib/format";
-import type { DownloadEntry, ModelSort } from "../types/models";
+import type { DownloadEntry, HfFile, ModelSort } from "../types/models";
 
 const inputClass =
   "w-full rounded-lg border border-border bg-background px-3 py-2 text-sm text-text focus:border-primary focus:outline-none";
@@ -53,6 +54,58 @@ function formatCount(n: number | null): string {
   if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
   if (n >= 1_000) return `${(n / 1_000).toFixed(0)}K`;
   return String(n);
+}
+
+/**
+ * Mirrors `_SHARD_RE` in `hf_discovery.py` — PRM-210.
+ *
+ * It has to, because the node acts on the group rather than the file: picking
+ * one shard calls `shard_filenames()`, which collects every sibling and
+ * downloads all of them. Listing each shard separately with its own size
+ * therefore understated what the button did, measured on a real repo, by two
+ * and a half times — a row reading 26.8 GB fetched 68.0 GB.
+ */
+const SHARD_RE = /^(.*?-?)(\d{5})-of-(\d{5})(\.gguf)$/i;
+
+interface FileGroup {
+  /** The filename to hand the node; it expands the rest itself. */
+  filename: string;
+  label: string;
+  quantization: string;
+  /** Summed across the set. Null if any member did not report a size — a
+   * partial sum presented as the whole is the same lie as a missing one. */
+  totalBytes: number | null;
+  parts: number;
+}
+
+function groupShards(files: HfFile[]): FileGroup[] {
+  const groups = new Map<string, HfFile[]>();
+  for (const f of files) {
+    const m = SHARD_RE.exec(f.filename);
+    groups.set(m ? `${m[1]}|of|${m[3]}${m[4]}` : f.filename, [
+      ...(groups.get(m ? `${m[1]}|of|${m[3]}${m[4]}` : f.filename) ?? []),
+      f,
+    ]);
+  }
+  return [...groups.values()].map((members) => {
+    const sorted = [...members].sort((a, b) =>
+      a.filename.localeCompare(b.filename),
+    );
+    const first = sorted[0];
+    const anyUnsized = sorted.some((f) => f.size_bytes === null);
+    return {
+      filename: first.filename,
+      label:
+        sorted.length > 1
+          ? first.filename.replace(SHARD_RE, "$1*$4")
+          : first.filename,
+      quantization: first.quantization,
+      totalBytes: anyUnsized
+        ? null
+        : sorted.reduce((n, f) => n + (f.size_bytes ?? 0), 0),
+      parts: sorted.length,
+    };
+  });
 }
 
 const STATUS_COLOR: Record<DownloadEntry["status"], string> = {
@@ -200,6 +253,7 @@ export default function Models() {
   const searchQuery = useModelSearch(selectedNode, searchTerm, sort);
   const filesQuery = useModelFiles(selectedNode, selectedRepo);
   const downloadsQuery = useDownloads(selectedNode);
+  const configQuery = useModelsConfig(selectedNode);
   const instancesQuery = useInstances();
   const catalogQuery = useModelCatalog();
   const startDownload = useStartDownload();
@@ -208,6 +262,16 @@ export default function Models() {
   const downloadedModels = (catalogQuery.data?.models ?? []).filter(
     (m) => m.node === selectedNode,
   );
+  /** Repo ids already downloaded on this node, so a search result can say so
+   *  rather than letting someone re-fetch 68 GB they already have. */
+  const ownedRepos = new Set(
+    downloadedModels
+      .filter((m) => m.hf_repo)
+      .map((m) => m.hf_repo.toLowerCase()),
+  );
+  const fileGroups = groupShards(filesQuery.data ?? []);
+  const freeBytes = configQuery.data?.disk_free_bytes ?? null;
+
   const previewModel = previewId
     ? (downloadedModels.find((m) => m.id === previewId) ?? null)
     : null;
@@ -364,181 +428,259 @@ export default function Models() {
             </div>
 
             {tab === "discover" ? (
-              <div className="mt-6 grid grid-cols-1 gap-6 lg:grid-cols-3">
-                <div className="rounded-xl border border-border bg-surface p-4">
-                  <h2 className="mb-3 text-sm font-semibold text-text">
-                    Search Hugging Face
-                  </h2>
-                  <div className="flex gap-2">
-                    <input
-                      value={query}
-                      onChange={(e) => setQuery(e.target.value)}
-                      onKeyDown={(e) => e.key === "Enter" && handleSearch()}
-                      placeholder="e.g. llama-3.2, nomic-embed-text…"
-                      className={cn(inputClass, "flex-1")}
-                    />
-                    <button
-                      type="button"
-                      onClick={handleSearch}
-                      disabled={!query.trim()}
-                      className="flex items-center gap-2 rounded-lg bg-primary px-3 py-2 text-sm font-medium text-primary-foreground hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-40"
-                    >
-                      <Search size={16} />
-                    </button>
-                  </div>
-
-                  {searchTerm && (
-                    <div className="mt-2 flex items-center gap-2">
-                      <label
-                        htmlFor="model-sort"
-                        className="text-xs text-text-muted"
-                      >
-                        Sort by
-                      </label>
-                      <select
-                        id="model-sort"
-                        value={sort}
-                        onChange={(e) =>
-                          setSort(e.target.value as ModelSort | "")
-                        }
-                        className={cn(inputClass, "w-auto py-1 text-xs")}
-                      >
-                        {SORT_OPTIONS.map((o) => (
-                          <option key={o.value} value={o.value}>
-                            {o.label}
-                          </option>
-                        ))}
-                      </select>
-                    </div>
+              <>
+                {/* What a download will cost, against what there is room for.
+                    The catalog reports what the weights occupy and never what
+                    is left; the node now answers that too (PRM-210). */}
+                <div className="mt-6 flex flex-wrap items-center gap-x-6 gap-y-1 rounded-xl border border-border bg-surface px-4 py-3 text-sm">
+                  <span className="text-text-muted">
+                    Downloads land on{" "}
+                    <span className="font-medium text-text">
+                      {selectedNode}
+                    </span>
+                  </span>
+                  <span className="text-text-muted">
+                    {freeBytes === null ? (
+                      "Free space unknown on this node"
+                    ) : (
+                      <>
+                        <span className="font-medium text-text">
+                          {formatBytes(freeBytes)}
+                        </span>{" "}
+                        free
+                        {configQuery.data?.disk_total_bytes
+                          ? ` of ${formatBytes(configQuery.data.disk_total_bytes)}`
+                          : ""}
+                      </>
+                    )}
+                  </span>
+                  {disk.totalBytes > 0 && (
+                    <span className="text-text-muted">
+                      {formatBytes(disk.totalBytes)} already in models here
+                    </span>
                   )}
-
-                  <div className="mt-3 max-h-[28rem] space-y-1 overflow-y-auto">
-                    {searchQuery.isLoading && (
-                      <p className="text-sm text-text-muted">Searching…</p>
-                    )}
-                    {searchQuery.isError && (
-                      <p className="text-sm text-red-600">
-                        {getErrorMessage(searchQuery.error)}
-                      </p>
-                    )}
-                    {searchQuery.data?.length === 0 && (
-                      <p className="text-sm text-text-muted">No results.</p>
-                    )}
-                    {searchQuery.data?.map((r) => (
-                      <button
-                        key={r.id}
-                        type="button"
-                        onClick={() => {
-                          setSelectedRepo(r.id);
-                          setShowCard(false);
-                          setCustomModelId("");
-                        }}
-                        className={cn(
-                          "block w-full rounded-lg px-3 py-2 text-left text-sm hover:bg-background",
-                          selectedRepo === r.id &&
-                            "bg-background ring-1 ring-primary",
-                        )}
-                      >
-                        <span className="font-medium text-text">{r.id}</span>
-                        <span className="ml-2 text-xs text-text-muted">
-                          ↓{formatCount(r.downloads)} · ★{formatCount(r.likes)}
-                        </span>
-                      </button>
-                    ))}
-                  </div>
                 </div>
 
-                <div className="rounded-xl border border-border bg-surface p-4">
-                  {selectedRepo ? (
-                    <>
-                      <div className="mb-3 flex items-center justify-between">
-                        <h2 className="truncate text-sm font-semibold text-text">
-                          {selectedRepo}
-                        </h2>
+                <div className="mt-4 grid grid-cols-1 gap-6 lg:grid-cols-5">
+                  <div className="lg:col-span-2">
+                    <div className="rounded-xl border border-border bg-surface p-4">
+                      <h2 className="mb-3 text-sm font-semibold text-text">
+                        Search Hugging Face
+                      </h2>
+                      <div className="flex gap-2">
+                        <input
+                          value={query}
+                          onChange={(e) => setQuery(e.target.value)}
+                          onKeyDown={(e) => e.key === "Enter" && handleSearch()}
+                          placeholder="e.g. llama-3.2, nomic-embed-text…"
+                          className={cn(inputClass, "flex-1")}
+                        />
                         <button
                           type="button"
-                          onClick={() => setShowCard((v) => !v)}
-                          className="shrink-0 text-xs font-medium text-primary hover:underline"
+                          onClick={handleSearch}
+                          disabled={!query.trim()}
+                          className="flex items-center gap-2 rounded-lg bg-primary px-3 py-2 text-sm font-medium text-primary-foreground hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-40"
                         >
-                          {showCard ? "Hide model card" : "Show model card"}
+                          <Search size={16} />
                         </button>
                       </div>
 
-                      {showCard && (
-                        <div className="mb-3 max-h-56 overflow-y-auto rounded-lg border border-border bg-background p-3">
-                          <ModelCardView
-                            node={selectedNode}
-                            repoId={selectedRepo}
-                          />
+                      {searchTerm && (
+                        <div className="mt-2 flex items-center gap-2">
+                          <label
+                            htmlFor="model-sort"
+                            className="text-xs text-text-muted"
+                          >
+                            Sort by
+                          </label>
+                          <select
+                            id="model-sort"
+                            value={sort}
+                            onChange={(e) =>
+                              setSort(e.target.value as ModelSort | "")
+                            }
+                            className={cn(inputClass, "w-auto py-1 text-xs")}
+                          >
+                            {SORT_OPTIONS.map((o) => (
+                              <option key={o.value} value={o.value}>
+                                {o.label}
+                              </option>
+                            ))}
+                          </select>
                         </div>
                       )}
 
-                      <label className="mb-3 block text-sm text-text">
-                        <span className="mb-1 block text-xs font-medium text-text-muted">
-                          Model name (optional)
-                        </span>
-                        <input
-                          value={customModelId}
-                          onChange={(e) => setCustomModelId(e.target.value)}
-                          placeholder="Auto-generated if left blank"
-                          className={inputClass}
-                        />
-                        <span className="mt-1 block text-xs text-text-muted">
-                          Only settable now — once downloaded, the name can't be
-                          changed.
-                        </span>
-                      </label>
-
-                      <div className="max-h-[24rem] space-y-1 overflow-y-auto">
-                        {filesQuery.isLoading && (
-                          <p className="text-sm text-text-muted">
-                            Loading files…
+                      <div className="mt-3 max-h-[28rem] space-y-1 overflow-y-auto">
+                        {searchQuery.isLoading && (
+                          <p className="text-sm text-text-muted">Searching…</p>
+                        )}
+                        {searchQuery.isError && (
+                          <p className="text-sm text-red-600">
+                            {getErrorMessage(searchQuery.error)}
                           </p>
                         )}
-                        {filesQuery.data?.map((f) => (
-                          <div
-                            key={f.filename}
-                            className="flex items-center justify-between rounded-lg px-3 py-2 text-sm hover:bg-background"
+                        {searchQuery.data?.length === 0 && (
+                          <p className="text-sm text-text-muted">No results.</p>
+                        )}
+                        {searchQuery.data?.map((r) => (
+                          <button
+                            key={r.id}
+                            type="button"
+                            onClick={() => {
+                              setSelectedRepo(r.id);
+                              setShowCard(false);
+                              setCustomModelId("");
+                            }}
+                            className={cn(
+                              "block w-full rounded-lg px-3 py-2 text-left text-sm hover:bg-background",
+                              selectedRepo === r.id &&
+                                "bg-background ring-1 ring-primary",
+                            )}
                           >
-                            <div className="min-w-0">
-                              <span className="block truncate font-mono text-xs text-text">
-                                {f.filename}
-                              </span>
-                              <span className="text-xs text-text-muted">
-                                {f.quantization} ·{" "}
-                                {f.size_bytes !== null
-                                  ? formatBytes(f.size_bytes)
-                                  : "? size"}
-                              </span>
-                            </div>
-                            <button
-                              type="button"
-                              onClick={() => handleDownload(f.filename)}
-                              disabled={startDownload.isPending}
-                              title="Download"
-                              className="shrink-0 text-text-muted hover:text-primary disabled:opacity-40"
-                            >
-                              <Download size={16} />
-                            </button>
-                          </div>
+                            {/* `break-words`, not `truncate`: a repo id is the
+                            only thing distinguishing two results and half of
+                            one identifies nothing. */}
+                            <span className="block break-words font-medium text-text">
+                              {r.id}
+                            </span>
+                            <span className="mt-0.5 flex items-center gap-2 text-xs text-text-muted">
+                              <span>↓{formatCount(r.downloads)}</span>
+                              <span>★{formatCount(r.likes)}</span>
+                              {ownedRepos.has(r.id.toLowerCase()) && (
+                                <span className="rounded bg-green-500/10 px-1.5 py-0.5 font-medium text-green-700 dark:text-green-400">
+                                  in library
+                                </span>
+                              )}
+                            </span>
+                          </button>
                         ))}
                       </div>
-                    </>
-                  ) : (
-                    <div className="flex h-full min-h-[16rem] items-center justify-center text-center text-sm text-text-muted">
-                      Select a result to see its files.
                     </div>
-                  )}
+                  </div>
+
+                  <div className="rounded-xl border border-border bg-surface p-4 lg:col-span-3">
+                    {selectedRepo ? (
+                      <>
+                        <div className="mb-3 flex items-center justify-between">
+                          <h2 className="break-words text-sm font-semibold text-text">
+                            {selectedRepo}
+                          </h2>
+                          <button
+                            type="button"
+                            onClick={() => setShowCard((v) => !v)}
+                            className="shrink-0 text-xs font-medium text-primary hover:underline"
+                          >
+                            {showCard ? "Hide model card" : "Show model card"}
+                          </button>
+                        </div>
+
+                        {showCard && (
+                          <div className="mb-3 max-h-56 overflow-y-auto rounded-lg border border-border bg-background p-3">
+                            <ModelCardView
+                              node={selectedNode}
+                              repoId={selectedRepo}
+                            />
+                          </div>
+                        )}
+
+                        <label className="mb-3 block text-sm text-text">
+                          <span className="mb-1 block text-xs font-medium text-text-muted">
+                            Model name (optional)
+                          </span>
+                          <input
+                            value={customModelId}
+                            onChange={(e) => setCustomModelId(e.target.value)}
+                            placeholder="Auto-generated if left blank"
+                            className={inputClass}
+                          />
+                          <span className="mt-1 block text-xs text-text-muted">
+                            Only settable now — once downloaded, the name can't
+                            be changed.
+                          </span>
+                        </label>
+
+                        <div className="max-h-[24rem] space-y-1 overflow-y-auto">
+                          {filesQuery.isLoading && (
+                            <p className="text-sm text-text-muted">
+                              Loading files…
+                            </p>
+                          )}
+                          {fileGroups.map((g) => {
+                            const fits =
+                              freeBytes === null || g.totalBytes === null
+                                ? null
+                                : g.totalBytes <= freeBytes;
+                            return (
+                              <div
+                                key={g.filename}
+                                className="flex items-start justify-between gap-3 rounded-lg px-3 py-2 text-sm hover:bg-background"
+                              >
+                                <div className="min-w-0">
+                                  {/* The whole name, wrapped. Truncating it hid
+                                    the one part that differs between two
+                                    quantizations of the same repo. */}
+                                  <span className="block break-all font-mono text-xs text-text">
+                                    {g.label}
+                                  </span>
+                                  <span className="mt-0.5 flex flex-wrap items-center gap-x-2 text-xs text-text-muted">
+                                    <span>{g.quantization}</span>
+                                    <span>
+                                      {g.totalBytes === null
+                                        ? "size unknown"
+                                        : formatBytes(g.totalBytes)}
+                                    </span>
+                                    {g.parts > 1 && (
+                                      <span className="rounded bg-primary/10 px-1.5 py-0.5 font-medium text-primary">
+                                        {g.parts} files, all fetched
+                                      </span>
+                                    )}
+                                    {fits === false && (
+                                      <span className="rounded bg-red-500/10 px-1.5 py-0.5 font-medium text-red-600 dark:text-red-400">
+                                        larger than free space
+                                      </span>
+                                    )}
+                                  </span>
+                                </div>
+                                <button
+                                  type="button"
+                                  onClick={() => handleDownload(g.filename)}
+                                  disabled={startDownload.isPending}
+                                  title={
+                                    g.parts > 1
+                                      ? `Download all ${g.parts} parts to ${selectedNode}`
+                                      : `Download to ${selectedNode}`
+                                  }
+                                  aria-label={
+                                    g.parts > 1
+                                      ? `Download all ${g.parts} parts to ${selectedNode}`
+                                      : `Download ${g.label} to ${selectedNode}`
+                                  }
+                                  className="shrink-0 text-text-muted hover:text-primary disabled:opacity-40"
+                                >
+                                  <Download size={16} />
+                                </button>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      </>
+                    ) : (
+                      <div className="flex h-full min-h-[16rem] items-center justify-center text-center text-sm text-text-muted">
+                        Select a result to see its files.
+                      </div>
+                    )}
+                  </div>
                 </div>
 
-                <div className="rounded-xl border border-border bg-surface p-4">
-                  <h2 className="mb-3 text-sm font-semibold text-text">
-                    Downloads
-                  </h2>
-                  {(downloadsQuery.data?.length ?? 0) === 0 ? (
-                    <p className="text-sm text-text-muted">No downloads yet.</p>
-                  ) : (
-                    <div className="max-h-[32rem] space-y-2 overflow-y-auto">
+                {/* Only when there is something to show. A third of the width
+                  held permanently to say "No downloads yet" was the widest
+                  element on a tab whose content had nowhere to go. */}
+                {(downloadsQuery.data?.length ?? 0) > 0 && (
+                  <div className="mt-6 rounded-xl border border-border bg-surface p-4">
+                    <h2 className="mb-3 text-sm font-semibold text-text">
+                      Downloads
+                    </h2>
+                    <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
                       {downloadsQuery.data?.map((d) => (
                         <DownloadRow
                           key={d.model_id}
@@ -547,9 +689,9 @@ export default function Models() {
                         />
                       ))}
                     </div>
-                  )}
-                </div>
-              </div>
+                  </div>
+                )}
+              </>
             ) : (
               <>
                 <div className="mt-6 grid grid-cols-1 gap-4 sm:grid-cols-3">
