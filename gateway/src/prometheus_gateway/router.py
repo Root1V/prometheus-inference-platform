@@ -1183,6 +1183,102 @@ def create_router(registry: ModelRegistry, pool: "BackendPool") -> APIRouter:
 
     # ── GET /v1/usage/export ─────────────────────────────────────────────────
     # Implements: docs/roadmap.md — RM-60 (CSV export over an arbitrary date range)
+    @router.get("/v1/usage/range")
+    async def get_usage_range(request: Request, start: str, end: str) -> Any:
+        """Per-day and per-client totals across [start, end] — PRM-208.
+
+        `GET /v1/usage` answers one day, which is the right shape for the
+        per-model breakdown it carries and the wrong one for "who has been using
+        the platform this month". The dashboard had no way to ask the second
+        question: Billing's trend chart is per-client, so *all clients over
+        time* was answerable nowhere, and the page that should answer it was
+        rendering two rows and half a screen of nothing.
+
+        Grouped in SQL by `query_daily_cost_range` and `query_client_cost_range`
+        rather than fetching each day in turn from the single-day route — thirty
+        round trips to draw one line is a client working around a missing
+        endpoint rather than an endpoint doing its job.
+
+        Both halves carry `unpriced_requests` (PRM-119): a total that silently
+        omitted an unpriced model would state a confident zero.
+        """
+        claims = getattr(getattr(request, "state", None), "claims", None)
+        if claims is None or not claims.has_scope("admin:read"):
+            return _problem(
+                request, 403, "forbidden", "Forbidden", "This endpoint requires admin:read scope."
+            )
+
+        try:
+            start_day = _date.fromisoformat(start)
+            end_day = _date.fromisoformat(end)
+        except ValueError:
+            return _problem(
+                request,
+                400,
+                "invalid-date",
+                "Invalid Date",
+                "start/end must be valid YYYY-MM-DD dates.",
+            )
+        if end_day < start_day:
+            return _problem(
+                request, 400, "invalid-range", "Invalid Range", "end must not be before start."
+            )
+        # The same ceiling the CSV export uses. One bound, not two that drift.
+        if (end_day - start_day).days > _MAX_EXPORT_RANGE_DAYS:
+            return _problem(
+                request,
+                400,
+                "range-too-large",
+                "Range Too Large",
+                f"Date range exceeds the {_MAX_EXPORT_RANGE_DAYS}-day maximum.",
+            )
+
+        daily = await db.query_daily_cost_range(start_day, end_day)
+        by_client = await db.query_client_cost_range(start_day, end_day)
+
+        # Each client carries its own per-model split, sorted dearest first.
+        # The single-day route offered this breakdown and the range route did
+        # not, so dropping the day picker would have dropped the answer to
+        # "on what?" along with it.
+        by_model = await db.query_client_model_cost_range(start_day, end_day)
+        models_by_client: dict[str, list[dict[str, Any]]] = {}
+        for row in by_model:
+            models_by_client.setdefault(row["client_id"], []).append(row)
+        for rows in models_by_client.values():
+            rows.sort(key=lambda r: ((r["cost_usd"] or 0.0), r["total_tokens"]), reverse=True)
+        # The monthly cap, and how much of it is gone — PRM-208.
+        #
+        # Deliberately *not* derived from the selected range. A cap is a
+        # calendar-month limit; measuring an arbitrary seven-day window against
+        # it and calling the result "82% of cap" would be the instrument
+        # asserting something it did not measure. These two fields carry their
+        # own period in their names, and the UI states it, so neither can be
+        # read as belonging to the range above.
+        month_start = end_day.replace(day=1)
+        mtd_by_client = {
+            row["client_id"]: row["cost_usd"]
+            for row in await db.query_client_cost_range(month_start, end_day)
+        }
+        caps = {
+            row.client_id: row.monthly_spend_cap_usd
+            for row in await db.list_client_billing_settings_with_cap()
+        }
+
+        for client in by_client:
+            cid = client["client_id"]
+            client["by_model"] = models_by_client.get(cid, [])
+            client["month_to_date_cost_usd"] = mtd_by_client.get(cid)
+            client["monthly_spend_cap_usd"] = caps.get(cid)
+
+        return {
+            "object": "usage.range",
+            "start": start,
+            "end": end,
+            "month_to_date_start": month_start.isoformat(),
+            "daily": daily,
+            "by_client": by_client,
+        }
+
     @router.get("/v1/usage/export")
     async def export_usage(
         request: Request, start: str, end: str, client_id: str | None = None
