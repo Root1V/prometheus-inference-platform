@@ -8364,3 +8364,31 @@ to send".
 
 **Scope**: in — `w-fit` on every bubble, the composer block, the rail heading. Out — translating the
 interface, which is a separate decision about the whole admin UI rather than this page.
+
+
+## PRM-216 — Admin in Spanish and English, the reader's choice
+
+**Why**: the admin UI is written in English end to end while the platform is operated in Spanish, so
+every explanatory string — the ones that exist to be *read* rather than scanned — lands in the wrong
+language for the person reading it. The two have already begun mixing by accident: `Playground.tsx`
+carries Spanish placeholders (`facturación, soporte técnico, ventas, cancelación`) among English
+labels. Translating individual strings where they irritate makes that mixing worse rather than
+better, which is why this is an infrastructure item and not a patch.
+
+**Shape**: a string catalogue with `es` and `en`, and a reader-set switch that copies the pattern
+`ThemeContext` already establishes — `light`/`dark`/`system` becomes `es`/`en`/`system`, defaulting
+to `system` and reading `navigator.language`, persisted under a `prometheus-*` key and surfaced in
+the sidebar beside the theme control.
+
+**Size, measured**: 11 routes, 37 components, roughly 79 visible text literals plus about 90
+`placeholder`/`title`/`aria-label` strings — call it 170 as a floor, since that count misses JSX text
+spanning several lines and strings built by template literal.
+
+**One thing stays English, deliberately**: `problem+json` bodies from the gateway and the
+manager-api. Those are an API contract, not interface copy — the SDK guide documents them and
+neighbouring teams parse `title` and `type` — so translating them would be changing a wire format to
+improve a dashboard.
+
+**Scope**: in — the catalogue, the two locales, the switch and its persistence, and every string the
+admin renders. Out — the backend's error bodies, model output, the roadmap and docs, and machine
+translation of either locale (both are written, not generated).
