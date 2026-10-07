@@ -1,3 +1,5 @@
+import { cn } from "../lib/cn";
+import { BulkActions } from "./InstanceBulkActions";
 import { ChevronLeft, ChevronRight } from "lucide-react";
 import { useMemo, useState } from "react";
 import type { BackendMetrics } from "../api/metrics";
@@ -7,48 +9,51 @@ import { TableSearchInput } from "./TableSearchInput";
 
 /** RM-46 follow-up: header tooltips explain what each performance column
  * means once, here — the per-row cells no longer need to repeat it. */
-const COLUMNS: { label: string; title?: string }[] = [
-  { label: "#" },
-  { label: "ID" },
-  { label: "Node" },
-  { label: "Backend" },
-  { label: "Modality" },
+/**
+ * PRM-204: two column sets behind a toggle, replacing one row of eighteen.
+ *
+ * Six of those eighteen were performance metrics, and on this deployment they
+ * are `—` for nine of twelve instances — a metric only exists once a request of
+ * the right shape has happened, so an instance that has served nothing shows
+ * nothing. Eighteen columns to carry four populated ones made every row scroll
+ * sideways and nothing comparable.
+ *
+ * Health is the default because it is the question the page is opened with:
+ * what is running, how much is it holding, and for how long.
+ */
+const HEALTH_COLUMNS: { label: string; title?: string }[] = [
+  { label: "" },
+  { label: "Instance", title: "The instance id, and underneath it the name clients send as `model`." },
   { label: "State" },
-  { label: "Port" },
-  { label: "CPU" },
-  { label: "RSS" },
+  { label: "Node · engine" },
+  { label: "Context · port" },
+  { label: "Memory", title: "Resident memory now, and the size of the weights on disk." },
+  { label: "Uptime" },
+  { label: "" },
+];
+
+const PERFORMANCE_COLUMNS: { label: string; title?: string }[] = [
+  { label: "" },
+  { label: "Instance" },
+  { label: "State" },
+  { label: "Requests", title: "Requests this instance has served since the gateway started." },
   {
-    label: "P50",
-    title: "Latencia mediana — la mitad de las requests fueron más rápidas que esto, la otra mitad más lentas.",
-  },
-  {
-    label: "P95",
+    label: "Latency p50 / p95",
     title:
-      "Latencia percentil 95 — la 'cola lenta'. Solo el 5% peor de las requests tardó más que esto.",
+      "Median and 95th percentile. The p95 is the slow tail — only the worst 5% of requests took longer.",
   },
   {
     label: "TTFT",
-    title:
-      "Tiempo al primer token — cuánto tarda en empezar a aparecer la respuesta. Solo aplica con streaming.",
+    title: "Time to first token. Streaming requests only; blank where nothing streamed.",
   },
   {
-    label: "Tok/s",
+    label: "Throughput",
     title:
-      "Throughput — tokens generados por segundo (chat), o tokens de entrada procesados por segundo (embeddings, que no generan texto de salida).",
+      "Tokens per second for text, images per second for image models, and the inter-token latency underneath where the engine reports it.",
   },
-  {
-    label: "ms/tok",
-    title:
-      "Latencia entre tokens — tiempo promedio entre tokens sucesivos una vez que arrancó la generación. Más bajo = streaming más fluido. Solo backends de la familia llama.cpp.",
-  },
-  {
-    label: "Img/s",
-    title:
-      "Throughput — imágenes generadas por segundo. Solo modelos de generación de imágenes (no aplica el concepto de tokens acá).",
-  },
-  { label: "Uptime" },
-  { label: "Actions" },
+  { label: "" },
 ];
+
 
 const PAGE_SIZE = 20;
 
@@ -97,10 +102,27 @@ export function InstanceTable({
     );
   }, [sorted, query]);
 
+  const [view, setView] = useState<"health" | "performance">("health");
+  const [selected, setSelected] = useState<Set<string>>(new Set());
+  const columns = view === "health" ? HEALTH_COLUMNS : PERFORMANCE_COLUMNS;
+
   const totalPages = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE));
   const currentPage = Math.min(page, totalPages);
   const startIndex = (currentPage - 1) * PAGE_SIZE;
   const pageItems = filtered.slice(startIndex, startIndex + PAGE_SIZE);
+
+  const keyOf = (id: string, node: string) => `${node}/${id}`;
+  const toggleOne = (id: string, node: string) =>
+    setSelected((prev) => {
+      const next = new Set(prev);
+      const k = keyOf(id, node);
+      if (next.has(k)) next.delete(k);
+      else next.add(k);
+      return next;
+    });
+  const pageKeys = pageItems.map((i) => keyOf(i.id, i.node));
+  const allOnPageSelected = pageKeys.length > 0 && pageKeys.every((k) => selected.has(k));
+  const chosen = pageItems.filter((i) => selected.has(keyOf(i.id, i.node)));
 
   if (instances.length === 0) {
     return (
@@ -125,6 +147,39 @@ export function InstanceTable({
         resultLabel={`${filtered.length} of ${instances.length}`}
       />
 
+      <div className="flex flex-wrap items-center justify-between gap-3 border-b border-border px-3 pb-3">
+        <div role="tablist" aria-label="Column set" className="flex items-center gap-1 rounded-lg bg-background p-1">
+          {(["health", "performance"] as const).map((v) => (
+            <button
+              key={v}
+              type="button"
+              role="tab"
+              aria-selected={view === v}
+              onClick={() => setView(v)}
+              className={cn(
+                "rounded-md px-3 py-1.5 text-sm font-medium capitalize transition-colors",
+                view === v ? "bg-surface text-text shadow-sm" : "text-text-muted hover:text-text",
+              )}
+            >
+              {v}
+            </button>
+          ))}
+        </div>
+
+        {/*
+          PRM-204: bulk start and stop. Restarting a node's models after a
+          config change meant clicking through them one at a time, and the
+          selection is keyed by node/id because instance ids are only unique
+          within a node.
+        */}
+        {chosen.length > 0 && (
+          <div className="flex items-center gap-2 text-sm">
+            <span className="text-text-muted">{chosen.length} selected</span>
+            <BulkActions instances={chosen} onDone={() => setSelected(new Set())} />
+          </div>
+        )}
+      </div>
+
       {filtered.length === 0 ? (
         <div className="p-12 text-center text-text-muted">
           No instances match “{query.trim()}”.
@@ -133,9 +188,25 @@ export function InstanceTable({
       <table className="w-full min-w-[900px] text-left text-sm">
         <thead>
           <tr className="border-b border-border text-xs uppercase tracking-wide text-text-muted">
-            {COLUMNS.map((col) => (
+            <th className="w-10 px-4 py-3">
+              <input
+                type="checkbox"
+                checked={allOnPageSelected}
+                onChange={() =>
+                  setSelected((prev) => {
+                    const next = new Set(prev);
+                    if (allOnPageSelected) pageKeys.forEach((k) => next.delete(k));
+                    else pageKeys.forEach((k) => next.add(k));
+                    return next;
+                  })
+                }
+                aria-label="Select all instances on this page"
+                className="h-4 w-4 cursor-pointer accent-primary"
+              />
+            </th>
+            {columns.slice(1).map((col, i) => (
               <th
-                key={col.label}
+                key={col.label || `col-${i}`}
                 className={col.title ? "cursor-help px-4 py-3 font-medium" : "px-4 py-3 font-medium"}
                 title={col.title}
               >
@@ -145,10 +216,12 @@ export function InstanceTable({
           </tr>
         </thead>
         <tbody>
-          {pageItems.map((instance, i) => (
+          {pageItems.map((instance) => (
             <InstanceRow
               key={`${instance.node}-${instance.id}`}
-              rowNumber={startIndex + i + 1}
+              view={view}
+              selected={selected.has(keyOf(instance.id, instance.node))}
+              onToggleSelected={toggleOne}
               instance={instance}
               metrics={backendMetrics?.[instance.id]}
               onEdit={onEdit}

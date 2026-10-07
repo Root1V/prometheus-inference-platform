@@ -7981,3 +7981,42 @@ still saves the transfer), and a long immutable max-age on the hashed assets, wh
 no directive either and are re-fetched more than they need to be. Out — a service worker or any
 versioning scheme; the content hashes already do that job.
 
+## PRM-204 — Instances says what a client would send
+
+**Why**: eighteen columns. Six of them are performance metrics, and a metric only exists once a
+request of the right shape has happened — so on this deployment they are `—` for nine of twelve
+rows. Eighteen columns carrying four populated ones made every row scroll sideways and nothing
+comparable.
+
+**The field that mattered was missing entirely: `model_slug`.** It is in the API response and was
+rendered nowhere, and it is *what a client puts in its `model` field*. The instance id is not:
+granting `model:qwen3-embedding-0-6b-q8-0-local` does nothing, because the slug is
+`qwen3-embedding`. That distinction has already cost time in this project — it is the page someone
+opens to look the name up, and it was the one thing the page did not show. Now under every id.
+
+**Three more were in the response and discarded.** `error_message`, so a failed start says why
+rather than showing a red badge and sending you to the logs. `context_length`, which PRM-194 just
+turned from a default somebody accepted into a decision. `file_size_bytes`, because "how much disk
+is this costing" is asked on exactly this page.
+
+**Two column sets behind a toggle** rather than one row of eighteen. Health is the default — what
+is running, how much is it holding, for how long — and Performance carries the metrics for whoever
+came looking for them.
+
+**Bulk start and stop**, sequential and not parallel: each start loads weights, the largest here is
+20 GB, and firing twelve at once would have the machine swapping rather than serving. A failure
+stops the rest, which is what you want when the reason the second failed is that the first took the
+memory. The toast reports `4 of 6` rather than claiming success.
+
+**Seven bare icons became one contextual button and a menu.** Start and Stop were separate buttons
+of which exactly one was ever enabled, so every row carried a permanently dead control, and Delete
+sat two glyphs from Restart.
+
+**A correction to this session's own record**: `npx tsc --noEmit` was reported as passing several
+times while checking nothing. This project uses TypeScript project references with `files: []` at
+the root, so that command is a no-op; the real check is `tsc -b`, which `npm run build` runs. The
+builds were genuine, the standalone typecheck claims were not.
+
+**Scope**: in — the two views, the slug, the discarded fields, bulk actions, the action menu. Out —
+grouping by node, which the filter already serves.
+
