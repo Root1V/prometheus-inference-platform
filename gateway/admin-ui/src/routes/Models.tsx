@@ -227,7 +227,10 @@ export default function Models() {
   const disk = (() => {
     const onDisk = downloadedModels.filter((m) => m.downloaded);
     const unsized = onDisk.filter((m) => m.file_size_bytes === null).length;
-    const idle = onDisk.filter((m) => m.instance_ids.length === 0);
+    // Counted across EVERY model, not just the downloaded ones, so this agrees
+    // with the table's own "No instance" filter. A registered model nothing
+    // runs is dead weight in the registry whether or not it holds a disk.
+    const idle = downloadedModels.filter((m) => m.instance_ids.length === 0);
     const sum = (ms: typeof onDisk) =>
       ms.reduce((n, m) => n + (m.file_size_bytes ?? 0), 0);
     return {
@@ -550,17 +553,26 @@ export default function Models() {
             ) : (
               <>
                 <div className="mt-6 grid grid-cols-1 gap-4 sm:grid-cols-3">
+                  {/* A dash is not an answer. On a node whose models are all
+                      served from another host there is genuinely nothing on
+                      disk, and saying so is information — rendering "—" for it
+                      made the page look broken while showing eight real models
+                      with nine real instances. */}
                   <StatCard
                     label="On disk"
                     value={
                       disk.totalBytes > 0
                         ? formatBytes(disk.totalBytes)
-                        : "\u2014"
+                        : disk.onDisk > 0
+                          ? "Not reported"
+                          : "None"
                     }
                     sub={
-                      disk.unsized > 0
-                        ? `${disk.onDisk - disk.unsized} of ${disk.onDisk} models measured`
-                        : `across ${disk.onDisk} model${disk.onDisk === 1 ? "" : "s"}`
+                      disk.onDisk === 0
+                        ? `all ${downloadedModels.length} served from another host`
+                        : disk.unsized > 0
+                          ? `${disk.onDisk - disk.unsized} of ${disk.onDisk} model${disk.onDisk === 1 ? "" : "s"} measured`
+                          : `across ${disk.onDisk} model${disk.onDisk === 1 ? "" : "s"}`
                     }
                     toneReason={
                       disk.unsized > 0
@@ -577,9 +589,17 @@ export default function Models() {
                     value={
                       disk.idleBytes > 0
                         ? formatBytes(disk.idleBytes)
-                        : "\u2014"
+                        : disk.idleCount > 0
+                          ? String(disk.idleCount)
+                          : "None"
                     }
-                    sub={`${disk.idleCount} model${disk.idleCount === 1 ? "" : "s"} nothing runs`}
+                    sub={
+                      disk.idleCount === 0
+                        ? "every model here is in use"
+                        : disk.idleBytes > 0
+                          ? `${disk.idleCount} model${disk.idleCount === 1 ? "" : "s"} nothing runs`
+                          : `${disk.idleCount} model${disk.idleCount === 1 ? "" : "s"}, none on disk`
+                    }
                     tone={
                       disk.totalBytes > 0 &&
                       disk.idleBytes / disk.totalBytes >= 0.5
