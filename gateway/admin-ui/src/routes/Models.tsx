@@ -157,6 +157,23 @@ const STATUS_COLOR: Record<DownloadEntry["status"], string> = {
 
 const _ACTIVE = new Set(["queued", "downloading", "verifying"]);
 
+/**
+ * How interesting a download is right now — PRM-213.
+ *
+ * The panel shows one row, because the manager keeps every entry for the
+ * session and a morning of downloading turned the top of the page into a
+ * history. "The last one" is not quite the question though: with something in
+ * flight, the thing you want is the thing moving, not whichever finished most
+ * recently. Higher wins, and ties fall back to the order the node returned,
+ * which is the order they were started.
+ */
+function downloadRank(entry: DownloadEntry): number {
+  if (_ACTIVE.has(entry.status)) return 3;
+  if (entry.status === "paused") return 2;
+  if (entry.status === "failed") return 1;
+  return 0;
+}
+
 function DownloadRow({ entry, node }: { entry: DownloadEntry; node: string }) {
   const { showToast } = useToast();
   const cancelDownload = useCancelDownload();
@@ -348,6 +365,7 @@ export default function Models() {
   const [sort, setSort] = useState<ModelSort | "">("");
   const [selectedRepo, setSelectedRepo] = useState("");
   const [showCard, setShowCard] = useState(false);
+  const [allDownloads, setAllDownloads] = useState(false);
   const [customModelId, setCustomModelId] = useState("");
 
   const [previewId, setPreviewId] = useState<string | null>(null);
@@ -373,6 +391,11 @@ export default function Models() {
   );
   const fileGroups = groupShards(filesQuery.data ?? []);
   const freeBytes = configQuery.data?.disk_free_bytes ?? null;
+  /** Most interesting first; the panel shows this list's head unless opened. */
+  const rankedDownloads = [...(downloadsQuery.data ?? [])]
+    .map((d, i) => ({ d, i }))
+    .sort((a, b) => downloadRank(b.d) - downloadRank(a.d) || b.i - a.i)
+    .map(({ d }) => d);
 
   const previewModel = previewId
     ? (downloadedModels.find((m) => m.id === previewId) ?? null)
@@ -574,30 +597,41 @@ export default function Models() {
                     <h2 className="mb-3 text-xs font-medium uppercase tracking-wide text-text-muted">
                       Downloads
                     </h2>
-                    {/* In-flight first, and the whole block bounded. Moving
-                        this to the top gave finished entries the best seat on
-                        the page, and the manager keeps them for the session —
-                        so without an order and a ceiling a morning of
-                        downloads would push the search off-screen. */}
-                    <div className="max-h-60 space-y-2 overflow-y-auto">
-                      {[...(downloadsQuery.data ?? [])]
-                        .sort(
-                          (a, b) =>
-                            Number(
-                              _ACTIVE.has(b.status) || b.status === "paused",
-                            ) -
-                            Number(
-                              _ACTIVE.has(a.status) || a.status === "paused",
-                            ),
-                        )
-                        .map((d) => (
-                          <DownloadRow
-                            key={d.model_id}
-                            entry={d}
-                            node={selectedNode}
-                          />
-                        ))}
-                    </div>
+                    {/* PRM-213: one row, not a session's history.
+                        Which one is not simply the most recent: with a
+                        transfer in flight, the thing you want to see is the
+                        thing moving. The rest stay one click away rather than
+                        hidden — three concurrent downloads reduced to one
+                        visible row would be this page quietly dropping work
+                        it is doing. */}
+                    <DownloadRow
+                      entry={rankedDownloads[0]}
+                      node={selectedNode}
+                    />
+                    {rankedDownloads.length > 1 && (
+                      <>
+                        {allDownloads && (
+                          <div className="mt-2 max-h-56 space-y-2 overflow-y-auto">
+                            {rankedDownloads.slice(1).map((d) => (
+                              <DownloadRow
+                                key={d.model_id}
+                                entry={d}
+                                node={selectedNode}
+                              />
+                            ))}
+                          </div>
+                        )}
+                        <button
+                          type="button"
+                          onClick={() => setAllDownloads((v) => !v)}
+                          className="mt-2 text-xs font-medium text-primary hover:underline"
+                        >
+                          {allDownloads
+                            ? "Show only the latest"
+                            : `Show all ${rankedDownloads.length}`}
+                        </button>
+                      </>
+                    )}
                   </div>
                 )}
 
