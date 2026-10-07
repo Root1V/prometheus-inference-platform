@@ -1,4 +1,13 @@
-import { Copy, Download, Paperclip, RotateCcw, Send, Trash2, Wrench, X } from "lucide-react";
+import {
+  Copy,
+  Download,
+  Paperclip,
+  RotateCcw,
+  Send,
+  Trash2,
+  Wrench,
+  X,
+} from "lucide-react";
 import {
   useEffect,
   useRef,
@@ -24,9 +33,67 @@ import {
   type ToolDefinition,
 } from "../api/playground";
 import { PlaygroundModelPicker } from "../components/PlaygroundModelPicker";
+import type { Modality } from "../types/instance";
 import { Sidebar } from "../components/Sidebar";
 import { cn } from "../lib/cn";
 import { getErrorMessage } from "../lib/errors";
+
+const MODEL_STORAGE_KEY = "prometheus.playground.model";
+
+/**
+ * What each modality does here, and something to try — PRM-214.
+ *
+ * Picking a model does not just change where the request goes: it rebuilds the
+ * composer. `gpt-oss-20b` gives you a chat box; `emotions-tei` gives you a
+ * classifier; `von-decide` gives you a labels field and a Decide button. The
+ * page changed shape with no warning and no explanation, and the empty
+ * conversation panel — 538px of it — said only "No messages yet".
+ *
+ * So the empty state is where the mode gets explained, and the examples are
+ * clickable because the fastest way to learn what a thing does is to run it.
+ */
+const MODALITY_GUIDE: Partial<
+  Record<Modality, { what: string; examples: string[] }>
+> = {
+  text: {
+    what: "Chat. Multi-turn \u2014 everything above is sent again with each message.",
+    examples: [
+      "Explain the difference between a GGUF Q4_K_M and a Q8_0 quantization.",
+      "Write a bash one-liner that finds the ten largest files under a directory.",
+    ],
+  },
+  vision: {
+    what: "Chat with images. Attach one with the paperclip, then ask about it.",
+    examples: [
+      "Describe this image in one sentence.",
+      "What text appears in this image?",
+    ],
+  },
+  embedding: {
+    what: "Turns text into a vector. Single-shot \u2014 each request is independent, with no history carried between them.",
+    examples: ["The invoice was issued on the third of May."],
+  },
+  rerank: {
+    what: "Scores how well each candidate answers the query. Single-shot.",
+    examples: ["How do I reset my password?"],
+  },
+  classification: {
+    what: "Sorts text into the labels this model was trained on. Single-shot.",
+    examples: ["I have been waiting three weeks and nobody has replied."],
+  },
+  zero_shot: {
+    what: "Sorts text into labels you supply per request \u2014 it is not trained on a fixed set, which is what makes the labels yours to choose.",
+    examples: ["Mi factura de marzo me cobr\u00f3 el doble de lo habitual."],
+  },
+  typed_decision: {
+    what: "Answers a typed question about the text. Single-shot.",
+    examples: ["The customer asked to cancel and then changed their mind."],
+  },
+  image: {
+    what: "Generates an image from a prompt. Single-shot, with no history between generations.",
+    examples: ["A lighthouse on a cliff at dusk, long exposure."],
+  },
+};
 
 /** Auto-scrolls to its own bottom as `text` grows — so the model's live chain-of-thought
  * stays visible instead of scrolling out of a fixed-height box (RM-36 follow-up). */
@@ -103,10 +170,14 @@ function usePromptHistory() {
       if (history.length === 0) return;
       e.preventDefault();
       if (index === -1) setStash(value);
-      const nextIndex = index === -1 ? history.length - 1 : Math.max(0, index - 1);
+      const nextIndex =
+        index === -1 ? history.length - 1 : Math.max(0, index - 1);
       setIndex(nextIndex);
       setValue(history[nextIndex]);
-    } else if (e.key === "ArrowDown" && !el.value.slice(caretEnd).includes("\n")) {
+    } else if (
+      e.key === "ArrowDown" &&
+      !el.value.slice(caretEnd).includes("\n")
+    ) {
       if (index === -1) return;
       e.preventDefault();
       if (index >= history.length - 1) {
@@ -136,8 +207,12 @@ function MessageContent({
   if (typeof content !== "object" || content === null) {
     return content ? <p className="whitespace-pre-wrap">{content}</p> : null;
   }
-  const text = content.find((p): p is TextContentPart => p.type === "text")?.text;
-  const image = content.find((p): p is ImageContentPart => p.type === "image_url");
+  const text = content.find(
+    (p): p is TextContentPart => p.type === "text",
+  )?.text;
+  const image = content.find(
+    (p): p is ImageContentPart => p.type === "image_url",
+  );
   return (
     <>
       {text && <p className="whitespace-pre-wrap">{text}</p>}
@@ -182,7 +257,11 @@ interface ChatLogEntry {
   messages: ChatMessage[];
   // null for a streamed response — the backends verified so far don't report
   // usage for stream:true (docs/roadmap.md RM-36).
-  usage: { prompt_tokens: number; completion_tokens: number; total_tokens: number } | null;
+  usage: {
+    prompt_tokens: number;
+    completion_tokens: number;
+    total_tokens: number;
+  } | null;
   latencyMs: number;
   finishReason: string | null;
   // The model's chain-of-thought for this turn, if any — kept around (collapsed
@@ -245,7 +324,12 @@ interface TypedDecisionLogEntry {
   kind: "typed_decision";
   input: string;
   /** One row per question, because one forward pass answered all of them. */
-  answers: { name: string; verdict: string; confidence: number; bars: [string, number][] }[];
+  answers: {
+    name: string;
+    verdict: string;
+    confidence: number;
+    bars: [string, number][];
+  }[];
   latencyMs: number;
   model: string;
 }
@@ -285,7 +369,22 @@ export default function Playground() {
   const imageGenerations = useImageGenerations();
   const composerHistory = usePromptHistory();
 
-  const [model, setModel] = useState("");
+  /**
+   * PRM-214: remembered, and defaulted to something you can chat with.
+   *
+   * It was `useState("")` falling through to `readyInstances[0]` — whichever
+   * instance the API happened to list first. On this platform that is
+   * `von-decide`, so the Playground opened as a zero-shot decision form and
+   * the first text model sat fifth in the list. Nothing about that was a
+   * choice; it was array order deciding the shape of the page.
+   */
+  const [model, setModel] = useState(() => {
+    try {
+      return localStorage.getItem(MODEL_STORAGE_KEY) ?? "";
+    } catch {
+      return "";
+    }
+  });
   const [entries, setEntries] = useState<LogEntry[]>([]);
   const [draft, setDraft] = useState("");
 
@@ -296,18 +395,23 @@ export default function Playground() {
   // rather than in the model picker.
   const [candidateLabels, setCandidateLabels] = useState("");
   const [imageError, setImageError] = useState<string | null>(null);
-  const [expandedImage, setExpandedImage] = useState<ImageLogEntry | null>(null);
-
-  // RM-40: image attached to the next message, vision models only.
-  const [attachedImage, setAttachedImage] = useState<{ dataUrl: string; name: string } | null>(
+  const [expandedImage, setExpandedImage] = useState<ImageLogEntry | null>(
     null,
   );
+
+  // RM-40: image attached to the next message, vision models only.
+  const [attachedImage, setAttachedImage] = useState<{
+    dataUrl: string;
+    name: string;
+  } | null>(null);
   const [attachError, setAttachError] = useState<string | null>(null);
   const imageInputRef = useRef<HTMLInputElement>(null);
   // RM-40 follow-up: full-size lightbox for an image attached to a chat
   // message — just the data: URL, unlike the image-result lightbox (which
   // also needs prompt/model for the download button there).
-  const [expandedChatImageUrl, setExpandedChatImageUrl] = useState<string | null>(null);
+  const [expandedChatImageUrl, setExpandedChatImageUrl] = useState<
+    string | null
+  >(null);
 
   const [systemPrompt, setSystemPrompt] = useState("");
   const [temperature, setTemperature] = useState(1.0);
@@ -315,9 +419,13 @@ export default function Playground() {
   const [maxTokens, setMaxTokens] = useState(512);
   const [stopInput, setStopInput] = useState("");
   const [toolsInput, setToolsInput] = useState("");
-  const [toolChoice, setToolChoice] = useState<"auto" | "required" | "none">("auto");
+  const [toolChoice, setToolChoice] = useState<"auto" | "required" | "none">(
+    "auto",
+  );
   const [toolsError, setToolsError] = useState<string | null>(null);
-  const [toolResultDrafts, setToolResultDrafts] = useState<Record<string, string>>({});
+  const [toolResultDrafts, setToolResultDrafts] = useState<
+    Record<string, string>
+  >({});
   const [streamingEnabled, setStreamingEnabled] = useState(false);
   const [isSending, setIsSending] = useState(false);
   const [inProgress, setInProgress] = useState<InProgress | null>(null);
@@ -339,8 +447,16 @@ export default function Playground() {
   // RM-53: one Model selector spans every modality — the selected model's
   // own `modality` drives which composer/sidebar controls are visible,
   // replacing the old three separately-filtered pickers (one per tab).
-  const readyInstances = (instancesQuery.data?.instances ?? []).filter((i) => i.state === "ready");
-  const selectedInstance = readyInstances.find((i) => i.id === model) ?? readyInstances[0];
+  const readyInstances = (instancesQuery.data?.instances ?? []).filter(
+    (i) => i.state === "ready",
+  );
+  const selectedInstance =
+    readyInstances.find((i) => i.id === model) ??
+    // Text first, then vision: both chat, and chat is what someone opening a
+    // playground means. Anything at all beats an empty page when neither is up.
+    readyInstances.find((i) => i.modality === "text") ??
+    readyInstances.find((i) => i.modality === "vision") ??
+    readyInstances[0];
   const selectedModel = selectedInstance?.id ?? "";
   const modality = selectedInstance?.modality;
   const isTextLike = modality === "text" || modality === "vision";
@@ -365,12 +481,20 @@ export default function Playground() {
     rerank.isPending ||
     typedDecision.isPending;
   const canSendDraft =
-    modality === "embedding" || modality === "image" || isRanked || isTypedDecision
+    modality === "embedding" ||
+    modality === "image" ||
+    isRanked ||
+    isTypedDecision
       ? draft.trim().length > 0
       : draft.trim().length > 0 || attachedImage !== null;
 
   function handleModelChange(nextId: string) {
     setModel(nextId);
+    try {
+      localStorage.setItem(MODEL_STORAGE_KEY, nextId);
+    } catch {
+      /* no persistence available; the session still works */
+    }
     // RM-40: an attached image is only ever sendable to a vision model — drop
     // it rather than leave it staged for a model that would just reject it.
     const next = readyInstances.find((i) => i.id === nextId);
@@ -388,7 +512,10 @@ export default function Playground() {
     setDraft("");
     const startedAt = performance.now();
     try {
-      const data = await embeddings.mutateAsync({ model: selectedModel, input });
+      const data = await embeddings.mutateAsync({
+        model: selectedModel,
+        input,
+      });
       setEntries((prev) => [
         ...prev,
         {
@@ -412,7 +539,9 @@ export default function Playground() {
       .filter(Boolean);
     if (!selectedModel || !draft.trim() || zeroShot.isPending) return;
     if (labels.length < 2) {
-      setEmbedError("Give at least two options, comma-separated — a choice needs something to choose between.");
+      setEmbedError(
+        "Give at least two options, comma-separated — a choice needs something to choose between.",
+      );
       return;
     }
     setEmbedError(null);
@@ -421,7 +550,11 @@ export default function Playground() {
     setDraft("");
     const startedAt = performance.now();
     try {
-      const data = await zeroShot.mutateAsync({ model: selectedModel, input, labels });
+      const data = await zeroShot.mutateAsync({
+        model: selectedModel,
+        input,
+        labels,
+      });
       setEntries((prev) => [
         ...prev,
         {
@@ -486,10 +619,16 @@ export default function Playground() {
     setCandidateLabels("");
     const startedAt = performance.now();
     try {
-      const data = await rerank.mutateAsync({ model: selectedModel, query, documents });
+      const data = await rerank.mutateAsync({
+        model: selectedModel,
+        query,
+        documents,
+      });
       // Sorted by score, like the other two — the endpoint returns original
       // indices, and a ranking shown in input order is not a ranking.
-      const ranked = [...data.results].sort((a, b) => b.relevance_score - a.relevance_score);
+      const ranked = [...data.results].sort(
+        (a, b) => b.relevance_score - a.relevance_score,
+      );
       setEntries((prev) => [
         ...prev,
         {
@@ -512,7 +651,9 @@ export default function Playground() {
     try {
       questions = JSON.parse(candidateLabels);
     } catch {
-      setEmbedError("The questions must be valid JSON — see the example below the box.");
+      setEmbedError(
+        "The questions must be valid JSON — see the example below the box.",
+      );
       return;
     }
     setEmbedError(null);
@@ -540,7 +681,8 @@ export default function Playground() {
               a.type === "choice"
                 ? (a.choice ?? "—")
                 : a.type === "score"
-                  ? (a.legend?.[String(Math.round(a.score ?? 0))] ?? String(a.score ?? "—"))
+                  ? (a.legend?.[String(Math.round(a.score ?? 0))] ??
+                    String(a.score ?? "—"))
                   : `${((a.noul ?? 0) * 100).toFixed(1)}% yes`,
             confidence: a.confidence,
             bars: Object.entries(a.probabilities ?? {}).map(([k, v]) => [
@@ -572,7 +714,10 @@ export default function Playground() {
     setDraft("");
     const startedAt = performance.now();
     try {
-      const data = await imageGenerations.mutateAsync({ model: selectedModel, prompt });
+      const data = await imageGenerations.mutateAsync({
+        model: selectedModel,
+        prompt,
+      });
       setEntries((prev) => [
         ...prev,
         {
@@ -603,7 +748,8 @@ export default function Playground() {
     }
     try {
       const parsed = JSON.parse(toolsInput);
-      if (!Array.isArray(parsed)) throw new Error("Tools must be a JSON array.");
+      if (!Array.isArray(parsed))
+        throw new Error("Tools must be a JSON array.");
       setToolsError(null);
       return parsed as ToolDefinition[];
     } catch (e) {
@@ -646,8 +792,17 @@ export default function Playground() {
     // Show the user's own message immediately instead of leaving it
     // invisible until the whole round-trip completes — same treatment the
     // streaming path already gives it via inProgress.leading.
-    setInProgress({ leading: leadingMessages, content: "", reasoning: "", toolCalls: [] });
-    const data = await chat.mutateAsync({ model: selectedModel, messages, params: buildParams(tools) });
+    setInProgress({
+      leading: leadingMessages,
+      content: "",
+      reasoning: "",
+      toolCalls: [],
+    });
+    const data = await chat.mutateAsync({
+      model: selectedModel,
+      messages,
+      params: buildParams(tools),
+    });
     const latencyMs = Math.round(performance.now() - startedAt);
     const responseMessage = data.choices[0]?.message;
     const hasToolCalls = (responseMessage?.tool_calls?.length ?? 0) > 0;
@@ -683,7 +838,12 @@ export default function Playground() {
     let content = "";
     let reasoning = "";
     const toolCallsByIndex = new Map<number, ToolCall>();
-    setInProgress({ leading: leadingMessages, content: "", reasoning: "", toolCalls: [] });
+    setInProgress({
+      leading: leadingMessages,
+      content: "",
+      reasoning: "",
+      toolCalls: [],
+    });
 
     const { finishReason, usage } = await streamPlaygroundChat(
       { model: selectedModel, messages, params: buildParams(tools) },
@@ -697,12 +857,21 @@ export default function Playground() {
             function: { name: "", arguments: "" },
           };
           if (partial.id) existing.id = partial.id;
-          if (partial.function?.name) existing.function.name = partial.function.name;
-          if (partial.function?.arguments) existing.function.arguments += partial.function.arguments;
+          if (partial.function?.name)
+            existing.function.name = partial.function.name;
+          if (partial.function?.arguments)
+            existing.function.arguments += partial.function.arguments;
           toolCallsByIndex.set(partial.index, existing);
         }
-        setInProgress({ leading: leadingMessages, content, reasoning, toolCalls: [...toolCallsByIndex.values()] });
-        requestAnimationFrame(() => bottomRef.current?.scrollIntoView({ block: "end" }));
+        setInProgress({
+          leading: leadingMessages,
+          content,
+          reasoning,
+          toolCalls: [...toolCallsByIndex.values()],
+        });
+        requestAnimationFrame(() =>
+          bottomRef.current?.scrollIntoView({ block: "end" }),
+        );
       },
     );
 
@@ -746,7 +915,9 @@ export default function Playground() {
       } else {
         await sendNonStreaming(leadingMessages, messages, tools);
       }
-      requestAnimationFrame(() => bottomRef.current?.scrollIntoView({ block: "end" }));
+      requestAnimationFrame(() =>
+        bottomRef.current?.scrollIntoView({ block: "end" }),
+      );
     } catch (error) {
       setInProgress(null);
       setSendError(getErrorMessage(error));
@@ -769,7 +940,10 @@ export default function Playground() {
       content: attachedImage
         ? [
             ...(draft.trim() ? [{ type: "text" as const, text: draft }] : []),
-            { type: "image_url" as const, image_url: { url: attachedImage.dataUrl } },
+            {
+              type: "image_url" as const,
+              image_url: { url: attachedImage.dataUrl },
+            },
           ]
         : draft,
     };
@@ -805,7 +979,9 @@ export default function Playground() {
   }
 
   function handleRegenerate() {
-    const chatEntries = entries.filter((e): e is ChatLogEntry => e.kind === "chat");
+    const chatEntries = entries.filter(
+      (e): e is ChatLogEntry => e.kind === "chat",
+    );
     if (chatEntries.length === 0 || isSending) return;
     const last = chatEntries[chatEntries.length - 1];
     const lastLeading = last.messages.slice(0, -1);
@@ -852,14 +1028,20 @@ export default function Playground() {
   }
 
   function placeholder(): string {
-    if (readyInstances.length === 0) return "No running models — start one from Instances first.";
-    if (modality === "embedding") return "Text to embed… (Enter to send, Shift+Enter for a new line)";
+    if (readyInstances.length === 0)
+      return "No running models — start one from Instances first.";
+    if (modality === "embedding")
+      return "Text to embed… (Enter to send, Shift+Enter for a new line)";
     if (modality === "image")
       return "Describe the image to generate… (Enter to send, Shift+Enter for a new line)";
-    if (isZeroShot) return "Text to decide about… (Enter to send, Shift+Enter for a new line)";
-    if (isClassification) return "Text to classify… (Enter to send, Shift+Enter for a new line)";
-    if (isRerank) return "The query to score documents against… (Enter to send)";
-    if (isTypedDecision) return "The state to decide about — an email, a ticket… (Enter to send)";
+    if (isZeroShot)
+      return "Text to decide about… (Enter to send, Shift+Enter for a new line)";
+    if (isClassification)
+      return "Text to classify… (Enter to send, Shift+Enter for a new line)";
+    if (isRerank)
+      return "The query to score documents against… (Enter to send)";
+    if (isTypedDecision)
+      return "The state to decide about — an email, a ticket… (Enter to send)";
     return "Ask something… (Enter to send, Shift+Enter for a new line)";
   }
 
@@ -874,41 +1056,115 @@ export default function Playground() {
   }
 
   const lastChatEntry =
-    [...entries].reverse().find((e): e is ChatLogEntry => e.kind === "chat") ?? null;
-  const imageEntries = entries.filter((e): e is ImageLogEntry => e.kind === "image");
+    [...entries].reverse().find((e): e is ChatLogEntry => e.kind === "chat") ??
+    null;
+  const imageEntries = entries.filter(
+    (e): e is ImageLogEntry => e.kind === "image",
+  );
 
   return (
     <div className="flex h-screen overflow-hidden bg-background">
       <Sidebar />
       <main className="flex min-h-0 min-w-0 flex-1">
         <div className="flex min-h-0 min-w-0 flex-1 flex-col px-8 py-8">
-          <div className="flex items-center justify-between">
-            <div>
+          <div className="flex flex-wrap items-end justify-between gap-4">
+            <div className="min-w-0">
               <h1 className="text-2xl font-semibold text-text">Playground</h1>
               <p className="mt-1 text-sm text-text-muted">
-                Sends real requests through the gateway's inference API — this counts as
-                real usage, recorded the same as any other call.
+                Sends real requests through the gateway's inference API — this
+                counts as real usage, recorded the same as any other call.
               </p>
             </div>
-            <button
-              type="button"
-              onClick={handleClear}
-              disabled={entries.length === 0}
-              className="flex items-center gap-1.5 rounded-lg border border-border px-3 py-1.5 text-sm text-text-muted hover:bg-surface disabled:cursor-not-allowed disabled:opacity-40"
-            >
-              <Trash2 size={14} />
-              Clear
-            </button>
+            {/* PRM-214: the model belongs here, not at the top of a side rail.
+                It is the one control that rebuilds the rest of the page, and
+                for six of the seven modalities it was the rail's only
+                occupant — 590px of empty column under a single select. */}
+            <div className="flex items-end gap-2">
+              <div className="w-64 min-w-0">
+                <label
+                  htmlFor="playground-model"
+                  className="mb-1.5 block text-sm font-medium text-text"
+                >
+                  Model
+                </label>
+                <PlaygroundModelPicker
+                  instances={readyInstances}
+                  value={selectedModel}
+                  onChange={handleModelChange}
+                />
+              </div>
+              <button
+                type="button"
+                onClick={handleClear}
+                disabled={entries.length === 0}
+                className={cn(
+                  "flex items-center gap-1.5 rounded-lg border px-3 py-2 text-sm transition-colors",
+                  entries.length === 0
+                    ? "cursor-not-allowed border-border/60 text-text-muted/50"
+                    : "border-border text-text-muted hover:bg-surface hover:text-text",
+                )}
+              >
+                <Trash2 size={14} />
+                Clear
+              </button>
+            </div>
           </div>
+
+          {/* What you picked, in the terms that decide how it behaves. The page
+              knew the node, the modality and the state and showed none of it. */}
+          {selectedInstance && (
+            <p className="mt-3 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-text-muted">
+              <span className="rounded bg-surface px-1.5 py-0.5 font-medium text-text">
+                {modality ?? "unknown"}
+              </span>
+              <span>on {selectedInstance.node}</span>
+              {modality && MODALITY_GUIDE[modality] && (
+                <span className="basis-full sm:basis-auto sm:before:mr-2 sm:before:content-['·']">
+                  {MODALITY_GUIDE[modality]?.what}
+                </span>
+              )}
+            </p>
+          )}
 
           <div className="mt-4 min-h-0 flex-1 space-y-4 overflow-y-auto rounded-xl border border-border bg-surface p-4">
             {entries.length === 0 ? (
-              <p className="text-sm text-text-muted">No messages yet — send a prompt to get started.</p>
+              /* PRM-214: 538px of panel used to carry one grey line. The
+                 panel is empty exactly when someone does not yet know what
+                 this model does, so that is what it says now — and the
+                 examples are buttons, because running one teaches the mode
+                 faster than reading about it. */
+              <div className="flex h-full flex-col items-center justify-center px-6 text-center">
+                <p className="max-w-md text-sm text-text">
+                  {modality && MODALITY_GUIDE[modality]
+                    ? MODALITY_GUIDE[modality]?.what
+                    : "Send a prompt to get started."}
+                </p>
+                {modality && MODALITY_GUIDE[modality] && (
+                  <>
+                    <p className="mt-4 text-xs font-medium uppercase tracking-wide text-text-muted">
+                      Try one
+                    </p>
+                    <div className="mt-2 flex max-w-xl flex-col items-center gap-2">
+                      {MODALITY_GUIDE[modality]?.examples.map((example) => (
+                        <button
+                          key={example}
+                          type="button"
+                          onClick={() => setDraft(example)}
+                          className="rounded-lg border border-border px-3 py-2 text-left text-sm text-text-muted transition-colors hover:border-primary/40 hover:bg-background hover:text-text"
+                        >
+                          {example}
+                        </button>
+                      ))}
+                    </div>
+                  </>
+                )}
+              </div>
             ) : (
               entries.map((entry, i) => {
                 if (entry.kind === "chat") {
                   const leading = entry.messages.slice(0, -1);
-                  const assistantMessage = entry.messages[entry.messages.length - 1];
+                  const assistantMessage =
+                    entry.messages[entry.messages.length - 1];
                   const isLastChatEntry = entry === lastChatEntry;
                   return (
                     <div key={i} className="space-y-3">
@@ -918,14 +1174,18 @@ export default function Playground() {
                             key={j}
                             className="ml-auto max-w-[80%] rounded-xl border border-dashed border-border bg-surface px-4 py-2 text-xs text-text-muted"
                           >
-                            Tool result: {typeof m.content === "string" ? m.content : ""}
+                            Tool result:{" "}
+                            {typeof m.content === "string" ? m.content : ""}
                           </div>
                         ) : (
                           <div
                             key={j}
                             className="ml-auto max-w-[80%] rounded-xl bg-primary px-4 py-2 text-sm text-primary-foreground"
                           >
-                            <MessageContent content={m.content} onImageClick={setExpandedChatImageUrl} />
+                            <MessageContent
+                              content={m.content}
+                              onImageClick={setExpandedChatImageUrl}
+                            />
                           </div>
                         ),
                       )}
@@ -935,15 +1195,17 @@ export default function Playground() {
                           !assistantMessage.tool_calls?.length &&
                           entry.finishReason === "length" && (
                             <p className="text-amber-600">
-                              Ran out of max tokens before producing a visible answer — this model
-                              spends tokens on hidden reasoning first, and used up the whole budget
+                              Ran out of max tokens before producing a visible
+                              answer — this model spends tokens on hidden
+                              reasoning first, and used up the whole budget
                               there. Try raising Max tokens.
                             </p>
                           )}
                         {entry.reasoning && (
                           <details className="mt-2 rounded-lg border border-dashed border-border bg-surface p-2 text-xs text-text-muted">
                             <summary className="cursor-pointer select-none font-medium">
-                              Show the model's reasoning ({entry.reasoning.length.toLocaleString()} chars)
+                              Show the model's reasoning (
+                              {entry.reasoning.length.toLocaleString()} chars)
                             </summary>
                             <div className="mt-2 flex items-start justify-between gap-2">
                               <p className="max-h-64 overflow-y-auto whitespace-pre-wrap italic">
@@ -951,7 +1213,9 @@ export default function Playground() {
                               </p>
                               <button
                                 type="button"
-                                onClick={() => handleCopyReasoning(entry.reasoning)}
+                                onClick={() =>
+                                  handleCopyReasoning(entry.reasoning)
+                                }
                                 title="Copy reasoning"
                                 className="shrink-0 text-text-muted hover:text-text"
                               >
@@ -965,10 +1229,17 @@ export default function Playground() {
                             key={call.id}
                             className="mt-1 flex items-start gap-2 rounded-lg bg-surface p-2 font-mono text-xs text-text"
                           >
-                            <Wrench size={14} className="mt-0.5 shrink-0 text-primary" />
+                            <Wrench
+                              size={14}
+                              className="mt-0.5 shrink-0 text-primary"
+                            />
                             <div>
-                              <span className="font-semibold">{call.function.name}</span>
-                              <span className="text-text-muted">({call.function.arguments})</span>
+                              <span className="font-semibold">
+                                {call.function.name}
+                              </span>
+                              <span className="text-text-muted">
+                                ({call.function.arguments})
+                              </span>
                             </div>
                           </div>
                         ))}
@@ -979,7 +1250,10 @@ export default function Playground() {
                               : "tokens not reported (streamed)"}
                           </span>
                           <span>{entry.latencyMs} ms</span>
-                          <span className="ml-auto font-mono" title="Model that answered this turn">
+                          <span
+                            className="ml-auto font-mono"
+                            title="Model that answered this turn"
+                          >
                             {entry.model}
                           </span>
                           <button
@@ -1008,11 +1282,15 @@ export default function Playground() {
                         assistantMessage.tool_calls.length > 0 && (
                           <div className="max-w-[80%] space-y-2 rounded-xl border border-dashed border-border bg-surface p-3">
                             <p className="text-xs text-text-muted">
-                              The Playground doesn't execute tools for real — type a mock result to
-                              continue and see the model's final answer.
+                              The Playground doesn't execute tools for real —
+                              type a mock result to continue and see the model's
+                              final answer.
                             </p>
                             {assistantMessage.tool_calls.map((call) => (
-                              <div key={call.id} className="flex items-center gap-2">
+                              <div
+                                key={call.id}
+                                className="flex items-center gap-2"
+                              >
                                 <span className="shrink-0 font-mono text-xs text-text-muted">
                                   {call.function.name}:
                                 </span>
@@ -1020,7 +1298,10 @@ export default function Playground() {
                                   type="text"
                                   value={toolResultDrafts[call.id] ?? ""}
                                   onChange={(e) =>
-                                    setToolResultDrafts((prev) => ({ ...prev, [call.id]: e.target.value }))
+                                    setToolResultDrafts((prev) => ({
+                                      ...prev,
+                                      [call.id]: e.target.value,
+                                    }))
                                   }
                                   placeholder="Mock result, e.g. 22C, sunny"
                                   className={cn(inputClass, "text-xs")}
@@ -1029,7 +1310,11 @@ export default function Playground() {
                             ))}
                             <button
                               type="button"
-                              onClick={() => handleSubmitToolResults(assistantMessage.tool_calls)}
+                              onClick={() =>
+                                handleSubmitToolResults(
+                                  assistantMessage.tool_calls,
+                                )
+                              }
                               disabled={isSending}
                               className="rounded-lg bg-primary px-3 py-1.5 text-xs font-medium text-primary-foreground hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-40"
                             >
@@ -1049,17 +1334,24 @@ export default function Playground() {
                       </div>
                       <div className="rounded-xl border border-border bg-background px-4 py-3 text-sm text-text">
                         <p className="font-mono text-xs text-text">
-                          [{entry.embedding
+                          [
+                          {entry.embedding
                             .slice(0, EMBEDDING_PREVIEW_COUNT)
                             .map((v) => v.toFixed(4))
                             .join(", ")}
-                          {entry.embedding.length > EMBEDDING_PREVIEW_COUNT ? ", …" : ""}]
+                          {entry.embedding.length > EMBEDDING_PREVIEW_COUNT
+                            ? ", …"
+                            : ""}
+                          ]
                         </p>
                         <div className="mt-2 flex items-center gap-3 border-t border-border pt-2 text-xs text-text-muted">
                           <span>{entry.embedding.length} dimensions</span>
                           <span>{entry.usage.total_tokens} tokens</span>
                           <span>{entry.latencyMs} ms</span>
-                          <span className="ml-auto font-mono" title="Model that produced this embedding">
+                          <span
+                            className="ml-auto font-mono"
+                            title="Model that produced this embedding"
+                          >
                             {entry.model}
                           </span>
                           <button
@@ -1088,11 +1380,16 @@ export default function Playground() {
                           {entry.labels.map((label, li) => {
                             const score = entry.scores[li] ?? 0;
                             return (
-                              <div key={label} className="flex items-center gap-3">
+                              <div
+                                key={label}
+                                className="flex items-center gap-3"
+                              >
                                 <span
                                   className={cn(
                                     "w-40 shrink-0 truncate text-xs",
-                                    li === 0 ? "font-medium text-text" : "text-text-muted",
+                                    li === 0
+                                      ? "font-medium text-text"
+                                      : "text-text-muted",
                                   )}
                                   title={label}
                                 >
@@ -1105,9 +1402,13 @@ export default function Playground() {
                                   <div
                                     className={cn(
                                       "h-full rounded-full",
-                                      li === 0 ? "bg-primary" : "bg-text-muted/40",
+                                      li === 0
+                                        ? "bg-primary"
+                                        : "bg-text-muted/40",
                                     )}
-                                    style={{ width: `${Math.max(score * 100, 0.5)}%` }}
+                                    style={{
+                                      width: `${Math.max(score * 100, 0.5)}%`,
+                                    }}
                                   />
                                 </div>
                                 <span className="w-14 shrink-0 text-right font-mono text-xs tabular-nums text-text-muted">
@@ -1119,7 +1420,8 @@ export default function Playground() {
                         </div>
                         <div className="mt-3 flex items-center gap-3 border-t border-border pt-2 text-xs text-text-muted">
                           <span>
-                            {entry.labels.length} options · top {(top * 100).toFixed(1)}%
+                            {entry.labels.length} options · top{" "}
+                            {(top * 100).toFixed(1)}%
                           </span>
                           <span>{entry.latencyMs} ms</span>
                           <span
@@ -1147,7 +1449,9 @@ export default function Playground() {
                               <span className="text-xs uppercase tracking-wide text-text-muted">
                                 {a.name}
                               </span>
-                              <span className="font-medium text-text">{a.verdict}</span>
+                              <span className="font-medium text-text">
+                                {a.verdict}
+                              </span>
                               {/* Confidence is not the winning probability —
                                   the model reports them separately, and a 0.95
                                   choice at 0.22 confidence is exactly the case
@@ -1155,7 +1459,9 @@ export default function Playground() {
                               <span
                                 className={cn(
                                   "ml-auto font-mono text-xs tabular-nums",
-                                  a.confidence < 0.5 ? "text-amber-500" : "text-text-muted",
+                                  a.confidence < 0.5
+                                    ? "text-amber-500"
+                                    : "text-text-muted",
                                 )}
                                 title="Confidence, reported separately from the distribution"
                               >
@@ -1165,14 +1471,19 @@ export default function Playground() {
                             {a.bars.length > 0 && (
                               <div className="mt-1 space-y-1">
                                 {a.bars.map(([label, p]) => (
-                                  <div key={label} className="flex items-center gap-2">
+                                  <div
+                                    key={label}
+                                    className="flex items-center gap-2"
+                                  >
                                     <span className="w-28 shrink-0 truncate text-xs text-text-muted">
                                       {label}
                                     </span>
                                     <div className="h-1.5 flex-1 overflow-hidden rounded-full bg-border">
                                       <div
                                         className="h-full rounded-full bg-primary"
-                                        style={{ width: `${Math.max(p * 100, 0.5)}%` }}
+                                        style={{
+                                          width: `${Math.max(p * 100, 0.5)}%`,
+                                        }}
                                       />
                                     </div>
                                     <span className="w-12 shrink-0 text-right font-mono text-xs tabular-nums text-text-muted">
@@ -1190,7 +1501,9 @@ export default function Playground() {
                             {entry.answers.length === 1 ? "" : "s"}, one pass
                           </span>
                           <span>{entry.latencyMs} ms</span>
-                          <span className="ml-auto font-mono">{entry.model}</span>
+                          <span className="ml-auto font-mono">
+                            {entry.model}
+                          </span>
                         </div>
                       </div>
                     </div>
@@ -1245,48 +1558,73 @@ export default function Playground() {
                     key={j}
                     className="ml-auto max-w-[80%] rounded-xl border border-dashed border-border bg-surface px-4 py-2 text-xs text-text-muted"
                   >
-                    Tool result: {typeof m.content === "string" ? m.content : ""}
+                    Tool result:{" "}
+                    {typeof m.content === "string" ? m.content : ""}
                   </div>
                 ) : (
                   <div
                     key={j}
                     className="ml-auto max-w-[80%] rounded-xl bg-primary px-4 py-2 text-sm text-primary-foreground"
                   >
-                    <MessageContent content={m.content} onImageClick={setExpandedChatImageUrl} />
+                    <MessageContent
+                      content={m.content}
+                      onImageClick={setExpandedChatImageUrl}
+                    />
                   </div>
                 ),
               )}
             {inProgress &&
               !inProgress.content &&
               inProgress.toolCalls.length === 0 &&
-              inProgress.reasoning && <ReasoningBox text={inProgress.reasoning} />}
-            {inProgress && (inProgress.content || inProgress.toolCalls.length > 0) && (
-              <div className="max-w-[80%] rounded-xl border border-border bg-background px-4 py-2 text-sm text-text">
-                {inProgress.content && (
-                  <p className="whitespace-pre-wrap">
-                    {inProgress.content}
-                    <span className="animate-pulse">▍</span>
-                  </p>
-                )}
-                {inProgress.toolCalls.map((call, idx) => (
-                  <div
-                    key={idx}
-                    className="mt-1 flex items-start gap-2 rounded-lg bg-surface p-2 font-mono text-xs text-text"
-                  >
-                    <Wrench size={14} className="mt-0.5 shrink-0 text-primary" />
-                    <div>
-                      <span className="font-semibold">{call.function.name || "…"}</span>
-                      <span className="text-text-muted">({call.function.arguments})</span>
+              inProgress.reasoning && (
+                <ReasoningBox text={inProgress.reasoning} />
+              )}
+            {inProgress &&
+              (inProgress.content || inProgress.toolCalls.length > 0) && (
+                <div className="max-w-[80%] rounded-xl border border-border bg-background px-4 py-2 text-sm text-text">
+                  {inProgress.content && (
+                    <p className="whitespace-pre-wrap">
+                      {inProgress.content}
+                      <span className="animate-pulse">▍</span>
+                    </p>
+                  )}
+                  {inProgress.toolCalls.map((call, idx) => (
+                    <div
+                      key={idx}
+                      className="mt-1 flex items-start gap-2 rounded-lg bg-surface p-2 font-mono text-xs text-text"
+                    >
+                      <Wrench
+                        size={14}
+                        className="mt-0.5 shrink-0 text-primary"
+                      />
+                      <div>
+                        <span className="font-semibold">
+                          {call.function.name || "…"}
+                        </span>
+                        <span className="text-text-muted">
+                          ({call.function.arguments})
+                        </span>
+                      </div>
                     </div>
-                  </div>
-                ))}
-              </div>
+                  ))}
+                </div>
+              )}
+            {inProgress &&
+              !inProgress.content &&
+              !inProgress.reasoning &&
+              inProgress.toolCalls.length === 0 && (
+                <WaitingIndicator
+                  label={
+                    streamingEnabled ? "Streaming" : "Waiting for a response"
+                  }
+                />
+              )}
+            {embeddings.isPending && (
+              <WaitingIndicator label="Generating embedding" />
             )}
-            {inProgress && !inProgress.content && !inProgress.reasoning && inProgress.toolCalls.length === 0 && (
-              <WaitingIndicator label={streamingEnabled ? "Streaming" : "Waiting for a response"} />
+            {imageGenerations.isPending && (
+              <WaitingIndicator label="Generating image" />
             )}
-            {embeddings.isPending && <WaitingIndicator label="Generating embedding" />}
-            {imageGenerations.isPending && <WaitingIndicator label="Generating image" />}
             <div ref={bottomRef} />
           </div>
 
@@ -1307,8 +1645,9 @@ export default function Playground() {
                 className="mt-1 w-full rounded-lg border border-border bg-surface px-3 py-2 text-sm text-text focus:border-primary focus:outline-none"
               />
               <p className="mt-1 text-xs text-text-muted">
-                Comma-separated, and set per request — this model is not trained on a fixed
-                label set, which is what makes the options yours to choose.
+                Comma-separated, and set per request — this model is not trained
+                on a fixed label set, which is what makes the options yours to
+                choose.
               </p>
             </div>
           )}
@@ -1322,11 +1661,14 @@ export default function Playground() {
                 value={candidateLabels}
                 onChange={(e) => setCandidateLabels(e.target.value)}
                 rows={4}
-                placeholder={"La membresía anual de la Tarjeta Oro cuesta S/ 45.00.\nEl horario de atención es de 9 a 18h.\nPara bloquear una tarjeta, llame al 0800-1234."}
+                placeholder={
+                  "La membresía anual de la Tarjeta Oro cuesta S/ 45.00.\nEl horario de atención es de 9 a 18h.\nPara bloquear una tarjeta, llame al 0800-1234."
+                }
                 className="mt-1 w-full rounded-lg border border-border bg-surface px-3 py-2 text-sm text-text focus:border-primary focus:outline-none"
               />
               <p className="mt-1 text-xs text-text-muted">
-                The box above is the query; these are the candidates it scores against.
+                The box above is the query; these are the candidates it scores
+                against.
               </p>
             </div>
           )}
@@ -1348,13 +1690,15 @@ export default function Playground() {
                 One forward pass answers all of them.{" "}
                 <span className="font-mono">choice</span> picks from{" "}
                 <span className="font-mono">criteria</span>,{" "}
-                <span className="font-mono">score</span> places it on that ordered scale, and{" "}
-                <span className="font-mono">noul</span> returns P(true) with no criteria.
+                <span className="font-mono">score</span> places it on that
+                ordered scale, and <span className="font-mono">noul</span>{" "}
+                returns P(true) with no criteria.
                 <br />
-                <strong>Word the question the way the text does.</strong> This model matches
-                vocabulary more than meaning: on an email saying “cancelamos el plan”, asking
-                “amenaza con cancelar” answers yes at 0.98 and asking “amenaza con irse” —
-                the same question in synonyms — answers no at 0.17.
+                <strong>Word the question the way the text does.</strong> This
+                model matches vocabulary more than meaning: on an email saying
+                “cancelamos el plan”, asking “amenaza con cancelar” answers yes
+                at 0.98 and asking “amenaza con irse” — the same question in
+                synonyms — answers no at 0.17.
               </p>
               {!candidateLabels && (
                 <button
@@ -1370,8 +1714,9 @@ export default function Playground() {
 
           {isClassification && (
             <p className="mt-3 text-xs text-text-muted">
-              This model's labels come from the checkpoint, not from the request — nothing to
-              choose. For labels you set per call, pick a model under “Decision (zero-shot)”.
+              This model's labels come from the checkpoint, not from the request
+              — nothing to choose. For labels you set per call, pick a model
+              under “Decision (zero-shot)”.
             </p>
           )}
 
@@ -1382,7 +1727,9 @@ export default function Playground() {
                 alt={attachedImage.name}
                 className="h-12 w-12 rounded object-cover"
               />
-              <span className="flex-1 truncate text-xs text-text-muted">{attachedImage.name}</span>
+              <span className="flex-1 truncate text-xs text-text-muted">
+                {attachedImage.name}
+              </span>
               <button
                 type="button"
                 onClick={() => setAttachedImage(null)}
@@ -1443,168 +1790,180 @@ export default function Playground() {
           </div>
         </div>
 
-        <aside className="w-72 shrink-0 space-y-5 overflow-y-auto border-l border-border bg-surface px-5 py-8">
-          <div>
-            <label htmlFor="playground-model" className="mb-1.5 block text-sm font-medium text-text">
-              Model
-            </label>
-            <PlaygroundModelPicker
-              instances={readyInstances}
-              value={selectedModel}
-              onChange={handleModelChange}
-            />
-          </div>
-
-          {isTextLike && (
-            <>
-              <div>
-                <label
-                  htmlFor="playground-system"
-                  className="mb-1.5 block text-sm font-medium text-text"
-                >
-                  System prompt
-                </label>
-                <textarea
-                  id="playground-system"
-                  rows={3}
-                  value={systemPrompt}
-                  onChange={(e) => setSystemPrompt(e.target.value)}
-                  placeholder="Optional — sets the assistant's behavior for this conversation."
-                  className={inputClass}
-                />
-              </div>
-
-              <label className="flex items-center gap-2 text-sm text-text">
-                <input
-                  type="checkbox"
-                  checked={streamingEnabled}
-                  onChange={(e) => setStreamingEnabled(e.target.checked)}
-                />
-                Stream response
-              </label>
-
-              <h2 className="text-xs font-medium uppercase tracking-wide text-text-muted">Parameters</h2>
-
-              <div>
-                <div className="mb-1.5 flex items-center justify-between text-sm text-text">
-                  <label htmlFor="playground-temperature">Temperature</label>
-                  <span className="text-text-muted">{temperature.toFixed(1)}</span>
+        {/* PRM-214: rendered only when it has parameters to hold. Every
+            modality but text and vision left it a 288px column containing a
+            label and 590px of nothing. The notes it used to carry for
+            embedding and image moved to the empty state, where they are read
+            before the request rather than beside it. */}
+        {isTextLike && (
+          <aside className="w-72 shrink-0 space-y-5 overflow-y-auto border-l border-border bg-surface px-5 py-8">
+            {isTextLike && (
+              <>
+                <div>
+                  <label
+                    htmlFor="playground-system"
+                    className="mb-1.5 block text-sm font-medium text-text"
+                  >
+                    System prompt
+                  </label>
+                  <textarea
+                    id="playground-system"
+                    rows={3}
+                    value={systemPrompt}
+                    onChange={(e) => setSystemPrompt(e.target.value)}
+                    placeholder="Optional — sets the assistant's behavior for this conversation."
+                    className={inputClass}
+                  />
                 </div>
-                <input
-                  id="playground-temperature"
-                  type="range"
-                  min={0}
-                  max={2}
-                  step={0.1}
-                  value={temperature}
-                  onChange={(e) => setTemperature(Number(e.target.value))}
-                  className="w-full"
-                />
-              </div>
 
-              <div>
-                <div className="mb-1.5 flex items-center justify-between text-sm text-text">
-                  <label htmlFor="playground-top-p">Top P</label>
-                  <span className="text-text-muted">{topP.toFixed(2)}</span>
+                <label className="flex items-center gap-2 text-sm text-text">
+                  <input
+                    type="checkbox"
+                    checked={streamingEnabled}
+                    onChange={(e) => setStreamingEnabled(e.target.checked)}
+                  />
+                  Stream response
+                </label>
+
+                <h2 className="text-xs font-medium uppercase tracking-wide text-text-muted">
+                  Parameters
+                </h2>
+
+                <div>
+                  <div className="mb-1.5 flex items-center justify-between text-sm text-text">
+                    <label htmlFor="playground-temperature">Temperature</label>
+                    <span className="text-text-muted">
+                      {temperature.toFixed(1)}
+                    </span>
+                  </div>
+                  <input
+                    id="playground-temperature"
+                    type="range"
+                    min={0}
+                    max={2}
+                    step={0.1}
+                    value={temperature}
+                    onChange={(e) => setTemperature(Number(e.target.value))}
+                    className="w-full accent-primary"
+                  />
                 </div>
-                <input
-                  id="playground-top-p"
-                  type="range"
-                  min={0.05}
-                  max={1}
-                  step={0.05}
-                  value={topP}
-                  onChange={(e) => setTopP(Number(e.target.value))}
-                  className="w-full"
-                />
-              </div>
 
-              <div>
-                <label htmlFor="playground-max-tokens" className="mb-1.5 block text-sm text-text">
-                  Max tokens
-                </label>
-                <input
-                  id="playground-max-tokens"
-                  type="number"
-                  min={1}
-                  value={maxTokens}
-                  onChange={(e) => setMaxTokens(Math.max(1, Number(e.target.value) || 1))}
-                  className={inputClass}
-                />
-              </div>
+                <div>
+                  <div className="mb-1.5 flex items-center justify-between text-sm text-text">
+                    <label htmlFor="playground-top-p">Top P</label>
+                    <span className="text-text-muted">{topP.toFixed(2)}</span>
+                  </div>
+                  <input
+                    id="playground-top-p"
+                    type="range"
+                    min={0.05}
+                    max={1}
+                    step={0.05}
+                    value={topP}
+                    onChange={(e) => setTopP(Number(e.target.value))}
+                    className="w-full accent-primary"
+                  />
+                </div>
 
-              <div>
-                <label htmlFor="playground-stop" className="mb-1.5 block text-sm text-text">
-                  Stop sequences
-                </label>
-                <input
-                  id="playground-stop"
-                  type="text"
-                  value={stopInput}
-                  onChange={(e) => setStopInput(e.target.value)}
-                  placeholder="Comma-separated, optional"
-                  className={inputClass}
-                />
-              </div>
+                <div>
+                  <label
+                    htmlFor="playground-max-tokens"
+                    className="mb-1.5 block text-sm text-text"
+                  >
+                    Max tokens
+                  </label>
+                  <input
+                    id="playground-max-tokens"
+                    type="number"
+                    min={1}
+                    value={maxTokens}
+                    onChange={(e) =>
+                      setMaxTokens(Math.max(1, Number(e.target.value) || 1))
+                    }
+                    className={inputClass}
+                  />
+                </div>
 
-              <h2 className="text-xs font-medium uppercase tracking-wide text-text-muted">
-                Tools (function calling)
-              </h2>
+                <div>
+                  <label
+                    htmlFor="playground-stop"
+                    className="mb-1.5 block text-sm text-text"
+                  >
+                    Stop sequences
+                  </label>
+                  <input
+                    id="playground-stop"
+                    type="text"
+                    value={stopInput}
+                    onChange={(e) => setStopInput(e.target.value)}
+                    placeholder="Comma-separated, optional"
+                    className={inputClass}
+                  />
+                </div>
 
-              <div>
-                <label htmlFor="playground-tools" className="mb-1.5 block text-sm text-text">
-                  Tool definitions (JSON)
-                </label>
-                <textarea
-                  id="playground-tools"
-                  rows={6}
-                  value={toolsInput}
-                  onChange={(e) => setToolsInput(e.target.value)}
-                  placeholder={'Optional — an OpenAI-style tools array, e.g.\n[\n  {\n    "type": "function",\n    "function": {\n      "name": "get_weather",\n      "parameters": {"type": "object", "properties": {"city": {"type": "string"}}}\n    }\n  }\n]'}
-                  className={cn(inputClass, "font-mono text-xs")}
-                />
-                {toolsError && <p className="mt-1 text-xs text-red-600">{toolsError}</p>}
-              </div>
+                <h2 className="text-xs font-medium uppercase tracking-wide text-text-muted">
+                  Tools (function calling)
+                </h2>
 
-              <div>
-                <label htmlFor="playground-tool-choice" className="mb-1.5 block text-sm text-text">
-                  Tool choice
-                </label>
-                <select
-                  id="playground-tool-choice"
-                  value={toolChoice}
-                  onChange={(e) => setToolChoice(e.target.value as "auto" | "required" | "none")}
-                  disabled={!toolsInput.trim()}
-                  className={cn(inputClass, !toolsInput.trim() && "opacity-40")}
-                >
-                  <option value="auto">auto</option>
-                  <option value="required">required</option>
-                  <option value="none">none</option>
-                </select>
-                {toolChoice === "required" && (
-                  <p className="mt-1 text-xs text-text-muted">
-                    "required" forces a tool call every turn — switch to "auto" after submitting a
-                    result if you want the model's final text answer instead of another call.
-                  </p>
-                )}
-              </div>
-            </>
-          )}
+                <div>
+                  <label
+                    htmlFor="playground-tools"
+                    className="mb-1.5 block text-sm text-text"
+                  >
+                    Tool definitions (JSON)
+                  </label>
+                  <textarea
+                    id="playground-tools"
+                    rows={6}
+                    value={toolsInput}
+                    onChange={(e) => setToolsInput(e.target.value)}
+                    placeholder={
+                      'Optional — an OpenAI-style tools array, e.g.\n[\n  {\n    "type": "function",\n    "function": {\n      "name": "get_weather",\n      "parameters": {"type": "object", "properties": {"city": {"type": "string"}}}\n    }\n  }\n]'
+                    }
+                    className={cn(inputClass, "font-mono text-xs")}
+                  />
+                  {toolsError && (
+                    <p className="mt-1 text-xs text-red-600">{toolsError}</p>
+                  )}
+                </div>
 
-          {modality === "embedding" && (
-            <p className="text-xs text-text-muted">
-              Embeddings are single-shot — each request is independent, there's no
-              conversation history to carry over between them.
-            </p>
-          )}
-
-          {modality === "image" && (
-            <p className="text-xs text-text-muted">
-              Each prompt is single-shot — there's no conversation history to carry over
-              between generations.
-            </p>
-          )}
-        </aside>
+                <div>
+                  <label
+                    htmlFor="playground-tool-choice"
+                    className="mb-1.5 block text-sm text-text"
+                  >
+                    Tool choice
+                  </label>
+                  <select
+                    id="playground-tool-choice"
+                    value={toolChoice}
+                    onChange={(e) =>
+                      setToolChoice(
+                        e.target.value as "auto" | "required" | "none",
+                      )
+                    }
+                    disabled={!toolsInput.trim()}
+                    className={cn(
+                      inputClass,
+                      !toolsInput.trim() && "opacity-40",
+                    )}
+                  >
+                    <option value="auto">auto</option>
+                    <option value="required">required</option>
+                    <option value="none">none</option>
+                  </select>
+                  {toolChoice === "required" && (
+                    <p className="mt-1 text-xs text-text-muted">
+                      "required" forces a tool call every turn — switch to
+                      "auto" after submitting a result if you want the model's
+                      final text answer instead of another call.
+                    </p>
+                  )}
+                </div>
+              </>
+            )}
+          </aside>
+        )}
       </main>
       {expandedImage &&
         createPortal(
@@ -1617,7 +1976,10 @@ export default function Playground() {
                 type="button"
                 onClick={(e) => {
                   e.stopPropagation();
-                  handleDownloadImage(expandedImage, imageEntries.indexOf(expandedImage));
+                  handleDownloadImage(
+                    expandedImage,
+                    imageEntries.indexOf(expandedImage),
+                  );
                 }}
                 aria-label="Download"
                 title="Download image"

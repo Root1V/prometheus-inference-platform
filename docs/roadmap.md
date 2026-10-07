@@ -8315,3 +8315,32 @@ this repo keeps finding, so `Show all N` expands them.
 
 **Scope**: in — the ranking, the single row, the toggle. Out — clearing finished entries, which is
 the manager's to do and would remove the need for most of this.
+
+
+## PRM-214 — Playground opens ready to use
+
+**Why**: the model was `useState("")` falling through to `readyInstances[0]` — whichever instance the
+API happened to list first. On this platform that is `von-decide`, so the Playground opened as a
+zero-shot decision form, with its labels field and its Decide button, while the first text model sat
+fifth in the list. Nothing about that was a choice. It now prefers text, then vision, then anything
+at all, and remembers what you picked.
+
+**The rail was mostly empty, and the page said nothing about why.** Picking a model does not just
+change where the request goes: it rebuilds the composer. Six of the seven modalities put nothing in
+the right rail but the model select — measured at 590px of empty column under it, 77% of its height —
+while text and vision filled it with system prompt, streaming, sampling, stop sequences and tools.
+The picker moved to the header, beside `Clear`, with a line naming the modality, the node and what
+the modality actually does; the rail renders only when it has parameters to hold.
+
+**And the empty state is where the mode gets explained.** 538px of conversation panel carried one
+grey line reading "No messages yet". It is empty exactly when someone does not yet know what this
+model does, so that is what it says now, with two runnable examples — the fastest way to learn what
+a mode is, is to run it.
+
+**Two smaller things**: the temperature and top-p sliders were unstyled natives (`accent-color: auto`,
+class `w-full`), the only blue elements in an orange app; and `Clear` used `disabled:opacity-40` over
+a bordered button, the washed-out treatment PRM-211 already replaced on Discover.
+
+**Scope**: in — the default and its persistence, the picker's move, the conditional rail, the
+per-modality empty state, the sliders and the button. Out — the composer layouts themselves, and
+clearing the draft when the modality changes (the same text is often worth sending to both).
