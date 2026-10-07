@@ -8094,3 +8094,42 @@ this says so rather than implying otherwise.
 basis labelled, nine columns to six. Out — a UI test for the unexercised branches; this project has
 no frontend test runner, and adding one is its own change.
 
+## PRM-207 — Usage answers who and how much
+
+**Why**: four things, and the first was a trap.
+
+**Two date controls that looked like one mechanism.** `Day`, top right, drove the table. `From` and
+`To`, in a card below it, drove only the CSV export. That split is deliberate — RM-60 kept
+`GET /v1/usage` single-day on purpose — but nothing on the page said so, and a pair of date inputs
+sitting above a table reads as a filter on it. Now the control that drives the table says
+*Showing*, and the export card is titled *Export a date range — does not change the table below*.
+
+**The day's totals had to be added up by hand.** Three cards now carry requests, tokens and cost.
+The cost card states its own caveat rather than printing a bare number: RM-33 never bills an
+unpriced model as `$0`, so a total that silently omitted one would be that same lie in aggregate.
+
+**Rows came in whatever order the group-by produced.** The question asked of this page is "who is
+using the platform", which is answered by reading down a sorted column. Sorted by cost, falling back
+to tokens so an unpriced client still ranks rather than sinking as a null.
+
+**A share column**, because proportion is read off a shape far faster than off a column of numbers.
+Measured against tokens rather than cost, so the one model with no configured price does not appear
+as no usage at all. A client under half a percent reads `<1%` rather than `0%` — 272 tokens is use,
+and a bar drawn beside a zero contradicts itself.
+
+**Four cost columns became one.** Prompt, completion and image are still there, on the total's
+tooltip and in the per-model rows. Detail does not need a permanent column each.
+
+**And the expansion refused to answer its own question.** It opened only when a client had used more
+than one model, so a client that called exactly one could not see *which*. It is the same question
+either way.
+
+**Unlike PRM-201, PRM-204 and PRM-206, there was nothing discarded here.** Those three each found
+fields the API returned and the UI dropped; this page already uses everything `GET /v1/usage` gives
+it. Worth recording, because "look for the thrown-away field" is a good first move and not a
+universal one.
+
+**Scope**: in — the date-scope labelling, the totals, the ranking, the share column, the cost
+collapse, and always-expandable rows. Out — a usage-over-time chart: Billing already carries one
+per client, and this page's job is the per-day, per-model breakdown rather than a second trend.
+
