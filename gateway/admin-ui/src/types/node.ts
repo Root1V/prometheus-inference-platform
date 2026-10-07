@@ -6,7 +6,20 @@ export interface Node {
   manager_url: string;
   node_type: NodeType;
   tag: string | null;
+  /**
+   * Derived by the coordinator: the operator allows it **and** it was seen
+   * within the liveness TTL. PRM-206 stopped showing only this, because it
+   * collapses two facts the backend deliberately reports separately —
+   * `fleet.py`: *"'cordoned' and 'not answering' need different actions from an
+   * operator and a single boolean cannot tell them apart."*
+   */
   is_active: boolean;
+  /** The operator's half: false means cordoned on purpose. Was in the response
+   * and declared nowhere, so the UI could not show it. */
+  enabled: boolean;
+  /** The observed half: when the coordinator last heard from this node. Null
+   * means never. Nodes heartbeat every 10s against a 60s TTL. */
+  last_seen_at: string | null;
   /** RM-62: the two $/hour components the operator enters — nothing in this
    * codebase can derive them. Always a real number: left blank at creation,
    * each falls back to a platform default (see CreateNodeModal's placeholders). */

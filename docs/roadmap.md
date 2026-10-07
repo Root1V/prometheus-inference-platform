@@ -8051,3 +8051,46 @@ latency, which explains why it is staying out of it.
 latency or tokens, which are deployment- and model-specific and belong in `Limits` with real
 configuration behind them rather than hardcoded in a card.
 
+## PRM-206 — Nodes tells cordoned from not answering
+
+**Why**: the page rendered one badge driven by `is_active`. That field is **derived** by the
+coordinator from two facts it deliberately reports beside it, and `fleet.py` states the reason in
+the serialiser itself: *"'cordoned' and 'not answering' need different actions from an operator and
+a single boolean cannot tell them apart."* Before PRM-151 they shared one column, and a maintenance
+cordon was erased by whoever pressed Check next.
+
+The backend did that work. **`enabled` and `last_seen_at` were in the response and declared nowhere
+in the UI's `Node` type**, so the frontend threw the distinction away and showed the collapsed
+boolean — the same shape of loss as `label` in PRM-201.
+
+**The heartbeat is the point of this page and was the thing it did not show.** Nodes report every
+10 s against a 60 s liveness TTL, and the only way to see when one last reported was to open
+`fleet.db` — which is exactly what the credential audit had to do to establish that two
+zero-inference credentials were live and load-bearing.
+
+Three states now, because they want three different responses:
+
+* **Active** — allowed and reporting inside the window. Leave it alone.
+* **Cordoned** — `enabled: false`. Deactivated on purpose, possibly perfectly healthy. Press
+  Activate when maintenance is done.
+* **Not answering / Never seen** — allowed but silent. Go and look at the box. "Never seen" is
+  called out separately because it is almost always the three fleet identity variables missing from
+  that node's environment, which `docs/local-stack.md` covers.
+
+The 60 s threshold is `DEFAULT_LIVENESS_TTL_S` read from `fleet.py` rather than a number picked
+here — a second copy of that rule is how two answers to one question start disagreeing, which is
+what `nodes_client.py` already refuses to do for `is_active`.
+
+**`$/hour` and `margin` were two bare numbers.** `$0.3228` and `1.3×` with no unit and no
+explanation, and nothing in this codebase can derive either — they are an operator's input that
+only this page shows back. Now labelled, with what they feed on hover.
+
+**Verified live**: both nodes read Active with their real heartbeat age (5 s and 10 s against a 10 s
+reporting interval). The cordoned and not-answering branches are **not** exercised live — doing so
+means cordoning a node other teams are currently calling — so they are reasoned code paths, and
+this says so rather than implying otherwise.
+
+**Scope**: in — the two discarded fields, the three-state badge with the heartbeat age, the cost
+basis labelled, nine columns to six. Out — a UI test for the unexercised branches; this project has
+no frontend test runner, and adding one is its own change.
+
