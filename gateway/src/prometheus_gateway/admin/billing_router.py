@@ -150,6 +150,26 @@ def create_billing_router(manager_client: "ManagerApiClient | None" = None) -> A
         rows = await db.list_currency_rates()
         return {r.currency_code: r.units_per_usd for r in rows}
 
+    @router.get("/admin/api/billing/overview")
+    async def get_billing_overview(request: Request, period: str | None = None) -> Any:
+        """The whole platform for one month — PRM-221.
+
+        Every other endpoint on this router is keyed by client, so the page
+        built on them could only answer "what does this one client owe" and
+        the reader had to already know which client they meant. Asking "how is
+        the month going" meant one request per client, in a loop, by hand.
+        """
+        if (err := _require_scope(request, "admin:read")) is not None:
+            return err
+        target_period = period or datetime.now(tz=timezone.utc).strftime(_ISO_MONTH_FORMAT)
+        try:
+            datetime.strptime(target_period, _ISO_MONTH_FORMAT)
+        except ValueError:
+            return _problem(
+                request, 400, "invalid-period", "Invalid Period", "period must be YYYY-MM."
+            )
+        return await billing.build_platform_overview(target_period)
+
     @router.get("/admin/api/billing/clients/{client_id}/summary")
     async def get_billing_summary(
         client_id: str, request: Request, period: str | None = None

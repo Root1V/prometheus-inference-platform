@@ -60,6 +60,76 @@ def apply_tax(
     return tax_amount, subtotal_usd + tax_amount
 
 
+async def build_platform_overview(period: str) -> dict[str, Any]:
+    """The whole platform for one month, ranked — PRM-221.
+
+    Billing opened on a client selector, which meant it could not answer its
+    own first question: what did the platform bill this month? Answering it by
+    hand was a request per client, and that is exactly the loop this endpoint
+    replaces.
+
+    **Subtotal is the headline, tax is a separate line, and that is deliberate.**
+    `tax_rate_percent` is configured per client, so a single blended "total
+    billed" would add figures computed at different rates and present the sum
+    as one number. The total is still returned — it is what is owed — but the
+    two are never collapsed.
+
+    Reuses `query_client_cost_range` and `query_model_cost_range` rather than
+    adding grouped queries that already exist.
+    """
+    start_day, end_day = month_bounds(period)
+    by_client = await db.query_client_cost_range(start_day, end_day)
+    by_model = await db.query_model_cost_range(start_day, end_day)
+    tax_rates = {
+        row.client_id: row.tax_rate_percent for row in await db.list_client_billing_settings()
+    }
+
+    clients: list[dict[str, Any]] = []
+    subtotal = 0.0
+    tax_total = 0.0
+    any_priced = False
+    for row in by_client:
+        client_subtotal = row["cost_usd"]
+        rate = tax_rates.get(row["client_id"], 0.0)
+        tax_amount, total = apply_tax(client_subtotal, rate)
+        if client_subtotal is not None:
+            any_priced = True
+            subtotal += client_subtotal
+            tax_total += tax_amount or 0.0
+        clients.append(
+            {
+                "client_id": row["client_id"],
+                "subtotal_usd": client_subtotal,
+                "tax_rate_percent": rate,
+                "tax_amount_usd": tax_amount,
+                "total_usd": total,
+                "total_tokens": row["total_tokens"],
+                "request_count": row["request_count"],
+                "unpriced_requests": row["unpriced_requests"],
+            }
+        )
+    clients.sort(key=lambda c: (c["subtotal_usd"] or 0.0, c["total_tokens"]), reverse=True)
+
+    models = sorted(by_model, key=lambda m: ((m["cost_usd"] or 0.0), m["tokens"]), reverse=True)
+
+    return {
+        "period": period,
+        "period_start": start_day.isoformat(),
+        "period_end": end_day.isoformat(),
+        # None, never 0.0, when nothing in the month could be priced — the same
+        # rule `apply_tax` keeps one function above.
+        "subtotal_usd": subtotal if any_priced else None,
+        "tax_amount_usd": tax_total if any_priced else None,
+        "total_usd": subtotal + tax_total if any_priced else None,
+        "client_count": len(clients),
+        "total_tokens": sum(c["total_tokens"] for c in clients),
+        "request_count": sum(c["request_count"] for c in clients),
+        "unpriced_requests": sum(c["unpriced_requests"] for c in clients),
+        "by_client": clients,
+        "by_model": models,
+    }
+
+
 async def build_period_summary(client_id: str, period: str) -> dict[str, Any]:
     """Assemble one client's billing summary for one UTC calendar-month period."""
     start_day, end_day = month_bounds(period)
