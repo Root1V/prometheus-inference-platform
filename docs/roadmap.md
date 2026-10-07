@@ -8178,3 +8178,37 @@ month-to-date and caps), `query_client_cost_range` and `query_client_model_cost_
 the trend chart, the kind-mix chart, the busiest-model card, the one expandable table, and the five
 columns above. Out — error rate and latency per client: `usage_events` records neither, so the page
 cannot answer "who is failing" or "who is slow" and does not pretend to.
+
+
+## PRM-209 — Models says what is on disk
+
+**Why**: the page describes itself as the place to "manage what's on disk" and never stated the
+figure. Measured: **522.9 GB** across 32 models on the local node, of which **443.4 GB — 85% —** is
+held by **21 models with no instance**. The five largest idle: `minimax-m2-q2` 77.6 GB,
+`laguna-s-2.1-q4` 70.0, `llama4-scout-17b-q4` 60.9, `deepseek-v25-1210-iq1m` 49.1,
+`qwen3-coder-next-30b-q4` 45.2. Every one of those numbers required reading 32 rows and adding by
+hand, on the page whose job is to answer exactly that.
+
+**One em dash meant two different things.** A model with `downloaded: false` is served from another
+host: no file exists here, so a size or quantization *cannot*. A model with `downloaded: true` and a
+null size is on disk and the size was not reported — on this platform that is `promptguard2-tei` and
+`minimax-m27-iq2m`, the latter a GGUF split across three shards. Both drew the same `—`, so "not
+applicable" and "we failed to find out" were indistinguishable; only the second is worth chasing.
+`downloaded`, not the node, is the discriminator — the totals use it too, so weights hosted
+elsewhere are never counted as occupying space here.
+
+**The description was contradicted by its own table**, ending "only downloaded models can be
+selected when creating an instance" while `minilm-hfserve` sits two rows below it, not downloaded,
+with two instances.
+
+**Two things deliberately left alone.** The `model: <slug>` subtitle duplicates the name on 24 of 32
+rows, and removing it where it duplicates was the obvious fix — but PRM-112 made it unconditional on
+purpose, because a subtitle appearing on some rows and not others gave "which of these do I put in
+`model`?" no reliable answer. That reasoning still holds and this item does not undo it. The node
+selector stayed in the header rather than moving next to the table: it governs the Discover tab too,
+so the header is where it belongs. It was simply never labelled.
+
+**Scope**: in — the three figures, the `No instance` filter (which sorts by size, because an idle
+363 MB model and an idle 77.6 GB one are not the same finding), the `n/a`/`?` split, the corrected
+description, a labelled node selector, and dropping the row-number column. Out — bulk delete from
+the filtered view, and any change to what the catalog reports.

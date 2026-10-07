@@ -1,4 +1,15 @@
-import { Ban, Download, Pause, Play, RotateCcw, Search, Settings } from "lucide-react";
+import {
+  Ban,
+  Download,
+  HardDrive,
+  Layers,
+  Pause,
+  Play,
+  RotateCcw,
+  Search,
+  Settings,
+  Trash2,
+} from "lucide-react";
 import { useState } from "react";
 import {
   useCancelDownload,
@@ -18,6 +29,7 @@ import { ModelCardView } from "../components/ModelCardView";
 import { ModelPreviewPanel } from "../components/ModelPreviewPanel";
 import { ModelSettingsModal } from "../components/ModelSettingsModal";
 import { Sidebar } from "../components/Sidebar";
+import { StatCard } from "../components/StatCard";
 import { useToast } from "../context/ToastContext";
 import { cn } from "../lib/cn";
 import { getErrorMessage } from "../lib/errors";
@@ -69,13 +81,18 @@ function DownloadRow({ entry, node }: { entry: DownloadEntry; node: string }) {
     <div className="rounded-lg border border-border bg-background p-3 text-sm">
       <div className="flex items-center justify-between gap-2">
         <span className="font-medium text-text">{entry.model_id}</span>
-        <span className={cn("text-xs font-medium", STATUS_COLOR[entry.status])}>{entry.status}</span>
+        <span className={cn("text-xs font-medium", STATUS_COLOR[entry.status])}>
+          {entry.status}
+        </span>
       </div>
       <p className="mt-0.5 truncate text-xs text-text-muted">{entry.hf_repo}</p>
       {(isActive || isPaused) && (
         <div className="mt-2 h-1.5 w-full overflow-hidden rounded-full bg-border">
           <div
-            className={cn("h-full transition-all", isPaused ? "bg-amber-500" : "bg-primary")}
+            className={cn(
+              "h-full transition-all",
+              isPaused ? "bg-amber-500" : "bg-primary",
+            )}
             style={{ width: `${Math.round(entry.progress * 100)}%` }}
           />
         </div>
@@ -148,7 +165,9 @@ function DownloadRow({ entry, node }: { entry: DownloadEntry; node: string }) {
           )}
         </div>
       </div>
-      {entry.error && <p className="mt-1 text-xs text-red-600">{entry.error}</p>}
+      {entry.error && (
+        <p className="mt-1 text-xs text-red-600">{entry.error}</p>
+      )}
     </div>
   );
 }
@@ -160,7 +179,9 @@ export default function Models() {
   const nodesQuery = useNodeRegistry();
   // Only active nodes are actually reachable — fetch_nodes() on the manager-api
   // side filters inactive ones out, so offering them here would just 400.
-  const nodes = (nodesQuery.data ?? []).filter((n) => n.is_active).map((n) => n.name);
+  const nodes = (nodesQuery.data ?? [])
+    .filter((n) => n.is_active)
+    .map((n) => n.name);
   const [node, setNode] = useState("");
   const selectedNode = node || nodes[0] || "";
 
@@ -184,8 +205,43 @@ export default function Models() {
   const startDownload = useStartDownload();
 
   const instances = instancesQuery.data?.instances ?? [];
-  const downloadedModels = (catalogQuery.data?.models ?? []).filter((m) => m.node === selectedNode);
-  const previewModel = previewId ? (downloadedModels.find((m) => m.id === previewId) ?? null) : null;
+  const downloadedModels = (catalogQuery.data?.models ?? []).filter(
+    (m) => m.node === selectedNode,
+  );
+  const previewModel = previewId
+    ? (downloadedModels.find((m) => m.id === previewId) ?? null)
+    : null;
+
+  /**
+   * PRM-209: this page's own description says it manages what is on disk, and
+   * it never said how much that was. Measured on this platform the answer is
+   * 523.2 GB across 32 local models, of which 443.5 GB — 85% — is held by 21
+   * models with no instance. Reconstructing that meant reading every row and
+   * adding by hand.
+   *
+   * `downloaded` is the discriminator throughout: a model served from another
+   * host occupies nothing here and must not be counted as if it did. And the
+   * total says how many models it could not measure rather than quietly
+   * summing the rest, which is the same rule RM-33 applies to unpriced usage.
+   */
+  const disk = (() => {
+    const onDisk = downloadedModels.filter((m) => m.downloaded);
+    const unsized = onDisk.filter((m) => m.file_size_bytes === null).length;
+    // Counted across EVERY model, not just the downloaded ones, so this agrees
+    // with the table's own "No instance" filter. A registered model nothing
+    // runs is dead weight in the registry whether or not it holds a disk.
+    const idle = downloadedModels.filter((m) => m.instance_ids.length === 0);
+    const sum = (ms: typeof onDisk) =>
+      ms.reduce((n, m) => n + (m.file_size_bytes ?? 0), 0);
+    return {
+      onDisk: onDisk.length,
+      unsized,
+      totalBytes: sum(onDisk),
+      idleCount: idle.length,
+      idleBytes: sum(idle),
+      remote: downloadedModels.length - onDisk.length,
+    };
+  })();
 
   function handleSearch() {
     setSearchTerm(query.trim());
@@ -198,9 +254,17 @@ export default function Models() {
     if (!selectedNode) return;
     const modelId = customModelId.trim();
     startDownload.mutate(
-      { node: selectedNode, data: { repo_id: selectedRepo, filename, ...(modelId ? { model_id: modelId } : {}) } },
       {
-        onSuccess: (result) => showToast(`Downloading ${result.model_id}…`, "success"),
+        node: selectedNode,
+        data: {
+          repo_id: selectedRepo,
+          filename,
+          ...(modelId ? { model_id: modelId } : {}),
+        },
+      },
+      {
+        onSuccess: (result) =>
+          showToast(`Downloading ${result.model_id}…`, "success"),
         onError: (e) => showToast(getErrorMessage(e), "error"),
       },
     );
@@ -214,26 +278,37 @@ export default function Models() {
           <div>
             <h1 className="text-2xl font-semibold text-text">Models</h1>
             <p className="mt-1 text-sm text-text-muted">
-              Search Hugging Face, download a GGUF model, and manage what's on disk — only
-              downloaded models can be selected when creating an instance.
+              {/* PRM-209: it used to end "only downloaded models can be
+                  selected when creating an instance", which this page's own
+                  table contradicts — `minilm-hfserve` is not downloaded and
+                  has two. */}
+              Search Hugging Face, download GGUF weights, and manage what's on
+              disk. Models served from another host appear here too, holding no
+              space on this node.
             </p>
           </div>
           <div className="flex items-center gap-2">
+            {/* PRM-209: labelled. It governs both tabs, so the header is the
+                right place for it — but a bare select reading "lab" never said
+                what it selected, and switching it turns 8 rows into 32. */}
             {nodes.length > 0 && (
-              <select
-                value={selectedNode}
-                onChange={(e) => {
-                  setNode(e.target.value);
-                  setPreviewId(null);
-                }}
-                className={cn(inputClass, "w-48")}
-              >
-                {nodes.map((n) => (
-                  <option key={n} value={n}>
-                    {n}
-                  </option>
-                ))}
-              </select>
+              <label className="flex items-center gap-2 text-sm text-text-muted">
+                Node
+                <select
+                  value={selectedNode}
+                  onChange={(e) => {
+                    setNode(e.target.value);
+                    setPreviewId(null);
+                  }}
+                  className={cn(inputClass, "w-48")}
+                >
+                  {nodes.map((n) => (
+                    <option key={n} value={n}>
+                      {n}
+                    </option>
+                  ))}
+                </select>
+              </label>
             )}
             <button
               type="button"
@@ -269,7 +344,9 @@ export default function Models() {
               >
                 Library
                 {downloadedModels.length > 0 && (
-                  <span className="ml-1.5 text-xs text-text-muted">({downloadedModels.length})</span>
+                  <span className="ml-1.5 text-xs text-text-muted">
+                    ({downloadedModels.length})
+                  </span>
                 )}
               </button>
               <button
@@ -289,7 +366,9 @@ export default function Models() {
             {tab === "discover" ? (
               <div className="mt-6 grid grid-cols-1 gap-6 lg:grid-cols-3">
                 <div className="rounded-xl border border-border bg-surface p-4">
-                  <h2 className="mb-3 text-sm font-semibold text-text">Search Hugging Face</h2>
+                  <h2 className="mb-3 text-sm font-semibold text-text">
+                    Search Hugging Face
+                  </h2>
                   <div className="flex gap-2">
                     <input
                       value={query}
@@ -310,13 +389,18 @@ export default function Models() {
 
                   {searchTerm && (
                     <div className="mt-2 flex items-center gap-2">
-                      <label htmlFor="model-sort" className="text-xs text-text-muted">
+                      <label
+                        htmlFor="model-sort"
+                        className="text-xs text-text-muted"
+                      >
                         Sort by
                       </label>
                       <select
                         id="model-sort"
                         value={sort}
-                        onChange={(e) => setSort(e.target.value as ModelSort | "")}
+                        onChange={(e) =>
+                          setSort(e.target.value as ModelSort | "")
+                        }
                         className={cn(inputClass, "w-auto py-1 text-xs")}
                       >
                         {SORT_OPTIONS.map((o) => (
@@ -329,9 +413,13 @@ export default function Models() {
                   )}
 
                   <div className="mt-3 max-h-[28rem] space-y-1 overflow-y-auto">
-                    {searchQuery.isLoading && <p className="text-sm text-text-muted">Searching…</p>}
+                    {searchQuery.isLoading && (
+                      <p className="text-sm text-text-muted">Searching…</p>
+                    )}
                     {searchQuery.isError && (
-                      <p className="text-sm text-red-600">{getErrorMessage(searchQuery.error)}</p>
+                      <p className="text-sm text-red-600">
+                        {getErrorMessage(searchQuery.error)}
+                      </p>
                     )}
                     {searchQuery.data?.length === 0 && (
                       <p className="text-sm text-text-muted">No results.</p>
@@ -347,7 +435,8 @@ export default function Models() {
                         }}
                         className={cn(
                           "block w-full rounded-lg px-3 py-2 text-left text-sm hover:bg-background",
-                          selectedRepo === r.id && "bg-background ring-1 ring-primary",
+                          selectedRepo === r.id &&
+                            "bg-background ring-1 ring-primary",
                         )}
                       >
                         <span className="font-medium text-text">{r.id}</span>
@@ -363,7 +452,9 @@ export default function Models() {
                   {selectedRepo ? (
                     <>
                       <div className="mb-3 flex items-center justify-between">
-                        <h2 className="truncate text-sm font-semibold text-text">{selectedRepo}</h2>
+                        <h2 className="truncate text-sm font-semibold text-text">
+                          {selectedRepo}
+                        </h2>
                         <button
                           type="button"
                           onClick={() => setShowCard((v) => !v)}
@@ -375,7 +466,10 @@ export default function Models() {
 
                       {showCard && (
                         <div className="mb-3 max-h-56 overflow-y-auto rounded-lg border border-border bg-background p-3">
-                          <ModelCardView node={selectedNode} repoId={selectedRepo} />
+                          <ModelCardView
+                            node={selectedNode}
+                            repoId={selectedRepo}
+                          />
                         </div>
                       )}
 
@@ -390,13 +484,16 @@ export default function Models() {
                           className={inputClass}
                         />
                         <span className="mt-1 block text-xs text-text-muted">
-                          Only settable now — once downloaded, the name can't be changed.
+                          Only settable now — once downloaded, the name can't be
+                          changed.
                         </span>
                       </label>
 
                       <div className="max-h-[24rem] space-y-1 overflow-y-auto">
                         {filesQuery.isLoading && (
-                          <p className="text-sm text-text-muted">Loading files…</p>
+                          <p className="text-sm text-text-muted">
+                            Loading files…
+                          </p>
                         )}
                         {filesQuery.data?.map((f) => (
                           <div
@@ -409,7 +506,9 @@ export default function Models() {
                               </span>
                               <span className="text-xs text-text-muted">
                                 {f.quantization} ·{" "}
-                                {f.size_bytes !== null ? formatBytes(f.size_bytes) : "? size"}
+                                {f.size_bytes !== null
+                                  ? formatBytes(f.size_bytes)
+                                  : "? size"}
                               </span>
                             </div>
                             <button
@@ -433,43 +532,135 @@ export default function Models() {
                 </div>
 
                 <div className="rounded-xl border border-border bg-surface p-4">
-                  <h2 className="mb-3 text-sm font-semibold text-text">Downloads</h2>
+                  <h2 className="mb-3 text-sm font-semibold text-text">
+                    Downloads
+                  </h2>
                   {(downloadsQuery.data?.length ?? 0) === 0 ? (
                     <p className="text-sm text-text-muted">No downloads yet.</p>
                   ) : (
                     <div className="max-h-[32rem] space-y-2 overflow-y-auto">
                       {downloadsQuery.data?.map((d) => (
-                        <DownloadRow key={d.model_id} entry={d} node={selectedNode} />
+                        <DownloadRow
+                          key={d.model_id}
+                          entry={d}
+                          node={selectedNode}
+                        />
                       ))}
                     </div>
                   )}
                 </div>
               </div>
             ) : (
-              <div className="mt-6 flex items-start gap-6">
-                <div className="min-w-0 flex-1">
-                  <DownloadedModelsTable
-                    models={downloadedModels}
-                    instances={instances}
-                    node={selectedNode}
-                    selectedId={previewId}
-                    onSelect={(m) => setPreviewId(m.id === previewId ? null : m.id)}
+              <>
+                <div className="mt-6 grid grid-cols-1 gap-4 sm:grid-cols-3">
+                  {/* A dash is not an answer. On a node whose models are all
+                      served from another host there is genuinely nothing on
+                      disk, and saying so is information — rendering "—" for it
+                      made the page look broken while showing eight real models
+                      with nine real instances. */}
+                  <StatCard
+                    label="On disk"
+                    value={
+                      disk.totalBytes > 0
+                        ? formatBytes(disk.totalBytes)
+                        : disk.onDisk > 0
+                          ? "Not reported"
+                          : "None"
+                    }
+                    sub={
+                      disk.onDisk === 0
+                        ? `all ${downloadedModels.length} served from another host`
+                        : disk.unsized > 0
+                          ? `${disk.onDisk - disk.unsized} of ${disk.onDisk} model${disk.onDisk === 1 ? "" : "s"} measured`
+                          : `across ${disk.onDisk} model${disk.onDisk === 1 ? "" : "s"}`
+                    }
+                    toneReason={
+                      disk.unsized > 0
+                        ? `${disk.unsized} downloaded model(s) did not report a size, so this total is a floor rather than the whole figure.`
+                        : undefined
+                    }
+                    icon={HardDrive}
+                  />
+                  {/* Idle weights are the only number here anyone acts on. Warn
+                    past half the disk: at that point the node is mostly
+                    storing models nothing runs. */}
+                  <StatCard
+                    label="No instance"
+                    value={
+                      disk.idleBytes > 0
+                        ? formatBytes(disk.idleBytes)
+                        : disk.idleCount > 0
+                          ? String(disk.idleCount)
+                          : "None"
+                    }
+                    sub={
+                      disk.idleCount === 0
+                        ? "every model here is in use"
+                        : disk.idleBytes > 0
+                          ? `${disk.idleCount} model${disk.idleCount === 1 ? "" : "s"} nothing runs`
+                          : `${disk.idleCount} model${disk.idleCount === 1 ? "" : "s"}, none on disk`
+                    }
+                    tone={
+                      disk.totalBytes > 0 &&
+                      disk.idleBytes / disk.totalBytes >= 0.5
+                        ? "warn"
+                        : "neutral"
+                    }
+                    toneReason={
+                      disk.totalBytes > 0
+                        ? `${Math.round((disk.idleBytes / disk.totalBytes) * 100)}% of this node's model storage is held by models with no instance.`
+                        : undefined
+                    }
+                    icon={Trash2}
+                  />
+                  <StatCard
+                    label="Models"
+                    value={downloadedModels.length}
+                    sub={
+                      disk.remote > 0
+                        ? `${disk.onDisk} on disk \u00b7 ${disk.remote} served elsewhere`
+                        : `${disk.onDisk} on disk`
+                    }
+                    icon={Layers}
                   />
                 </div>
-                {previewModel && (
-                  <ModelPreviewPanel
-                    model={previewModel}
-                    node={selectedNode}
-                    onClose={() => setPreviewId(null)}
-                  />
-                )}
-              </div>
+                <div className="mt-4 flex items-start gap-6">
+                  <div className="min-w-0 flex-1">
+                    {/* Remount per node: the search text, the sort and the
+                        "no instance" filter are all about *these* models, and
+                        carrying them across emptied the table with no visible
+                        cause. React's own answer to "reset state when a prop
+                        changes" is a key, not an effect. */}
+                    <DownloadedModelsTable
+                      key={selectedNode}
+                      models={downloadedModels}
+                      instances={instances}
+                      node={selectedNode}
+                      selectedId={previewId}
+                      onSelect={(m) =>
+                        setPreviewId(m.id === previewId ? null : m.id)
+                      }
+                    />
+                  </div>
+                  {previewModel && (
+                    <ModelPreviewPanel
+                      model={previewModel}
+                      node={selectedNode}
+                      onClose={() => setPreviewId(null)}
+                    />
+                  )}
+                </div>
+              </>
             )}
           </>
         )}
       </main>
 
-      <ModelSettingsModal open={settingsOpen} node={selectedNode} onClose={() => setSettingsOpen(false)} />
+      <ModelSettingsModal
+        open={settingsOpen}
+        node={selectedNode}
+        onClose={() => setSettingsOpen(false)}
+      />
     </div>
   );
 }
