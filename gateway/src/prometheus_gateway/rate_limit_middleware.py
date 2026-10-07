@@ -15,6 +15,7 @@ from starlette.types import ASGIApp, Receive, Scope, Send
 
 from .config import Settings
 from .rate_limiter import RateLimiter
+from .rate_limiter import ALL_ENDPOINTS, PLATFORM_IDENTITY
 from .rate_limits import ENDPOINT_LIMIT_FIELDS
 from .telemetry import get_logger
 
@@ -24,6 +25,15 @@ _BASE_URL = "https://prometheus.internal/errors"
 
 # Endpoint slug used in rate limit keys when no specific route is matched
 _DEFAULT_ENDPOINT = "default"
+# PRM-227: what the 429's `scope` says when it is not an endpoint slug.
+# The inference routes a single consumer can spread across — the basis for the
+# consumer layer's default ceiling. `admin` is excluded on purpose: this
+# dashboard's own budget is not part of a client's inference entitlement.
+INFERENCE_ENDPOINT_SLUGS = frozenset(
+    {"chat_completions", "embeddings", "rerank", "predict", "images", _DEFAULT_ENDPOINT}
+)
+PLATFORM_SCOPE = "platform"
+CLIENT_SCOPE = "client"
 
 # Map route path patterns to endpoint slugs for per-endpoint limiting (AC-13)
 #
@@ -272,6 +282,50 @@ class RateLimitMiddleware:
 
         await self.app(scope, receive, send_with_rl_headers)
 
+    def _layer_refusal(
+        self,
+        request: Request,
+        subject: str,
+        state: Any,
+        noun: str,
+        scope: str,
+    ) -> JSONResponse:
+        """One 429 for the two broader layers — PRM-227.
+
+        `scope` is what tells a caller which ceiling stopped them, and the
+        practice is explicit that each layer needs its own answer: backing off
+        helps against a platform ceiling, while a client ceiling means their
+        own traffic is the problem and a per-endpoint one means this route is.
+        """
+        retry_after = max(1, state.reset_at - int(time.time()))
+        platform = scope == PLATFORM_SCOPE
+        detail = (
+            f"The platform is at its {noun} ceiling of {state.limit} per minute. "
+            f"This is not your budget \u2014 every caller is sharing one limit right now. "
+            f"Retry in {retry_after} seconds."
+            if platform
+            else (
+                f"'{subject}' has exceeded its {noun} limit of {state.limit} per minute "
+                f"across all endpoints. Reset in {retry_after} seconds."
+            )
+        )
+        logger.warning(
+            "rate_limit.layer_exceeded",
+            layer=scope,
+            subject=subject,
+            dimension=noun,
+            limit=state.limit,
+        )
+        return _rl_problem(
+            request,
+            429,
+            f"rate-limit-exceeded-{noun}s",
+            "Rate Limit Exceeded",
+            detail,
+            retry_after=retry_after,
+            extra={"scope": scope},
+        )
+
     def _daily_refusal(
         self,
         request: Request,
@@ -339,6 +393,27 @@ class RateLimitMiddleware:
         Implements: memory/specs/007-rate-limiting-and-throughput.md — AC-1, AC-9
         """
         assert self._limiter is not None
+
+        # ── Layer 1: the platform ───────────────────────────────────────────
+        #
+        # Broadest first, and deliberately: if the hardware is saturated the
+        # other two are moot, and no client should spend its own budget on a
+        # request the platform was never going to serve. A 429 rather than a
+        # 503 because the contract a caller already handles is Retry-After,
+        # but `scope: platform` says this is not their quota — they did
+        # nothing wrong and nothing about their own usage will fix it.
+        if (platform_rpm := self.settings.rate_limit_rpm_platform) is not None:
+            state = await self._limiter.check_and_increment_rpm(
+                PLATFORM_IDENTITY, ALL_ENDPOINTS, platform_rpm
+            )
+            if not state.allowed:
+                return self._layer_refusal(request, "platform", state, "request", PLATFORM_SCOPE)
+        if (platform_tpm := self.settings.rate_limit_tpm_platform) is not None:
+            state = await self._limiter.check_tpm_budget(
+                PLATFORM_IDENTITY, ALL_ENDPOINTS, platform_tpm, 0
+            )
+            if not state.allowed:
+                return self._layer_refusal(request, "platform", state, "token", PLATFORM_SCOPE)
 
         # Check client_id RPM (AC-1)
         client_rpm = await self._limiter.check_and_increment_rpm(claims.client_id, slug, rpm_limit)
@@ -413,6 +488,57 @@ class RateLimitMiddleware:
             0,  # 0 tokens for the gate check only
         )
         request.state._rl_tpm_state = tpm_state
+
+        # ── Layer 2: the client, across every endpoint ──────────────────────
+        #
+        # The layer that did not exist. Layer 3 alone bounds a route, never a
+        # consumer: six counters of 60 let one client reach 112 requests in a
+        # minute without a refusal, because no counter ever saw another.
+        #
+        # **After layer 3, and a test made the case.** When the two carry the
+        # same value — which they do until PRM-228 gives a tier its own —
+        # checking the consumer first means it always fires first and the
+        # endpoint layer becomes unreachable, so a client hammering one route
+        # was told `scope: client` when `scope: embeddings` was the useful
+        # answer. Most specific reason wins where both apply; this layer
+        # still catches what no single endpoint counter can see.
+        # Always enforced: `None` on the dedicated setting means "the global
+        # value", not "no ceiling". PRM-228 will let a tier supply it per
+        # client; until then every consumer gets the same entitlement, which
+        # is still a ceiling where there was none.
+        # The default is the *sum* of the per-endpoint allowances, not the
+        # per-endpoint value, and a test made that case too.
+        #
+        # PRM-129 exists because embeddings and rerank shared one budget and a
+        # copilot using both hit its ceiling 5% short of nine users. A consumer
+        # ceiling equal to the endpoint value recreates that exactly — every
+        # route sharing one number is the bug PRM-129 fixed, wearing a new
+        # name. So the default bounds the pathological case (a client at full
+        # tilt on every route at once) without re-merging budgets that were
+        # deliberately separated, and PRM-228's tiers are where a real,
+        # tighter number is chosen per client rather than invented here.
+        default_factor = len(INFERENCE_ENDPOINT_SLUGS)
+        client_rpm_limit = (
+            self.settings.rate_limit_rpm_client
+            if self.settings.rate_limit_rpm_client is not None
+            else self.settings.rate_limit_rpm * default_factor
+        )
+        client_tpm_limit = (
+            self.settings.rate_limit_tpm_client
+            if self.settings.rate_limit_tpm_client is not None
+            else self.settings.rate_limit_tpm * default_factor
+        )
+        for identity in filter(None, dict.fromkeys((claims.client_id, claims.user_id))):
+            state = await self._limiter.check_and_increment_rpm(
+                identity, ALL_ENDPOINTS, client_rpm_limit
+            )
+            if not state.allowed:
+                return self._layer_refusal(request, identity, state, "request", CLIENT_SCOPE)
+            state = await self._limiter.check_tpm_budget(
+                identity, ALL_ENDPOINTS, client_tpm_limit, 0
+            )
+            if not state.allowed:
+                return self._layer_refusal(request, identity, state, "token", CLIENT_SCOPE)
 
         # PRM-225: the day's ceilings, where they are set.
         #

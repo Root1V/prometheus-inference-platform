@@ -60,6 +60,31 @@ class Settings(BaseSettings):
     # request that would not fit is refused instead of noticed afterwards.
     # Optional like the rest; unset means unmeasured.
     rate_limit_ipm: int | None = None
+    # PRM-227: the three layers the practice calls for, as a conjunction — a
+    # request passes all of them, not whichever is most specific.
+    #
+    #   layer 1  platform   protects the hardware from everyone at once
+    #   layer 2  client     the consumer's entitlement, across all endpoints
+    #   layer 3  endpoint   the micro-limit on an expensive route (today's)
+    #
+    # Layer 3 is what existed, and it alone does not bound a client: one client
+    # was measured at 112 requests in a minute — 56 embeddings, 52 rerank, 4
+    # chat — without a single refusal, because six counters of 60 never see
+    # each other.
+    #
+    # Layer 2 is therefore **always enforced**, and `None` means "use the
+    # global value above" rather than "off". The conjunction is the
+    # architecture; a deployment where the consumer layer is absent is the
+    # configuration the practice says is wrong, and shipping that as the
+    # default would be shipping the bug with a switch next to it.
+    rate_limit_rpm_client: int | None = None
+    rate_limit_tpm_client: int | None = None
+    # Layer 1 is opt-in, and for a different reason: it is sized against the
+    # hardware, and any number chosen here rather than by the operator would be
+    # invented. Unset means the platform is bounded only by the sum of its
+    # consumers — which is what it is today.
+    rate_limit_rpm_platform: int | None = None
+    rate_limit_tpm_platform: int | None = None
     rate_limit_strict: bool = True  # fail-closed when Redis unavailable for rate limiting
     # Per-endpoint overrides (AC-13)
     rate_limit_rpm_chat_completions: int | None = None

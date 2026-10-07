@@ -780,6 +780,135 @@ async def test_ipm_counts_what_came_back_not_what_was_asked_for(fake_redis):
     assert await fake_redis.get(f"prometheus:rl:tpm:client-a:images:{bucket}") is None
 
 
+async def test_the_client_layer_bounds_what_six_endpoint_counters_cannot(
+    rl_settings, small_registry, fake_redis, rsa_keys
+):
+    """PRM-227, and the measurement that motivated it.
+
+    One client reached 112 requests in a minute — 56 embeddings, 52 rerank, 4
+    chat — with no refusal, because each endpoint's counter stayed under 60 and
+    none of them could see the others. Layer 2 is the one that sees the client.
+    """
+    import time as _time
+
+    from prometheus_gateway.main import create_app
+
+    rl_settings.rate_limit_rpm_client = 10
+    app = create_app(settings=rl_settings, registry=small_registry, redis_client=fake_redis)
+    token = make_token(
+        rsa_keys["private"],
+        scope="inference:read inference:stream model:small-model",
+        sub="user-x",
+        azp="client-a",
+    )
+    bucket = int(_time.time() // 60)
+    # Spent on a *different* endpoint, with this one's own counter untouched.
+    await fake_redis.set(f"prometheus:rl:rpm:client-a:*:{bucket}", 10)
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
+        r = await c.post(
+            "/v1/chat/completions",
+            json=VALID_BODY,
+            headers={"Authorization": f"Bearer {token}"},
+        )
+
+    assert r.status_code == 429
+    assert r.json()["scope"] == "client"
+    assert "across all endpoints" in r.json()["detail"]
+    # This endpoint's own counter sits at 1, nowhere near its limit — layer 3
+    # ran and was perfectly happy. The refusal came from the only layer that
+    # can see a client spending itself across six routes at once.
+    endpoint_count = int(
+        await fake_redis.get(f"prometheus:rl:rpm:client-a:chat_completions:{bucket}")
+    )
+    assert endpoint_count == 1
+    assert endpoint_count < rl_settings.rate_limit_rpm
+
+
+async def test_the_platform_layer_says_it_is_not_your_budget(
+    rl_settings, small_registry, fake_redis, rsa_keys
+):
+    """PRM-227: a caller refused by the platform ceiling did nothing wrong, and
+    nothing about their own usage will fix it. The message has to say so."""
+    import time as _time
+
+    from prometheus_gateway.main import create_app
+
+    rl_settings.rate_limit_rpm_platform = 5
+    app = create_app(settings=rl_settings, registry=small_registry, redis_client=fake_redis)
+    token = make_token(
+        rsa_keys["private"],
+        scope="inference:read inference:stream model:small-model",
+        sub="user-x",
+        azp="client-a",
+    )
+    bucket = int(_time.time() // 60)
+    await fake_redis.set(f"prometheus:rl:rpm:*platform*:*:{bucket}", 5)
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
+        r = await c.post(
+            "/v1/chat/completions",
+            json=VALID_BODY,
+            headers={"Authorization": f"Bearer {token}"},
+        )
+
+    assert r.status_code == 429
+    assert r.json()["scope"] == "platform"
+    assert "not your budget" in r.json()["detail"]
+    # Checked first, so the client's own budget was never spent on a request
+    # the platform was never going to serve.
+    assert await fake_redis.get(f"prometheus:rl:rpm:client-a:*:{bucket}") is None
+
+
+async def test_the_consumer_layer_is_on_without_being_configured(
+    rl_settings, small_registry, fake_redis, rsa_keys
+):
+    """PRM-227: `None` on the dedicated setting means "use the global", not
+    "no ceiling".
+
+    The conjunction is the architecture. A deployment whose consumer layer is
+    absent is the configuration the practice calls wrong, so shipping that as
+    the default would be shipping the bug with a switch beside it. The
+    platform layer stays opt-in for the opposite reason — it is sized against
+    hardware, and a number chosen here rather than by the operator would be
+    invented.
+    """
+    import time as _time
+
+    from prometheus_gateway.main import create_app
+
+    assert rl_settings.rate_limit_rpm_client is None
+    assert rl_settings.rate_limit_rpm_platform is None
+
+    app = create_app(settings=rl_settings, registry=small_registry, redis_client=fake_redis)
+    token = make_token(
+        rsa_keys["private"],
+        scope="inference:read inference:stream model:small-model",
+        sub="user-x",
+        azp="client-a",
+    )
+    bucket = int(_time.time() // 60)
+    # An unset client limit falls back to the *sum* of the per-endpoint
+    # allowances, not the per-endpoint value — equalling it would re-merge the
+    # budgets PRM-129 deliberately separated.
+    from prometheus_gateway.rate_limit_middleware import INFERENCE_ENDPOINT_SLUGS
+
+    derived = rl_settings.rate_limit_rpm * len(INFERENCE_ENDPOINT_SLUGS)
+    await fake_redis.set(f"prometheus:rl:rpm:client-a:*:{bucket}", derived)
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
+        r = await c.post(
+            "/v1/chat/completions",
+            json=VALID_BODY,
+            headers={"Authorization": f"Bearer {token}"},
+        )
+
+    assert r.status_code == 429
+    assert r.json()["scope"] == "client"
+    # And the platform layer did not fire, because nobody set one.
+    assert await fake_redis.get(f"prometheus:rl:rpm:*platform*:*:{bucket}") is None
+
+
 def test_endpoint_slug_maps_admin_api_prefix():
     """Every /admin/api/* path — including dynamic segments like
     {node}/{model_id} — must resolve to the "admin" slug, not "default"."""

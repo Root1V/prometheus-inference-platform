@@ -26,7 +26,7 @@ from fastapi.responses import JSONResponse, StreamingResponse
 
 from dataclasses import replace
 
-from .rate_limiter import RateLimiter
+from .rate_limiter import ALL_ENDPOINTS, PLATFORM_IDENTITY, RateLimiter
 from . import db, idempotency, pricing, traffic_split
 from .budget import (
     BudgetReservation,
@@ -3647,6 +3647,20 @@ async def _record_usage(
                 # spend a minute's budget for images nobody got.
                 if image_count > 0:
                     await limiter.increment_ipm(identity, endpoint_slug, image_count)
+                # PRM-227: and the client-wide counter the consumer layer
+                # reads. Without this the layer-2 TPM check would read zero
+                # forever and never fire — a ceiling that cannot be reached is
+                # not a ceiling, and nothing would have said so.
+                if total_tokens_for_rl > 0:
+                    await limiter.increment_tpm(
+                        identity, ALL_ENDPOINTS, prompt_tokens, completion_tokens
+                    )
+            # The platform's own counter, once per request rather than once per
+            # identity — client and user are two views of one call.
+            if total_tokens_for_rl > 0:
+                await limiter.increment_tpm(
+                    PLATFORM_IDENTITY, ALL_ENDPOINTS, prompt_tokens, completion_tokens
+                )
         except Exception as exc:
             logger.warning("tpm.increment_error", error=str(exc))
     cost_usd: float | None = None
