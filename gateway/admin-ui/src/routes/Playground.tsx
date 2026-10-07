@@ -52,46 +52,99 @@ const MODEL_STORAGE_KEY = "prometheus.playground.model";
  * So the empty state is where the mode gets explained, and the examples are
  * clickable because the fastest way to learn what a thing does is to run it.
  */
+const TYPED_DECISION_EXAMPLE = `{
+  "category":    {"type": "choice", "instructions": "Which team should handle this?",
+                  "criteria": ["billing", "support", "sales", "retention"]},
+  "urgency":     {"type": "score", "instructions": "How urgent is this?",
+                  "criteria": ["low", "medium", "high", "critical"]},
+  "churn_risk":  {"type": "choice", "instructions": "Is the customer threatening to cancel?",
+                  "criteria": ["yes", "no"]},
+  "needs_human": {"type": "choice", "instructions": "Does this need a human?",
+                  "criteria": ["yes", "no"]},
+  "action":      {"type": "choice", "instructions": "What should we do?",
+                  "criteria": ["refund", "escalate", "reply", "close"]}
+}`;
+
+interface ModalityExample {
+  text: string;
+  /**
+   * PRM-218: the companion input the request needs, where it needs one.
+   *
+   * The examples used to fill the text box only, so pressing Send on a
+   * zero-shot example answered "Give at least two options, comma-separated" —
+   * an example that cannot be run teaches nothing except that the page is
+   * broken. `candidateLabels` is the shared field behind labels, documents and
+   * typed questions, so one slot covers all three.
+   */
+  companion?: string;
+}
+
 const MODALITY_GUIDE: Partial<
-  Record<Modality, { what: string; examples: string[] }>
+  Record<Modality, { what: string; examples: ModalityExample[] }>
 > = {
   text: {
     what: "Chat. Multi-turn \u2014 everything above is sent again with each message.",
     examples: [
-      "Explain the difference between a GGUF Q4_K_M and a Q8_0 quantization.",
-      "Write a bash one-liner that finds the ten largest files under a directory.",
+      {
+        text: "Explain the difference between a GGUF Q4_K_M and a Q8_0 quantization.",
+      },
+      {
+        text: "Write a bash one-liner that finds the ten largest files under a directory.",
+      },
     ],
   },
   vision: {
     what: "Chat with images. Attach one with the paperclip, then ask about it.",
     examples: [
-      "Describe this image in one sentence.",
-      "What text appears in this image?",
+      { text: "Describe this image in one sentence." },
+      { text: "What text appears in this image?" },
     ],
   },
   embedding: {
     what: "Turns text into a vector. Single-shot \u2014 each request is independent, with no history carried between them.",
-    examples: ["The invoice was issued on the third of May."],
+    examples: [{ text: "The invoice was issued on the third of May." }],
   },
   rerank: {
     what: "Scores how well each candidate answers the query. Single-shot.",
-    examples: ["How do I reset my password?"],
+    examples: [
+      {
+        text: "\u00bfC\u00f3mo restablezco mi contrase\u00f1a?",
+        companion: [
+          "Para restablecer tu contrase\u00f1a, entra en Ajustes > Seguridad.",
+          "El horario de atenci\u00f3n es de 9 a 18h.",
+          "La membres\u00eda anual cuesta S/ 45.00.",
+        ].join("\n"),
+      },
+    ],
   },
   classification: {
     what: "Sorts text into the labels this model was trained on. Single-shot.",
-    examples: ["I have been waiting three weeks and nobody has replied."],
+    examples: [
+      { text: "I have been waiting three weeks and nobody has replied." },
+    ],
   },
   zero_shot: {
     what: "Sorts text into labels you supply per request \u2014 it is not trained on a fixed set, which is what makes the labels yours to choose.",
-    examples: ["Mi factura de marzo me cobr\u00f3 el doble de lo habitual."],
+    examples: [
+      {
+        text: "Mi factura de marzo me cobr\u00f3 el doble de lo habitual.",
+        companion:
+          "facturaci\u00f3n, soporte t\u00e9cnico, ventas, cancelaci\u00f3n",
+      },
+    ],
   },
   typed_decision: {
     what: "Answers a typed question about the text. Single-shot.",
-    examples: ["The customer asked to cancel and then changed their mind."],
+    examples: [
+      {
+        text: "The customer asked to cancel and then changed their mind.",
+        companion: TYPED_DECISION_EXAMPLE,
+      },
+    ],
   },
   image: {
     what: "Generates an image from a prompt. Single-shot, with no history between generations.",
-    examples: ["A lighthouse on a cliff at dusk, long exposure."],
+    examples: [{ text: "A lighthouse on a cliff at dusk, long exposure." }],
   },
 };
 
@@ -312,18 +365,6 @@ interface ZeroShotLogEntry {
 // the text, not their meaning: on an email saying "cancelamos el plan", asking
 // "amenaza con cancelar" answers yes at 0.98 and asking "amenaza con irse"
 // answers no at 0.17. Write the question with the words a customer would use.
-const TYPED_DECISION_EXAMPLE = `{
-  "category":    {"type": "choice", "instructions": "Which team should handle this?",
-                  "criteria": ["billing", "support", "sales", "retention"]},
-  "urgency":     {"type": "score", "instructions": "How urgent is this?",
-                  "criteria": ["low", "medium", "high", "critical"]},
-  "churn_risk":  {"type": "choice", "instructions": "Is the customer threatening to cancel?",
-                  "criteria": ["yes", "no"]},
-  "needs_human": {"type": "choice", "instructions": "Does this need a human?",
-                  "criteria": ["yes", "no"]},
-  "action":      {"type": "choice", "instructions": "What should we do?",
-                  "criteria": ["refund", "escalate", "reply", "close"]}
-}`;
 
 interface TypedDecisionLogEntry {
   kind: "typed_decision";
@@ -399,6 +440,7 @@ export default function Playground() {
   // to the request, not the checkpoint, so they live beside the prompt
   // rather than in the model picker.
   /** PRM-217: the parameters every non-chat modality turned out to have. */
+  const [autoSend, setAutoSend] = useState(0);
   const [multiLabel, setMultiLabel] = useState(false);
   const [rerankTopN, setRerankTopN] = useState("");
   const [rerankRawScores, setRerankRawScores] = useState(false);
@@ -945,6 +987,22 @@ export default function Playground() {
     }
   }
 
+  /**
+   * PRM-218: fill both fields, then send. Clicking an example and then having
+   * to find the button is a demonstration you have to finish yourself, and for
+   * the modalities that need a companion input it did not even work — it ran
+   * into "Give at least two options".
+   *
+   * The send goes through a counter and an effect because `handleSend` reads
+   * `draft` and `candidateLabels` from state, and state set in this handler is
+   * not visible until the next render.
+   */
+  function runExample(example: ModalityExample) {
+    setDraft(example.text);
+    if (example.companion !== undefined) setCandidateLabels(example.companion);
+    setAutoSend((n) => n + 1);
+  }
+
   function handleSend() {
     if (!selectedModel || isBusy) return;
     if (modality === "embedding") return void handleGetEmbedding();
@@ -971,6 +1029,21 @@ export default function Playground() {
     setAttachedImage(null);
     void sendMessages([userMessage]);
   }
+
+  /**
+   * Fires once per `runExample` click, after the fields it set have rendered.
+   *
+   * Deferred a tick rather than called in the effect body: `handleSend` sets
+   * state itself, and doing that synchronously from an effect cascades a
+   * second render. The closure is already the post-update one, so `draft` and
+   * `candidateLabels` are the values the click just wrote.
+   */
+  useEffect(() => {
+    if (autoSend === 0) return;
+    const id = setTimeout(() => handleSend(), 0);
+    return () => clearTimeout(id);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [autoSend]);
 
   // RM-40: images are inlined as base64 data: URIs (the gateway rejects
   // remote http(s) URLs to avoid SSRF), so an oversized image bloats the
@@ -1086,66 +1159,79 @@ export default function Playground() {
       <Sidebar />
       <main className="flex min-h-0 min-w-0 flex-1">
         <div className="flex min-h-0 min-w-0 flex-1 flex-col px-8 py-8">
-          <div className="flex flex-wrap items-end justify-between gap-4">
-            <div className="min-w-0">
-              <h1 className="text-2xl font-semibold text-text">Playground</h1>
-              <p className="mt-1 text-sm text-text-muted">
-                Sends real requests through the gateway's inference API — this
-                counts as real usage, recorded the same as any other call.
-              </p>
-            </div>
+          {/* PRM-218: two explicit rows rather than one that wraps. Sharing a
+              line with the title meant the title's own subtitle decided how
+              much was left, and at most widths that was nothing — the caption
+              collapsed to zero width and spilled over the edge. */}
+          <div>
+            <h1 className="text-2xl font-semibold text-text">Playground</h1>
+            <p className="mt-1 text-sm text-text-muted">
+              Sends real requests through the gateway's inference API — this
+              counts as real usage, recorded the same as any other call.
+            </p>
+          </div>
+          <div className="mt-3 flex items-end gap-3">
             {/* PRM-214: the model belongs here, not at the top of a side rail.
                 It is the one control that rebuilds the rest of the page, and
                 for six of the seven modalities it was the rail's only
                 occupant — 590px of empty column under a single select. */}
-            <div className="flex items-end gap-2">
-              <div className="w-64 min-w-0">
-                <label
-                  htmlFor="playground-model"
-                  className="mb-1.5 block text-sm font-medium text-text"
-                >
-                  Model
-                </label>
-                <PlaygroundModelPicker
-                  instances={readyInstances}
-                  value={selectedModel}
-                  onChange={handleModelChange}
-                />
-              </div>
-              <button
-                type="button"
-                onClick={handleClear}
-                disabled={entries.length === 0}
-                className={cn(
-                  "flex items-center gap-1.5 rounded-lg border px-3 py-2 text-sm transition-colors",
-                  entries.length === 0
-                    ? "cursor-not-allowed border-border/60 text-text-muted/50"
-                    : "border-border text-text-muted hover:bg-surface hover:text-text",
-                )}
+            <div className="w-64 shrink-0">
+              <label
+                htmlFor="playground-model"
+                className="mb-1.5 block text-sm font-medium text-text"
               >
-                <Trash2 size={14} />
-                Clear
-              </button>
+                Model
+              </label>
+              <PlaygroundModelPicker
+                instances={readyInstances}
+                value={selectedModel}
+                onChange={handleModelChange}
+              />
             </div>
+            <button
+              type="button"
+              onClick={handleClear}
+              disabled={entries.length === 0}
+              className={cn(
+                "flex items-center gap-1.5 rounded-lg border px-3 py-2 text-sm transition-colors",
+                entries.length === 0
+                  ? "cursor-not-allowed border-border/60 text-text-muted/50"
+                  : "border-border text-text-muted hover:bg-surface hover:text-text",
+              )}
+            >
+              <Trash2 size={14} />
+              Clear
+            </button>
+            {/* PRM-218: after Clear, in the space that was empty. It used to
+                  be a full-width row of its own under the header, costing the
+                  conversation panel a line of height for nothing. `line-clamp`
+                  rather than wrap: this is a caption, and a caption that
+                  reflows to five lines pushes the thing it captions down. */}
+            {selectedInstance && (
+              <p className="hidden min-w-0 flex-1 items-baseline gap-x-2 pb-2 text-xs text-text-muted xl:flex">
+                <span className="shrink-0 rounded bg-surface px-1.5 py-0.5 font-medium text-text">
+                  {modality ?? "unknown"}
+                </span>
+                <span className="shrink-0">on {selectedInstance.node}</span>
+                {modality && MODALITY_GUIDE[modality] && (
+                  <span className="line-clamp-2 min-w-0">
+                    {MODALITY_GUIDE[modality]?.what}
+                  </span>
+                )}
+              </p>
+            )}
           </div>
 
-          {/* What you picked, in the terms that decide how it behaves. The page
-              knew the node, the modality and the state and showed none of it. */}
           {selectedInstance && (
-            <p className="mt-3 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-text-muted">
-              <span className="rounded bg-surface px-1.5 py-0.5 font-medium text-text">
+            <p className="mt-2 flex items-baseline gap-x-2 text-xs text-text-muted xl:hidden">
+              <span className="shrink-0 rounded bg-surface px-1.5 py-0.5 font-medium text-text">
                 {modality ?? "unknown"}
               </span>
-              <span>on {selectedInstance.node}</span>
-              {modality && MODALITY_GUIDE[modality] && (
-                <span className="basis-full sm:basis-auto sm:before:mr-2 sm:before:content-['·']">
-                  {MODALITY_GUIDE[modality]?.what}
-                </span>
-              )}
+              <span className="shrink-0">on {selectedInstance.node}</span>
             </p>
           )}
 
-          <div className="mt-4 min-h-0 flex-1 space-y-4 overflow-y-auto rounded-xl border border-border bg-surface p-4">
+          <div className="mt-3 min-h-0 flex-1 space-y-4 overflow-y-auto rounded-xl border border-border bg-surface p-4">
             {/* `!isBusy`, not just "no entries yet".
                 A chat entry is only appended once the response completes, so
                 `entries` stays empty for the whole request. The waiting
@@ -1174,12 +1260,12 @@ export default function Playground() {
                     <div className="mt-2 flex max-w-xl flex-col items-center gap-2">
                       {MODALITY_GUIDE[modality]?.examples.map((example) => (
                         <button
-                          key={example}
+                          key={example.text}
                           type="button"
-                          onClick={() => setDraft(example)}
+                          onClick={() => runExample(example)}
                           className="rounded-lg border border-border px-3 py-2 text-left text-sm text-text-muted transition-colors hover:border-primary/40 hover:bg-background hover:text-text"
                         >
-                          {example}
+                          {example.text}
                         </button>
                       ))}
                     </div>

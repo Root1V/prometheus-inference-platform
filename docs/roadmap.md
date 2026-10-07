@@ -8427,3 +8427,29 @@ indistinguishable from one that works. The rerank result now names what the engi
 parameters wired through, embedding's "no parameters" note, and reading the ignored-parameters
 header for rerank. Out — reading that header on the other endpoints, which deserves to be done
 uniformly rather than one modality at a time.
+
+
+## PRM-218 — Examples that actually run
+
+**Why**: PRM-214 added a runnable example to each modality's empty state, on the reasoning that the
+fastest way to learn what a mode does is to run it. It filled the text box and nothing else, so for
+every modality that needs a companion input — zero-shot's labels, rerank's documents,
+typed-decision's questions — pressing Send answered *"Give at least two options, comma-separated"*.
+An example that cannot be run teaches only that the page is broken. Each example now carries that
+companion, and clicking one sends it: a demonstration you have to finish yourself is not one.
+
+**And running them found a crash that was always there.** `nli-tei` is registered with modality
+`zero_shot`, but its endpoint is a raw NLI classifier: it answers
+`[{label: "entailment", score}, …]`, not `von-decide`'s `{sequence, labels, scores}`. `useZeroShot`
+took `raw[0]`, `labels` came back undefined, the renderer mapped over it and **the entire page went
+white**. Reachable before this item by typing labels by hand; nobody had. The client now checks the
+shape and says what is wrong, because a blank screen is the worst possible way to report a
+mis-registered model.
+
+*Worth deciding separately*: whether `nli-tei`'s registry entry is wrong, or whether a bare NLI
+checkpoint deserves its own modality. The UI stops crashing either way; the catalogue is still
+claiming something the endpoint does not do.
+
+**Scope**: in — companion inputs on examples, auto-send, the shape guard, and moving the model
+caption beside `Clear` (it was a full-width row costing the conversation a line of height). Out —
+changing `nli-tei`'s registration, which is a catalogue decision rather than a UI one.
