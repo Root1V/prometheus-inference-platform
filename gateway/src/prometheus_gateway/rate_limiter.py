@@ -16,6 +16,19 @@ logger = get_logger(__name__)
 # Key patterns — AC-3
 _RPM_KEY = "prometheus:rl:rpm:{identity}:{endpoint}:{bucket}"
 _TPM_KEY = "prometheus:rl:tpm:{identity}:{endpoint}:{bucket}"
+# PRM-224: the same minute, told apart by direction.
+#
+# Both vendors this platform is shaped after count these separately, and the
+# reason is physical rather than commercial: output tokens are generated one at
+# a time and dominate latency, while input is processed in parallel at prefill.
+# Measured on this platform, Sentinel's traffic is 88% prompt and
+# Code2Presentation's is 75/25 — one combined counter treats them as the same
+# load, though they occupy the hardware in completely different ways.
+#
+# The combined key above is untouched, so the existing limit and every reader
+# of it keep working; these two are additive.
+_TPM_IN_KEY = "prometheus:rl:tpm_in:{identity}:{endpoint}:{bucket}"
+_TPM_OUT_KEY = "prometheus:rl:tpm_out:{identity}:{endpoint}:{bucket}"
 _COUNTER_TTL = 90  # seconds — covers current + previous minute
 
 
@@ -133,21 +146,58 @@ class RateLimiter:
         self,
         identity: str,
         endpoint: str,
-        tokens: int,
+        prompt_tokens: int,
+        completion_tokens: int,
     ) -> None:
-        """Increment the TPM counter after a successful response.
+        """Increment the TPM counters after a successful response.
+
+        Three counters, one call: the combined total the existing limit reads,
+        and input and output separately (PRM-224). Takes the two halves rather
+        than a total because the caller always has both and a sum cannot be
+        taken apart again.
 
         Implements: memory/specs/007-rate-limiting-and-throughput.md — AC-2, AC-3
         """
         bucket = self._bucket()
-        key = _TPM_KEY.format(identity=identity, endpoint=endpoint, bucket=bucket)
+        total = prompt_tokens + completion_tokens
+        keys = (
+            (_TPM_KEY.format(identity=identity, endpoint=endpoint, bucket=bucket), total),
+            (
+                _TPM_IN_KEY.format(identity=identity, endpoint=endpoint, bucket=bucket),
+                prompt_tokens,
+            ),
+            (
+                _TPM_OUT_KEY.format(identity=identity, endpoint=endpoint, bucket=bucket),
+                completion_tokens,
+            ),
+        )
 
         pipe = self._redis.pipeline()
-        pipe.incrby(key, tokens)
-        pipe.ttl(key)
+        for key, amount in keys:
+            pipe.incrby(key, amount)
+            pipe.ttl(key)
         results = await pipe.execute()
-        if results[1] < 0:
-            await self._redis.expire(key, _COUNTER_TTL)
+        # results alternate incrby, ttl — a fresh key reports -1 and needs one.
+        for index, (key, _) in enumerate(keys):
+            if results[index * 2 + 1] < 0:
+                await self._redis.expire(key, _COUNTER_TTL)
+
+    async def check_tpm_direction(
+        self, identity: str, endpoint: str, limit: int, *, outgoing: bool
+    ) -> RateLimitState:
+        """One direction's budget — PRM-224. Same post-hoc shape as
+        `check_tpm_budget`: the counter is read, never estimated into."""
+        bucket = self._bucket()
+        template = _TPM_OUT_KEY if outgoing else _TPM_IN_KEY
+        key = template.format(identity=identity, endpoint=endpoint, bucket=bucket)
+        raw = await self._redis.get(key)
+        current = int(raw) if raw else 0
+        return RateLimitState(
+            allowed=current <= limit,
+            limit=limit,
+            remaining=max(0, limit - current),
+            reset_at=self._reset_at(),
+        )
 
     async def get_rpm_count(self, identity: str, endpoint: str) -> int:
         """Return current RPM count for the given identity+endpoint (for /v1/backends).

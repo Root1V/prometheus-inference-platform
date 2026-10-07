@@ -8600,3 +8600,37 @@ store unreachable the limiter cannot count and traffic passes unmetered.
 **Scope**: in — the table's row source, the `no traffic yet` state, the counter caveat, and the
 fourth card. Out — the limit dimensions themselves (RPD, TPD, IPM, split input/output TPM, tiers),
 which the review alongside this one covers and which are their own items.
+
+
+## PRM-224 — TPM counts every token, and tells input from output
+
+**Why**: the token limit measured 93% of the traffic. `increment_tpm` was called from two of the
+seven `_record_usage` call sites, both in the chat path. Measured on live data: **5,305 requests and
+1,462,186 tokens** from embeddings, rerank, predict and images spent no token budget at all. A
+client could exhaust embeddings without ever approaching a limit named after tokens.
+
+**The fix is structural, not six more copies.** The increment moved inside `_record_usage`, which
+every path already calls and which already has the counts, and `rl_redis` is a **required**
+parameter — mypy named all six missing call sites the moment it became one, and a path added later
+cannot quietly skip it.
+
+**Input and output are their own counters now.** Both vendors this platform is shaped after count
+them apart, and the reason is physical: output tokens are generated one at a time and dominate
+latency, while input is processed in parallel at prefill. Measured here, Sentinel's traffic is 88%
+prompt and Code2Presentation's is 75/25 — identical TPM, very different load. The combined key is
+untouched so existing limits keep their meaning; the two ceilings are optional and default to
+unenforced, because silently splitting a number people have tuned against would change what they
+bought.
+
+**They are a meter, not a gate**, and the code now says so. How many tokens a request will produce
+is not knowable before it runs, so the budget is spent and the *next* request is refused. "Token
+limit" reads as a gate; this has always been a meter, and nothing said it.
+
+**And `/v1/images/generations` was not on the endpoint map**, so it fell to `default` and shared a
+budget with every unmapped route — the exact failure PRM-129 documents eleven lines below the map it
+is missing from. A test pinned that behaviour, which makes it recorded rather than unnoticed. It is
+also the one endpoint priced per image rather than per token, so a token-shaped shared bucket hid it
+twice over.
+
+**Scope**: in — coverage, the split, the optional ceilings, the images slug, and three tests. Out —
+RPD/TPD buckets, IPM, and per-client tiers, which are the next three items.

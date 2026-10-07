@@ -36,6 +36,15 @@ class Settings(BaseSettings):
     rate_limit_redis_url: str | None = None  # defaults to jwt_revocation_redis_url if unset
     rate_limit_rpm: int = 60  # global requests-per-minute per client_id / user_id
     rate_limit_tpm: int = 40_000  # global tokens-per-minute per client_id / user_id
+    # PRM-224: optional ceilings on one direction. None = unenforced, and that
+    # is the default, because the combined limit above is what every existing
+    # deployment is tuned against and silently splitting it would change what
+    # they bought. Output is the one worth setting: those tokens are generated
+    # serially and dominate latency, while input is processed in parallel at
+    # prefill — two clients with identical TPM can occupy the hardware very
+    # differently, which is why both vendors count them apart.
+    rate_limit_tpm_input: int | None = None
+    rate_limit_tpm_output: int | None = None
     rate_limit_strict: bool = True  # fail-closed when Redis unavailable for rate limiting
     # Per-endpoint overrides (AC-13)
     rate_limit_rpm_chat_completions: int | None = None

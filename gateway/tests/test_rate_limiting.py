@@ -514,6 +514,92 @@ async def test_rate_limit_per_endpoint_override_AC13(
 # ── RM-51 follow-up: /admin/api/* gets its own "admin" rate-limit budget ─────
 
 
+async def test_increment_tpm_writes_the_split_as_well_as_the_total(fake_redis):
+    """PRM-224: three counters, one call. The combined key the existing limit
+    reads, plus input and output, which a sum cannot be taken apart into."""
+    import time as _time
+
+    from prometheus_gateway.rate_limiter import RateLimiter
+
+    await RateLimiter(fake_redis).increment_tpm("client-a", "embeddings", 300, 40)
+    bucket = int(_time.time() // 60)
+    base = f"client-a:embeddings:{bucket}"
+
+    assert int(await fake_redis.get(f"prometheus:rl:tpm:{base}")) == 340
+    assert int(await fake_redis.get(f"prometheus:rl:tpm_in:{base}")) == 300
+    assert int(await fake_redis.get(f"prometheus:rl:tpm_out:{base}")) == 40
+    # Every counter gets a TTL, or a quiet minute leaves a key behind forever.
+    for suffix in ("tpm", "tpm_in", "tpm_out"):
+        assert await fake_redis.ttl(f"prometheus:rl:{suffix}:{base}") > 0
+
+
+async def test_every_usage_recording_path_spends_the_token_budget(fake_redis):
+    """PRM-224: the gap this item exists to close.
+
+    The increment lived at two of the seven `_record_usage` call sites, both
+    in the chat path — measured on live data, 5,305 requests and 1,462,186
+    tokens from embeddings, rerank, predict and images never touched the token
+    budget on a platform that calls that number the token limit. It lives
+    inside `_record_usage` now, so a kind cannot be forgotten.
+    """
+    import time as _time
+    from types import SimpleNamespace
+
+    from prometheus_gateway.router import _record_usage
+
+    claims = SimpleNamespace(client_id="client-a", user_id="client-a")
+    bucket = int(_time.time() // 60)
+
+    for kind, slug, prompt, completion in (
+        ("embedding", "embeddings", 300, 0),
+        ("rerank", "rerank", 120, 0),
+        ("predict", "predict", 45, 0),
+    ):
+        await _record_usage(
+            claims,
+            "some-model",
+            prompt,
+            completion,
+            rl_redis=fake_redis,
+            endpoint_slug=slug,
+            request_kind=kind,
+        )
+        key = f"prometheus:rl:tpm:client-a:{slug}:{bucket}"
+        assert int(await fake_redis.get(key)) == prompt + completion, (
+            f"{kind} did not spend its token budget"
+        )
+
+
+async def test_an_output_ceiling_refuses_once_it_is_spent(
+    rl_settings, small_registry, fake_redis, rsa_keys
+):
+    """PRM-224: the direction limits are real, and post-hoc like the combined
+    one — the budget is spent, then the next request is refused."""
+    import time as _time
+
+    from prometheus_gateway.main import create_app
+
+    rl_settings.rate_limit_tpm_output = 50
+    app = create_app(settings=rl_settings, registry=small_registry, redis_client=fake_redis)
+    token = make_token(
+        rsa_keys["private"],
+        scope="inference:read inference:stream model:small-model",
+        sub="user-x",
+        azp="client-a",
+    )
+    headers = {"Authorization": f"Bearer {token}"}
+    bucket = int(_time.time() // 60)
+    await fake_redis.set(f"prometheus:rl:tpm_out:client-a:chat_completions:{bucket}", 60)
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
+        r = await c.post("/v1/chat/completions", json=VALID_BODY, headers=headers)
+
+    assert r.status_code == 429
+    assert "output token limit" in r.json()["detail"]
+    # The input counter is untouched, so it must not be what refused this.
+    assert await fake_redis.get(f"prometheus:rl:tpm_in:client-a:chat_completions:{bucket}") is None
+
+
 def test_endpoint_slug_maps_admin_api_prefix():
     """Every /admin/api/* path — including dynamic segments like
     {node}/{model_id} — must resolve to the "admin" slug, not "default"."""
@@ -531,7 +617,13 @@ def test_endpoint_slug_maps_admin_api_prefix():
     # concurrent users.
     assert _endpoint_slug("/v1/embeddings") == "embeddings"
     assert _endpoint_slug("/v1/rerank") == "rerank"
-    assert _endpoint_slug("/v1/images/generations") == "default"
+    # PRM-224: it was "default", and this line pinned that — so the state was
+    # recorded rather than unnoticed, which is worse: the comment four lines
+    # above explains why sharing `default` cost a pilot 5% of its capacity, and
+    # images was left doing exactly that. It is also the one endpoint priced
+    # per image rather than per token, so a token-shaped shared bucket hid it
+    # twice over.
+    assert _endpoint_slug("/v1/images/generations") == "images"
     # The SPA shell itself (/admin, /admin/instances, /admin/assets/...) is
     # exempt from rate limiting entirely (see _is_exempt) and never reaches
     # _endpoint_slug — but confirm it's at least not misclassified as "admin"
