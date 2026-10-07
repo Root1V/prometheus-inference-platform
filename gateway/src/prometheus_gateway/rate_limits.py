@@ -165,3 +165,103 @@ def limits_by_layer(settings: Any, *, endpoint_count: int) -> list[dict[str, Any
 
 def current_limits(settings: Any) -> dict[str, int | None]:
     return {field: getattr(settings, field) for field in RATE_LIMIT_FIELDS}
+
+
+# ── PRM-230: which ceiling is refusing right now ─────────────────────────────
+
+# Reserved identity/endpoint tokens, repeated from `rate_limiter` rather than
+# imported: importing it here would make this module depend on redis for two
+# string constants, and `test_rate_limits.py` asserts the two agree.
+_PLATFORM_IDENTITY = "*platform*"
+_ALL_ENDPOINTS = "*"
+
+
+def endpoint_limits(settings: Any, endpoint_slug: str) -> tuple[int, int]:
+    """(rpm, tpm) in force for one endpoint — the per-endpoint override, or the
+    global when there isn't one.
+
+    Implements: memory/specs/007-rate-limiting-and-throughput.md — AC-13
+
+    Lives here because PRM-230 needs the same answer the middleware acts on,
+    and a second copy of it is how this file's other maps came to need the
+    warnings above them.
+    """
+    rpm = settings.rate_limit_rpm
+    tpm = settings.rate_limit_tpm
+    fields = ENDPOINT_LIMIT_FIELDS.get(endpoint_slug)
+    if fields is not None:
+        rpm_field, tpm_field = fields
+        if (override := getattr(settings, rpm_field, None)) is not None:
+            rpm = override
+        if (override := getattr(settings, tpm_field, None)) is not None:
+            tpm = override
+    return rpm, tpm
+
+
+def counter_layer(identity: str, endpoint: str) -> str:
+    """Which layer a live counter belongs to — read off the key, not guessed.
+
+    The key shape *is* the layer: the platform's own identity, the
+    all-endpoints endpoint, or a real consumer on a real route. Deriving it
+    from `LIMIT_LAYERS` instead would report where a setting is *grouped*,
+    and those disagree — `rate_limit_tpm_input` sits in the client group and
+    is checked per endpoint.
+    """
+    if identity == _PLATFORM_IDENTITY:
+        return "platform"
+    if endpoint == _ALL_ENDPOINTS:
+        return "client"
+    return "endpoint"
+
+
+# Which setting bounds a counter, per layer. `None` means nothing checks this
+# counter — a real state, and one this table exists to make visible: the
+# router increments tpm_in/tpm_out at the all-endpoints key as well, while the
+# middleware only ever reads them per endpoint. Those two rows are measured
+# and unenforced, and a page that quietly dropped them would hide it.
+_LIVE_LIMIT_FIELDS: dict[tuple[str, str], str | None] = {
+    ("platform", "rpm"): "rate_limit_rpm_platform",
+    ("platform", "tpm"): "rate_limit_tpm_platform",
+    ("client", "rpm"): "rate_limit_rpm_client",
+    ("client", "tpm"): "rate_limit_tpm_client",
+    ("endpoint", "tpm_in"): "rate_limit_tpm_input",
+    ("endpoint", "tpm_out"): "rate_limit_tpm_output",
+    ("endpoint", "rpd"): "rate_limit_rpd",
+    ("endpoint", "tpd"): "rate_limit_tpd",
+    ("endpoint", "ipm"): "rate_limit_ipm",
+}
+
+
+def live_limit_for(
+    settings: Any,
+    *,
+    layer: str,
+    dimension: str,
+    endpoint: str,
+    endpoint_count: int,
+    tier: Any = None,
+) -> tuple[int | None, str]:
+    """The ceiling a live counter is measured against, and where it came from.
+
+    `source` is `tier` / `set` / `derived` / `none`, in the order the
+    middleware resolves them. `none` is not "unlimited by policy" — it is "no
+    check reads this counter", which is why it is worth printing.
+    """
+    if layer == "endpoint" and dimension in ("rpm", "tpm"):
+        rpm, tpm = endpoint_limits(settings, endpoint)
+        return (rpm if dimension == "rpm" else tpm), "set"
+
+    if layer == "client" and dimension in ("rpm", "tpm"):
+        if tier is not None and getattr(tier, dimension, None) is not None:
+            return int(getattr(tier, dimension)), "tier"
+        chosen = getattr(settings, f"rate_limit_{dimension}_client", None)
+        if chosen is not None:
+            return int(chosen), "set"
+        # PRM-227's default: the sum of the per-endpoint allowances.
+        return int(getattr(settings, f"rate_limit_{dimension}")) * endpoint_count, "derived"
+
+    field = _LIVE_LIMIT_FIELDS.get((layer, dimension))
+    if field is None:
+        return None, "none"
+    value = getattr(settings, field, None)
+    return (int(value), "set") if value is not None else (None, "none")
