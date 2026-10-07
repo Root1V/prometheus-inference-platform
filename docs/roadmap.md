@@ -8553,3 +8553,25 @@ never collapsed into one headline.
 since tax is per client), the overview cards, two ranking tables, and moving the client selector
 down beside the detail section it governs. Out — ranking by anything other than cost; tokens and
 requests ride along on each row instead.
+
+
+## PRM-222 — The trend curve is a choice
+
+**Why**: PRM-220 replaced a `monotone` spline with bars, then with a `linear` area, on the argument
+that curvature between daily points is interpolation nobody measured — and through few points it can
+draw a peak above the dearest day in the data. That argument is correct and it is not the whole
+question. Over a thirty-day period the smooth curve reads the trend better, and the trend is what a
+period chart is opened for.
+
+So neither answer is right for every reading, which makes it a control rather than a decision I keep
+making on someone else's behalf. `Smooth` / `Exact`, defaulting to smooth, remembered per reader
+under a `prometheus-*` key like the sidebar's width and the Playground's model.
+
+**The labels do the arguing.** Smooth says it is "curved between days, easier to read a trend, and
+not proportional — the curve passes through values that were never measured". Exact says it "never
+leaves the range of the data". Putting the distinction where it is used beats putting it in a commit
+message twice.
+
+**Scope**: in — the toggle, its persistence, and the two tooltips. Out — applying the same choice to
+the Usage page's trend chart, which has the same property and should get the same control when
+someone asks for it rather than on speculation.
