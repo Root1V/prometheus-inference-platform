@@ -9,6 +9,24 @@ export interface ClientBillingSettings {
   alert_thresholds_percent: string | null;
   tax_rate_percent: number;
   preferred_currency: CurrencyCode;
+  /** PRM-228: the rate-limit tier this client is on. null = platform defaults. */
+  tier: string | null;
+}
+
+/** PRM-228: a named set of ceilings. Every dimension is nullable, and null
+ *  means "the platform default for this dimension" rather than "unlimited" —
+ *  a tier that omits `ipm` says nothing about images, it does not grant them
+ *  freely. */
+export interface RateLimitTier {
+  name: string;
+  description: string | null;
+  rpm: number | null;
+  tpm: number | null;
+  tpm_input: number | null;
+  tpm_output: number | null;
+  rpd: number | null;
+  tpd: number | null;
+  ipm: number | null;
 }
 
 export type UpdateClientBillingSettingsRequest = Omit<ClientBillingSettings, "client_id">;

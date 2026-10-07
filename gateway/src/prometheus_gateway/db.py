@@ -255,7 +255,47 @@ class ClientBillingSettings(Base):
     monthly_spend_cap_usd: Mapped[float | None] = mapped_column(Float, nullable=True)
     alert_thresholds_percent: Mapped[str | None] = mapped_column(String(64), nullable=True)
     tax_rate_percent: Mapped[float] = mapped_column(Float, default=0.0, nullable=False)
+    # PRM-228: which rate-limit tier this client is on. Null = the platform
+    # defaults, which is what every client gets today.
+    #
+    # It lives on this row rather than its own table because this row is
+    # already fetched and cached on the hot inference path for the spend cap
+    # (`get_client_billing_settings_cached`), so the tier rides along for free.
+    # The table's name is then slightly short of what it holds, which is a
+    # worse name in exchange for not adding a second cached read per request.
+    tier: Mapped[str | None] = mapped_column(String(32), nullable=True)
     preferred_currency: Mapped[str] = mapped_column(String(3), default="USD", nullable=False)
+    updated_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True, onupdate=lambda: datetime.now(timezone.utc)
+    )
+
+
+class RateLimitTier(Base):
+    """A named set of ceilings — PRM-228.
+
+    Tiers rather than per-client values because the industry answer is tiers:
+    OpenAI has five and Anthropic four, and neither hand-tunes a customer.
+    Fourteen clients could be tuned individually; a hundred are fourteen
+    forgotten decisions and eighty-six defaults nobody chose.
+
+    Every dimension is nullable, and null means "the platform default for this
+    dimension" rather than "unlimited" — a tier that omits `ipm` is saying
+    nothing about images, not granting them without limit.
+    """
+
+    __tablename__ = "rate_limit_tiers"
+
+    name: Mapped[str] = mapped_column(String(32), primary_key=True)
+    description: Mapped[str | None] = mapped_column(String(256), nullable=True)
+    # Layer 2's ceilings: across every endpoint, which is what makes them a
+    # consumer entitlement rather than another per-route limit (PRM-227).
+    rpm: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    tpm: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    tpm_input: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    tpm_output: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    rpd: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    tpd: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    ipm: Mapped[int | None] = mapped_column(Integer, nullable=True)
     updated_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True, onupdate=lambda: datetime.now(timezone.utc)
     )
@@ -1048,6 +1088,7 @@ async def upsert_client_billing_settings(
     alert_thresholds_percent: str | None,
     tax_rate_percent: float,
     preferred_currency: str,
+    tier: str | None = None,
 ) -> ClientBillingSettings:
     session_factory = get_session_factory()
     async with session_factory() as session:
@@ -1059,9 +1100,72 @@ async def upsert_client_billing_settings(
         row.alert_thresholds_percent = alert_thresholds_percent
         row.tax_rate_percent = tax_rate_percent
         row.preferred_currency = preferred_currency
+        row.tier = tier
         await session.commit()
         await session.refresh(row)
         return row
+
+
+async def list_rate_limit_tiers() -> list[RateLimitTier]:
+    """Every tier, name order — PRM-228."""
+    session_factory = get_session_factory()
+    async with session_factory() as session:
+        result = await session.execute(select(RateLimitTier).order_by(RateLimitTier.name))
+        return list(result.scalars().all())
+
+
+async def get_rate_limit_tier(name: str) -> RateLimitTier | None:
+    session_factory = get_session_factory()
+    async with session_factory() as session:
+        row: RateLimitTier | None = await session.get(RateLimitTier, name)
+        return row
+
+
+async def upsert_rate_limit_tier(name: str, **values: Any) -> RateLimitTier:
+    """Create or update one tier. Dimensions absent from `values` are left
+    alone; passing an explicit None clears one back to the platform default."""
+    session_factory = get_session_factory()
+    async with session_factory() as session:
+        row = await session.get(RateLimitTier, name)
+        if row is None:
+            row = RateLimitTier(name=name)
+            session.add(row)
+        for field, value in values.items():
+            setattr(row, field, value)
+        row.updated_at = datetime.now(timezone.utc)
+        await session.commit()
+        await session.refresh(row)
+        fresh: RateLimitTier = row
+        return fresh
+
+
+async def count_clients_on_tier(name: str) -> int:
+    """How many clients a tier would take with it — PRM-228.
+
+    Separate from the delete, and that separation is the point: the first
+    version counted *and* deleted, so the router's "refuse while in use" check
+    ran against a row that was already gone.
+    """
+    session_factory = get_session_factory()
+    async with session_factory() as session:
+        assigned = await session.execute(
+            select(func.count())
+            .select_from(ClientBillingSettings)
+            .where(ClientBillingSettings.tier == name)
+        )
+        return int(assigned.scalar() or 0)
+
+
+async def delete_rate_limit_tier(name: str) -> bool:
+    """Deletes one tier. True if a row went; False if there was none."""
+    session_factory = get_session_factory()
+    async with session_factory() as session:
+        row = await session.get(RateLimitTier, name)
+        if row is None:
+            return False
+        await session.delete(row)
+        await session.commit()
+        return True
 
 
 async def list_client_billing_settings() -> list[ClientBillingSettings]:

@@ -1,7 +1,11 @@
 import { Receipt, X } from "lucide-react";
 import { useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
-import { useClientBillingSettings, useUpdateClientBillingSettings } from "../api/billing";
+import {
+  useClientBillingSettings,
+  useRateLimitTiers,
+  useUpdateClientBillingSettings,
+} from "../api/billing";
 import { useToast } from "../context/ToastContext";
 import { cn } from "../lib/cn";
 import type { CurrencyCode } from "../lib/format";
@@ -20,12 +24,24 @@ const inputClass =
 
 const CURRENCIES: CurrencyCode[] = ["USD", "PEN", "EUR"];
 
-function Field({ label, hint, children }: { label: string; hint?: string; children: ReactNode }) {
+function Field({
+  label,
+  hint,
+  children,
+}: {
+  label: string;
+  hint?: string;
+  children: ReactNode;
+}) {
   return (
     <label className="block text-sm text-text">
-      <span className="mb-1 block text-xs font-medium text-text-muted">{label}</span>
+      <span className="mb-1 block text-xs font-medium text-text-muted">
+        {label}
+      </span>
       {children}
-      {hint && <span className="mt-1 block text-xs text-text-muted">{hint}</span>}
+      {hint && (
+        <span className="mt-1 block text-xs text-text-muted">{hint}</span>
+      )}
     </label>
   );
 }
@@ -47,15 +63,26 @@ function ClientBillingSettingsForm({
   const { showToast } = useToast();
   const updateSettings = useUpdateClientBillingSettings();
 
-  const [cap, setCap] = useState(initial.monthly_spend_cap_usd?.toString() ?? "");
-  const [thresholds, setThresholds] = useState(initial.alert_thresholds_percent ?? "");
+  const [cap, setCap] = useState(
+    initial.monthly_spend_cap_usd?.toString() ?? "",
+  );
+  const [thresholds, setThresholds] = useState(
+    initial.alert_thresholds_percent ?? "",
+  );
   const [taxRate, setTaxRate] = useState(initial.tax_rate_percent.toString());
-  const [currency, setCurrency] = useState<CurrencyCode>(initial.preferred_currency);
+  const [currency, setCurrency] = useState<CurrencyCode>(
+    initial.preferred_currency,
+  );
+  const [tier, setTier] = useState(initial.tier ?? "");
+  const tiersQuery = useRateLimitTiers();
 
   function handleSave() {
     const parsedCap = cap.trim() === "" ? null : Number(cap);
     if (parsedCap !== null && (Number.isNaN(parsedCap) || parsedCap < 0)) {
-      showToast("Monthly spend cap must be a non-negative number, or blank for no cap", "error");
+      showToast(
+        "Monthly spend cap must be a non-negative number, or blank for no cap",
+        "error",
+      );
       return;
     }
     const parsedTax = Number(taxRate);
@@ -68,9 +95,11 @@ function ClientBillingSettingsForm({
         clientId,
         data: {
           monthly_spend_cap_usd: parsedCap,
-          alert_thresholds_percent: thresholds.trim() === "" ? null : thresholds.trim(),
+          alert_thresholds_percent:
+            thresholds.trim() === "" ? null : thresholds.trim(),
           tax_rate_percent: parsedTax,
           preferred_currency: currency,
+          tier: tier || null,
         },
       },
       {
@@ -86,6 +115,28 @@ function ClientBillingSettingsForm({
   return (
     <>
       <div className="space-y-4">
+        {/* PRM-228: the rate-limit tier, beside the spend cap because they are
+            the same kind of decision about the same client — what this one may
+            consume — and they already share a row in the database. */}
+        <Field
+          label="Rate-limit tier"
+          hint="Blank = platform defaults. A tier's ceilings apply across every endpoint, which is what makes it the client's entitlement rather than another per-route limit."
+        >
+          <select
+            value={tier}
+            onChange={(e) => setTier(e.target.value)}
+            className={inputClass}
+          >
+            <option value="">(platform defaults)</option>
+            {(tiersQuery.data ?? []).map((t) => (
+              <option key={t.name} value={t.name}>
+                {t.name}
+                {t.rpm !== null ? ` \u2014 ${t.rpm} RPM` : ""}
+                {t.tpm !== null ? ` \u00b7 ${t.tpm.toLocaleString()} TPM` : ""}
+              </option>
+            ))}
+          </select>
+        </Field>
         <Field
           label="Monthly spend cap (USD)"
           hint="Blank = no hard cap. Once reached, further requests get a 402 until next month."
@@ -109,7 +160,10 @@ function ClientBillingSettingsForm({
             className={inputClass}
           />
         </Field>
-        <Field label="Tax rate (%)" hint="Shown as a separate line item on top of the subtotal.">
+        <Field
+          label="Tax rate (%)"
+          hint="Shown as a separate line item on top of the subtotal."
+        >
           <input
             value={taxRate}
             onChange={(e) => setTaxRate(e.target.value)}
@@ -117,7 +171,10 @@ function ClientBillingSettingsForm({
             className={inputClass}
           />
         </Field>
-        <Field label="Preferred currency" hint="Display-only — cost is always computed in USD.">
+        <Field
+          label="Preferred currency"
+          hint="Display-only — cost is always computed in USD."
+        >
           <select
             value={currency}
             onChange={(e) => setCurrency(e.target.value as CurrencyCode)}

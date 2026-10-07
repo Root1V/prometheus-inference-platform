@@ -8,6 +8,7 @@ import type {
   ModelPricesResponse,
   UpdateClientBillingSettingsRequest,
   UpdateModelPriceRequest,
+  RateLimitTier,
 } from "../types/billing";
 import { apiClient } from "./client";
 
@@ -25,7 +26,11 @@ export function useClientBillingSettings(clientId: string) {
   return useQuery({
     queryKey: [BILLING_SETTINGS_KEY, clientId] as const,
     queryFn: async () =>
-      (await apiClient.get<ClientBillingSettings>(`/billing/clients/${clientId}/settings`)).data,
+      (
+        await apiClient.get<ClientBillingSettings>(
+          `/billing/clients/${clientId}/settings`,
+        )
+      ).data,
     enabled: clientId.length > 0,
   });
 }
@@ -41,11 +46,18 @@ export function useUpdateClientBillingSettings() {
       data: UpdateClientBillingSettingsRequest;
     }) =>
       (
-        await apiClient.put<ClientBillingSettings>(`/billing/clients/${clientId}/settings`, data)
+        await apiClient.put<ClientBillingSettings>(
+          `/billing/clients/${clientId}/settings`,
+          data,
+        )
       ).data,
     onSuccess: (_data, { clientId }) => {
-      queryClient.invalidateQueries({ queryKey: [BILLING_SETTINGS_KEY, clientId] });
-      queryClient.invalidateQueries({ queryKey: [BILLING_SUMMARY_KEY, clientId] });
+      queryClient.invalidateQueries({
+        queryKey: [BILLING_SETTINGS_KEY, clientId],
+      });
+      queryClient.invalidateQueries({
+        queryKey: [BILLING_SUMMARY_KEY, clientId],
+      });
       queryClient.invalidateQueries({ queryKey: BILLING_ALERTS_KEY });
     },
   });
@@ -54,7 +66,8 @@ export function useUpdateClientBillingSettings() {
 export function useCurrencyRates() {
   return useQuery({
     queryKey: CURRENCY_RATES_KEY,
-    queryFn: async () => (await apiClient.get<CurrencyRates>("/billing/currency-rates")).data,
+    queryFn: async () =>
+      (await apiClient.get<CurrencyRates>("/billing/currency-rates")).data,
   });
 }
 
@@ -62,8 +75,10 @@ export function useUpdateCurrencyRates() {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: async (rates: CurrencyRates) =>
-      (await apiClient.put<CurrencyRates>("/billing/currency-rates", rates)).data,
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: CURRENCY_RATES_KEY }),
+      (await apiClient.put<CurrencyRates>("/billing/currency-rates", rates))
+        .data,
+    onSuccess: () =>
+      queryClient.invalidateQueries({ queryKey: CURRENCY_RATES_KEY }),
   });
 }
 
@@ -106,11 +121,25 @@ export interface BillingOverview {
 
 /** PRM-221: the whole platform for one month. Every other billing hook is
  *  keyed by client, so "how is the month going" was a request per client. */
+/** PRM-228: the tier catalogue, for the per-client assignment picker. */
+export function useRateLimitTiers() {
+  return useQuery({
+    queryKey: ["rate-limit-tiers"] as const,
+    queryFn: async () =>
+      (await apiClient.get<{ tiers: RateLimitTier[] }>("/limits/tiers")).data
+        .tiers,
+  });
+}
+
 export function useBillingOverview(period: string) {
   return useQuery({
     queryKey: ["billing-overview", period] as const,
     queryFn: async () =>
-      (await apiClient.get<BillingOverview>("/billing/overview", { params: { period } })).data,
+      (
+        await apiClient.get<BillingOverview>("/billing/overview", {
+          params: { period },
+        })
+      ).data,
     enabled: period.length > 0,
   });
 }
@@ -120,9 +149,12 @@ export function useBillingSummary(clientId: string, period?: string) {
     queryKey: [BILLING_SUMMARY_KEY, clientId, period ?? "current"] as const,
     queryFn: async () =>
       (
-        await apiClient.get<BillingPeriodSummary>(`/billing/clients/${clientId}/summary`, {
-          params: period ? { period } : undefined,
-        })
+        await apiClient.get<BillingPeriodSummary>(
+          `/billing/clients/${clientId}/summary`,
+          {
+            params: period ? { period } : undefined,
+          },
+        )
       ).data,
     enabled: clientId.length > 0,
   });
@@ -133,9 +165,12 @@ export function useBillingHistory(clientId: string, periods = 6) {
     queryKey: [BILLING_HISTORY_KEY, clientId, periods] as const,
     queryFn: async () =>
       (
-        await apiClient.get<BillingHistory>(`/billing/clients/${clientId}/history`, {
-          params: { periods },
-        })
+        await apiClient.get<BillingHistory>(
+          `/billing/clients/${clientId}/history`,
+          {
+            params: { periods },
+          },
+        )
       ).data,
     enabled: clientId.length > 0,
   });
@@ -145,7 +180,8 @@ export function useBillingHistory(clientId: string, periods = 6) {
 export function useBillingAlerts() {
   return useQuery({
     queryKey: BILLING_ALERTS_KEY,
-    queryFn: async () => (await apiClient.get<BillingAlertsResponse>("/billing/alerts")).data,
+    queryFn: async () =>
+      (await apiClient.get<BillingAlertsResponse>("/billing/alerts")).data,
     refetchInterval: ALERTS_POLL_MS,
   });
 }
@@ -157,16 +193,23 @@ export function useBillingAlerts() {
 export function useModelPrices() {
   return useQuery({
     queryKey: MODEL_PRICES_KEY,
-    queryFn: async () => (await apiClient.get<ModelPricesResponse>("/billing/pricing")).data,
+    queryFn: async () =>
+      (await apiClient.get<ModelPricesResponse>("/billing/pricing")).data,
   });
 }
 
 export function useUpdateModelPrice() {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: async ({ modelId, data }: { modelId: string; data: UpdateModelPriceRequest }) =>
-      (await apiClient.put(`/billing/pricing/${modelId}`, data)).data,
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: MODEL_PRICES_KEY }),
+    mutationFn: async ({
+      modelId,
+      data,
+    }: {
+      modelId: string;
+      data: UpdateModelPriceRequest;
+    }) => (await apiClient.put(`/billing/pricing/${modelId}`, data)).data,
+    onSuccess: () =>
+      queryClient.invalidateQueries({ queryKey: MODEL_PRICES_KEY }),
   });
 }
 

@@ -61,11 +61,13 @@ def _settings_to_dict(row: "db.ClientBillingSettings | None", client_id: str) ->
             "alert_thresholds_percent": None,
             "tax_rate_percent": 0.0,
             "preferred_currency": "USD",
+            "tier": None,
         }
     return {
         "client_id": row.client_id,
         "monthly_spend_cap_usd": row.monthly_spend_cap_usd,
         "alert_thresholds_percent": row.alert_thresholds_percent,
+        "tier": row.tier,
         "tax_rate_percent": row.tax_rate_percent,
         "preferred_currency": row.preferred_currency,
     }
@@ -107,14 +109,29 @@ def create_billing_router(manager_client: "ManagerApiClient | None" = None) -> A
                 "Invalid Currency",
                 "preferred_currency must be one of USD, PEN, EUR.",
             )
+        # PRM-228: the tier, validated against the catalogue rather than taken
+        # on trust. A typo would otherwise park a client on a tier that does
+        # not exist, which resolves to the platform defaults and looks exactly
+        # like a tier that does.
+        tier = body.get("tier") or None
+        if tier is not None and await db.get_rate_limit_tier(tier) is None:
+            return _problem(
+                request,
+                400,
+                "unknown-tier",
+                "Unknown Tier",
+                f"No tier {tier!r}. See GET /admin/api/limits/tiers for the ones that exist.",
+            )
         row = await db.upsert_client_billing_settings(
             client_id,
             monthly_spend_cap_usd=cap,
             alert_thresholds_percent=body.get("alert_thresholds_percent") or None,
             tax_rate_percent=tax_rate,
             preferred_currency=currency,
+            tier=tier,
         )
         budget.invalidate_client_billing_settings_cache(client_id)
+        budget.invalidate_rate_limit_tier_cache()
         return _settings_to_dict(row, client_id)
 
     @router.get("/admin/api/billing/currency-rates")
@@ -149,6 +166,93 @@ def create_billing_router(manager_client: "ManagerApiClient | None" = None) -> A
                 )
         rows = await db.list_currency_rates()
         return {r.currency_code: r.units_per_usd for r in rows}
+
+    _TIER_DIMENSIONS = ("rpm", "tpm", "tpm_input", "tpm_output", "rpd", "tpd", "ipm")
+
+    def _tier_json(row: Any) -> dict[str, Any]:
+        out: dict[str, Any] = {"name": row.name, "description": row.description}
+        out.update({d: getattr(row, d) for d in _TIER_DIMENSIONS})
+        return out
+
+    @router.get("/admin/api/limits/tiers")
+    async def list_tiers(request: Request) -> Any:
+        """The tier catalogue — PRM-228."""
+        if (err := _require_scope(request, "admin:read")) is not None:
+            return err
+        return {"tiers": [_tier_json(t) for t in await db.list_rate_limit_tiers()]}
+
+    @router.put("/admin/api/limits/tiers/{name}")
+    async def put_tier(name: str, body: dict[str, Any], request: Request) -> Any:
+        """Create or update one tier.
+
+        A dimension present and null clears it back to the platform default; a
+        dimension absent is left as it was. The two are different edits and
+        collapsing them would make "leave this alone" unexpressible.
+        """
+        if (err := _require_scope(request, "admin:write")) is not None:
+            return err
+        if not name or len(name) > 32:
+            return _problem(
+                request, 400, "invalid-tier", "Invalid Tier", "name must be 1-32 characters."
+            )
+        values: dict[str, Any] = {}
+        if "description" in body:
+            values["description"] = body["description"]
+        for dimension in _TIER_DIMENSIONS:
+            if dimension not in body:
+                continue
+            raw = body[dimension]
+            if raw is None:
+                values[dimension] = None
+                continue
+            try:
+                parsed = int(raw)
+            except (TypeError, ValueError):
+                return _problem(
+                    request,
+                    400,
+                    "invalid-tier",
+                    "Invalid Tier",
+                    f"{dimension} must be a whole number or null.",
+                )
+            if parsed <= 0:
+                return _problem(
+                    request,
+                    400,
+                    "invalid-tier",
+                    "Invalid Tier",
+                    f"{dimension} must be greater than zero \u2014 use null to fall back to "
+                    f"the platform default, since zero would mean a ceiling nobody can pass.",
+                )
+            values[dimension] = parsed
+        row = await db.upsert_rate_limit_tier(name, **values)
+        budget.invalidate_rate_limit_tier_cache(name)
+        return _tier_json(row)
+
+    @router.delete("/admin/api/limits/tiers/{name}")
+    async def delete_tier(name: str, request: Request) -> Any:
+        """Refused while clients are still on it.
+
+        Deleting a tier out from under a client would silently move them to the
+        platform defaults, which is a limit change nobody asked for and nobody
+        would see.
+        """
+        if (err := _require_scope(request, "admin:write")) is not None:
+            return err
+        if await db.get_rate_limit_tier(name) is None:
+            return _problem(request, 404, "unknown-tier", "Unknown Tier", f"No tier {name!r}.")
+        if assigned := await db.count_clients_on_tier(name):
+            return _problem(
+                request,
+                409,
+                "tier-in-use",
+                "Tier In Use",
+                f"{assigned} client(s) are on {name!r}. Move them first — deleting it would "
+                f"change their limits without anyone seeing it happen.",
+            )
+        await db.delete_rate_limit_tier(name)
+        budget.invalidate_rate_limit_tier_cache(name)
+        return {"deleted": name}
 
     @router.get("/admin/api/billing/overview")
     async def get_billing_overview(request: Request, period: str | None = None) -> Any:
