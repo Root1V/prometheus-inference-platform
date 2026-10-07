@@ -43,6 +43,13 @@ _TPM_OUT_KEY = "prometheus:rl:tpm_out:{identity}:{endpoint}:{bucket}"
 # minute bucket exactly and there is one rule to reason about.
 _RPD_KEY = "prometheus:rl:rpd:{identity}:{endpoint}:{bucket}"
 _TPD_KEY = "prometheus:rl:tpd:{identity}:{endpoint}:{bucket}"
+# PRM-226: images per minute.
+#
+# The one dimension that can be a real gate rather than a meter: how many
+# images a request will produce is `n` in the body, known before anything is
+# generated, where the size of a completion is not. So this is checked ahead of
+# the work and counted from what actually came back.
+_IPM_KEY = "prometheus:rl:ipm:{identity}:{endpoint}:{bucket}"
 _COUNTER_TTL = 90  # seconds — covers current + previous minute
 # PRM-225: a day plus two hours, for the same reason the minute gets ninety
 # seconds — the key must outlive its own window so a request landing in the
@@ -146,6 +153,42 @@ class RateLimiter:
             remaining=max(0, limit - current),
             reset_at=self._day_reset_at(),
         )
+
+    async def check_ipm_headroom(
+        self, identity: str, endpoint: str, limit: int, requested: int
+    ) -> RateLimitState:
+        """Would `requested` more images fit in this minute — PRM-226.
+
+        A read, not a reservation, and the race that allows is deliberate: two
+        requests arriving together can both pass and overshoot by one batch.
+        RM-60 chose atomic reserve-and-roll-back for *money*, where an overshoot
+        is a real charge; here the counter is incremented from what the backend
+        actually returned, so the overshoot is bounded by concurrency and
+        corrects itself within the minute. Paying for atomicity would mean
+        reserving `n` and settling the difference on every request to buy back
+        a bounded, self-healing error.
+        """
+        bucket = self._bucket()
+        key = _IPM_KEY.format(identity=identity, endpoint=endpoint, bucket=bucket)
+        raw = await self._redis.get(key)
+        current = int(raw) if raw else 0
+        return RateLimitState(
+            allowed=current + requested <= limit,
+            limit=limit,
+            remaining=max(0, limit - current),
+            reset_at=self._reset_at(),
+        )
+
+    async def increment_ipm(self, identity: str, endpoint: str, images: int) -> None:
+        """Count the images that were actually produced — PRM-226."""
+        bucket = self._bucket()
+        key = _IPM_KEY.format(identity=identity, endpoint=endpoint, bucket=bucket)
+        pipe = self._redis.pipeline()
+        pipe.incrby(key, images)
+        pipe.ttl(key)
+        results = await pipe.execute()
+        if int(results[1]) < 0:
+            await self._redis.expire(key, _COUNTER_TTL)
 
     async def increment_tpd(self, identity: str, endpoint: str, tokens: int) -> None:
         """Add to the day's token counter — PRM-225."""
