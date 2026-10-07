@@ -1,4 +1,9 @@
-"""Sliding-window rate limiter backed by Redis.
+"""Fixed-window rate limiter backed by Redis.
+
+Fixed, not sliding, and this docstring said sliding until PRM-225 — a
+correctness-relevant claim, since a fixed window lets a caller spend its whole
+quota at 11:59:59 and again at 12:00:00. Changing the window is its own item;
+describing it accurately is not.
 
 Implements: memory/specs/007-rate-limiting-and-throughput.md — AC-1, AC-2, AC-3, AC-4, AC-5, AC-9, AC-13
 """
@@ -29,7 +34,20 @@ _TPM_KEY = "prometheus:rl:tpm:{identity}:{endpoint}:{bucket}"
 # of it keep working; these two are additive.
 _TPM_IN_KEY = "prometheus:rl:tpm_in:{identity}:{endpoint}:{bucket}"
 _TPM_OUT_KEY = "prometheus:rl:tpm_out:{identity}:{endpoint}:{bucket}"
+# PRM-225: the same counters over a UTC day.
+#
+# A minute limit answers "how hard can you push right now" and a day limit
+# answers "how much of this is yours" — they are different questions and both
+# vendors ask both (OpenAI publishes RPD and TPD beside RPM and TPM). Keyed by
+# `time // 86400` rather than a date string so the arithmetic matches the
+# minute bucket exactly and there is one rule to reason about.
+_RPD_KEY = "prometheus:rl:rpd:{identity}:{endpoint}:{bucket}"
+_TPD_KEY = "prometheus:rl:tpd:{identity}:{endpoint}:{bucket}"
 _COUNTER_TTL = 90  # seconds — covers current + previous minute
+# PRM-225: a day plus two hours, for the same reason the minute gets ninety
+# seconds — the key must outlive its own window so a request landing in the
+# last second still finds the counter it belongs to.
+_DAILY_COUNTER_TTL = 86_400 + 7_200
 
 
 @dataclass
@@ -79,6 +97,66 @@ class RateLimiter:
     def _reset_at(self) -> int:
         bucket = self._bucket()
         return (bucket + 1) * 60
+
+    def _day_bucket(self) -> int:
+        return int(time.time() // 86_400)
+
+    def _day_reset_at(self) -> int:
+        return (self._day_bucket() + 1) * 86_400
+
+    async def check_and_increment_rpd(
+        self, identity: str, endpoint: str, limit: int
+    ) -> RateLimitState:
+        """The day's request counter — PRM-225. Same atomic incr-then-compare
+        as the minute's, so a refused request has still spent its slot and a
+        caller cannot win by racing.
+
+        Only called where a daily limit is configured, so a deployment that
+        does not use one pays nothing. The cost of that choice: switching a
+        limit on mid-day starts counting from that moment, not from midnight.
+        """
+        bucket = self._day_bucket()
+        key = _RPD_KEY.format(identity=identity, endpoint=endpoint, bucket=bucket)
+
+        pipe = self._redis.pipeline()
+        pipe.incr(key)
+        pipe.ttl(key)
+        results = await pipe.execute()
+        count, ttl = int(results[0]), int(results[1])
+        if ttl < 0:
+            await self._redis.expire(key, _DAILY_COUNTER_TTL)
+
+        return RateLimitState(
+            allowed=count <= limit,
+            limit=limit,
+            remaining=max(0, limit - count),
+            reset_at=self._day_reset_at(),
+        )
+
+    async def check_tpd_budget(self, identity: str, endpoint: str, limit: int) -> RateLimitState:
+        """The day's token counter, read not estimated — the same meter-not-gate
+        shape as `check_tpm_budget` (PRM-224)."""
+        bucket = self._day_bucket()
+        key = _TPD_KEY.format(identity=identity, endpoint=endpoint, bucket=bucket)
+        raw = await self._redis.get(key)
+        current = int(raw) if raw else 0
+        return RateLimitState(
+            allowed=current <= limit,
+            limit=limit,
+            remaining=max(0, limit - current),
+            reset_at=self._day_reset_at(),
+        )
+
+    async def increment_tpd(self, identity: str, endpoint: str, tokens: int) -> None:
+        """Add to the day's token counter — PRM-225."""
+        bucket = self._day_bucket()
+        key = _TPD_KEY.format(identity=identity, endpoint=endpoint, bucket=bucket)
+        pipe = self._redis.pipeline()
+        pipe.incrby(key, tokens)
+        pipe.ttl(key)
+        results = await pipe.execute()
+        if int(results[1]) < 0:
+            await self._redis.expire(key, _DAILY_COUNTER_TTL)
 
     async def check_and_increment_rpm(
         self,
