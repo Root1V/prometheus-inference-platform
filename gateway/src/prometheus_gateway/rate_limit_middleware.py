@@ -37,6 +37,12 @@ _ENDPOINT_SLUG_MAP: dict[str, str] = {
     "/v1/chat/completions": "chat_completions",
     "/v1/embeddings": "embeddings",
     "/v1/rerank": "rerank",
+    # PRM-224: images was not on this map, so it fell to `default` and shared a
+    # budget with every unmapped route — which is precisely the failure PRM-129
+    # describes eleven lines below, still live in the file that describes it.
+    # It is also the one endpoint whose cost is per image rather than per
+    # token, so sharing a token-shaped bucket hid it twice over.
+    "/v1/images/generations": "images",
 }
 
 # RM-51 follow-up: every /admin/api/* route (dynamic path segments like
@@ -376,5 +382,41 @@ class RateLimitMiddleware:
             0,  # 0 tokens for the gate check only
         )
         request.state._rl_tpm_state = tpm_state
+
+        # PRM-224: and the same read, per direction, where a ceiling is set.
+        #
+        # Post-hoc like the combined check above, and for the same reason: how
+        # many tokens a request will produce is not knowable before it runs, so
+        # the budget is spent and the *next* request is refused. Saying so here
+        # because "token limit" reads as a gate and this is a meter.
+        for outgoing, limit, label in (
+            (False, self.settings.rate_limit_tpm_input, "input"),
+            (True, self.settings.rate_limit_tpm_output, "output"),
+        ):
+            if limit is None:
+                continue
+            for identity in filter(None, (claims.client_id, claims.user_id)):
+                state = await self._limiter.check_tpm_direction(
+                    identity, slug, limit, outgoing=outgoing
+                )
+                if not state.allowed:
+                    retry_after = max(1, state.reset_at - int(time.time()))
+                    logger.warning(
+                        "rate_limit.tpm_direction_exceeded",
+                        identity=identity,
+                        endpoint=slug,
+                        direction=label,
+                        limit=limit,
+                    )
+                    return _rl_problem(
+                        request,
+                        429,
+                        "rate-limit-exceeded-tokens",
+                        "Rate Limit Exceeded",
+                        f"'{identity}' has exceeded the {label} token limit of {limit} "
+                        f"per minute for endpoint '{slug}'. Reset in {retry_after} seconds.",
+                        retry_after=retry_after,
+                        extra={"scope": slug},
+                    )
 
         return None

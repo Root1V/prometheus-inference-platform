@@ -26,6 +26,7 @@ from fastapi.responses import JSONResponse, StreamingResponse
 
 from dataclasses import replace
 
+from .rate_limiter import RateLimiter
 from . import db, idempotency, pricing, traffic_split
 from .budget import (
     BudgetReservation,
@@ -2104,6 +2105,8 @@ def create_router(registry: ModelRegistry, pool: "BackendPool") -> APIRouter:
                         cached_prompt_tokens=cached_prompt_tokens,
                         duration_s=backend_latency_ms / 1000,
                         engine=entry.backend,
+                        rl_redis=getattr(pool, "_redis", None),
+                        endpoint_slug="chat_completions",
                     )
 
                     # RM-60: settle the spend-cap reservation with the real cost
@@ -2129,25 +2132,6 @@ def create_router(registry: ModelRegistry, pool: "BackendPool") -> APIRouter:
                                 reservation.total_spend_usd,
                                 newly_crossed,
                             )
-
-                    # Increment TPM counter with actual token usage
-                    rl_redis = getattr(pool, "_redis", None)
-                    if rl_redis is not None and claims and total_tokens > 0:
-                        try:
-                            from .rate_limiter import RateLimiter
-
-                            rl = RateLimiter(rl_redis)
-                            await rl.increment_tpm(
-                                claims.client_id, "chat_completions", total_tokens
-                            )
-                            # PRM-128: same identity, same key — a machine
-                            # credential was spending its token budget twice.
-                            if claims.user_id and claims.user_id != claims.client_id:
-                                await rl.increment_tpm(
-                                    claims.user_id, "chat_completions", total_tokens
-                                )
-                        except Exception as exc:
-                            logger.warning("tpm.increment_error", error=str(exc))
 
                     # RM-77: see the streaming path — the body names the
                     # model, never the replica that served it.
@@ -2486,6 +2470,8 @@ def create_router(registry: ModelRegistry, pool: "BackendPool") -> APIRouter:
             request_id=getattr(getattr(request, "state", None), "request_id", None),
             duration_s=embeddings_latency_ms / 1000,
             engine=entry.backend,
+            rl_redis=getattr(pool, "_redis", None),
+            endpoint_slug="embeddings",
         )
         if budget_redis is not None and reservation is not None and reservation.allowed:
             actual_cost = pricing.get_pricing_table().estimate_cost_usd(
@@ -2879,6 +2865,8 @@ def create_router(registry: ModelRegistry, pool: "BackendPool") -> APIRouter:
             request_id=getattr(getattr(request, "state", None), "request_id", None),
             duration_s=rerank_latency_ms / 1000,
             engine=entry.backend,
+            rl_redis=getattr(pool, "_redis", None),
+            endpoint_slug="rerank",
         )
         if budget_redis is not None and reservation is not None and reservation.allowed:
             actual_cost = pricing.get_pricing_table().estimate_cost_usd(
@@ -3115,6 +3103,8 @@ def create_router(registry: ModelRegistry, pool: "BackendPool") -> APIRouter:
             request_id=request_id,
             duration_s=latency_ms / 1000,
             engine=entry.backend,
+            rl_redis=getattr(pool, "_redis", None),
+            endpoint_slug="predict",
         )
         return JSONResponse(status_code=resp.status_code, content=resp_body)
 
@@ -3428,6 +3418,8 @@ def create_router(registry: ModelRegistry, pool: "BackendPool") -> APIRouter:
             request_id=getattr(getattr(request, "state", None), "request_id", None),
             duration_s=images_latency_ms / 1000,
             engine=entry.backend,
+            rl_redis=getattr(pool, "_redis", None),
+            endpoint_slug="images",
         )
         if budget_redis is not None and reservation is not None and reservation.allowed:
             actual_cost = pricing.get_pricing_table().estimate_image_cost_usd(
@@ -3549,6 +3541,18 @@ async def _record_usage(
     prompt_tokens: int,
     completion_tokens: int,
     *,
+    # PRM-224: required, and that is the point.
+    #
+    # The TPM counter used to be incremented at the call sites, and only two of
+    # the seven did it — both in the chat path. Measured on live data, 5,305
+    # requests and 1,462,186 tokens from embeddings, rerank, predict and images
+    # never touched the token budget at all, on a platform that calls that
+    # number "the token limit". Moving it in here makes coverage structural; a
+    # required parameter makes a new caller that forgets it a type error rather
+    # than another silent gap. Pass None only where there is genuinely no
+    # limiter (tests, or a pool without Redis).
+    rl_redis: Any,
+    endpoint_slug: str,
     request_kind: str = "chat",
     image_count: int = 0,
     instance_id: str | None = None,
@@ -3579,6 +3583,22 @@ async def _record_usage(
             return
     elif prompt_tokens + completion_tokens == 0:
         return
+
+    # The token budget, for every kind of request rather than one of them.
+    if rl_redis is not None and prompt_tokens + completion_tokens > 0:
+        try:
+            limiter = RateLimiter(rl_redis)
+            await limiter.increment_tpm(
+                claims.client_id, endpoint_slug, prompt_tokens, completion_tokens
+            )
+            # PRM-128: same identity, same key — a machine credential was
+            # spending its token budget twice.
+            if claims.user_id and claims.user_id != claims.client_id:
+                await limiter.increment_tpm(
+                    claims.user_id, endpoint_slug, prompt_tokens, completion_tokens
+                )
+        except Exception as exc:
+            logger.warning("tpm.increment_error", error=str(exc))
     cost_usd: float | None = None
     try:
         cost_usd = await db.record_usage(
@@ -4143,6 +4163,8 @@ async def _stream_response(
                     # empty 19 times out of 20 and looks like an outage.
                     ttft_s=(first_token_ms / 1000) if first_token_ms is not None else None,
                     engine=engine,
+                    rl_redis=getattr(pool, "_redis", None),
+                    endpoint_slug="chat_completions",
                 )
 
                 # RM-60: settle the spend-cap reservation with the real cost
