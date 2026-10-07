@@ -7949,3 +7949,35 @@ place that sees every use regardless of what the token is then spent on; surface
 table beside the age that PRM-201 added. Out — per-endpoint usage, which the gateway already
 records and bills from; this is about liveness, not accounting.
 
+## PRM-203 — the admin shell is cached without saying so
+
+**Why**: hit first-hand while verifying PRM-201. The UI was rebuilt, the new bundle was on disk and
+named by the new `index.html`, and the browser went on loading the previous one:
+
+```
+on disk          assets/index-CdkjFYZV.js   (the rebuild)
+browser loaded   assets/index-DbpWk7U2.js   (the previous build)
+```
+
+`curl -I` on the shell explains it — `etag` and `last-modified`, and **no `cache-control` at all**:
+
+```
+HTTP/1.1 200 OK
+last-modified: Wed, 07 Oct 2026 00:19:58 GMT
+etag: "eca0725e7d4224feb454fdf6243a412a"
+```
+
+With no explicit directive a browser is free to apply heuristic freshness — commonly a fraction of
+the time since `last-modified` — and serve the shell from cache without revalidating. The shell
+names the hashed bundle, so a stale shell pins a stale application. Every asset under `assets/` is
+content-hashed and therefore safe to cache forever; `index.html` is the one file that must not be.
+
+**What makes this worth an item rather than a shrug**: the failure is silent and asymmetric. The
+operator who deploys has just hard-reloaded and sees the new UI; the people who did not are on the
+old one with no indication, and the bug reports that follow describe behaviour that was fixed.
+
+**Scope**: in — `Cache-Control: no-cache` on `index.html` (revalidate, not "don't store": the etag
+still saves the transfer), and a long immutable max-age on the hashed assets, which currently carry
+no directive either and are re-fetched more than they need to be. Out — a service worker or any
+versioning scheme; the content hashes already do that job.
+
