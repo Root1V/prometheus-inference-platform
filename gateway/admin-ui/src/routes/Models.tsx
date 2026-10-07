@@ -167,32 +167,97 @@ function DownloadRow({ entry, node }: { entry: DownloadEntry; node: string }) {
   const isPaused = entry.status === "paused";
   const baseModelId = entry.model_id.split(" [")[0];
 
+  const pct = Math.round(entry.progress * 100);
+  /** PRM-212: the shard suffix the manager puts on a multi-part download, e.g.
+   *  "model [2/3]". It was rendered inside the id, where it reads as part of
+   *  the name rather than as "second file of three". */
+  const shard = /\s\[(\d+)\/(\d+)\]$/.exec(entry.model_id);
+
   return (
     <div className="rounded-lg border border-border bg-background p-3 text-sm">
-      <div className="flex items-center justify-between gap-2">
-        <span className="font-medium text-text">{entry.model_id}</span>
-        <span className={cn("text-xs font-medium", STATUS_COLOR[entry.status])}>
+      <div className="flex flex-wrap items-baseline gap-x-2 gap-y-1">
+        <span className="font-medium text-text">{baseModelId}</span>
+        {shard && (
+          <span className="rounded bg-primary/10 px-1.5 py-0.5 text-xs font-medium text-primary">
+            file {shard[1]} of {shard[2]}
+          </span>
+        )}
+        <span
+          className={cn(
+            "ml-auto text-xs font-medium",
+            STATUS_COLOR[entry.status],
+          )}
+        >
           {entry.status}
         </span>
       </div>
-      <p className="mt-0.5 truncate text-xs text-text-muted">{entry.hf_repo}</p>
-      {(isActive || isPaused) && (
-        <div className="mt-2 h-1.5 w-full overflow-hidden rounded-full bg-border">
+      {/* Which repo *and* which file. `hf_filename` was in the response and
+          rendered nowhere, so two quantizations of one repo downloading at
+          once were two identical-looking rows. */}
+      <p className="mt-0.5 break-all text-xs text-text-muted">
+        {entry.hf_repo}
+        {entry.hf_filename ? ` · ${entry.hf_filename}` : ""}
+      </p>
+
+      {/* PRM-212: always drawn, whatever the status.
+          It used to render only while downloading or paused, so a run that
+          stopped at 43% and one that finished were both a bare pair of byte
+          counts you had to read and compare. A full bar means it is all here;
+          a half-full one means it is not, and the colour says why. */}
+      <div className="mt-2.5 flex items-center gap-3">
+        <div
+          className="h-2 flex-1 overflow-hidden rounded-full bg-border"
+          role="progressbar"
+          aria-valuenow={pct}
+          aria-valuemin={0}
+          aria-valuemax={100}
+          aria-label={`${baseModelId} download`}
+        >
           <div
             className={cn(
               "h-full transition-all",
-              isPaused ? "bg-amber-500" : "bg-primary",
+              entry.status === "done"
+                ? "bg-green-500"
+                : entry.status === "failed"
+                  ? "bg-red-500"
+                  : isPaused
+                    ? "bg-amber-500"
+                    : entry.status === "cancelled"
+                      ? "bg-text-muted/40"
+                      : "bg-primary",
             )}
-            style={{ width: `${Math.round(entry.progress * 100)}%` }}
+            style={{ width: `${pct}%` }}
           />
         </div>
-      )}
-      <div className="mt-2 flex items-center justify-between text-xs text-text-muted">
-        <span>
+        <span className="w-10 shrink-0 text-right text-xs font-medium tabular-nums text-text">
+          {pct}%
+        </span>
+      </div>
+
+      <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-text-muted">
+        <span className="tabular-nums">
           {formatBytes(entry.downloaded_bytes)}
           {entry.total_bytes > 0 ? ` / ${formatBytes(entry.total_bytes)}` : ""}
         </span>
-        <div className="flex items-center gap-2">
+        {/* Speed and ETA only while bytes are actually moving — both are
+            stale numbers on a paused or finished row, and a stale rate
+            presented as current is the defect this repo keeps finding. */}
+        {entry.status === "downloading" && entry.speed_bps > 0 && (
+          <span className="tabular-nums">{formatBytes(entry.speed_bps)}/s</span>
+        )}
+        {entry.status === "downloading" && entry.eta_seconds !== null && (
+          <span className="tabular-nums">
+            {entry.eta_seconds >= 60
+              ? `${Math.round(entry.eta_seconds / 60)}m left`
+              : `${Math.round(entry.eta_seconds)}s left`}
+          </span>
+        )}
+        {entry.status !== "done" && entry.total_bytes > 0 && (
+          <span className="tabular-nums">
+            {formatBytes(entry.total_bytes - entry.downloaded_bytes)} remaining
+          </span>
+        )}
+        <div className="ml-auto flex items-center gap-2">
           {isActive && (
             <button
               type="button"
