@@ -8575,3 +8575,28 @@ message twice.
 **Scope**: in — the toggle, its persistence, and the two tooltips. Out — applying the same choice to
 the Usage page's trend chart, which has the same property and should get the same control when
 someone asks for it rather than on speculation.
+
+
+## PRM-223 — Limits says which backends it has not heard from
+
+**Why**: the circuit table rendered `metrics.backends`, which has a row per backend that has served
+a request since the gateway process started. Measured on the running platform: **12 instances ready,
+3 rows**. The other nine were healthy and had simply seen no traffic in the hour since the last
+restart. A model missing from a list reads as a model nobody started — the mistake PRM-137 named
+when `rerank` had been invisible in the Playground since PRM-106.
+
+**It matters more here than on a dropdown.** An absent row is not a closed circuit. "Closed" means
+the backend is taking traffic and the breaker is satisfied; absent means the breaker has never been
+exercised there at all. Conflating them is the difference between a backend known to work and one
+nobody has tested. Every running model is listed now, with `no traffic yet` in place of a badge, and
+the process-memory caveat that Overview already carries is here too — it is the reason the nine are
+blank.
+
+**`On store unavailable` was the only card without a line of its own**, and the one that most needed
+one: it decides what happens to every request when Redis cannot be reached. "Deny (strict)" is a
+word, not an answer. It now says which, and warns when the setting is fail-open, because with the
+store unreachable the limiter cannot count and traffic passes unmetered.
+
+**Scope**: in — the table's row source, the `no traffic yet` state, the counter caveat, and the
+fourth card. Out — the limit dimensions themselves (RPD, TPD, IPM, split input/output TPM, tiers),
+which the review alongside this one covers and which are their own items.
