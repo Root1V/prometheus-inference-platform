@@ -7886,3 +7886,66 @@ files are the same trap in a different place, and they cost ten minutes during t
 empty file that a service recreates is a symptom, not litter); and a line in the runbook's
 "Diagnosing" section naming the two real paths. Out — changing where either database lives.
 
+## PRM-201 — the sidebar folds and Users becomes scannable
+
+**Why**: the nav was a fixed 256px and the Users table stacked one chip per granted model inside a
+`max-w-xs` cell. The widest grant here is eleven models, which made that row roughly 400px tall —
+**two users on a 1080p screen**, in a table whose job is comparing users.
+
+**The sidebar** collapses to a 64px rail, persisted so it is a preference rather than a gesture.
+Its tooltips render through a portal, and that is not over-engineering: positioned beside the icon
+they never appeared, because the nav scrolls and `overflow-y: auto` computes `overflow-x: auto`
+too. Measured in the running page — the tooltip's box ran to 134px against a clip at 64. Any
+ancestor that scrolls does this, so moving the scroll elsewhere only moves the bug.
+
+**Models fold to three plus a count.** Three is what fits on one line at the narrowest column
+width, so rows are uniform and the table can be scanned down a column instead of read.
+
+**Search covers the model scopes**, which is the point rather than a bonus. The question this page
+could not answer was "who can reach `fara-7b`" — the grants existed only as chips inside rows. A
+matching chip is pulled to the front and highlighted, because a filter that hides the reason a row
+survived reads as broken.
+
+**Scopes are summarised by family, with the privileged ones accented.** The first pass collapsed
+them to "2 scopes" and hid the only interesting thing; printing them all hides it too, and for the
+same reason. Measured: **eleven of fourteen credentials carry exactly `inference:read` +
+`inference:stream`**. All the information is in the three that differ — the registry writer, the
+two fleet nodes, and the one credential with `admin:write`. So each family is one chip carrying its
+verbs, `admin` and `backend-registry:write` are accented, and a scan shows a wall of muted
+`inference r·s` with the exceptions standing out.
+
+**Three fields were already in the API and discarded by the UI**: `label` (set on 11 of 14 and
+carrying what the name does not — "Video Vigilancia", "Device Control"), `token_ttl_seconds` (four
+distinct values in use, and the longest sits on the credential holding `admin:write`), and
+`created_at`, rendered as an age because "30d" answers "is this leftover?" while a timestamp makes
+you do the subtraction.
+
+**Destructive actions moved behind a menu.** Deactivate and Delete were bare adjacent icons
+distinguishable only by glyph — the two that cannot be undone, one pixel-perfect click apart. They
+are now labelled, separated by a rule, and behind a deliberate second step.
+
+**Scope**: in — the collapsible rail, the Users table, `ScopeSummary`. Out — the other nine routes,
+which share the sidebar and are unaffected; and `last_used`, which is not in the API at all. See
+[[PRM-202]].
+
+## PRM-202 — nobody records when a credential was last used
+
+**Why**: found doing the thing the data should have supported. Asked which of this deployment's 23
+credentials could be deleted, the honest answer required joining `usage_events` in the **gateway's**
+database against the principal list from **auth-service** — two separate stores with no key between
+them, reconciled by hand.
+
+auth-service stores `created_at`, `updated_at`, `is_active` and `revoked_at`. **Nothing about use.**
+It is the service that issues every token and it does not record that it did.
+
+**The gateway's usage table is not a substitute**, and the audit proved it rather than assuming it.
+Three credentials showed zero rows there and were live and load-bearing: the two fleet nodes, which
+only ever call `/v1/fleet/nodes/{id}/heartbeat`, and `gateway-manager-sync`, which only syncs the
+catalogue. Deleting on that evidence would have taken the fleet down. A credential can also mint
+tokens without ever reaching an inference route, and nothing anywhere would show it.
+
+**Scope**: in — a `last_used_at` on the principal, stamped at token issuance, which is the one
+place that sees every use regardless of what the token is then spent on; surfaced in the Users
+table beside the age that PRM-201 added. Out — per-endpoint usage, which the gateway already
+records and bills from; this is about liveness, not accounting.
+
