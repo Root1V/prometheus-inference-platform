@@ -8344,3 +8344,23 @@ a bordered button, the washed-out treatment PRM-211 already replaced on Discover
 **Scope**: in — the default and its persistence, the picker's move, the conditional rail, the
 per-modality empty state, the sliders and the button. Out — the composer layouts themselves, and
 clearing the draft when the modality changes (the same text is often worth sending to both).
+
+
+## PRM-215 — Playground bubbles fit their text
+
+**Why**: reported as the page looking deformed, and it was. Chat bubbles carried
+`ml-auto max-w-[80%]` on a block `div`. A max-width is a ceiling, not a width, and a block element
+fills what it is given — so every message rendered as a slab at 80% of the panel regardless of
+content. Measured: **459px wide for 19 characters.** Four bubbles in the non-chat modalities already
+had `w-fit` and looked right; the other eight did not, which is why the same page looked correct in
+some modes and broken in others.
+
+**Configuration appeared to live in two arbitrary places**, and the split is actually principled —
+it just said so nowhere. A zero-shot model's labels are chosen *per call*; that is the whole point
+of zero-shot, and they belong with the text you are sending, not in a rail beside `Temperature`.
+Settings that persist across requests stay in the rail, now headed `Model settings`; the per-request
+inputs are wrapped with the composer in one bordered block that reads as "the request you are about
+to send".
+
+**Scope**: in — `w-fit` on every bubble, the composer block, the rail heading. Out — translating the
+interface, which is a separate decision about the whole admin UI rather than this page.

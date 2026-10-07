@@ -103,7 +103,7 @@ function ReasoningBox({ text }: { text: string }) {
     ref.current?.scrollIntoView({ block: "end" });
   }, [text]);
   return (
-    <div className="max-w-[80%] rounded-xl border border-dashed border-border bg-surface px-4 py-2 text-xs text-text-muted">
+    <div className="w-fit max-w-[80%] rounded-xl border border-dashed border-border bg-surface px-4 py-2 text-xs text-text-muted">
       <p className="mb-1 font-medium">🧠 Thinking…</p>
       <div className="max-h-40 overflow-y-auto">
         <p className="whitespace-pre-wrap italic">
@@ -1180,7 +1180,7 @@ export default function Playground() {
                         m.role === "tool" ? (
                           <div
                             key={j}
-                            className="ml-auto max-w-[80%] rounded-xl border border-dashed border-border bg-surface px-4 py-2 text-xs text-text-muted"
+                            className="ml-auto w-fit max-w-[80%] rounded-xl border border-dashed border-border bg-surface px-4 py-2 text-xs text-text-muted"
                           >
                             Tool result:{" "}
                             {typeof m.content === "string" ? m.content : ""}
@@ -1188,7 +1188,7 @@ export default function Playground() {
                         ) : (
                           <div
                             key={j}
-                            className="ml-auto max-w-[80%] rounded-xl bg-primary px-4 py-2 text-sm text-primary-foreground"
+                            className="ml-auto w-fit max-w-[80%] rounded-xl bg-primary px-4 py-2 text-sm text-primary-foreground"
                           >
                             <MessageContent
                               content={m.content}
@@ -1197,7 +1197,7 @@ export default function Playground() {
                           </div>
                         ),
                       )}
-                      <div className="max-w-[80%] rounded-xl border border-border bg-background px-4 py-2 text-sm text-text">
+                      <div className="w-fit max-w-[80%] rounded-xl border border-border bg-background px-4 py-2 text-sm text-text">
                         <MessageContent content={assistantMessage.content} />
                         {!assistantMessage.content &&
                           !assistantMessage.tool_calls?.length &&
@@ -1288,7 +1288,7 @@ export default function Playground() {
                       {isLastChatEntry &&
                         assistantMessage.tool_calls &&
                         assistantMessage.tool_calls.length > 0 && (
-                          <div className="max-w-[80%] space-y-2 rounded-xl border border-dashed border-border bg-surface p-3">
+                          <div className="w-fit max-w-[80%] space-y-2 rounded-xl border border-dashed border-border bg-surface p-3">
                             <p className="text-xs text-text-muted">
                               The Playground doesn't execute tools for real —
                               type a mock result to continue and see the model's
@@ -1564,7 +1564,7 @@ export default function Playground() {
                 m.role === "tool" ? (
                   <div
                     key={j}
-                    className="ml-auto max-w-[80%] rounded-xl border border-dashed border-border bg-surface px-4 py-2 text-xs text-text-muted"
+                    className="ml-auto w-fit max-w-[80%] rounded-xl border border-dashed border-border bg-surface px-4 py-2 text-xs text-text-muted"
                   >
                     Tool result:{" "}
                     {typeof m.content === "string" ? m.content : ""}
@@ -1572,7 +1572,7 @@ export default function Playground() {
                 ) : (
                   <div
                     key={j}
-                    className="ml-auto max-w-[80%] rounded-xl bg-primary px-4 py-2 text-sm text-primary-foreground"
+                    className="ml-auto w-fit max-w-[80%] rounded-xl bg-primary px-4 py-2 text-sm text-primary-foreground"
                   >
                     <MessageContent
                       content={m.content}
@@ -1589,7 +1589,7 @@ export default function Playground() {
               )}
             {inProgress &&
               (inProgress.content || inProgress.toolCalls.length > 0) && (
-                <div className="max-w-[80%] rounded-xl border border-border bg-background px-4 py-2 text-sm text-text">
+                <div className="w-fit max-w-[80%] rounded-xl border border-border bg-background px-4 py-2 text-sm text-text">
                   {inProgress.content && (
                     <p className="whitespace-pre-wrap">
                       {inProgress.content}
@@ -1641,160 +1641,169 @@ export default function Playground() {
           <ErrorBanner message={embedError} />
           <ErrorBanner message={imageError} />
 
-          {isZeroShot && (
-            <div className="mt-3">
-              <label className="block text-xs font-medium text-text-muted">
-                Options to choose between
-              </label>
-              <input
-                value={candidateLabels}
-                onChange={(e) => setCandidateLabels(e.target.value)}
-                placeholder="facturación, soporte técnico, ventas, cancelación"
-                className="mt-1 w-full rounded-lg border border-border bg-surface px-3 py-2 text-sm text-text focus:border-primary focus:outline-none"
-              />
-              <p className="mt-1 text-xs text-text-muted">
-                Comma-separated, and set per request — this model is not trained
-                on a fixed label set, which is what makes the options yours to
-                choose.
-              </p>
-            </div>
-          )}
+          {/* PRM-215: one bordered block for "the request you are about to
+              send". The per-modality inputs above the composer are not
+              settings — a zero-shot model's labels are chosen per call, which
+              is the whole point of zero-shot — so they belong with the text
+              box rather than in the side rail with temperature. They just
+              never looked like they belonged to anything, which is what made
+              configuration appear to live in two arbitrary places. */}
+          <div className="mt-4 rounded-xl border border-border bg-surface p-3">
+            {isZeroShot && (
+              <div className="mt-3">
+                <label className="block text-xs font-medium text-text-muted">
+                  Options to choose between
+                </label>
+                <input
+                  value={candidateLabels}
+                  onChange={(e) => setCandidateLabels(e.target.value)}
+                  placeholder="facturación, soporte técnico, ventas, cancelación"
+                  className="mt-1 w-full rounded-lg border border-border bg-surface px-3 py-2 text-sm text-text focus:border-primary focus:outline-none"
+                />
+                <p className="mt-1 text-xs text-text-muted">
+                  Comma-separated, and set per request — this model is not
+                  trained on a fixed label set, which is what makes the options
+                  yours to choose.
+                </p>
+              </div>
+            )}
 
-          {isRerank && (
-            <div className="mt-3">
-              <label className="block text-xs font-medium text-text-muted">
-                Documents to score, one per line
-              </label>
-              <textarea
-                value={candidateLabels}
-                onChange={(e) => setCandidateLabels(e.target.value)}
-                rows={4}
-                placeholder={
-                  "La membresía anual de la Tarjeta Oro cuesta S/ 45.00.\nEl horario de atención es de 9 a 18h.\nPara bloquear una tarjeta, llame al 0800-1234."
-                }
-                className="mt-1 w-full rounded-lg border border-border bg-surface px-3 py-2 text-sm text-text focus:border-primary focus:outline-none"
-              />
-              <p className="mt-1 text-xs text-text-muted">
-                The box above is the query; these are the candidates it scores
-                against.
-              </p>
-            </div>
-          )}
+            {isRerank && (
+              <div className="mt-3">
+                <label className="block text-xs font-medium text-text-muted">
+                  Documents to score, one per line
+                </label>
+                <textarea
+                  value={candidateLabels}
+                  onChange={(e) => setCandidateLabels(e.target.value)}
+                  rows={4}
+                  placeholder={
+                    "La membresía anual de la Tarjeta Oro cuesta S/ 45.00.\nEl horario de atención es de 9 a 18h.\nPara bloquear una tarjeta, llame al 0800-1234."
+                  }
+                  className="mt-1 w-full rounded-lg border border-border bg-surface px-3 py-2 text-sm text-text focus:border-primary focus:outline-none"
+                />
+                <p className="mt-1 text-xs text-text-muted">
+                  The box above is the query; these are the candidates it scores
+                  against.
+                </p>
+              </div>
+            )}
 
-          {isTypedDecision && (
-            <div className="mt-3">
-              <label className="block text-xs font-medium text-text-muted">
-                Questions to answer, as JSON
-              </label>
-              <textarea
-                value={candidateLabels}
-                onChange={(e) => setCandidateLabels(e.target.value)}
-                rows={6}
-                spellCheck={false}
-                placeholder={TYPED_DECISION_EXAMPLE}
-                className="mt-1 w-full rounded-lg border border-border bg-surface px-3 py-2 font-mono text-xs text-text focus:border-primary focus:outline-none"
-              />
-              <p className="mt-1 text-xs text-text-muted">
-                One forward pass answers all of them.{" "}
-                <span className="font-mono">choice</span> picks from{" "}
-                <span className="font-mono">criteria</span>,{" "}
-                <span className="font-mono">score</span> places it on that
-                ordered scale, and <span className="font-mono">noul</span>{" "}
-                returns P(true) with no criteria.
-                <br />
-                <strong>Word the question the way the text does.</strong> This
-                model matches vocabulary more than meaning: on an email saying
-                “cancelamos el plan”, asking “amenaza con cancelar” answers yes
-                at 0.98 and asking “amenaza con irse” — the same question in
-                synonyms — answers no at 0.17.
+            {isTypedDecision && (
+              <div className="mt-3">
+                <label className="block text-xs font-medium text-text-muted">
+                  Questions to answer, as JSON
+                </label>
+                <textarea
+                  value={candidateLabels}
+                  onChange={(e) => setCandidateLabels(e.target.value)}
+                  rows={6}
+                  spellCheck={false}
+                  placeholder={TYPED_DECISION_EXAMPLE}
+                  className="mt-1 w-full rounded-lg border border-border bg-surface px-3 py-2 font-mono text-xs text-text focus:border-primary focus:outline-none"
+                />
+                <p className="mt-1 text-xs text-text-muted">
+                  One forward pass answers all of them.{" "}
+                  <span className="font-mono">choice</span> picks from{" "}
+                  <span className="font-mono">criteria</span>,{" "}
+                  <span className="font-mono">score</span> places it on that
+                  ordered scale, and <span className="font-mono">noul</span>{" "}
+                  returns P(true) with no criteria.
+                  <br />
+                  <strong>Word the question the way the text does.</strong> This
+                  model matches vocabulary more than meaning: on an email saying
+                  “cancelamos el plan”, asking “amenaza con cancelar” answers
+                  yes at 0.98 and asking “amenaza con irse” — the same question
+                  in synonyms — answers no at 0.17.
+                </p>
+                {!candidateLabels && (
+                  <button
+                    type="button"
+                    onClick={() => setCandidateLabels(TYPED_DECISION_EXAMPLE)}
+                    className="mt-1 text-xs text-primary hover:underline"
+                  >
+                    Fill the example
+                  </button>
+                )}
+              </div>
+            )}
+
+            {isClassification && (
+              <p className="mt-3 text-xs text-text-muted">
+                This model's labels come from the checkpoint, not from the
+                request — nothing to choose. For labels you set per call, pick a
+                model under “Decision (zero-shot)”.
               </p>
-              {!candidateLabels && (
+            )}
+
+            {attachedImage && (
+              <div className="mt-3 flex items-center gap-2 rounded-lg border border-border bg-surface p-2">
+                <img
+                  src={attachedImage.dataUrl}
+                  alt={attachedImage.name}
+                  className="h-12 w-12 rounded object-cover"
+                />
+                <span className="flex-1 truncate text-xs text-text-muted">
+                  {attachedImage.name}
+                </span>
                 <button
                   type="button"
-                  onClick={() => setCandidateLabels(TYPED_DECISION_EXAMPLE)}
-                  className="mt-1 text-xs text-primary hover:underline"
+                  onClick={() => setAttachedImage(null)}
+                  title="Remove image"
+                  className="cursor-pointer text-text-muted hover:text-text"
                 >
-                  Fill the example
+                  <X size={14} />
                 </button>
+              </div>
+            )}
+
+            <div className="mt-4 flex items-end gap-2">
+              {isVisionModel && (
+                <>
+                  <input
+                    ref={imageInputRef}
+                    type="file"
+                    accept="image/*"
+                    onChange={handleImageFileSelected}
+                    className="hidden"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => imageInputRef.current?.click()}
+                    disabled={isBusy}
+                    title="Attach an image"
+                    className="flex shrink-0 items-center justify-center self-stretch rounded-lg border border-border px-3 text-text-muted hover:bg-background disabled:cursor-not-allowed disabled:opacity-40"
+                  >
+                    <Paperclip size={16} />
+                  </button>
+                </>
               )}
-            </div>
-          )}
-
-          {isClassification && (
-            <p className="mt-3 text-xs text-text-muted">
-              This model's labels come from the checkpoint, not from the request
-              — nothing to choose. For labels you set per call, pick a model
-              under “Decision (zero-shot)”.
-            </p>
-          )}
-
-          {attachedImage && (
-            <div className="mt-3 flex items-center gap-2 rounded-lg border border-border bg-surface p-2">
-              <img
-                src={attachedImage.dataUrl}
-                alt={attachedImage.name}
-                className="h-12 w-12 rounded object-cover"
+              <textarea
+                rows={2}
+                value={draft}
+                onChange={(e) => setDraft(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" && !e.shiftKey) {
+                    e.preventDefault();
+                    handleSend();
+                    return;
+                  }
+                  composerHistory.handleKeyDown(e, draft, setDraft);
+                }}
+                placeholder={placeholder()}
+                disabled={readyInstances.length === 0 || isBusy}
+                className={cn(inputClass, "flex-1")}
               />
-              <span className="flex-1 truncate text-xs text-text-muted">
-                {attachedImage.name}
-              </span>
               <button
                 type="button"
-                onClick={() => setAttachedImage(null)}
-                title="Remove image"
-                className="cursor-pointer text-text-muted hover:text-text"
+                onClick={handleSend}
+                disabled={!selectedModel || isBusy || !canSendDraft}
+                className="flex items-center gap-2 rounded-lg bg-primary px-4 py-2.5 text-sm font-medium text-primary-foreground hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-40"
               >
-                <X size={14} />
+                <Send size={16} />
+                {sendLabel()}
               </button>
             </div>
-          )}
-
-          <div className="mt-4 flex items-end gap-2">
-            {isVisionModel && (
-              <>
-                <input
-                  ref={imageInputRef}
-                  type="file"
-                  accept="image/*"
-                  onChange={handleImageFileSelected}
-                  className="hidden"
-                />
-                <button
-                  type="button"
-                  onClick={() => imageInputRef.current?.click()}
-                  disabled={isBusy}
-                  title="Attach an image"
-                  className="flex shrink-0 items-center justify-center self-stretch rounded-lg border border-border px-3 text-text-muted hover:bg-background disabled:cursor-not-allowed disabled:opacity-40"
-                >
-                  <Paperclip size={16} />
-                </button>
-              </>
-            )}
-            <textarea
-              rows={2}
-              value={draft}
-              onChange={(e) => setDraft(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === "Enter" && !e.shiftKey) {
-                  e.preventDefault();
-                  handleSend();
-                  return;
-                }
-                composerHistory.handleKeyDown(e, draft, setDraft);
-              }}
-              placeholder={placeholder()}
-              disabled={readyInstances.length === 0 || isBusy}
-              className={cn(inputClass, "flex-1")}
-            />
-            <button
-              type="button"
-              onClick={handleSend}
-              disabled={!selectedModel || isBusy || !canSendDraft}
-              className="flex items-center gap-2 rounded-lg bg-primary px-4 py-2.5 text-sm font-medium text-primary-foreground hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-40"
-            >
-              <Send size={16} />
-              {sendLabel()}
-            </button>
           </div>
         </div>
 
@@ -1805,6 +1814,12 @@ export default function Playground() {
             before the request rather than beside it. */}
         {isTextLike && (
           <aside className="w-72 shrink-0 space-y-5 overflow-y-auto border-l border-border bg-surface px-5 py-8">
+            {/* Named, so the split reads as a rule rather than an accident:
+                settings that persist across requests live here, and the
+                inputs that change per request live with the composer. */}
+            <p className="text-xs font-medium uppercase tracking-wide text-text-muted">
+              Model settings
+            </p>
             {isTextLike && (
               <>
                 <div>
