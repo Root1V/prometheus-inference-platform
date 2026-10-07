@@ -14,8 +14,37 @@ export interface RateLimitValues {
 }
 
 /** GET/PUT/DELETE /admin/api/limits — RM-56. */
+/** PRM-229: one limit, with the layer it belongs to and whether this page can
+ *  edit it. The eleven added by PRM-224..228 are `.env`-only until the
+ *  migration that gives `RateLimitConfig` a column each. */
+export interface LimitField {
+  field: string;
+  /** What is in force, which is not always what is configured. */
+  value: number | null;
+  /**
+   * `set` — a number someone chose.
+   * `derived` — computed by PRM-227 and enforced all the same.
+   * `unset` — this dimension genuinely refuses nothing.
+   *
+   * The middle one is why this field exists: reporting the raw setting would
+   * have the page call an enforced 360 RPM ceiling "nothing set".
+   */
+  source: "set" | "derived" | "unset";
+  editable: boolean;
+}
+
+export interface LimitLayer {
+  layer: "platform" | "client" | "endpoint";
+  /** One line on what this layer bounds — the page shows it verbatim. */
+  what: string;
+  fields: LimitField[];
+}
+
 export interface RateLimitsResponse {
   limits: RateLimitValues;
+  /** PRM-229: every limit there is, grouped by layer. A request passes all
+   *  three, so showing one of them was showing a third of the answer. */
+  layers: LimitLayer[];
   /** What .env asked for, so the UI can show what a reset would restore. */
   env_defaults: RateLimitValues;
   /** false = the .env values are in effect verbatim, nothing saved. */
@@ -36,7 +65,8 @@ const LIMITS_KEY = ["rate-limits"] as const;
 export function useRateLimits() {
   return useQuery({
     queryKey: LIMITS_KEY,
-    queryFn: async () => (await apiClient.get<RateLimitsResponse>("/limits")).data,
+    queryFn: async () =>
+      (await apiClient.get<RateLimitsResponse>("/limits")).data,
   });
 }
 
@@ -57,7 +87,8 @@ export function useUpdateRateLimits() {
 export function useResetRateLimits() {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: async () => (await apiClient.delete<RateLimitsResponse>("/limits")).data,
+    mutationFn: async () =>
+      (await apiClient.delete<RateLimitsResponse>("/limits")).data,
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: LIMITS_KEY });
       queryClient.invalidateQueries({ queryKey: CONFIG_KEY });

@@ -8764,3 +8764,30 @@ gone. Counting and deleting are separate now, and a test asserts the tier surviv
 CRUD endpoints, assignment validation, cache invalidation on every write, the Users modal field, and
 three tests. Out — a tier editor in the UI (the endpoints are there; the catalogue is small and
 changes rarely), automatic promotion by spend, and per-model limits.
+
+
+## PRM-229 — Limits shows the three layers
+
+**Why**: PRM-224 through PRM-228 added eleven dimensions and two layers, and the page kept showing
+two dimensions of one layer. Worse than incomplete, it was wrong: the card reading
+`Global RPM 60 — requests/min per client` is the per-**endpoint** value, so a reader learned a
+number that is not what a client may consume. That is the defect this whole sweep has been chasing,
+introduced by me, by changing the system and not the page describing it.
+
+**Three cards, one per layer**, each saying what it bounds in a line — *everyone at once*, *one
+consumer across every endpoint*, *one consumer on one route* — with every dimension listed under the
+scope that actually applies to it.
+
+**The effective value, not the configured one.** PRM-227 left the consumer layer always enforced
+with a ceiling derived from the per-endpoint allowances, so `rate_limit_rpm_client` being null does
+not mean "no ceiling": it means 360, computed and enforced. Reporting the raw setting would have had
+this page say a layer refuses nothing while it refuses at 360 — the same class of lie, one layer
+down. Each field now carries `set` / `derived` / `unset`, and the middle one is why the field exists.
+
+**Eleven are `.env`-only and the page says so** rather than letting a reader discover it by not
+finding them. Making them editable needs a column each on `RateLimitConfig`; PRM-182 recorded that
+this is one change rather than two, and it is the next item.
+
+**Scope**: in — `limits_by_layer` with effective values, the three cards, the corrected form hints
+and page intro. Out — editing the eleven (needs the migration), and a live view of which layer is
+currently refusing, which is the diagnostic item after it.

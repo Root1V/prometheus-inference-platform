@@ -71,6 +71,7 @@ from fastapi import APIRouter, Request, Response
 from fastapi.responses import JSONResponse
 
 from .. import audit, db, pricing, rate_limits, traffic_split
+from ..rate_limit_middleware import INFERENCE_ENDPOINT_SLUGS
 from ..config import Settings
 from ..router import _problem
 from ..telemetry import activity_tracker, get_logger
@@ -1180,6 +1181,13 @@ def create_admin_router(manager_client: ManagerApiClient) -> APIRouter:
         settings: Settings = request.app.state.settings
         return {
             "limits": rate_limits.current_limits(settings),
+            # PRM-229: and all of them, grouped by layer. `limits` above stays
+            # exactly as it was — it is what the editable form posts back, and
+            # widening it would have made the form's shape depend on a display
+            # concern.
+            "layers": rate_limits.limits_by_layer(
+                settings, endpoint_count=len(INFERENCE_ENDPOINT_SLUGS)
+            ),
             "env_defaults": request.app.state.rate_limit_env_defaults,
             # False = the .env values are in effect verbatim.
             "is_overridden": is_overridden,

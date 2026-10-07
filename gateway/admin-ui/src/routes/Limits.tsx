@@ -1,16 +1,82 @@
 import { useDashboardConfig } from "../api/config";
 import { useInstances } from "../api/instances";
+import { useRateLimits, type LimitLayer } from "../api/limits";
 import { useMetrics } from "../api/metrics";
 import { CircuitBadge } from "../components/CircuitBadge";
 import { CircuitBreakerForm } from "../components/CircuitBreakerForm";
 import { RateLimitsForm } from "../components/RateLimitsForm";
 import { Sidebar } from "../components/Sidebar";
 import { StatCard } from "../components/StatCard";
-import { AlertOctagon, Gauge, RotateCw, ShieldAlert } from "lucide-react";
+import { AlertOctagon, RotateCw } from "lucide-react";
+
+/**
+ * One layer's ceilings — PRM-229.
+ *
+ * Names come from the setting itself rather than a second table of labels:
+ * `rate_limit_tpm_output` is read by whoever sets `RATE_LIMIT_TPM_OUTPUT`, and
+ * a prettier name here would be one more thing to keep in step with `.env`.
+ *
+ * The `.env` chip marks the eleven PRM-224..228 added. They are live and
+ * enforced; they are simply not editable from this page until each has a
+ * column on `RateLimitConfig` — the migration PRM-182 said belongs in one
+ * change rather than two.
+ */
+function LimitLayerCard({ layer }: { layer: LimitLayer }) {
+  // Anything in force, derived or chosen — an enforced ceiling is not absent
+  // just because nobody typed it.
+  const inForce = layer.fields.filter((f) => f.source !== "unset");
+  return (
+    <div className="rounded-xl border border-border bg-surface p-4">
+      <p className="text-xs font-medium uppercase tracking-wide text-text-muted">
+        {layer.layer}
+      </p>
+      <p className="mt-1 text-sm text-text">{layer.what}</p>
+      {inForce.length === 0 ? (
+        <p className="mt-3 text-xs text-text-muted">
+          {/* Absent is not zero. An unset platform ceiling means the platform
+              is bounded only by the sum of its consumers — a real state, not
+              a missing one. */}
+          Nothing set — this layer refuses nothing today.
+        </p>
+      ) : (
+        <div className="mt-3 space-y-1.5">
+          {inForce.map((f) => (
+            <div key={f.field} className="flex items-baseline gap-2 text-sm">
+              <span className="min-w-0 flex-1 truncate font-mono text-xs text-text-muted">
+                {f.field.replace("rate_limit_", "")}
+              </span>
+              <span className="shrink-0 tabular-nums text-text">
+                {f.value?.toLocaleString()}
+              </span>
+              {f.source === "derived" ? (
+                <span
+                  className="shrink-0 rounded bg-primary/10 px-1.5 py-0.5 text-[10px] font-medium text-primary"
+                  title="Nobody set this — it is the sum of the per-endpoint allowances, computed and enforced. Put the client on a tier to choose a real number."
+                >
+                  derived
+                </span>
+              ) : (
+                !f.editable && (
+                  <span
+                    className="shrink-0 rounded bg-background px-1.5 py-0.5 text-[10px] font-medium text-text-muted"
+                    title="Live and enforced, but set through .env and a restart — this page cannot edit it yet."
+                  >
+                    .env
+                  </span>
+                )
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
 
 export default function Limits() {
   const configQuery = useDashboardConfig();
   const metricsQuery = useMetrics();
+  const limitsQuery = useRateLimits();
   const instancesQuery = useInstances();
 
   const config = configQuery.data;
@@ -43,65 +109,44 @@ export default function Limits() {
       <main className="min-w-0 flex-1 px-8 py-8">
         <h1 className="text-2xl font-semibold text-text">Limits</h1>
         <p className="mt-1 text-sm text-text-muted">
-          Current rate-limit and circuit-breaker configuration, and live
-          per-model circuit state. Rate limits and circuit-breaker thresholds
-          are both editable below and apply without a restart.
+          {/* PRM-229: "editable below" was true of six fields and is now true
+              of six out of seventeen, so saying it plainly beats letting a
+              reader discover the other eleven by not finding them. */}
+          Rate limits apply in three layers and a request passes all of them.
+          The form below edits the endpoint layer and applies without a restart;
+          the rest are set through .env, and a client's own ceiling comes from
+          its tier on the Users page.
         </p>
 
+        {/* PRM-229: three layers, because a request passes all three.
+            This was four cards drawn from one of them, and the one labelled
+            "requests/min per client" is the per-*endpoint* value — so the
+            page taught a number that is not what a client may consume. */}
         <h2 className="mt-8 text-sm font-medium uppercase tracking-wide text-text-muted">
           Rate limits
         </h2>
-        <div className="mt-3 grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
-          <StatCard
-            label="Global RPM"
-            value={config ? config.rate_limit_rpm : "—"}
-            sub="requests/min per client"
-            icon={Gauge}
-          />
-          <StatCard
-            label="Global TPM"
-            value={config ? config.rate_limit_tpm.toLocaleString() : "—"}
-            sub="tokens/min per client"
-            icon={Gauge}
-          />
-          <StatCard
-            label="Chat completions override"
-            value={
-              config
-                ? config.rate_limit_rpm_chat_completions !== null
-                  ? `${config.rate_limit_rpm_chat_completions} RPM`
-                  : "—"
-                : "—"
-            }
-            sub={
-              config?.rate_limit_tpm_chat_completions !== null && config
-                ? `${config.rate_limit_tpm_chat_completions.toLocaleString()} TPM`
-                : "None configured"
-            }
-            icon={Gauge}
-          />
-          <StatCard
-            label="On store unavailable"
-            value={config ? (config.rate_limit_strict ? "Deny" : "Allow") : "—"}
-            // The only card here without a line of its own, and the one that
-            // most needed it: it decides what happens to every request when
-            // Redis cannot be reached, and "strict" alone is a word, not an
-            // answer.
-            sub={
-              config
-                ? config.rate_limit_strict
-                  ? "Redis down → every request is refused (strict)"
-                  : "Redis down → every request is allowed through (fail-open)"
-                : undefined
-            }
-            tone={config?.rate_limit_strict === false ? "warn" : "neutral"}
-            toneReason={
-              config?.rate_limit_strict === false
-                ? "With the store unreachable the limiter cannot count, so nothing is enforced — traffic passes unmetered until Redis returns."
-                : undefined
-            }
-            icon={ShieldAlert}
-          />
+        <p className="mt-1 text-sm text-text-muted">
+          A request passes every layer that applies, not whichever is most
+          specific. The narrowest ceiling it meets is the one that stops it.
+        </p>
+        <div className="mt-3 grid grid-cols-1 gap-4 lg:grid-cols-3">
+          {(limitsQuery.data?.layers ?? []).map((layer) => (
+            <LimitLayerCard key={layer.layer} layer={layer} />
+          ))}
+        </div>
+
+        <div className="mt-4 rounded-xl border border-border bg-surface px-4 py-3">
+          <p className="flex flex-wrap items-baseline gap-x-2 text-sm">
+            <span className="font-medium text-text">
+              On store unavailable:{" "}
+              {config ? (config.rate_limit_strict ? "Deny" : "Allow") : "—"}
+            </span>
+            <span className="text-text-muted">
+              {config?.rate_limit_strict === false
+                ? "Redis down → every request passes unmetered, because the limiter cannot count."
+                : "Redis down → every request is refused, across all three layers."}
+            </span>
+          </p>
         </div>
 
         <div className="mt-4">
