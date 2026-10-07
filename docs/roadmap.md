@@ -8509,6 +8509,21 @@ summary response; only the second was rendered, and only in the history table. T
 `unpriced_requests` **is** rendered, in the history row, with a good explanation of what it means;
 `request_count` is there too. Reading the page is not reading the code.
 
+**Revised after use.** Bars made three days legible and a thirty-day month unreadable, and the
+question a period chart is read for is the trend. The area is back — but `linear`, with a dot per
+day. The original objection was narrower than "no curve": `monotone` interpolates *curvature*,
+inventing acceleration nobody measured, and through few points it can draw a peak higher than the
+dearest day. Straight segments between marked observations keep the trend and never leave the range
+of the data.
+
+`Cost by model` also stopped being a chart. Three 18px bars adrift in a 256px box read as
+unfinished, and widening them would have treated the symptom: that card asks the question the
+overview's rankings answer better, so it reuses `RankTable` — one visual grammar for "ranked by
+cost", denser, and carrying the tokens and requests behind each figure, which the chart had nowhere
+to put. Its value column shrink-wraps rather than taking a fixed width, because `significantDecimals`
+goes to twenty places: `USD 0.00000064` is fourteen characters, `w-20` clipped it and `w-28` still
+missed by three pixels. Rounding would be the silent zero PRM-119 prevents, so the column gives way.
+
 **Scope**: in — the two charts, the subtotal's sub-line, the repeated period in a card label, and
 the empty spend-cap card. Out — the page's structure, which is PRM-221.
 

@@ -9,10 +9,9 @@ import {
 } from "lucide-react";
 import { Fragment, useState, type CSSProperties } from "react";
 import {
-  Bar,
-  BarChart,
+  Area,
+  AreaChart,
   CartesianGrid,
-  LabelList,
   ResponsiveContainer,
   Tooltip,
   XAxis,
@@ -150,7 +149,15 @@ function RankTable({
                         ? "<1%"
                         : `${share.toFixed(0)}%`}
                   </span>
-                  <span className="w-20 text-right text-sm tabular-nums text-text">
+                  {/* No fixed width, because the figure has no fixed length.
+                      `formatUsdCost` keeps significant digits all the way
+                      down, so a model costing USD 0.00000064 is fourteen
+                      characters — `w-20` clipped it to "USD 0.00000" and
+                      `w-28` still missed by three pixels. Rounding instead
+                      would be the silent zero PRM-119 exists to prevent, so
+                      the number sets the width and the name truncates. Right
+                      edges still line up: it is the last cell in the row. */}
+                  <span className="shrink-0 whitespace-nowrap text-right text-sm tabular-nums text-text">
                     {formatUsdCost(row.cost)}
                   </span>
                 </div>
@@ -591,67 +598,27 @@ export default function Billing() {
             </div>
 
             <div className="mt-8 grid grid-cols-1 gap-6 lg:grid-cols-2">
-              <div className="rounded-xl border border-border bg-surface p-5">
-                <h2 className="text-sm font-medium uppercase tracking-wide text-text-muted">
-                  Cost by model
-                </h2>
-                <div className="mt-4 h-64">
-                  {modelBreakdown.length === 0 ? (
-                    <p className="flex h-full items-center justify-center text-sm text-text-muted">
-                      No usage this period.
-                    </p>
-                  ) : (
-                    <ResponsiveContainer width="100%" height="100%">
-                      {/* PRM-220: horizontal, and the reason is measurable.
-                          Vertically, Recharts drops a tick when labels collide:
-                          three models rendered three bars and two names, so the
-                          middle one — qwen36-35b-a3b-q4 at USD 0.5043 — was a
-                          quantity nobody could name, on a billing page. Turned
-                          on its side, a model slug has a whole row to sit in.
-                          It also sorts by cost, which a category axis cannot. */}
-                      <BarChart
-                        data={modelBreakdown}
-                        layout="vertical"
-                        margin={{ top: 4, right: 56, bottom: 4, left: 0 }}
-                      >
-                        <CartesianGrid
-                          strokeDasharray="3 3"
-                          stroke={GRID_COLOR}
-                          horizontal={false}
-                        />
-                        <XAxis type="number" hide />
-                        <YAxis
-                          type="category"
-                          dataKey="label"
-                          tick={{ fill: AXIS_COLOR, fontSize: 11 }}
-                          axisLine={false}
-                          tickLine={false}
-                          width={150}
-                        />
-                        <Tooltip
-                          cursor={{ fill: GRID_COLOR, fillOpacity: 0.25 }}
-                          contentStyle={tooltipStyle()}
-                          formatter={tooltipCostFormatter}
-                        />
-                        <Bar
-                          dataKey="cost"
-                          fill={CHART_COLOR}
-                          radius={[0, 4, 4, 0]}
-                          barSize={18}
-                        >
-                          <LabelList
-                            dataKey="cost"
-                            position="right"
-                            className="fill-text-muted"
-                            fontSize={11}
-                            formatter={(v: unknown) => formatUsdCost(Number(v))}
-                          />
-                        </Bar>
-                      </BarChart>
-                    </ResponsiveContainer>
-                  )}
-                </div>
-              </div>
+              {/* PRM-220, revised: the same ranking the platform section
+                  uses, at client scope.
+
+                  It was a bar chart, and reported as looking unfinished —
+                  rightly: three 18px bars adrift in a 256px box, with the
+                  gaps larger than the bars. Widening them would have treated
+                  the symptom. This card asks the question the overview's
+                  "Most billed models" already answers better, so it reuses
+                  that component: one visual grammar for "ranked by cost",
+                  denser, and carrying the tokens and requests behind each
+                  figure, which the chart had nowhere to put. */}
+              <RankTable
+                title="Cost by model"
+                rows={modelBreakdown.map((m) => ({
+                  key: m.model_id,
+                  name: m.model_id,
+                  cost: m.cost,
+                  sub: `${compactTokens(m.tokens)} tokens · ${m.request_count.toLocaleString()} requests`,
+                }))}
+                total={summary.subtotal_usd ?? 0}
+              />
 
               <div className="rounded-xl border border-border bg-surface p-5">
                 <h2 className="text-sm font-medium uppercase tracking-wide text-text-muted">
@@ -664,17 +631,41 @@ export default function Billing() {
                     </p>
                   ) : (
                     <ResponsiveContainer width="100%" height="100%">
-                      {/* PRM-220: bars, because a day's spend is one number
-                          and not a process.
+                      {/* PRM-220, revised: an area again, but `linear`.
+                          Bars made three days legible and a thirty-day month
+                          unreadable, and the question asked of a period chart
+                          is the trend — is this month climbing or falling.
 
-                          It was `type="monotone"`, a spline through the daily
-                          totals: on this client's three days — 0.0861, 3.3055,
-                          0.1743 — it drew a gradual rise and fall that never
-                          happened, and a curve through so few points can leave
-                          the range of the data entirely. What occurred was a
-                          spike on the 6th. One bar per day says that and
-                          nothing else. */}
-                      <BarChart data={dailyTrend}>
+                          The original objection stands and is narrower than
+                          "no curve": `monotone` interpolates *curvature*
+                          between points, inventing acceleration that was never
+                          measured, and through few points it can draw a peak
+                          higher than the dearest day. `linear` joins the
+                          observations with straight segments and never leaves
+                          the range of the data. The dots mark where a
+                          measurement actually exists, so the line reads as
+                          days joined up rather than a continuous function. */}
+                      <AreaChart data={dailyTrend}>
+                        <defs>
+                          <linearGradient
+                            id="dailySpendFill"
+                            x1="0"
+                            y1="0"
+                            x2="0"
+                            y2="1"
+                          >
+                            <stop
+                              offset="0%"
+                              stopColor={CHART_COLOR}
+                              stopOpacity={0.35}
+                            />
+                            <stop
+                              offset="100%"
+                              stopColor={CHART_COLOR}
+                              stopOpacity={0}
+                            />
+                          </linearGradient>
+                        </defs>
                         <CartesianGrid
                           strokeDasharray="3 3"
                           stroke={GRID_COLOR}
@@ -685,6 +676,7 @@ export default function Billing() {
                           tick={{ fill: AXIS_COLOR, fontSize: 12 }}
                           axisLine={{ stroke: GRID_COLOR }}
                           tickLine={false}
+                          minTickGap={24}
                         />
                         <YAxis
                           tick={{ fill: AXIS_COLOR, fontSize: 12 }}
@@ -694,16 +686,19 @@ export default function Billing() {
                           width={70}
                         />
                         <Tooltip
-                          cursor={{ fill: GRID_COLOR, fillOpacity: 0.25 }}
                           contentStyle={tooltipStyle()}
                           formatter={tooltipCostFormatter}
                         />
-                        <Bar
+                        <Area
+                          type="linear"
                           dataKey="cost"
-                          fill={CHART_COLOR}
-                          radius={[4, 4, 0, 0]}
+                          stroke={CHART_COLOR}
+                          fill="url(#dailySpendFill)"
+                          strokeWidth={2}
+                          dot={{ r: 2.5, fill: CHART_COLOR, strokeWidth: 0 }}
+                          activeDot={{ r: 4 }}
                         />
-                      </BarChart>
+                      </AreaChart>
                     </ResponsiveContainer>
                   )}
                 </div>
