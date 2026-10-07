@@ -221,3 +221,73 @@ async function fetchUsageExportRows(params: {
   }
   return rows;
 }
+
+/** One day's totals across every client — PRM-208. */
+export interface UsageRangeDay {
+  day: string;
+  cost_usd: number | null;
+  tokens: number;
+  request_count: number;
+  /** PRM-119: how many of those could not be priced. A period of entirely
+   * unpriced usage must not read as one that genuinely cost nothing. */
+  unpriced_requests: number;
+}
+
+/** One client's totals across the whole range. */
+/** The five kinds the platform actually serves. `image` carries no tokens. */
+export type UsageRequestKind = "chat" | "embedding" | "rerank" | "predict" | "image";
+
+export interface UsageRangeModel {
+  client_id: string;
+  model_id: string;
+  request_kind: UsageRequestKind | string;
+  cost_usd: number | null;
+  prompt_tokens: number;
+  completion_tokens: number;
+  total_tokens: number;
+  image_count: number;
+  request_count: number;
+  unpriced_requests: number;
+}
+
+export interface UsageRangeClient {
+  client_id: string;
+  cost_usd: number | null;
+  prompt_tokens: number;
+  completion_tokens: number;
+  total_tokens: number;
+  request_count: number;
+  unpriced_requests: number;
+  /** Dearest model first. Empty only if the client had no usage in the range. */
+  by_model: UsageRangeModel[];
+  /** Calendar-month-to-date spend. NOT the range above — PRM-208. */
+  month_to_date_cost_usd: number | null;
+  /** null when this client has no cap configured. */
+  monthly_spend_cap_usd: number | null;
+}
+
+export interface UsageRangeResponse {
+  object: string;
+  start: string;
+  /** First day of the month the cap figures are measured over. */
+  month_to_date_start: string;
+  end: string;
+  daily: UsageRangeDay[];
+  by_client: UsageRangeClient[];
+}
+
+/** GET /v1/usage/range — PRM-208. The single-day route answers "what happened
+ * today"; this answers "who has been using the platform", which nothing did. */
+export function useUsageRange(start: string, end: string) {
+  return useQuery({
+    queryKey: ["usage-range", start, end],
+    queryFn: async () => {
+      const { data } = await rootClient.get<UsageRangeResponse>("/v1/usage/range", {
+        params: { start, end },
+      });
+      return data;
+    },
+    enabled: Boolean(start && end),
+  });
+}
+

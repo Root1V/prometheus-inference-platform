@@ -706,6 +706,105 @@ async def query_daily_cost_range(
         ]
 
 
+async def query_client_cost_range(start: date, end: date) -> list[dict[str, Any]]:
+    """Per-client totals for [start, end] inclusive — PRM-208.
+
+    The third of this family, and the one that was missing. `query_daily_*` and
+    `query_model_*` both already existed and both already take an optional
+    `client_id` to narrow to one; neither answers "which clients, across all of
+    them", which is what the Usage page is for. Grouped in SQL for the same
+    reason as its siblings: the alternative is pulling every event of the range
+    into Python to add it up.
+
+    `unpriced_requests` is carried for the same reason PRM-119 added it to the
+    other two — `SUM` skips NULLs, so without it a period of entirely unpriced
+    usage is indistinguishable from one that genuinely cost nothing, and the
+    page then states a confident zero.
+    """
+    session_factory = get_session_factory()
+    async with session_factory() as session:
+        stmt = (
+            select(
+                UsageEvent.client_id,
+                func.sum(UsageEvent.cost_usd).label("cost_usd"),
+                func.sum(UsageEvent.prompt_tokens).label("prompt_tokens"),
+                func.sum(UsageEvent.completion_tokens).label("completion_tokens"),
+                func.count().label("request_count"),
+                func.sum(case((UsageEvent.cost_usd.is_(None), 1), else_=0)).label(
+                    "unpriced_requests"
+                ),
+            )
+            .where(UsageEvent.day >= start, UsageEvent.day <= end)
+            .group_by(UsageEvent.client_id)
+        )
+        result = await session.execute(stmt)
+        return [
+            {
+                "client_id": row.client_id,
+                "cost_usd": row.cost_usd,
+                "prompt_tokens": int(row.prompt_tokens or 0),
+                "completion_tokens": int(row.completion_tokens or 0),
+                "total_tokens": int((row.prompt_tokens or 0) + (row.completion_tokens or 0)),
+                "request_count": int(row.request_count or 0),
+                "unpriced_requests": int(row.unpriced_requests or 0),
+            }
+            for row in result.all()
+        ]
+
+
+async def query_client_model_cost_range(start: date, end: date) -> list[dict[str, Any]]:
+    """Per-(client, model) totals for [start, end] inclusive — PRM-208.
+
+    `query_client_cost_range` answers *who*; this answers *who, on what*, which
+    is the breakdown the single-day route carried and the range route did not.
+    Grouped in one statement rather than calling
+    `query_model_cost_range(client_id=...)` once per client: thirteen round
+    trips to fill one table is a client working around a missing query.
+
+    `request_kind` is part of the grouping because the platform serves five of
+    them — chat, embedding, rerank, predict and image — and an image request
+    carries **zero tokens** while costing real money. Measured on live data: six
+    image requests account for 9% of the entire bill and contribute nothing to
+    any token figure. A breakdown that omitted the kind would show that row as
+    `0 tokens / $1.54` with no explanation on the page for the discrepancy.
+    """
+    session_factory = get_session_factory()
+    async with session_factory() as session:
+        stmt = (
+            select(
+                UsageEvent.client_id,
+                UsageEvent.model_id,
+                UsageEvent.request_kind,
+                func.sum(UsageEvent.cost_usd).label("cost_usd"),
+                func.sum(UsageEvent.prompt_tokens).label("prompt_tokens"),
+                func.sum(UsageEvent.completion_tokens).label("completion_tokens"),
+                func.sum(UsageEvent.image_count).label("image_count"),
+                func.count().label("request_count"),
+                func.sum(case((UsageEvent.cost_usd.is_(None), 1), else_=0)).label(
+                    "unpriced_requests"
+                ),
+            )
+            .where(UsageEvent.day >= start, UsageEvent.day <= end)
+            .group_by(UsageEvent.client_id, UsageEvent.model_id, UsageEvent.request_kind)
+        )
+        result = await session.execute(stmt)
+        return [
+            {
+                "client_id": row.client_id,
+                "model_id": row.model_id,
+                "request_kind": row.request_kind,
+                "cost_usd": row.cost_usd,
+                "prompt_tokens": int(row.prompt_tokens or 0),
+                "completion_tokens": int(row.completion_tokens or 0),
+                "total_tokens": int((row.prompt_tokens or 0) + (row.completion_tokens or 0)),
+                "image_count": int(row.image_count or 0),
+                "request_count": int(row.request_count or 0),
+                "unpriced_requests": int(row.unpriced_requests or 0),
+            }
+            for row in result
+        ]
+
+
 async def query_model_cost_range(
     start: date, end: date, client_id: str | None = None
 ) -> list[dict[str, Any]]:

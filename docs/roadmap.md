@@ -8133,3 +8133,48 @@ universal one.
 collapse, and always-expandable rows. Out — a usage-over-time chart: Billing already carries one
 per client, and this page's job is the per-day, per-model breakdown rather than a second trend.
 
+
+## PRM-208 — Usage over a range, with the data to act on it
+
+**Why**: PRM-207 closed by ruling a trend chart out of scope, on the reasoning that Billing already
+carries one. That was wrong in a specific way: Billing's chart is *per client*, so **all clients over
+time** was answerable nowhere, and a page whose job is "who is using the platform" was answering it
+one UTC day at a time — two rows and half a screen of empty.
+
+Dropping the day also dissolved the ambiguity PRM-207 had settled for *labelling*: a `Day` picker
+driving the table and a `From`/`To` pair silently driving only the CSV. One range now drives the
+chart, the ranking and the export.
+
+**Then the ranking had to be worth ranking.** Sorted-by-cost tells you who to look at and nothing
+about what to do, so five things were added, each measured against live data first:
+
+- **Request kind.** The platform serves five — chat, embedding, rerank, predict, image — and the page
+  showed none. An `image` request carries **zero tokens** and still costs money: six of them are 9%
+  of the entire bill. The share bar was measured in tokens, so the fourth most expensive client on
+  the platform rendered as a bar at zero beside its own cost column. Share is now measured in cost,
+  which is what the table already sorts by, and an image row says `1 image` rather than a bare `0`.
+- **Effective rate (USD/Mtok).** Spans **800×** across live clients, $0.10 to $80.38. It is the
+  number that distinguishes an expensive model from heavy use, and it had to be computed by dividing
+  two columns by hand. Null, not `Infinity`, when there are no tokens to divide by.
+- **Average tokens per request.** 7,121/req on one client, 37/req on another. Same bill, opposite
+  remedy — one needs its context trimmed, the other a rate limit.
+- **Prompt/completion split.** Completion prices at roughly 4–5× prompt, so the split decides between
+  caching the prompt and capping `max_tokens`. It existed, on a tooltip.
+- **Month-to-date against the cap.** Deliberately *not* derived from the selected range: a cap is a
+  calendar-month limit, and measuring an arbitrary seven-day window against it would be this repo's
+  recurring defect — the instrument asserting something it did not measure. The fields carry their
+  period in their names and the column header states it.
+
+**The kind mix and the busiest model** close the last gap: the five kinds were readable only by
+expanding a client row, and four cards describing the range in the abstract — volume, tokens, money,
+headcount — named nothing you could act on. Both are folded out of `by_model`, which the range
+response already carries, so neither costs a request. The mix is counted in **requests**: tokens
+would erase images, which have none, and cost would make the chart a second copy of the share
+column. `minPointSize` keeps a kind with one request visible beside one with eight thousand —
+a bar at zero pixels reads as "not used" rather than "barely used", and those are different answers.
+
+**Scope**: in — `GET /v1/usage/range` (per-day, per-client, per-(client, model, kind), plus
+month-to-date and caps), `query_client_cost_range` and `query_client_model_cost_range`, the presets,
+the trend chart, the kind-mix chart, the busiest-model card, the one expandable table, and the five
+columns above. Out — error rate and latency per client: `usage_events` records neither, so the page
+cannot answer "who is failing" or "who is slow" and does not pretend to.
