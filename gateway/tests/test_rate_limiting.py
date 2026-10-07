@@ -600,6 +600,86 @@ async def test_an_output_ceiling_refuses_once_it_is_spent(
     assert await fake_redis.get(f"prometheus:rl:tpm_in:client-a:chat_completions:{bucket}") is None
 
 
+async def test_a_daily_request_ceiling_refuses_and_says_when_it_resets(
+    rl_settings, small_registry, fake_redis, rsa_keys
+):
+    """PRM-225: RPD is check-and-increment like RPM, so a refused request has
+    still spent its slot and racing gains nothing."""
+    import time as _time
+
+    from prometheus_gateway.main import create_app
+
+    rl_settings.rate_limit_rpd = 2
+    app = create_app(settings=rl_settings, registry=small_registry, redis_client=fake_redis)
+    token = make_token(
+        rsa_keys["private"],
+        scope="inference:read inference:stream model:small-model",
+        sub="user-x",
+        azp="client-a",
+    )
+    headers = {"Authorization": f"Bearer {token}"}
+    day = int(_time.time() // 86_400)
+    await fake_redis.set(f"prometheus:rl:rpd:client-a:chat_completions:{day}", 2)
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
+        r = await c.post("/v1/chat/completions", json=VALID_BODY, headers=headers)
+
+    assert r.status_code == 429
+    assert "daily request limit" in r.json()["detail"]
+    # A day away, not a minute — a daily budget that reset sooner would not be one.
+    assert int(r.headers["Retry-After"]) > 3_600
+
+
+async def test_the_day_is_not_counted_when_no_daily_limit_is_set(
+    rl_settings, small_registry, fake_redis, rsa_keys
+):
+    """Unset means unenforced *and* unmeasured, so a deployment that does not
+    want daily limits pays no Redis traffic for them. The cost of that choice
+    is documented on the setting: switching one on mid-day starts from then."""
+    import time as _time
+
+    from prometheus_gateway.main import create_app
+
+    assert rl_settings.rate_limit_rpd is None
+    app = create_app(settings=rl_settings, registry=small_registry, redis_client=fake_redis)
+    token = make_token(
+        rsa_keys["private"],
+        scope="inference:read inference:stream model:small-model",
+        sub="user-x",
+        azp="client-a",
+    )
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
+        with respx.mock:
+            respx.post("http://127.0.0.1:18081/v1/chat/completions").mock(
+                return_value=Response(200, json=LLAMA_RESPONSE)
+            )
+            await c.post(
+                "/v1/chat/completions",
+                json=VALID_BODY,
+                headers={"Authorization": f"Bearer {token}"},
+            )
+
+    day = int(_time.time() // 86_400)
+    assert await fake_redis.get(f"prometheus:rl:rpd:client-a:chat_completions:{day}") is None
+
+
+async def test_increment_tpd_carries_a_ttl_past_its_own_window(fake_redis):
+    """PRM-225: a day's key must outlive the day, for the same reason the
+    minute's TTL is ninety seconds — a request in the last second still needs
+    the counter it belongs to."""
+    import time as _time
+
+    from prometheus_gateway.rate_limiter import RateLimiter
+
+    await RateLimiter(fake_redis).increment_tpd("client-a", "embeddings", 500)
+    day = int(_time.time() // 86_400)
+    key = f"prometheus:rl:tpd:client-a:embeddings:{day}"
+
+    assert int(await fake_redis.get(key)) == 500
+    assert await fake_redis.ttl(key) > 86_400
+
+
 def test_endpoint_slug_maps_admin_api_prefix():
     """Every /admin/api/* path — including dynamic segments like
     {node}/{model_id} — must resolve to the "admin" slug, not "default"."""

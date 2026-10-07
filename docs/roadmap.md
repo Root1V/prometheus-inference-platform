@@ -8634,3 +8634,32 @@ twice over.
 
 **Scope**: in — coverage, the split, the optional ceilings, the images slug, and three tests. Out —
 RPD/TPD buckets, IPM, and per-client tiers, which are the next three items.
+
+
+## PRM-225 — A day is a limit too
+
+**Why**: a per-minute limit answers "how hard can you push right now". It does not answer "how much
+of this is yours", and the two are different questions — a client can sit comfortably under every
+per-minute ceiling for twenty-four hours and still consume a month of capacity. Both vendors publish
+daily dimensions alongside the per-minute ones for exactly that reason.
+
+**Off by default, and unset means unmeasured.** The combined and per-direction minute limits are
+what deployments are tuned against; a daily ceiling is a different policy decision, so it is opt-in
+and costs no Redis traffic until someone opts in. The price of that choice is documented on the
+method: switching a daily limit on mid-day starts counting from that moment rather than from
+midnight.
+
+**Requests are check-and-increment, tokens are read.** The same split PRM-224 made explicit: a
+request's existence is known before it runs, so RPD can refuse atomically and a refused request has
+still spent its slot; the size of a response is not knowable before it exists, so TPD is a meter
+that refuses the *next* caller. `Retry-After` points at the next UTC midnight, which is a long wait
+and exactly the point — a daily budget that reset sooner would not be one.
+
+**The module docstring said `Sliding-window` over a `time // 60` fixed window.** Corrected, because
+it is a correctness claim rather than a description: a fixed window lets a caller spend a full quota
+at 11:59:59 and a second one at 12:00:00. Changing the window is its own item; describing it
+honestly is not.
+
+**Scope**: in — the two dimensions, their keys and TTLs, the shared 429, counting TPD from the same
+place PRM-224 moved TPM to, three tests, and the docstring. Out — IPM and per-client tiers, the two
+items left from the limits review, and the fixed-to-sliding window change.

@@ -45,6 +45,16 @@ class Settings(BaseSettings):
     # differently, which is why both vendors count them apart.
     rate_limit_tpm_input: int | None = None
     rate_limit_tpm_output: int | None = None
+    # PRM-225: the day's ceilings, both optional and both off by default.
+    #
+    # A minute limit answers "how hard can you push right now"; a day limit
+    # answers "how much of this is yours". OpenAI publishes RPD and TPD beside
+    # RPM and TPM because they are different questions — a client can sit under
+    # every per-minute limit all day and still consume a month of capacity.
+    # Unset means not counted at all, so a deployment that does not want them
+    # pays no Redis traffic for them.
+    rate_limit_rpd: int | None = None
+    rate_limit_tpd: int | None = None
     rate_limit_strict: bool = True  # fail-closed when Redis unavailable for rate limiting
     # Per-endpoint overrides (AC-13)
     rate_limit_rpm_chat_completions: int | None = None

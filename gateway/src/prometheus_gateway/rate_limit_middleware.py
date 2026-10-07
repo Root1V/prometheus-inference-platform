@@ -272,6 +272,37 @@ class RateLimitMiddleware:
 
         await self.app(scope, receive, send_with_rl_headers)
 
+    def _daily_refusal(
+        self,
+        request: Request,
+        identity: str,
+        slug: str,
+        state: Any,
+        noun: str,
+        code: str,
+    ) -> JSONResponse:
+        """One 429 for both daily dimensions — PRM-225. `retry_after` is to the
+        next UTC midnight, which is a long wait and exactly the point: a daily
+        budget that reset sooner would not be one."""
+        retry_after = max(1, state.reset_at - int(time.time()))
+        logger.warning(
+            "rate_limit.daily_exceeded",
+            identity=identity,
+            endpoint=slug,
+            dimension=noun,
+            limit=state.limit,
+        )
+        return _rl_problem(
+            request,
+            429,
+            code,
+            "Rate Limit Exceeded",
+            f"'{identity}' has exceeded the daily {noun} limit of {state.limit} for "
+            f"endpoint '{slug}'. Resets at the next UTC midnight, in {retry_after} seconds.",
+            retry_after=retry_after,
+            extra={"scope": slug},
+        )
+
     def _resolve_limits(self, endpoint_slug: str) -> tuple[int, int]:
         """Return (rpm_limit, tpm_limit) for the given endpoint, applying per-endpoint overrides.
 
@@ -382,6 +413,31 @@ class RateLimitMiddleware:
             0,  # 0 tokens for the gate check only
         )
         request.state._rl_tpm_state = tpm_state
+
+        # PRM-225: the day's ceilings, where they are set.
+        #
+        # After the minute checks, because a caller over both should hear about
+        # the one that resets soonest. Requests are check-and-increment like
+        # RPM — a refused request has still spent its slot, so racing gains
+        # nothing — while tokens are read like TPM, for the same reason: the
+        # size of a response is not knowable before it exists.
+        for identity in filter(None, (claims.client_id, claims.user_id)):
+            if self.settings.rate_limit_rpd is not None:
+                state = await self._limiter.check_and_increment_rpd(
+                    identity, slug, self.settings.rate_limit_rpd
+                )
+                if not state.allowed:
+                    return self._daily_refusal(
+                        request, identity, slug, state, "request", "rate-limit-exceeded-requests"
+                    )
+            if self.settings.rate_limit_tpd is not None:
+                state = await self._limiter.check_tpd_budget(
+                    identity, slug, self.settings.rate_limit_tpd
+                )
+                if not state.allowed:
+                    return self._daily_refusal(
+                        request, identity, slug, state, "token", "rate-limit-exceeded-tokens"
+                    )
 
         # PRM-224: and the same read, per direction, where a ceiling is set.
         #

@@ -3588,14 +3588,20 @@ async def _record_usage(
     if rl_redis is not None and prompt_tokens + completion_tokens > 0:
         try:
             limiter = RateLimiter(rl_redis)
-            await limiter.increment_tpm(
-                claims.client_id, endpoint_slug, prompt_tokens, completion_tokens
-            )
+            identities = [claims.client_id]
             # PRM-128: same identity, same key — a machine credential was
             # spending its token budget twice.
             if claims.user_id and claims.user_id != claims.client_id:
+                identities.append(claims.user_id)
+            for identity in identities:
                 await limiter.increment_tpm(
-                    claims.user_id, endpoint_slug, prompt_tokens, completion_tokens
+                    identity, endpoint_slug, prompt_tokens, completion_tokens
+                )
+                # PRM-225: the day's counter, from the same place and the same
+                # loop — a dimension added anywhere else is a dimension that
+                # covers some paths and not others, which is what PRM-224 was.
+                await limiter.increment_tpd(
+                    identity, endpoint_slug, prompt_tokens + completion_tokens
                 )
         except Exception as exc:
             logger.warning("tpm.increment_error", error=str(exc))
