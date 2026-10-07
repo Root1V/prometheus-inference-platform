@@ -68,6 +68,53 @@ export function useUpdateCurrencyRates() {
 }
 
 /** @param period Optional "YYYY-MM"; defaults to the current UTC month server-side. */
+export interface BillingOverviewClient {
+  client_id: string;
+  subtotal_usd: number | null;
+  tax_rate_percent: number;
+  tax_amount_usd: number | null;
+  total_usd: number | null;
+  total_tokens: number;
+  request_count: number;
+  unpriced_requests: number;
+}
+
+export interface BillingOverviewModel {
+  model_id: string;
+  cost_usd: number | null;
+  tokens: number;
+  request_count: number;
+  unpriced_requests: number;
+}
+
+export interface BillingOverview {
+  period: string;
+  period_start: string;
+  period_end: string;
+  /** null, never 0, when nothing in the month could be priced. */
+  subtotal_usd: number | null;
+  tax_amount_usd: number | null;
+  total_usd: number | null;
+  client_count: number;
+  total_tokens: number;
+  request_count: number;
+  unpriced_requests: number;
+  /** Dearest first. */
+  by_client: BillingOverviewClient[];
+  by_model: BillingOverviewModel[];
+}
+
+/** PRM-221: the whole platform for one month. Every other billing hook is
+ *  keyed by client, so "how is the month going" was a request per client. */
+export function useBillingOverview(period: string) {
+  return useQuery({
+    queryKey: ["billing-overview", period] as const,
+    queryFn: async () =>
+      (await apiClient.get<BillingOverview>("/billing/overview", { params: { period } })).data,
+    enabled: period.length > 0,
+  });
+}
+
 export function useBillingSummary(clientId: string, period?: string) {
   return useQuery({
     queryKey: [BILLING_SUMMARY_KEY, clientId, period ?? "current"] as const,

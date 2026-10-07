@@ -160,6 +160,99 @@ async def test_currency_rates_rejects_unsupported_currency(app, admin_write_head
     assert r.status_code == 400
 
 
+async def test_the_overview_totals_the_platform_not_one_client(app, admin_read_headers):
+    """PRM-221: the page's first question, which every other endpoint here
+    could only answer one client at a time."""
+    await db.create_tables(db.get_engine())
+    today = date.today()
+    period = today.strftime("%Y-%m")
+    await db.record_usage("client-a", "small-model", 100, 50, day=today)
+    await db.record_usage("client-b", "small-model", 300, 10, day=today)
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
+        r = await c.get(
+            "/admin/api/billing/overview", params={"period": period}, headers=admin_read_headers
+        )
+
+    assert r.status_code == 200
+    body = r.json()
+    assert body["client_count"] == 2
+    assert body["total_tokens"] == 460
+    assert body["request_count"] == 2
+    # Dearest first, and both clients present — the ranking is the point.
+    assert {c["client_id"] for c in body["by_client"]} == {"client-a", "client-b"}
+    assert [m["model_id"] for m in body["by_model"]] == ["small-model"]
+
+
+async def test_the_overview_sums_tax_at_each_clients_own_rate(
+    app, admin_read_headers, admin_write_headers
+):
+    """Tax is per client. A platform figure that applied one rate to the whole
+    subtotal would be arithmetic nobody owes."""
+    await db.create_tables(db.get_engine())
+    today = date.today()
+    period = today.strftime("%Y-%m")
+    # The model has to be priced, or both subtotals are None and there is no
+    # tax to compare — which is itself the rule the next test covers.
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
+        await c.put(
+            "/admin/api/billing/pricing/small-model",
+            json={"prompt_price_per_1m": 1.0, "completion_price_per_1m": 2.0},
+            headers=admin_write_headers,
+        )
+    for client, rate in (("client-a", 0.0), ("client-b", 50.0)):
+        await db.upsert_client_billing_settings(
+            client,
+            monthly_spend_cap_usd=None,
+            alert_thresholds_percent=None,
+            tax_rate_percent=rate,
+            preferred_currency="USD",
+        )
+    await db.record_usage("client-a", "small-model", 100, 50, day=today)
+    await db.record_usage("client-b", "small-model", 100, 50, day=today)
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
+        body = (
+            await c.get(
+                "/admin/api/billing/overview",
+                params={"period": period},
+                headers=admin_read_headers,
+            )
+        ).json()
+
+    per_client = {c["client_id"]: c for c in body["by_client"]}
+    assert per_client["client-a"]["tax_amount_usd"] == 0.0
+    # Same usage, half again on top: the rate is the client's, not the platform's.
+    assert per_client["client-b"]["tax_amount_usd"] == pytest.approx(
+        per_client["client-b"]["subtotal_usd"] * 0.5
+    )
+    assert body["tax_amount_usd"] == pytest.approx(
+        sum(c["tax_amount_usd"] for c in body["by_client"])
+    )
+
+
+async def test_an_entirely_unpriced_month_is_null_and_not_zero(app, admin_read_headers):
+    """The rule every layer of this system keeps: no silent $0. A month where
+    nothing could be priced is unknown, and a confident 0.00 would be a lie."""
+    await db.create_tables(db.get_engine())
+    today = date.today()
+    period = today.strftime("%Y-%m")
+    await db.record_usage("client-a", "unpriced-chat", 10, 8, day=today)
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
+        body = (
+            await c.get(
+                "/admin/api/billing/overview",
+                params={"period": period},
+                headers=admin_read_headers,
+            )
+        ).json()
+
+    assert body["subtotal_usd"] is None
+    assert body["total_usd"] is None
+    assert body["unpriced_requests"] == 1
+
+
 async def test_billing_summary_reflects_recorded_usage(app, admin_read_headers):
     await db.create_tables(db.get_engine())
     today = date.today()

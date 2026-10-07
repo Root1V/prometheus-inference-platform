@@ -1,9 +1,11 @@
 import {
+  AlertTriangle,
   ChevronDown,
   ChevronRight,
   Download,
   Percent,
   Receipt,
+  Users,
 } from "lucide-react";
 import { Fragment, useState, type CSSProperties } from "react";
 import {
@@ -16,7 +18,11 @@ import {
   XAxis,
   YAxis,
 } from "recharts";
-import { useBillingHistory, useBillingSummary } from "../api/billing";
+import {
+  useBillingHistory,
+  useBillingOverview,
+  useBillingSummary,
+} from "../api/billing";
 import { downloadUsageExportCsv, useUsageExportRows } from "../api/usage";
 import { useUsers } from "../api/users";
 import { BudgetAlertBanner } from "../components/BudgetAlertBanner";
@@ -81,6 +87,80 @@ function recentPeriods(count: number): { value: string; label: string }[] {
     const value = `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, "0")}`;
     return { value, label: PERIOD_MONTH_FORMATTER.format(d) };
   });
+}
+
+/**
+ * A ranking with its share of the whole — PRM-221.
+ *
+ * Deliberately a table and not a chart: the two questions here are "who is
+ * biggest" and "by how much", and a sorted list with a share bar answers both
+ * without a reader having to map a bar back to an axis. It also carries the
+ * tokens and requests behind each figure, which a chart has nowhere to put.
+ */
+function RankTable({
+  title,
+  rows,
+  total,
+}: {
+  title: string;
+  rows: { key: string; name: string; cost: number; sub: string }[];
+  total: number;
+}) {
+  return (
+    <div className="overflow-hidden rounded-xl border border-border bg-surface">
+      <p className="border-b border-border px-4 py-3 text-xs font-medium uppercase tracking-wide text-text-muted">
+        {title}
+      </p>
+      {rows.length === 0 ? (
+        <p className="p-8 text-center text-sm text-text-muted">
+          No usage this period.
+        </p>
+      ) : (
+        <div className="max-h-72 overflow-y-auto">
+          {rows.map((row) => {
+            const share = total > 0 ? (row.cost / total) * 100 : 0;
+            return (
+              <div
+                key={row.key}
+                className="flex items-center gap-3 border-b border-border px-4 py-2.5 last:border-0"
+              >
+                <div className="min-w-0 flex-1">
+                  <p
+                    className="truncate text-sm font-medium text-text"
+                    title={row.name}
+                  >
+                    {row.name}
+                  </p>
+                  <p className="truncate text-xs text-text-muted">{row.sub}</p>
+                </div>
+                <div className="flex shrink-0 items-center gap-2">
+                  <div className="h-1.5 w-16 overflow-hidden rounded-full bg-background">
+                    <div
+                      className="h-full rounded-full bg-primary"
+                      style={{
+                        width: `${row.cost > 0 ? Math.max(2, share) : 0}%`,
+                      }}
+                    />
+                  </div>
+                  <span className="w-10 text-right text-xs tabular-nums text-text-muted">
+                    {/* "<1%" rather than "0%": it cost something. */}
+                    {total === 0 || row.cost === 0
+                      ? "\u2014"
+                      : share < 0.5
+                        ? "<1%"
+                        : `${share.toFixed(0)}%`}
+                  </span>
+                  <span className="w-20 text-right text-sm tabular-nums text-text">
+                    {formatUsdCost(row.cost)}
+                  </span>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
 }
 
 function CapIndicator({ summary }: { summary: BillingPeriodSummary }) {
@@ -281,6 +361,12 @@ export default function Billing() {
   );
   const historyQuery = useBillingHistory(effectiveClientId, 6);
   const periodOptions = recentPeriods(12);
+  /** The overview needs a concrete YYYY-MM; "" means the current month. */
+  const effectivePeriod = period || periodOptions[0].value;
+  const overviewQuery = useBillingOverview(effectivePeriod);
+  const overview = overviewQuery.data;
+  const nameOf = (clientId: string) =>
+    users.find((u) => u.client_id === clientId)?.client_name ?? clientId;
 
   const summary = summaryQuery.data;
   const modelBreakdown = (summary?.by_model ?? [])
@@ -317,25 +403,14 @@ export default function Billing() {
           <div>
             <h1 className="text-2xl font-semibold text-text">Billing</h1>
             <p className="mt-1 text-sm text-text-muted">
-              Per-client cost, spend cap, and export — informative only, no card
-              charging.
+              What the platform billed this month, where it came from, and the
+              detail per client — informative only, no card charging.
             </p>
           </div>
           <div className="flex items-end gap-3">
-            <label className="flex items-center gap-2 text-sm text-text-muted">
-              Client
-              <select
-                value={effectiveClientId}
-                onChange={(e) => setClientId(e.target.value)}
-                className="rounded-lg border border-border bg-surface px-3 py-1.5 text-text"
-              >
-                {users.map((u) => (
-                  <option key={u.client_id} value={u.client_id}>
-                    {u.client_name}
-                  </option>
-                ))}
-              </select>
-            </label>
+            {/* PRM-221: Period governs the whole page — the platform totals and
+                the per-client detail alike — so it stays here. Client governs
+                only the detail section, and moved down beside it. */}
             <label className="flex items-center gap-2 text-sm text-text-muted">
               Period
               <select
@@ -356,6 +431,103 @@ export default function Billing() {
 
         <div className="mt-4">
           <BudgetAlertBanner />
+        </div>
+
+        {/* PRM-221: the platform first.
+            Every billing endpoint was keyed by client, so this page opened on
+            a client selector and could not answer its own first question —
+            what did the platform bill this month. Answering it meant a request
+            per client, in a loop. It also hid the one fact worth acting on:
+            `qwen3vl-8b-q4` is 61% of this month's bill, and no single client's
+            view ever showed that. */}
+        {overview && (
+          <>
+            <div className="mt-6 grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
+              {/* Subtotal leads and tax is its own card, because
+                  `tax_rate_percent` is per client: one blended total would add
+                  figures computed at different rates and show the sum as a
+                  single number. */}
+              <StatCard
+                label="Platform subtotal"
+                value={formatUsdCost(overview.subtotal_usd)}
+                sub={`${compactTokens(overview.total_tokens)} tokens · ${overview.request_count.toLocaleString()} requests`}
+                toneReason={`${overview.total_tokens.toLocaleString()} tokens across ${overview.request_count.toLocaleString()} requests, before tax`}
+                icon={Receipt}
+              />
+              <StatCard
+                label="Tax across clients"
+                value={formatUsdCost(overview.tax_amount_usd)}
+                sub="rates are set per client"
+                icon={Percent}
+              />
+              <StatCard
+                label="Total billed"
+                value={formatUsdCost(overview.total_usd)}
+                sub={`${overview.client_count} client${overview.client_count === 1 ? "" : "s"} with usage`}
+                icon={Users}
+              />
+              <StatCard
+                label="Unpriced"
+                value={overview.unpriced_requests.toLocaleString()}
+                sub={
+                  overview.unpriced_requests === 0
+                    ? "every request this month was priced"
+                    : "requests on a model with no price — not in the figures above"
+                }
+                tone={overview.unpriced_requests > 0 ? "warn" : "neutral"}
+                toneReason={
+                  overview.unpriced_requests > 0
+                    ? "These requests happened and cost something; the subtotal does not include them. Set a price on the Model pricing table below."
+                    : undefined
+                }
+                icon={AlertTriangle}
+              />
+            </div>
+
+            <div className="mt-6 grid grid-cols-1 gap-6 lg:grid-cols-2">
+              <RankTable
+                title="Most billed models"
+                rows={overview.by_model.map((m) => ({
+                  key: m.model_id,
+                  name: m.model_id,
+                  cost: m.cost_usd ?? 0,
+                  sub: `${compactTokens(m.tokens)} tokens · ${m.request_count.toLocaleString()} requests`,
+                }))}
+                total={overview.subtotal_usd ?? 0}
+              />
+              <RankTable
+                title="Biggest clients"
+                rows={overview.by_client.map((c) => ({
+                  key: c.client_id,
+                  name: nameOf(c.client_id),
+                  cost: c.subtotal_usd ?? 0,
+                  sub: `${compactTokens(c.total_tokens)} tokens · ${c.request_count.toLocaleString()} requests`,
+                }))}
+                total={overview.subtotal_usd ?? 0}
+              />
+            </div>
+          </>
+        )}
+
+        <div className="mt-10 flex flex-wrap items-center justify-between gap-3 border-t border-border pt-6">
+          <h2 className="text-sm font-medium uppercase tracking-wide text-text-muted">
+            One client in detail
+          </h2>
+          {/* Beside the section it governs, not in the page header. */}
+          <label className="flex items-center gap-2 text-sm text-text-muted">
+            Client
+            <select
+              value={effectiveClientId}
+              onChange={(e) => setClientId(e.target.value)}
+              className="rounded-lg border border-border bg-surface px-3 py-1.5 text-text"
+            >
+              {users.map((u) => (
+                <option key={u.client_id} value={u.client_id}>
+                  {u.client_name}
+                </option>
+              ))}
+            </select>
+          </label>
         </div>
 
         {!effectiveClientId ? (

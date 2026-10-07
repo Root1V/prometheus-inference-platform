@@ -8511,3 +8511,30 @@ summary response; only the second was rendered, and only in the history table. T
 
 **Scope**: in — the two charts, the subtotal's sub-line, the repeated period in a card label, and
 the empty spend-cap card. Out — the page's structure, which is PRM-221.
+
+
+## PRM-221 — Billing opens on the platform
+
+**Why**: all nine billing endpoints were keyed by a client or by global config, so the page built on
+them opened with a client selector — and a selector first means the reader has to already know which
+client they care about before the page tells them anything. The first question a billing page is
+asked is *what did the platform bill this month*, and that was unanswerable: during this review I
+answered it by looping seven requests by hand, which is exactly the work the page was imposing.
+
+**What the aggregate makes visible**, and no per-client view ever could: `qwen3vl-8b-q4` is **61%**
+of October's bill at USD 10.31, and Sentinel is **53%** of it. Concentration like that is the whole
+reason to look at billing, and it was spread across seven screens.
+
+**Subtotal leads, tax is its own line, and that is deliberate.** `tax_rate_percent` is configured
+per client, so a single blended "total billed" would add figures computed at different rates and
+present the sum as one number. The total is still returned — it is what is owed — but the two are
+never collapsed into one headline.
+
+**The rule about zero holds here too.** A month in which nothing could be priced returns
+`subtotal_usd: null`, not `0.0`, and the unpriced request count is a card of its own. A confident
+0.00 over usage that happened is the silent $0 every other layer of this system refuses to produce.
+
+**Scope**: in — `build_platform_overview`, the endpoint, `list_client_billing_settings` (all rows,
+since tax is per client), the overview cards, two ranking tables, and moving the client selector
+down beside the detail section it governs. Out — ranking by anything other than cost; tokens and
+requests ride along on each row instead.

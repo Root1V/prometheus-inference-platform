@@ -1064,6 +1064,20 @@ async def upsert_client_billing_settings(
         return row
 
 
+async def list_client_billing_settings() -> list[ClientBillingSettings]:
+    """Every row, not only the capped ones — PRM-221.
+
+    The platform overview needs each client's `tax_rate_percent` to total the
+    month, and tax is configured per client. Fetching them one at a time is a
+    query per client on a page whose whole point is not making you walk the
+    clients one at a time.
+    """
+    session_factory = get_session_factory()
+    async with session_factory() as session:
+        result = await session.execute(select(ClientBillingSettings))
+        return list(result.scalars().all())
+
+
 async def list_client_billing_settings_with_cap() -> list[ClientBillingSettings]:
     session_factory = get_session_factory()
     async with session_factory() as session:
