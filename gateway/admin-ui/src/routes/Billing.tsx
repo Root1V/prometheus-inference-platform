@@ -30,6 +30,7 @@ import { ModelPricingTable } from "../components/ModelPricingTable";
 import { Sidebar } from "../components/Sidebar";
 import { StatCard } from "../components/StatCard";
 import { useToast } from "../context/ToastContext";
+import { cn } from "../lib/cn";
 import { getErrorMessage } from "../lib/errors";
 import { formatCurrency, formatUsdCost } from "../lib/format";
 import type { BillingPeriodSummary } from "../types/billing";
@@ -96,6 +97,47 @@ function recentPeriods(count: number): { value: string; label: string }[] {
  * without a reader having to map a bar back to an axis. It also carries the
  * tokens and requests behind each figure, which a chart has nowhere to put.
  */
+const CURVE_STORAGE_KEY = "prometheus.billing.trendCurve";
+
+/**
+ * How the daily line joins its points — PRM-222.
+ *
+ * `monotone` curves between days. It reads a trend better over a long period,
+ * which is what this chart is for, and it is not proportional: the curve
+ * passes through values nobody measured and through few points it can draw a
+ * peak above the dearest day. `linear` joins the observations with straight
+ * segments and never leaves the range of the data.
+ *
+ * Neither is wrong for every reading, which is why this is a control and not a
+ * decision. Smooth is the default because it is what the trend question is
+ * usually asked with; the exact shape is one click away and the labels say
+ * which is which rather than leaving the difference implicit.
+ */
+type TrendCurve = "monotone" | "linear";
+
+function useTrendCurve(): [TrendCurve, (next: TrendCurve) => void] {
+  const [curve, setCurve] = useState<TrendCurve>(() => {
+    try {
+      return localStorage.getItem(CURVE_STORAGE_KEY) === "linear"
+        ? "linear"
+        : "monotone";
+    } catch {
+      return "monotone";
+    }
+  });
+  return [
+    curve,
+    (next) => {
+      setCurve(next);
+      try {
+        localStorage.setItem(CURVE_STORAGE_KEY, next);
+      } catch {
+        /* no persistence available; the session still works */
+      }
+    },
+  ];
+}
+
 function RankTable({
   title,
   rows,
@@ -358,6 +400,7 @@ export default function Billing() {
   const users = usersQuery.data ?? [];
   const [clientId, setClientId] = useState("");
   const [period, setPeriod] = useState("");
+  const [trendCurve, setTrendCurve] = useTrendCurve();
   const { showToast } = useToast();
   const [exportingPeriod, setExportingPeriod] = useState<string | null>(null);
 
@@ -621,9 +664,43 @@ export default function Billing() {
               />
 
               <div className="rounded-xl border border-border bg-surface p-5">
-                <h2 className="text-sm font-medium uppercase tracking-wide text-text-muted">
-                  Daily spend this period
-                </h2>
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <h2 className="text-sm font-medium uppercase tracking-wide text-text-muted">
+                    Daily spend this period
+                  </h2>
+                  <div className="flex items-center gap-1 rounded-lg bg-background p-0.5">
+                    {(
+                      [
+                        [
+                          "monotone",
+                          "Smooth",
+                          "Curved between days. Easier to read a trend over a long period, and not proportional — the curve passes through values that were never measured.",
+                        ],
+                        [
+                          "linear",
+                          "Exact",
+                          "Straight between days. Never leaves the range of the data.",
+                        ],
+                      ] as [TrendCurve, string, string][]
+                    ).map(([value, label, why]) => (
+                      <button
+                        key={value}
+                        type="button"
+                        onClick={() => setTrendCurve(value)}
+                        title={why}
+                        aria-pressed={trendCurve === value}
+                        className={cn(
+                          "rounded-md px-2 py-1 text-xs font-medium transition-colors",
+                          trendCurve === value
+                            ? "bg-surface text-text shadow-sm"
+                            : "text-text-muted hover:text-text",
+                        )}
+                      >
+                        {label}
+                      </button>
+                    ))}
+                  </div>
+                </div>
                 <div className="mt-4 h-64">
                   {dailyTrend.length === 0 ? (
                     <p className="flex h-full items-center justify-center text-sm text-text-muted">
@@ -690,7 +767,7 @@ export default function Billing() {
                           formatter={tooltipCostFormatter}
                         />
                         <Area
-                          type="linear"
+                          type={trendCurve}
                           dataKey="cost"
                           stroke={CHART_COLOR}
                           fill="url(#dailySpendFill)"
