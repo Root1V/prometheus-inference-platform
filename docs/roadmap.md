@@ -8295,3 +8295,23 @@ inside the name where it reads as part of it rather than as "file 2 of 3".
 
 **Scope**: in — the bar, its colours, the recovered fields, and `… remaining` while incomplete.
 Out — clearing finished entries, which belongs to the manager.
+
+
+## PRM-213 — Downloads shows the one that matters
+
+**Why**: PRM-211 moved the panel to the top of the tab, where progress belongs, and PRM-212 made
+each row carry real detail. Together those turned a session's accumulated entries into a wall: the
+manager keeps finished downloads for the life of the process, so the first thing on the page became
+a history of the morning rather than a status.
+
+**One row — but "the latest" is the wrong rule on its own.** With something in flight, the row you
+want is the one moving, not whichever finished most recently. `downloadRank` orders in-flight above
+paused above failed above finished, and ties fall back to the order the node returned, which is the
+order they were started.
+
+**The rest are one click away rather than gone.** Collapsing three concurrent downloads to a single
+visible row would be the page quietly dropping work it is actually doing — the same class of defect
+this repo keeps finding, so `Show all N` expands them.
+
+**Scope**: in — the ranking, the single row, the toggle. Out — clearing finished entries, which is
+the manager's to do and would remove the need for most of this.
