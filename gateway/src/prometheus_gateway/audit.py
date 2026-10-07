@@ -146,6 +146,11 @@ TARGET_TYPES: frozenset[str] = frozenset(
         "pricing",
         "traffic_split",
         "share",
+        # PRM-228: a rate-limit tier. Its own type rather than folding into
+        # `pricing` — editing a tier changes what every client on it may
+        # consume, and an audit row that could not tell that from a price
+        # change would make the two indistinguishable after the fact.
+        "tier",
         # PRM-172: `client` says `client` again. It was emitted as `user` for a
         # while, and the reason is worth keeping because it is why the override
         # could be removed rather than forgotten.

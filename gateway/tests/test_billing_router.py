@@ -160,6 +160,67 @@ async def test_currency_rates_rejects_unsupported_currency(app, admin_write_head
     assert r.status_code == 400
 
 
+async def test_a_tier_is_refused_while_a_client_is_still_on_it(
+    app, admin_read_headers, admin_write_headers
+):
+    """PRM-228: deleting a tier out from under a client would move them to the
+    platform defaults silently — a limit change nobody asked for and nobody
+    would see."""
+    await db.create_tables(db.get_engine())
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
+        await c.put("/admin/api/limits/tiers/small", json={"rpm": 10}, headers=admin_write_headers)
+        await c.put(
+            "/admin/api/billing/clients/client-a/settings",
+            json={"tier": "small"},
+            headers=admin_write_headers,
+        )
+        refused = await c.delete("/admin/api/limits/tiers/small", headers=admin_write_headers)
+        # And it is still there — the first version counted and deleted in one
+        # call, so the refusal arrived after the row had already gone.
+        listed = await c.get("/admin/api/limits/tiers", headers=admin_read_headers)
+
+    assert refused.status_code == 409
+    assert "1 client(s)" in refused.json()["detail"]
+    assert [t["name"] for t in listed.json()["tiers"]] == ["small"]
+
+
+async def test_a_client_cannot_be_parked_on_a_tier_that_does_not_exist(app, admin_write_headers):
+    """A typo would otherwise resolve to the platform defaults and look exactly
+    like a tier that does exist."""
+    await db.create_tables(db.get_engine())
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
+        r = await c.put(
+            "/admin/api/billing/clients/client-a/settings",
+            json={"tier": "scal"},
+            headers=admin_write_headers,
+        )
+
+    assert r.status_code == 400
+    assert "No tier 'scal'" in r.json()["detail"]
+
+
+async def test_a_tier_dimension_can_be_cleared_but_not_zeroed(app, admin_write_headers):
+    """Null means "the platform default for this dimension"; zero would mean a
+    ceiling nobody can pass, which is never what someone meant to type."""
+    await db.create_tables(db.get_engine())
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
+        await c.put(
+            "/admin/api/limits/tiers/t", json={"rpm": 10, "ipm": 5}, headers=admin_write_headers
+        )
+        zeroed = await c.put(
+            "/admin/api/limits/tiers/t", json={"rpm": 0}, headers=admin_write_headers
+        )
+        cleared = await c.put(
+            "/admin/api/limits/tiers/t", json={"rpm": None}, headers=admin_write_headers
+        )
+
+    assert zeroed.status_code == 400
+    assert cleared.status_code == 200
+    assert cleared.json()["rpm"] is None
+    # Absent is not the same edit as null: `ipm` was never mentioned, so it stays.
+    assert cleared.json()["ipm"] == 5
+
+
 async def test_the_overview_totals_the_platform_not_one_client(app, admin_read_headers):
     """PRM-221: the page's first question, which every other endpoint here
     could only answer one client at a time."""

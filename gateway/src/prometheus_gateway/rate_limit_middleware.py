@@ -15,6 +15,7 @@ from starlette.types import ASGIApp, Receive, Scope, Send
 
 from .config import Settings
 from .rate_limiter import RateLimiter
+from .budget import resolve_client_limits
 from .rate_limiter import ALL_ENDPOINTS, PLATFORM_IDENTITY
 from .rate_limits import ENDPOINT_LIMIT_FIELDS
 from .telemetry import get_logger
@@ -528,6 +529,16 @@ class RateLimitMiddleware:
             if self.settings.rate_limit_tpm_client is not None
             else self.settings.rate_limit_tpm * default_factor
         )
+        # PRM-228: and the client's tier wins over both, where it has an
+        # opinion. A null dimension on a tier means "whatever the platform
+        # says" rather than "unlimited" — a tier that omits `rpm` is saying
+        # nothing about requests, not granting them freely.
+        tier = await resolve_client_limits(claims.client_id)
+        if tier is not None:
+            if tier.rpm is not None:
+                client_rpm_limit = tier.rpm
+            if tier.tpm is not None:
+                client_tpm_limit = tier.tpm
         for identity in filter(None, dict.fromkeys((claims.client_id, claims.user_id))):
             state = await self._limiter.check_and_increment_rpm(
                 identity, ALL_ENDPOINTS, client_rpm_limit

@@ -58,6 +58,43 @@ def parse_thresholds(raw: str | None, default_raw: str) -> list[int]:
     return sorted(set(thresholds))
 
 
+_tier_cache: dict[str, tuple[float, "db.RateLimitTier | None"]] = {}
+
+
+async def get_rate_limit_tier_cached(name: str) -> "db.RateLimitTier | None":
+    """A tier's ceilings, cached like the spend cap beside it — PRM-228.
+
+    Same 30-second window and the same reason: this is read on the hot
+    inference path, and a tier change taking up to half a minute to apply is a
+    better trade than a database round trip per request. Same failure mode
+    too — a read error is "no tier", never a reason to refuse inference.
+    """
+    now = time.monotonic()
+    cached = _tier_cache.get(name)
+    if cached and now - cached[0] < _SETTINGS_CACHE_TTL_S:
+        return cached[1]
+    try:
+        tier = await db.get_rate_limit_tier(name)
+    except Exception as exc:
+        logger.warning("rate_limit_tier.read_error", tier=name, error=str(exc))
+        return None
+    _tier_cache[name] = (now, tier)
+    return tier
+
+
+async def resolve_client_limits(client_id: str) -> "db.RateLimitTier | None":
+    """The tier a client is on, or None for the platform defaults — PRM-228.
+
+    Two cached reads at worst and usually zero: the settings row is already
+    fetched on this path for the spend cap, and a client with no tier costs
+    nothing beyond what RM-60 already pays.
+    """
+    settings = await get_client_billing_settings_cached(client_id)
+    if settings is None or settings.tier is None:
+        return None
+    return await get_rate_limit_tier_cached(settings.tier)
+
+
 async def get_client_billing_settings_cached(client_id: str) -> "db.ClientBillingSettings | None":
     """A cap change via the admin UI takes up to _SETTINGS_CACHE_TTL_S to apply
     on the hot path — a deliberate latency/freshness tradeoff, not real-time.
@@ -86,6 +123,20 @@ def invalidate_client_billing_settings_cache(client_id: str) -> None:
     visible immediately instead of waiting out the cache TTL.
     """
     _settings_cache.pop(client_id, None)
+
+
+def invalidate_rate_limit_tier_cache(name: str | None = None) -> None:
+    """Same contract as the one above, for tiers — PRM-228.
+
+    Clears everything when no name is given, because editing a tier changes
+    the limits of every client on it and there is no index from tier back to
+    client here. The cache holds at most a handful of rows, so the blunt
+    version costs one re-read each rather than a lookup table to maintain.
+    """
+    if name is None:
+        _tier_cache.clear()
+    else:
+        _tier_cache.pop(name, None)
 
 
 def _reset_cache_for_testing() -> None:

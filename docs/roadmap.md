@@ -8731,3 +8731,36 @@ than invented.
 the shared refusal with its `scope` field, and three tests. Out — the tiers that give layer 2 a
 per-client value (PRM-228), a pre-auth IP throttle, and per-model limits, which is the axis both
 vendors actually use and a better one than per-endpoint.
+
+
+## PRM-228 — Rate-limit tiers
+
+**Why**: PRM-227 made the consumer layer exist and deliberately left its value as a derived default —
+the sum of the per-endpoint allowances, which bounds the pathological case and little else. This is
+where a real number is chosen. Tiers rather than per-client values because that is what both vendors
+do and the reason scales: fourteen clients could be tuned individually, but a hundred are fourteen
+forgotten decisions and eighty-six defaults nobody chose.
+
+**Where it lives.** A `rate_limit_tiers` catalogue, and a `tier` column on
+`client_billing_settings` — the row already fetched and cached on the hot inference path for RM-60's
+spend cap, so the tier rides along instead of adding a second lookup per request. The table's name
+is then slightly short of what it holds; that is a worse name traded for a cheaper request, and the
+trade is recorded on the column.
+
+**Null is a default, not a licence.** A tier that omits `ipm` is saying nothing about images, not
+granting them without limit. Zero is refused outright, because a ceiling nobody can pass is never
+what someone meant to type, and "leave this alone" (absent) stays distinct from "clear it" (null).
+
+**Two ways to lose a limit without noticing, both closed.** A tier with clients on it cannot be
+deleted — doing so would move them to the platform defaults silently. And a client cannot be parked
+on a tier that does not exist, because an unknown tier resolves to the platform defaults and looks
+exactly like a tier that does.
+
+**A bug worth recording**: the first `delete_rate_limit_tier` counted the clients *and* deleted the
+row in one call, so the router's "refuse while in use" check ran against a row that was already
+gone. Counting and deleting are separate now, and a test asserts the tier survives the refusal.
+
+**Scope**: in — the table and migration, the cached resolution, layer 2 reading the tier, the tier
+CRUD endpoints, assignment validation, cache invalidation on every write, the Users modal field, and
+three tests. Out — a tier editor in the UI (the endpoints are there; the catalogue is small and
+changes rarely), automatic promotion by spend, and per-model limits.
