@@ -606,7 +606,13 @@ export default function Models() {
                 </div>
                 <div className="mt-4 flex items-start gap-6">
                   <div className="min-w-0 flex-1">
+                    {/* Remount per node: the search text, the sort and the
+                        "no instance" filter are all about *these* models, and
+                        carrying them across emptied the table with no visible
+                        cause. React's own answer to "reset state when a prop
+                        changes" is a key, not an effect. */}
                     <DownloadedModelsTable
+                      key={selectedNode}
                       models={downloadedModels}
                       instances={instances}
                       node={selectedNode}

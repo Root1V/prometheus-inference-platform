@@ -329,7 +329,12 @@ export function DownloadedModelsTable({
             resultLabel={`${sorted.length} of ${models.length}`}
           />
         </div>
-        {idleCount > 0 && (
+        {/* `|| idleOnly` is not redundant with the remount-on-node-change:
+            the catalog polls, so the last idle model gaining an instance can
+            drop `idleCount` to 0 while the filter is still on. A filter must
+            never be the only thing between someone and their data while its
+            own switch is off-screen. */}
+        {(idleCount > 0 || idleOnly) && (
           <button
             type="button"
             onClick={toggleIdleOnly}
