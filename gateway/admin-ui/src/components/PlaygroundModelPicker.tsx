@@ -21,6 +21,7 @@ const GROUP_LABELS: Partial<Record<Modality, string>> = {
   rerank: "Rerank",
   classification: "Classification",
   zero_shot: "Decision (zero-shot)",
+  nli: "Entailment (NLI)",
   typed_decision: "Decision (typed questions)",
   image: "Image",
 };
@@ -31,6 +32,7 @@ const GROUP_ORDER = [
   "Rerank",
   "Classification",
   "Decision (zero-shot)",
+  "Entailment (NLI)",
   "Decision (typed questions)",
   "Image",
 ];

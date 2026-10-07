@@ -152,6 +152,11 @@ def _probe_body(entry: RegistryEntry) -> tuple[str, dict[str, Any]] | None:
             "inputs": _TEXT,
             "parameters": {"candidate_labels": ["yes", "no"]},
         }
+    if modality == "nli":
+        # The pair is the whole modality: a probe sending one text would pass
+        # against a model that cannot do this at all, which is the failure
+        # PRM-184 described one branch above.
+        return "/predict", {"inputs": [[_TEXT, "this is a sentence"]]}
     if modality == "typed_decision":
         # laya's shape, and it is the shape this project got wrong first time:
         # options live in `criteria`, and `instructions` is required.

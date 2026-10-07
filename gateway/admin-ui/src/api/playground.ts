@@ -176,7 +176,11 @@ export function useZeroShot() {
        * renderer mapped over it, blanking the whole page — a white screen is
        * the worst possible way to say "this model is not what it claims".
        */
-      if (!first || !Array.isArray(first.labels) || !Array.isArray(first.scores)) {
+      if (
+        !first ||
+        !Array.isArray(first.labels) ||
+        !Array.isArray(first.scores)
+      ) {
         throw new Error(
           "This model is registered as zero-shot but did not answer like one — " +
             "no labels or scores came back. It is most likely a plain classifier " +
@@ -259,6 +263,50 @@ interface RerankResponse {
  * above this one is OpenAI-shaped and has its own route — it is here because
  * the picker now offers rerank models, and an option that cannot be used is
  * the defect PRM-133 exists to prevent. */
+/**
+ * PRM-219: raw entailment — one (premise, hypothesis) pair in, the model's own
+ * three classes out.
+ *
+ * Not `useZeroShot`, and that is the point of the separate modality. Zero-shot
+ * is the *pipeline*: it writes a hypothesis per candidate label, runs this, and
+ * normalises across the labels. Sending `parameters.candidate_labels` to a bare
+ * NLI model on TEI returns 200 with the labels silently discarded — PRM-184
+ * found that in the readiness probe, and the admin UI then read one shape as
+ * the other and crashed.
+ */
+export function useNli() {
+  return useMutation({
+    mutationFn: async ({
+      model,
+      premise,
+      hypothesis,
+    }: {
+      model: string;
+      premise: string;
+      hypothesis: string;
+    }) => {
+      const raw = (
+        await rootClient.post<
+          | { label: string; score: number }[]
+          | { label: string; score: number }[][]
+        >(`/v1/models/${encodeURIComponent(model)}/predict`, {
+          inputs: [premise, hypothesis],
+        })
+      ).data;
+      // TEI answers a bare pair with one list and a batch with a list of lists.
+      const first = Array.isArray(raw[0])
+        ? (raw[0] as { label: string; score: number }[])
+        : (raw as { label: string; score: number }[]);
+      if (!Array.isArray(first) || first.length === 0) {
+        throw new Error(
+          "This model did not return entailment scores for the pair.",
+        );
+      }
+      return [...first].sort((a, b) => b.score - a.score);
+    },
+  });
+}
+
 export function useRerank() {
   return useMutation({
     mutationFn: async ({

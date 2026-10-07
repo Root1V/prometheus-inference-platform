@@ -81,6 +81,9 @@ def _default_prices() -> dict[str, "ModelPrice"]:
                 # forward pass and reports its own `usage.input_tokens`,
                 # so unlike zero-shot the billed input does track the work.
                 "typed_decision": ModelPrice(prompt_price_per_1m=0.02, completion_price_per_1m=0.0),
+                # PRM-219: one forward pass over one pair, like classification
+                # — priced the same, and for the same reason.
+                "nli": ModelPrice(prompt_price_per_1m=0.02, completion_price_per_1m=0.0),
                 # Per image, not per token.
                 "image": ModelPrice(image_price=0.01),
             }

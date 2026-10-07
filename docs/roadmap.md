@@ -8453,3 +8453,34 @@ claiming something the endpoint does not do.
 **Scope**: in — companion inputs on examples, auto-send, the shape guard, and moving the model
 caption beside `Clear` (it was a full-width row costing the conversation a line of height). Out —
 changing `nli-tei`'s registration, which is a catalogue decision rather than a UI one.
+
+
+## PRM-219 — An `nli` modality with the pair it needs
+
+**Why**: `nli-tei` is `cross-encoder/nli-distilroberta-base` registered as `zero_shot`, and it is not
+one. Zero-shot classification is the *pipeline* built on a model like this: write one hypothesis per
+candidate label, run the cross-encoder on each, normalise the entailment scores across the labels.
+The bare model takes a **(premise, hypothesis) pair** and answers
+`entailment / neutral / contradiction`.
+
+**The project had already found this twice and never named it.** PRM-184 fixed the readiness probe,
+writing that TEI "ignores `parameters` entirely rather than refusing it — so this probe passed
+against TEI while the `candidate_labels` were thrown away". PRM-144's payload contract spelled out
+the consequence: *"a caller that dispatched on `modality` alone would read one as the other."* Both
+told the two apart by sniffing `backend == "tei"`. Then the admin UI dispatched on modality alone,
+read one as the other, and blanked the page (PRM-218). A distinction the code keeps rediscovering
+deserves a name.
+
+**Measured, as a two-field composer**: `"cancelled the subscription yesterday"` →
+`"no longer a subscriber"` gives entailment **0.979**; `"renewed for two more years"` →
+`"cancelled the contract"` gives contradiction **0.993**. Both in 87ms.
+
+**And the panel says what the checkpoint cannot do.** It is English-trained: on
+`"canceló ayer"` → `"ya no es suscriptor"` it answers *contradiction at 0.94* — not hedging, the
+exact inverse. A model that is confidently wrong in the language the platform is operated in has to
+say so where it is used, not in a commit message.
+
+**Scope**: in — the modality in the manager registry, a pair-shaped readiness probe, the gateway's
+pass-through set and payload contract, pricing, the picker group, the two-field composer and its
+examples, and re-registering `nli-tei`. Out — a zero-shot *pipeline* over NLI models, which would
+let a checkpoint like this back `von-decide`'s modality properly; that is its own item.

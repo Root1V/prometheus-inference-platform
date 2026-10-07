@@ -85,6 +85,17 @@ MODALITIES = (
     # per question. Several decisions come back from one forward pass, which is
     # the whole reason the shape is its own.
     "typed_decision",
+    # PRM-219: raw natural-language inference — a (premise, hypothesis) pair in,
+    # entailment/neutral/contradiction out. Distinct from `zero_shot`, which is
+    # the *pipeline* built on top of a model like this: it writes one hypothesis
+    # per candidate label, runs them, and normalises across the labels.
+    #
+    # They were one modality, told apart by sniffing `backend == "tei"`.
+    # PRM-184 found that in the readiness probe and PRM-144's payload contract
+    # names it outright — "a caller that dispatched on `modality` alone would
+    # read one as the other" — and then the admin UI did exactly that and
+    # crashed. A difference the code keeps rediscovering deserves a name.
+    "nli",
 )
 
 _SCHEMA_SQL = """

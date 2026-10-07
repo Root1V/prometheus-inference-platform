@@ -1,5 +1,12 @@
+// These three stay on one line each: gateway/tests/test_engine_list.py parses
+// them with `export type X = ([^;]*);` to prove the UI offers exactly what the
+// manager registry accepts. Wrapping them — or putting a `;` in a comment
+// inside one — silently blinds that guard. PRM-219 did both and the guard
+// caught it, which is the whole reason it exists.
 export type Backend = "llama_cpp" | "mlx" | "vllm" | "sglang" | "sd_cpp" | "hf_serve" | "tei" | "laya";
-export type Modality = "text" | "vision" | "embedding" | "image" | "rerank" | "classification" | "zero_shot" | "typed_decision";
+/** PRM-219 adds `nli`: raw (premise, hypothesis) entailment. `zero_shot` is the
+ *  pipeline built on a model like this — this is the model underneath. */
+export type Modality = "text" | "vision" | "embedding" | "image" | "rerank" | "classification" | "zero_shot" | "nli" | "typed_decision";
 export type InstanceState = "ready" | "loading" | "paused" | "stopped" | "error";
 
 export interface InstanceEntry {
