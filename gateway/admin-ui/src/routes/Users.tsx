@@ -18,7 +18,10 @@ type ModalState =
 type RevealState = { clientId: string; secret: string; label: string } | null;
 
 export default function Users() {
-  const usersQuery = useUsers();
+  // PRM-240: the one page where a stale list is a real problem — you create
+  // a client here and want to see it. Everywhere else the list is only a
+  // client_id-to-name map and does not need re-fetching every five seconds.
+  const usersQuery = useUsers({ live: true });
   const [modal, setModal] = useState<ModalState>(null);
   const [reveal, setReveal] = useState<RevealState>(null);
 
@@ -59,7 +62,9 @@ export default function Users() {
               users={users}
               onEdit={(user) => setModal({ mode: "edit", user })}
               onBilling={(user) => setModal({ mode: "billing", user })}
-              onRevealCredential={(clientId, secret, label) => setReveal({ clientId, secret, label })}
+              onRevealCredential={(clientId, secret, label) =>
+                setReveal({ clientId, secret, label })
+              }
             />
           )}
         </div>
@@ -73,7 +78,11 @@ export default function Users() {
         onCreated={handleCreated}
       />
       <ClientBillingSettingsModal
-        key={modal?.mode === "billing" ? `billing-${modal.user.client_id}` : "billing-none"}
+        key={
+          modal?.mode === "billing"
+            ? `billing-${modal.user.client_id}`
+            : "billing-none"
+        }
         open={modal?.mode === "billing"}
         clientId={modal?.mode === "billing" ? modal.user.client_id : ""}
         clientName={modal?.mode === "billing" ? modal.user.client_name : ""}

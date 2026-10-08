@@ -375,7 +375,7 @@ export default function Models() {
   const downloadsQuery = useDownloads(selectedNode);
   const configQuery = useModelsConfig(selectedNode);
   const instancesQuery = useInstances();
-  const catalogQuery = useModelCatalog();
+  const catalogQuery = useModelCatalog({ live: true });
   const startDownload = useStartDownload();
 
   const instances = instancesQuery.data?.instances ?? [];

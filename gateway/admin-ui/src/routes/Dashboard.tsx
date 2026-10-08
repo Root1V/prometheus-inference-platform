@@ -32,11 +32,12 @@ export default function Dashboard() {
   const instancesQuery = useInstances();
   const metricsQuery = useMetrics();
   const nodesQuery = useNodes();
-  const catalogQuery = useModelCatalog();
+  const catalogQuery = useModelCatalog({ live: true });
   const [modal, setModal] = useState<ModalState>(null);
 
   const instances = instancesQuery.data?.instances ?? EMPTY_INSTANCES;
-  const unreachableNodes = instancesQuery.data?.unreachable_nodes ?? EMPTY_NODES;
+  const unreachableNodes =
+    instancesQuery.data?.unreachable_nodes ?? EMPTY_NODES;
   const nodes = nodesQuery.data ?? EMPTY_NODE_RECORDS;
   // RM-51: the "Model" picker in RegisterModelModal sources from the catalog
   // now, not from instances.filter(downloaded) — a downloaded model with no
@@ -83,7 +84,11 @@ export default function Dashboard() {
           <StatCard label="Total instances" value={stats.total} icon={Boxes} />
           <StatCard label="Running" value={stats.running} icon={CircleCheck} />
           <StatCard label="Stopped" value={stats.stopped} icon={CirclePause} />
-          <StatCard label="Nodes configured" value={stats.nodes} icon={Server} />
+          <StatCard
+            label="Nodes configured"
+            value={stats.nodes}
+            icon={Server}
+          />
         </div>
 
         <div className="mt-6">
@@ -96,7 +101,9 @@ export default function Dashboard() {
               instances={instances}
               backendMetrics={metricsQuery.data?.backends}
               onEdit={(instance) => setModal({ mode: "edit", instance })}
-              onAddInstance={(instance) => setModal({ mode: "add-instance", instance })}
+              onAddInstance={(instance) =>
+                setModal({ mode: "add-instance", instance })
+              }
             />
           )}
         </div>
