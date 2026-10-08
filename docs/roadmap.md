@@ -9118,3 +9118,30 @@ on a wide window wrapped three-line sentences beside half a screen of nothing.
 
 **Scope**: in — the refresh control, the last-updated timestamp, removing the width cap on this
 page's copy.
+
+
+## PRM-240 — Stop polling for things that do not change
+
+**Why**: `useUsers` refetched every five seconds because it was written for the Users page, where
+that is right — you create a client there and want to see it. Six other pages then imported the
+hook to turn a `client_id` into a name and inherited the timer. Measured from the browser on the
+Activity page: 165 calls to `/admin/api/users` in 15.4 minutes, painting three names that had not
+changed. That is roughly twelve requests a minute per open tab, spent against the admin bucket
+that `MIN_ADMIN_RPM` exists to protect, and it is why PRM-237 found the operator at the top of
+their own Activity page.
+
+**Opt-in, not off.** `useUsers({ live: true })` on the Users page, plain everywhere else, with a
+five-minute `staleTime` for the name readers — and one query key either way, so the list is still
+fetched once and shared rather than copied per caller. Mutations invalidate that key, so a name
+changed on the Users page appears on the others immediately; the poll was never what kept them
+correct.
+
+`useModelCatalog` had the same shape for the same reason and got the same treatment.
+
+**Guarded from Python**, as `test_engine_list.py` is: the invariant spans two languages and only
+one of them has a test runner here. Three checks — the interval is behind the flag, the set of
+pages asking for it is the list in the test, and the flag never reaches the cache key, which is how
+this would silently become two copies of the same list instead of one.
+
+**Scope**: in — the two hooks, their live callers, the guard. Out — the other nine polls, which
+are on the pages that own the data they poll and watch things that change on their own.

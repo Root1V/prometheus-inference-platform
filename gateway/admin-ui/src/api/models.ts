@@ -23,29 +23,46 @@ const CATALOG_POLL_MS = 5000;
  * up here, never in useInstances(). */
 export const CATALOG_KEY = ["model-catalog"] as const;
 
-export function useModelCatalog() {
+/**
+ * The model catalogue — polling opt-in as of PRM-240.
+ *
+ * Same shape as `useUsers`: written for the Models page, where entries appear
+ * and change state while you watch, then imported by pages that only need a
+ * name or a price. One key either way, so the catalogue is fetched once and
+ * shared; `live` only decides whether this caller keeps asking.
+ */
+export function useModelCatalog(options: { live?: boolean } = {}) {
   return useQuery({
     queryKey: CATALOG_KEY,
     queryFn: async () =>
       (
-        await apiClient.get<{ models: ModelCatalogEntry[]; unreachable_nodes: string[] }>(
-          "/models",
-        )
+        await apiClient.get<{
+          models: ModelCatalogEntry[];
+          unreachable_nodes: string[];
+        }>("/models")
       ).data,
-    refetchInterval: CATALOG_POLL_MS,
+    refetchInterval: options.live ? CATALOG_POLL_MS : false,
+    staleTime: options.live ? 0 : 5 * 60_000,
   });
 }
 
 /** Not auto-fetched — the caller passes the current search box value and
  * only enables the query once there's a non-empty term to search for. */
-export function useModelSearch(node: string, query: string, sort: ModelSort | "" = "") {
+export function useModelSearch(
+  node: string,
+  query: string,
+  sort: ModelSort | "" = "",
+) {
   return useQuery({
     queryKey: ["model-search", node, query, sort] as const,
     queryFn: async () =>
       (
-        await apiClient.get<{ results: HfSearchResult[] }>(`/nodes/${node}/models/search`, {
-          params: { q: query, ...(sort ? { sort } : {}) },
-        })
+        await apiClient.get<{ results: HfSearchResult[] }>(
+          `/nodes/${node}/models/search`,
+          {
+            params: { q: query, ...(sort ? { sort } : {}) },
+          },
+        )
       ).data.results,
     enabled: node.length > 0 && query.trim().length > 0,
   });
@@ -56,9 +73,12 @@ export function useModelFiles(node: string, repoId: string) {
     queryKey: ["model-files", node, repoId] as const,
     queryFn: async () =>
       (
-        await apiClient.get<{ files: HfFile[] }>(`/nodes/${node}/models/search/files`, {
-          params: { repo_id: repoId },
-        })
+        await apiClient.get<{ files: HfFile[] }>(
+          `/nodes/${node}/models/search/files`,
+          {
+            params: { repo_id: repoId },
+          },
+        )
       ).data.files,
     enabled: node.length > 0 && repoId.length > 0,
   });
@@ -68,7 +88,11 @@ export function useModelCard(node: string, repoId: string) {
   return useQuery({
     queryKey: ["model-card", node, repoId] as const,
     queryFn: async () =>
-      (await apiClient.get<HfModelCard>(`/nodes/${node}/models/search/card`, { params: { repo_id: repoId } })).data,
+      (
+        await apiClient.get<HfModelCard>(`/nodes/${node}/models/search/card`, {
+          params: { repo_id: repoId },
+        })
+      ).data,
     enabled: node.length > 0 && repoId.length > 0,
   });
 }
@@ -76,8 +100,19 @@ export function useModelCard(node: string, repoId: string) {
 export function useStartDownload() {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: async ({ node, data }: { node: string; data: StartDownloadRequest }) =>
-      (await apiClient.post<StartDownloadResult>(`/nodes/${node}/models/downloads`, data)).data,
+    mutationFn: async ({
+      node,
+      data,
+    }: {
+      node: string;
+      data: StartDownloadRequest;
+    }) =>
+      (
+        await apiClient.post<StartDownloadResult>(
+          `/nodes/${node}/models/downloads`,
+          data,
+        )
+      ).data,
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: INSTANCES_KEY });
       queryClient.invalidateQueries({ queryKey: ["downloads"] });
@@ -93,7 +128,11 @@ export function useDownloads(node: string) {
   return useQuery({
     queryKey: ["downloads", node] as const,
     queryFn: async () =>
-      (await apiClient.get<{ downloads: DownloadEntry[] }>(`/nodes/${node}/models/downloads`)).data.downloads,
+      (
+        await apiClient.get<{ downloads: DownloadEntry[] }>(
+          `/nodes/${node}/models/downloads`,
+        )
+      ).data.downloads,
     enabled: node.length > 0,
     refetchInterval: DOWNLOADS_POLL_MS,
   });
@@ -103,7 +142,11 @@ function useDownloadAction(action: "cancel" | "pause" | "resume" | "retry") {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: async ({ node, modelId }: { node: string; modelId: string }) =>
-      (await apiClient.post(`/nodes/${node}/models/downloads/${modelId}/${action}`)).data,
+      (
+        await apiClient.post(
+          `/nodes/${node}/models/downloads/${modelId}/${action}`,
+        )
+      ).data,
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ["downloads"] }),
   });
 }
@@ -118,7 +161,8 @@ const MODELS_CONFIG_KEY = ["models-config"] as const;
 export function useModelsConfig(node: string) {
   return useQuery({
     queryKey: [...MODELS_CONFIG_KEY, node] as const,
-    queryFn: async () => (await apiClient.get<ModelsConfig>(`/nodes/${node}/models/config`)).data,
+    queryFn: async () =>
+      (await apiClient.get<ModelsConfig>(`/nodes/${node}/models/config`)).data,
     enabled: node.length > 0,
   });
 }
@@ -126,9 +170,21 @@ export function useModelsConfig(node: string) {
 export function useUpdateModelsConfig() {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: async ({ node, data }: { node: string; data: UpdateModelsConfigRequest }) =>
-      (await apiClient.patch<ModelsConfig>(`/nodes/${node}/models/config`, data)).data,
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: MODELS_CONFIG_KEY }),
+    mutationFn: async ({
+      node,
+      data,
+    }: {
+      node: string;
+      data: UpdateModelsConfigRequest;
+    }) =>
+      (
+        await apiClient.patch<ModelsConfig>(
+          `/nodes/${node}/models/config`,
+          data,
+        )
+      ).data,
+    onSuccess: () =>
+      queryClient.invalidateQueries({ queryKey: MODELS_CONFIG_KEY }),
   });
 }
 
@@ -175,7 +231,13 @@ export function useUpdateCatalogEntry() {
       node: string;
       modelId: string;
       data: { name?: string; family?: string; modality?: Modality };
-    }) => (await apiClient.patch<ModelCatalogEntry>(`/nodes/${node}/catalog/${modelId}`, data)).data,
+    }) =>
+      (
+        await apiClient.patch<ModelCatalogEntry>(
+          `/nodes/${node}/catalog/${modelId}`,
+          data,
+        )
+      ).data,
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: CATALOG_KEY });
       queryClient.invalidateQueries({ queryKey: INSTANCES_KEY });
