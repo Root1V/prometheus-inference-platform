@@ -30,29 +30,47 @@ ENDPOINT_LIMIT_FIELDS: dict[str, tuple[str, str]] = {
     "predict": ("rate_limit_rpm_predict", "rate_limit_tpm_predict"),
 }
 
-# The exact Settings fields an operator can override **from the dashboard**, which
-# is a different fact from the map above and is why it is not derived from it:
-# these are persisted, so each one is a column on `db.RateLimitConfig`, and a name
-# here that the table does not have breaks startup — `main.py` reads this list off
-# a row with `getattr`.
+# The exact Settings fields an operator can override **from the dashboard**,
+# which is a different fact from the map above and is why it is not derived
+# from it: these are persisted, so each one is a column on
+# `db.RateLimitConfig`, and a name here that the table does not have breaks
+# startup — `main.py` reads this list off a row with `getattr`.
 #
 # PRM-182 nearly shipped that bug: deriving this from `ENDPOINT_LIMIT_FIELDS`
 # looked like removing a duplication and was actually adding `predict` to a list
-# whose other consumer is a database. So `predict` is **.env-only for now**
-# (`RATE_LIMIT_RPM_PREDICT` plus a restart), which is enough to raise it, and
-# making it dashboard-editable is the same migration-and-UI work as PRM-181's
-# per-client store — they belong in one change, not two.
+# whose other consumer is a database.
 #
-# `test_rate_limits.py` now asserts every name here is a real column, so the next
-# attempt fails in a test instead of at startup.
+# PRM-232 is the migration that made the list safe to grow, so it now holds all
+# seventeen — the six RM-56 started with, `predict`'s pair that PRM-182 left for
+# this change, and the nine PRM-224..228 added and could not persist. The order
+# is `LIMIT_LAYERS`' order, broadest first, because the page reads it that way.
+#
+# `test_rate_limits.py` asserts every name here is a real column, so the next
+# attempt to grow it without a migration fails in a test instead of at startup.
 RATE_LIMIT_FIELDS: tuple[str, ...] = (
+    "rate_limit_rpm_platform",
+    "rate_limit_tpm_platform",
+    "rate_limit_rpm_client",
+    "rate_limit_tpm_client",
+    "rate_limit_tpm_input",
+    "rate_limit_tpm_output",
+    "rate_limit_rpd",
+    "rate_limit_tpd",
+    "rate_limit_ipm",
     "rate_limit_rpm",
     "rate_limit_tpm",
     "rate_limit_rpm_chat_completions",
     "rate_limit_tpm_chat_completions",
+    "rate_limit_rpm_predict",
+    "rate_limit_tpm_predict",
     "rate_limit_rpm_admin",
     "rate_limit_tpm_admin",
 )
+
+# The two with no blank state. Everything else is optional and means something
+# specific when unset — no ceiling, the derived default, or the global value —
+# which is why "required" is a two-element set and not "all of them".
+REQUIRED_RATE_LIMIT_FIELDS: frozenset[str] = frozenset({"rate_limit_rpm", "rate_limit_tpm"})
 
 # Guards the operator's own way back in: the dashboard polls several
 # endpoints every few seconds, so an admin bucket below this would 429 the

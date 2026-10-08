@@ -1329,17 +1329,18 @@ def create_admin_router(manager_client: ManagerApiClient) -> APIRouter:
             return value
 
         try:
+            # PRM-232: one loop over the field list rather than seventeen
+            # hand-written lines. The list is already the single source of what
+            # is editable — `limits_by_layer` marks the page's fields from it
+            # and a test asserts every name is a real column — so spelling the
+            # names again here would be a third copy to keep in step.
             values: dict[str, int | None] = {
-                "rate_limit_rpm": _parse("rate_limit_rpm", required=True),
-                "rate_limit_tpm": _parse("rate_limit_tpm", required=True),
-                "rate_limit_rpm_chat_completions": _parse(
-                    "rate_limit_rpm_chat_completions", required=False
-                ),
-                "rate_limit_tpm_chat_completions": _parse(
-                    "rate_limit_tpm_chat_completions", required=False
-                ),
-                "rate_limit_rpm_admin": _parse("rate_limit_rpm_admin", required=False),
-                "rate_limit_tpm_admin": _parse("rate_limit_tpm_admin", required=False),
+                field: _parse(field, required=field in rate_limits.REQUIRED_RATE_LIMIT_FIELDS)
+                for field in rate_limits.RATE_LIMIT_FIELDS
+                # Absent means "leave it as it is"; present and null means
+                # "clear it". The form posts every field, but an API caller
+                # editing one limit should not have to resend sixteen.
+                if field in body or field in rate_limits.REQUIRED_RATE_LIMIT_FIELDS
             }
         except ValueError as exc:
             return _problem(request, 400, "invalid-limit", "Invalid Limit", str(exc))
@@ -1347,7 +1348,7 @@ def create_admin_router(manager_client: ManagerApiClient) -> APIRouter:
         # The admin bucket is the operator's own way back in — see
         # rate_limits.MIN_ADMIN_RPM. Applies to whichever limit /admin/api/*
         # actually lands on: its own override, or the global when unset.
-        effective_admin_rpm = values["rate_limit_rpm_admin"] or values["rate_limit_rpm"]
+        effective_admin_rpm = values.get("rate_limit_rpm_admin") or values["rate_limit_rpm"]
         if effective_admin_rpm is not None and effective_admin_rpm < rate_limits.MIN_ADMIN_RPM:
             return _problem(
                 request,
@@ -1360,14 +1361,7 @@ def create_admin_router(manager_client: ManagerApiClient) -> APIRouter:
                 "it — leaving .env plus a restart as the only way back.",
             )
 
-        await db.upsert_rate_limit_config(
-            rate_limit_rpm=values["rate_limit_rpm"],  # type: ignore[arg-type]
-            rate_limit_tpm=values["rate_limit_tpm"],  # type: ignore[arg-type]
-            rate_limit_rpm_chat_completions=values["rate_limit_rpm_chat_completions"],
-            rate_limit_tpm_chat_completions=values["rate_limit_tpm_chat_completions"],
-            rate_limit_rpm_admin=values["rate_limit_rpm_admin"],
-            rate_limit_tpm_admin=values["rate_limit_tpm_admin"],
-        )
+        await db.upsert_rate_limit_config(values)
         rate_limits.apply_limits(request.app.state.settings, values)
         logger.info("admin.rate_limits_updated", **{k: v for k, v in values.items()})
         return _limits_payload(request, is_overridden=True)
