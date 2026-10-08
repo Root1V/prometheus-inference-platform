@@ -53,8 +53,9 @@ function LiveRow({ row, who }: { row: LiveCounter; who: string }) {
         <p className="mt-1 flex items-center gap-1.5 text-xs text-text-muted">
           <span
             className={`rounded px-1.5 py-0.5 text-[10px] font-medium ${LAYER_CHIP[row.layer]}`}
+            title={`Layer ${row.layer_n} of 3`}
           >
-            {row.layer}
+            L{row.layer_n} {row.layer}
           </span>
           {row.endpoint === "*" ? "every endpoint" : row.endpoint}
         </p>

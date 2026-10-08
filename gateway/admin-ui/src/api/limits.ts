@@ -54,6 +54,9 @@ export interface LimitField {
 
 export interface LimitLayer {
   layer: "platform" | "client" | "endpoint";
+  /** PRM-234: which of the three, numbered by the server from its own
+   *  ordering — broadest first, the way a request meets them. */
+  n: number;
   /** One line on what this layer bounds — the page shows it verbatim. */
   what: string;
   fields: LimitField[];
@@ -131,6 +134,8 @@ export interface LiveCounter {
   window: "minute" | "day";
   used: number;
   layer: "platform" | "client" | "endpoint";
+  /** Which of the three layers, numbered by the server. */
+  layer_n: number;
   limit: number | null;
   /** `tier` — this client's tier chose it. `set` — a configured number.
    *  `derived` — PRM-227's sum of the per-endpoint allowances. `none` — nothing

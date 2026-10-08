@@ -145,7 +145,15 @@ function LayerCard({
 }) {
   return (
     <div className="rounded-xl border border-border bg-surface p-4">
-      <p className="text-xs font-medium uppercase tracking-wide text-text-muted">
+      <p className="flex items-baseline gap-2 text-xs font-medium uppercase tracking-wide text-text-muted">
+        {/* PRM-234: the number as well as the name. "Three layers" is the
+            first sentence on the page and the cards only said which three —
+            a reader could not tell whether the one in front of them was the
+            broadest or the narrowest, which is the whole content of the
+            distinction. */}
+        <span className="rounded bg-background px-1.5 py-0.5 text-[10px] text-text-muted">
+          Layer {layer.n}
+        </span>
         {layer.layer}
       </p>
       <p className="mt-1 text-sm text-text">{layer.what}</p>

@@ -140,6 +140,17 @@ LIMIT_LAYERS: tuple[tuple[str, str, tuple[str, ...]], ...] = (
 )
 
 
+# PRM-234: the numbers the middleware's own comments have used since PRM-227
+# — "Layer 1: the platform", "Layer 2: the client", "Layer 3 alone bounds a
+# route". Derived from the tuple above rather than written out again, so the
+# order and the numbering cannot disagree, and served to the dashboard rather
+# than counted there: a page that numbered the layers itself would be a second
+# opinion about which one is first.
+LAYER_NUMBERS: dict[str, int] = {
+    layer: index + 1 for index, (layer, _, _) in enumerate(LIMIT_LAYERS)
+}
+
+
 # PRM-227 left the consumer layer always enforced with a value derived from
 # the per-endpoint allowances, so `rate_limit_rpm_client` being None does not
 # mean "no ceiling" — it means "this one, computed". Reporting the raw setting
@@ -177,7 +188,7 @@ def limits_by_layer(settings: Any, *, endpoint_count: int) -> list[dict[str, Any
                     "editable": field in editable,
                 }
             )
-        layers.append({"layer": layer, "what": what, "fields": entries})
+        layers.append({"layer": layer, "n": LAYER_NUMBERS[layer], "what": what, "fields": entries})
     return layers
 
 

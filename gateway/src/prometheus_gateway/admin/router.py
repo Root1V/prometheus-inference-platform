@@ -1297,6 +1297,9 @@ def create_admin_router(manager_client: ManagerApiClient) -> APIRouter:
                 {
                     **counter,
                     "layer": layer,
+                    # PRM-234: and which of the three it is, from the server's
+                    # own ordering — the page should not be counting layers.
+                    "layer_n": rate_limits.LAYER_NUMBERS[layer],
                     "limit": limit,
                     "limit_source": source,
                     # Server-side so the sort below and the page agree. A
