@@ -8885,3 +8885,40 @@ before any row is applied.
 **Scope**: in — the migration, the eleven columns, `RATE_LIMIT_FIELDS` grown to seventeen, a PUT
 driven off that list with partial edits (absent = leave alone, null = clear), the editable cards.
 Out — per-model limits and sliding windows, still the two real gaps against the industry.
+
+
+## PRM-233 — How close is each ceiling
+
+**Why**: PRM-230 answered "which ceiling refused me" with a list of every counter standing. That is
+the right answer once a 429 has happened and the wrong shape for the question before it — *who is
+about to be refused*. With fourteen clients across six endpoints and seven dimensions the list runs
+to a hundred rows, and the one at 98% looks like the ninety-nine at 2%.
+
+**Two roll-ups.** The whole platform this minute, and one row per consumer carrying both its own
+client-wide ceilings and its worst counter — different facts, and the second is the one that
+produces the 429: a client at 3% of its client-wide RPM can have a single endpoint at 98%. The
+per-counter list is still a click away.
+
+**The platform's RPM counter is now unconditional.** Its TPM counter has always been written on
+every request; RPM existed only once `RATE_LIMIT_RPM_PLATFORM` was set, so the dashboard could show
+what the platform spent in tokens and not in requests — and the operator deciding what that ceiling
+should be was the one person who could not see the number. Counting is not enforcing, and an
+unset platform ceiling still refuses nothing; that now needs its own test rather than resting on
+the absence of a Redis key.
+
+**The rate limit this page never showed.** Every ceiling on it is keyed on a credential, so every
+one applies *after* authentication. `/ui/login` has had a per-IP throttle since spec 017 AC-11 —
+enforced, `UI_ENABLED=true` on this deployment, and absent from the one page called Limits. Shown
+read-only: a login throttle an attacker could widen through the admin API is not obviously one
+worth making editable through the admin API.
+
+**And the panel now fails visibly.** Three retries with backoff left it reading "Reading the
+counters…" for seven seconds against a gateway without this endpoint — which is what an operator
+running an older build sees. A diagnostic that looks like it is still thinking is worse than one
+that says it failed.
+
+**Scope**: in — the two roll-ups, the unconditional platform RPM counter, `login_throttle` in the
+limits payload and its panel, `retry: false` on the live query. Out — the auth-service's own
+per-IP limit on token issuance (another service's configuration, and the gateway cannot read it),
+and that the admin login reaches it through the gateway's address rather than the operator's, so
+all operators share one bucket.

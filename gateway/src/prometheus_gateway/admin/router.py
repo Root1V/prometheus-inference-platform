@@ -1198,6 +1198,20 @@ def create_admin_router(manager_client: ManagerApiClient) -> APIRouter:
             # deployment decision, not a tuning knob.
             "rate_limit_strict": settings.rate_limit_strict,
             "min_admin_rpm": rate_limits.MIN_ADMIN_RPM,
+            # PRM-233: the rate limit this page never showed.
+            #
+            # Every ceiling above is keyed on a credential, which means every
+            # one of them applies *after* authentication. `/ui/login` is where
+            # credentials are guessed rather than presented, and it has had a
+            # per-IP throttle since spec 017 AC-11 — enforced, and absent from
+            # the one page called Limits. Read-only here: it is not on
+            # `RateLimitConfig`, and a login throttle an attacker could widen
+            # by reaching the admin API is not obviously one worth making
+            # editable from the admin API.
+            "login_throttle": {
+                "rpm": settings.ui_login_rate_limit_rpm,
+                "active": settings.ui_enabled,
+            },
             # RM-71 (decision #8): observed capacity shown next to the limit,
             # never used to derive one. Inferring a limit from slots, model size
             # and quantization is guesswork that throttles or over-admits in

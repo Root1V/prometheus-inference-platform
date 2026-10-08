@@ -128,19 +128,79 @@ function LiveRow({ row, who }: { row: LiveCounter; who: string }) {
   );
 }
 
+const PLATFORM_IDENTITY = "*platform*";
+
+/** Shared colouring: a counter is refusing, near, or fine. */
+function toneOf(percent: number | null) {
+  if (percent === null)
+    return { bar: "bg-text-muted/30", text: "text-text-muted" };
+  if (percent >= 100)
+    return { bar: "bg-red-500", text: "font-medium text-red-500" };
+  if (percent >= 80)
+    return { bar: "bg-amber-500", text: "text-amber-600 dark:text-amber-400" };
+  return { bar: "bg-primary", text: "text-text-muted" };
+}
+
 /**
- * The live diagnostic — PRM-230.
+ * One counter as used / limit with a bar — PRM-233.
+ *
+ * The rollups and the detail table show the same quantity, so they show it
+ * the same way. A second rendering of "how full is this" would be a second
+ * thing to keep honest.
+ */
+function Meter({
+  row,
+  width = "w-28",
+}: {
+  row: LiveCounter | undefined;
+  width?: string;
+}) {
+  if (!row) return <span className="text-xs text-text-muted">—</span>;
+  const tone = toneOf(row.percent);
+  return (
+    <div>
+      <p className="text-sm tabular-nums text-text">
+        {row.used.toLocaleString()}
+        <span className="text-text-muted">
+          {" / "}
+          {row.limit === null ? "\u2014" : row.limit.toLocaleString()}
+        </span>
+      </p>
+      <div className="mt-1 flex items-center gap-2">
+        <div
+          className={`h-1 ${width} overflow-hidden rounded-full bg-background`}
+        >
+          {row.percent !== null && (
+            <div
+              className={`h-full rounded-full ${tone.bar}`}
+              style={{ width: `${Math.min(100, row.percent)}%` }}
+            />
+          )}
+        </div>
+        <span className={`text-[11px] tabular-nums ${tone.text}`}>
+          {row.percent === null ? "no ceiling" : `${row.percent}%`}
+        </span>
+      </div>
+    </div>
+  );
+}
+
+/**
+ * The live diagnostic — PRM-230, answering "how close" as of PRM-233.
  *
  * First on the page, because it is the question the page gets opened with:
- * something is being refused, which ceiling did it hit. Three conjoined layers
- * and seven dimensions make that un-deducible from the configuration below —
- * a caller sees one 429 and the reason is whichever counter crossed.
+ * something is being refused, which ceiling did it hit. PRM-230 listed every
+ * counter, which answers that once something is already at its ceiling and
+ * not the question before it — *who is about to be*. With fourteen clients
+ * across six endpoints and seven dimensions, that answer is not in a list of
+ * a hundred rows; it is in two roll-ups, one per consumer and one for the
+ * whole platform. The list is still here, one click down, because when a
+ * 429 has already happened the exact counter is what you want.
  */
 function LiveCeilings() {
   const liveQuery = useLiveLimits();
   const usersQuery = useUsers();
-  const [showQuiet, setShowQuiet] = useState(false);
-  const [showUnmetered, setShowUnmetered] = useState(false);
+  const [showDetail, setShowDetail] = useState(false);
   const live = liveQuery.data;
 
   // An identity is a client_id or a user_id; only the first has a name here,
@@ -152,34 +212,54 @@ function LiveCeilings() {
     ]),
   );
 
-  if (liveQuery.isError) {
+  if (liveQuery.isError || (live && !live.available)) {
     return (
       <p className="mt-3 rounded-xl border border-border bg-surface px-4 py-3 text-sm text-text-muted">
-        Could not read the counters.
-      </p>
-    );
-  }
-  if (live && !live.available) {
-    return (
-      <p className="mt-3 rounded-xl border border-border bg-surface px-4 py-3 text-sm text-text-muted">
-        {live.reason}
+        {live?.reason ??
+          "Could not read the counters — this gateway may be running a build without /admin/api/limits/live."}
       </p>
     );
   }
 
   const rows = live?.rows ?? [];
-  // Three groups, because they answer three different questions and the server
-  // already sorted them into this order: what is close to refusing, what is
-  // merely busy, and what nothing is watching.
-  const metered = rows.filter((r) => r.percent !== null);
-  const unmetered = rows.filter((r) => r.percent === null);
-  const busy = metered.filter((r) => (r.percent ?? 0) >= 1);
-  // Five rows even in a quiet minute: a table that collapses to nothing while
-  // traffic is flowing reads as broken.
-  const visible = busy.length >= 5 ? busy : metered.slice(0, 5);
-  const quiet = metered.slice(visible.length);
-  const refusing = metered.filter((r) => (r.percent ?? 0) >= 100);
-  const shown = showQuiet ? metered : visible;
+  const platformRpm = rows.find(
+    (r) => r.layer === "platform" && r.dimension === "rpm",
+  );
+  const platformTpm = rows.find(
+    (r) => r.layer === "platform" && r.dimension === "tpm",
+  );
+
+  // One entry per consumer, with its own ceiling and its worst counter —
+  // which are two different facts. A client can sit at 3% of its client-wide
+  // RPM while one endpoint of its traffic is at 98%, and the second number is
+  // the one that is about to produce a 429.
+  const byIdentity = new Map<string, LiveCounter[]>();
+  for (const row of rows) {
+    if (row.identity === PLATFORM_IDENTITY) continue;
+    const list = byIdentity.get(row.identity);
+    if (list) list.push(row);
+    else byIdentity.set(row.identity, [row]);
+  }
+  const clients = [...byIdentity.entries()]
+    .map(([identity, own]) => {
+      const metered = own.filter((r) => r.percent !== null);
+      return {
+        identity,
+        rpm: own.find((r) => r.layer === "client" && r.dimension === "rpm"),
+        tpm: own.find((r) => r.layer === "client" && r.dimension === "tpm"),
+        worst: metered.length
+          ? metered.reduce((a, b) =>
+              (b.percent ?? 0) > (a.percent ?? 0) ? b : a,
+            )
+          : undefined,
+      };
+    })
+    .sort((a, b) => (b.worst?.percent ?? -1) - (a.worst?.percent ?? -1));
+
+  const refusing = rows.filter((r) => (r.percent ?? 0) >= 100);
+  const quiet = liveQuery.isLoading
+    ? "Reading the counters\u2026"
+    : "No counter standing this minute \u2014 nothing is close to a ceiling.";
 
   return (
     <>
@@ -190,60 +270,139 @@ function LiveCeilings() {
             : `${refusing.length} ceilings are refusing requests right now \u2014 the top rows.`}
         </p>
       )}
-      <div className="mt-3 overflow-x-auto rounded-xl border border-border bg-surface">
-        {metered.length === 0 ? (
-          <div className="p-10 text-center text-sm text-text-muted">
-            {liveQuery.isLoading
-              ? "Reading the counters\u2026"
-              : /* Not an empty state to apologise for: no counter standing is a
-                   minute in which nothing could have been refused. */
-                "No counter standing this minute \u2014 nothing is close to a ceiling."}
+
+      {/* The whole platform, which no per-client row can add up to: requests
+          and tokens are counted once per request at a reserved identity, so
+          summing the consumers would double-count every call that carries a
+          distinct user. */}
+      <div className="mt-3 grid grid-cols-1 gap-4 sm:grid-cols-3">
+        <div className="rounded-xl border border-border bg-surface p-4">
+          <p className="text-xs font-medium uppercase tracking-wide text-text-muted">
+            Platform, this minute
+          </p>
+          <div className="mt-3 space-y-3">
+            <div>
+              <p className="text-[11px] text-text-muted">requests / minute</p>
+              <Meter row={platformRpm} />
+            </div>
+            <div>
+              <p className="text-[11px] text-text-muted">tokens / minute</p>
+              <Meter row={platformTpm} />
+            </div>
           </div>
-        ) : (
+          {!platformRpm && !platformTpm && (
+            <p className="mt-3 text-xs text-text-muted">
+              Nothing has passed through this minute.
+            </p>
+          )}
+        </div>
+
+        <div className="rounded-xl border border-border bg-surface p-4 sm:col-span-2">
+          <p className="text-xs font-medium uppercase tracking-wide text-text-muted">
+            Closest to a ceiling
+          </p>
+          {clients.length === 0 || !clients[0].worst ? (
+            <p className="mt-3 text-sm text-text-muted">{quiet}</p>
+          ) : (
+            <>
+              <p className="mt-2 text-sm text-text">
+                <span className={toneOf(clients[0].worst.percent).text}>
+                  {clients[0].worst.percent}%
+                </span>{" "}
+                — {names.get(clients[0].identity) ?? clients[0].identity} on{" "}
+                <span className="font-mono text-xs">
+                  {clients[0].worst.dimension}
+                </span>{" "}
+                {clients[0].worst.endpoint === "*"
+                  ? "across every endpoint"
+                  : `at ${clients[0].worst.endpoint}`}
+              </p>
+              <p className="mt-1 text-xs text-text-muted">
+                {/* Stated because a percentage of a daily budget and a
+                    percentage of a minute's are not the same warning. */}
+                {clients[0].worst.window === "day"
+                  ? "A daily budget — it does not reset until the next UTC midnight."
+                  : "A per-minute budget — it resets on its own within the minute."}
+              </p>
+            </>
+          )}
+        </div>
+      </div>
+
+      {clients.length > 0 && (
+        <div className="mt-4 overflow-x-auto rounded-xl border border-border bg-surface">
           <table className="w-full min-w-[720px] text-left text-sm">
             <thead>
               <tr className="border-b border-border text-xs uppercase tracking-wide text-text-muted">
-                <th className="px-4 py-3 font-medium">Ceiling</th>
-                <th className="px-4 py-3 font-medium">Who</th>
-                <th className="px-4 py-3 font-medium">Used</th>
-                <th className="px-4 py-3 font-medium">Headroom</th>
+                <th className="px-4 py-3 font-medium">Consumer</th>
+                <th className="px-4 py-3 font-medium">Requests / min</th>
+                <th className="px-4 py-3 font-medium">Tokens / min</th>
+                <th className="px-4 py-3 font-medium">Closest ceiling</th>
               </tr>
             </thead>
             <tbody>
-              {shown.map((row) => (
-                <LiveRow
-                  key={`${row.dimension}:${row.identity}:${row.endpoint}`}
-                  row={row}
-                  who={names.get(row.identity) ?? row.identity}
-                />
+              {clients.map((c) => (
+                <tr
+                  key={c.identity}
+                  className="border-b border-border last:border-0"
+                >
+                  <td className="px-4 py-3">
+                    <p className="truncate text-text">
+                      {names.get(c.identity) ?? c.identity}
+                    </p>
+                    {names.has(c.identity) && (
+                      <p className="mt-0.5 truncate font-mono text-[11px] text-text-muted">
+                        {c.identity}
+                      </p>
+                    )}
+                  </td>
+                  <td className="px-4 py-3">
+                    <Meter row={c.rpm} />
+                  </td>
+                  <td className="px-4 py-3">
+                    <Meter row={c.tpm} />
+                  </td>
+                  <td className="px-4 py-3">
+                    {c.worst ? (
+                      <>
+                        <p
+                          className={`text-sm tabular-nums ${toneOf(c.worst.percent).text}`}
+                        >
+                          {c.worst.percent}%
+                        </p>
+                        <p className="mt-0.5 text-[11px] text-text-muted">
+                          <span className="font-mono">{c.worst.dimension}</span>
+                          {c.worst.endpoint === "*"
+                            ? " · all endpoints"
+                            : ` · ${c.worst.endpoint}`}
+                        </p>
+                      </>
+                    ) : (
+                      <span
+                        className="text-xs text-text-muted"
+                        title="Every counter this consumer has standing is one nothing checks — so none of them can refuse a request."
+                      >
+                        nothing checked
+                      </span>
+                    )}
+                  </td>
+                </tr>
               ))}
             </tbody>
           </table>
-        )}
-      </div>
+        </div>
+      )}
 
       <div className="mt-2 flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-text-muted">
-        {quiet.length > 0 && (
+        {rows.length > 0 && (
           <button
             type="button"
-            onClick={() => setShowQuiet((v) => !v)}
+            onClick={() => setShowDetail((v) => !v)}
             className="underline decoration-dotted hover:text-text"
           >
-            {showQuiet
-              ? "Hide the counters below 1%"
-              : `${quiet.length} more below 1% of their ceiling`}
-          </button>
-        )}
-        {unmetered.length > 0 && (
-          <button
-            type="button"
-            onClick={() => setShowUnmetered((v) => !v)}
-            className="underline decoration-dotted hover:text-text"
-            title="These are incremented and no check reads them, so they cannot refuse anything. Set the matching limit in .env to turn a meter into a ceiling."
-          >
-            {showUnmetered
-              ? "Hide the counters nothing checks"
-              : `${unmetered.length} counted and unchecked`}
+            {showDetail
+              ? "Hide the individual counters"
+              : `Show all ${rows.length} counters`}
           </button>
         )}
         {live?.minute_resets_in !== undefined && (
@@ -253,19 +412,18 @@ function LiveCeilings() {
         )}
       </div>
 
-      {showUnmetered && (
+      {showDetail && (
         <div className="mt-2 overflow-x-auto rounded-xl border border-dashed border-border bg-surface">
-          {/* Worth its own panel rather than a filter on the table above: these
-              rows are a finding about the configuration, not a reading about
-              the traffic. PRM-224..226 shipped the meters; a dimension with no
-              number set measures faithfully and refuses nothing. */}
           <p className="px-4 pt-3 text-xs text-text-muted">
-            Measured, and no ceiling reads them — so none of these can refuse a
-            request. Setting the matching limit turns a meter into a ceiling.
+            Every counter standing, closest to refusing first. A row reading{" "}
+            <span className="text-text">counted, not checked</span> is
+            incremented and read by no ceiling — it cannot refuse anything, and
+            it is not headroom either. Setting the matching limit above turns a
+            meter into a ceiling.
           </p>
           <table className="w-full min-w-[720px] text-left text-sm">
             <tbody>
-              {unmetered.map((row) => (
+              {rows.map((row) => (
                 <LiveRow
                   key={`${row.dimension}:${row.identity}:${row.endpoint}`}
                   row={row}
@@ -331,11 +489,12 @@ export default function Limits() {
           Right now
         </h2>
         <p className="mt-1 text-sm text-text-muted">
-          Every counter standing in this minute — or today, for the daily ones —
-          against the ceiling that reads it, closest to refusing first. Counters
-          are per-bucket and reset on their own, so a row here is this minute's
-          traffic, not a trend. The dashboard's own requests appear under the
-          admin endpoint.
+          What the platform and each consumer are spending against the ceilings
+          that apply to them, closest to refusing first. Counters are per-bucket
+          and reset on their own, so this is the current minute&rsquo;s traffic
+          — or today&rsquo;s, for the daily ones — not a trend. The
+          dashboard&rsquo;s own requests are in here too, under the admin
+          endpoint.
         </p>
         <LiveCeilings />
 
