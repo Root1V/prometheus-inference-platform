@@ -210,10 +210,19 @@ async def test_the_end_user_survives_every_path_that_bills(app, caller):
 
     import datetime as _dt
 
-    rows = await db.query_activity_today(_dt.date.today())
-    by_user = {r["end_user"]: r for r in rows if r["client_id"] == CLIENT}
-    assert by_user["alice"]["request_count"] == 2, "a billing path dropped the end user"
-    assert by_user["bob"]["request_count"] == 1
+    rows = [r for r in await db.query_activity_today(_dt.date.today()) if r["client_id"] == CLIENT]
+    by_user: dict[str | None, int] = {}
+    for row in rows:
+        by_user[row["end_user"]] = by_user.get(row["end_user"], 0) + row["request_count"]
+    assert by_user["alice"] == 2, "a billing path dropped the end user"
+    assert by_user["bob"] == 1
+    # PRM-236: and what each of them ran. Alice's two requests were two
+    # different models, which is the grouping the detail view reads.
+    assert {(r["end_user"], r["model"], r["request_kind"]) for r in rows} >= {
+        ("alice", "small-model", "chat"),
+        ("alice", "emb", "embedding"),
+        ("bob", "small-model", "chat"),
+    }
 
 
 async def test_traffic_with_no_end_user_is_kept_under_one_null_row(app, caller):
@@ -299,3 +308,138 @@ async def test_a_consumer_the_tracker_forgot_is_still_listed(app, caller, admin)
 async def test_activity_requires_admin_read(app, caller):
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
         assert (await c.get("/admin/api/activity", headers=caller)).status_code == 403
+
+
+# ── PRM-236: what did they do ────────────────────────────────────────────────
+
+
+def test_every_kind_of_call_has_a_label():
+    """The question the old page could not answer. A credential that listed
+    its models and one that ran a thousand completions both read as
+    `connection_type: api`, which is the URL prefix of whichever request
+    happened to be last."""
+    from prometheus_gateway.telemetry import ACTION_LABELS, classify_action
+
+    cases = {
+        "/v1/chat/completions": "chat",
+        "/v1/embeddings": "embeddings",
+        "/v1/rerank": "rerank",
+        "/v1/images/generations": "images",
+        "/v1/models/qwen/predict": "predict",
+        "/v1/models": "models.list",
+        "/v1/backends": "backends",
+        "/v1/usage/abc": "usage",
+        "/admin/api/instances": "dashboard",
+        "/v1/something-new": "other",
+    }
+    for path, expected in cases.items():
+        assert classify_action(path) == expected, path
+        assert expected in ACTION_LABELS
+
+
+def test_the_playground_is_not_an_integration():
+    """Same credential, same route — only the dashboard can say which it is,
+    and an operator trying a model out should not read as production traffic.
+    Self-reported, and only ever a label."""
+    from prometheus_gateway.telemetry import classify_action
+
+    assert classify_action("/v1/chat/completions", "playground") == "playground"
+    assert classify_action("/v1/chat/completions", None) == "chat"
+
+
+def test_the_label_set_is_closed():
+    """These become per-identity counters in memory. A label taken from the URL
+    unbounded is an unbounded dictionary, so an unknown path lands in `other`
+    rather than minting a key."""
+    from prometheus_gateway.telemetry import ACTION_LABELS, classify_action
+
+    for path in ("/v1/a", "/v1/b", "/v1/c/d/e", "/x"):
+        assert classify_action(path) == "other"
+    assert len(ACTION_LABELS) == 11
+
+
+async def test_activity_reports_what_each_consumer_did(app, caller, admin):
+    """Two different kinds of call from one credential, both named."""
+    await db.create_tables(db.get_engine())
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
+        with respx.mock:
+            respx.post("http://127.0.0.1:18081/v1/chat/completions").mock(
+                return_value=Response(200, json=CHAT_RESPONSE)
+            )
+            await c.post("/v1/chat/completions", json=CHAT, headers=caller)
+            await c.get("/v1/models", headers=caller)
+        body = (await c.get("/admin/api/activity", headers=admin)).json()
+
+    consumer = next(c for c in body["consumers"] if c["identity"] == CLIENT)
+    did = {a["action"]: a["count"] for a in consumer["actions"]}
+    assert did == {"chat": 1, "models.list": 1}
+    # And the model it ran, which listing does not produce a usage row for.
+    assert [(m["model"], m["request_kind"]) for m in consumer["models"]] == [
+        ("small-model", "chat")
+    ]
+
+
+async def test_an_end_user_is_reported_across_every_consumer_that_served_them(
+    app, caller, admin, rsa_keys
+):
+    """One person, two credentials. Nested inside each consumer that fact is
+    invisible, which is why this list exists beside them rather than inside."""
+    other = {
+        "Authorization": "Bearer "
+        + make_token(
+            rsa_keys["private"],
+            scope="inference:read model:small-model",
+            sub="second-client",
+            azp="second-client",
+        )
+    }
+    await db.create_tables(db.get_engine())
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
+        with respx.mock:
+            respx.post("http://127.0.0.1:18081/v1/chat/completions").mock(
+                return_value=Response(200, json=CHAT_RESPONSE)
+            )
+            await c.post("/v1/chat/completions", json={**CHAT, "user": "alice"}, headers=caller)
+            await c.post("/v1/chat/completions", json={**CHAT, "user": "alice"}, headers=other)
+        body = (await c.get("/admin/api/activity", headers=admin)).json()
+
+    alice = next(u for u in body["end_users_today"] if u["end_user"] == "alice")
+    assert alice["request_count"] == 2
+    assert sorted(alice["consumers"]) == ["client-with-users", "second-client"]
+    assert alice["models"] == ["small-model"]
+
+
+async def test_an_end_user_row_names_the_models_it_ran(app, caller, admin):
+    """ "Which client interacted with which user, on which model" is one row."""
+    await db.create_tables(db.get_engine())
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
+        with respx.mock:
+            respx.post("http://127.0.0.1:18081/v1/chat/completions").mock(
+                return_value=Response(200, json=CHAT_RESPONSE)
+            )
+            respx.post("http://127.0.0.1:18081/v1/embeddings").mock(
+                return_value=Response(
+                    200,
+                    json={
+                        "object": "list",
+                        "data": [{"object": "embedding", "index": 0, "embedding": [0.1]}],
+                        "model": "emb",
+                        "usage": {"prompt_tokens": 2, "total_tokens": 2},
+                    },
+                )
+            )
+            await c.post("/v1/chat/completions", json={**CHAT, "user": "alice"}, headers=caller)
+            await c.post(
+                "/v1/embeddings",
+                json={"model": "emb", "input": "hola", "user": "alice"},
+                headers=caller,
+            )
+        body = (await c.get("/admin/api/activity", headers=admin)).json()
+
+    consumer = next(c for c in body["consumers"] if c["identity"] == CLIENT)
+    alice = next(u for u in consumer["end_users"] if u["end_user"] == "alice")
+    assert alice["request_count"] == 2
+    assert {(m["model"], m["request_kind"]) for m in alice["models"]} == {
+        ("small-model", "chat"),
+        ("emb", "embedding"),
+    }

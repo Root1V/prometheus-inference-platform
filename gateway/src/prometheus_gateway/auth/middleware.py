@@ -11,7 +11,13 @@ from .claims import Claims
 from .errors import auth_error_response
 from .jwks import fetch_jwks_keys, invalidate_jwks_cache
 from ..config import Settings
-from ..telemetry import activity_tracker, get_logger, metrics_store
+from ..telemetry import (
+    SOURCE_HEADER,
+    activity_tracker,
+    classify_action,
+    get_logger,
+    metrics_store,
+)
 
 logger = get_logger(__name__)
 
@@ -213,7 +219,12 @@ class JWTAuthMiddleware:
         # RM-23: last-seen presence tracking, keyed off the same claims already
         # validated above — see ActivityTracker for what "active" means here.
         await activity_tracker.touch(
-            claims.client_id, claims.user_id, _connection_type(request.url.path)
+            claims.client_id,
+            claims.user_id,
+            _connection_type(request.url.path),
+            # PRM-236: and *what* they did, which the connection type never
+            # said — it is the URL prefix of whichever request was last.
+            classify_action(request.url.path, request.headers.get(SOURCE_HEADER)),
         )
         await self.app(scope, receive, send)
 

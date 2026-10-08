@@ -35,3 +35,18 @@ apiClient.interceptors.response.use((response) => response, handle401);
 export const rootClient = axios.create();
 rootClient.interceptors.request.use(attachToken);
 rootClient.interceptors.response.use((response) => response, handle401);
+
+/**
+ * PRM-236: the Playground, telling the gateway it is the Playground.
+ *
+ * Playground calls and SDK calls are the same credential hitting the same
+ * route, so no path can separate them and the Activity page would label an
+ * operator trying a model out as an integration running in production. The
+ * header is self-reported — it says "the dashboard sent this", which is all
+ * it is ever used for.
+ */
+export const playgroundClient = axios.create({
+  headers: { "x-prometheus-source": "playground" },
+});
+playgroundClient.interceptors.request.use(attachToken);
+playgroundClient.interceptors.response.use((response) => response, handle401);

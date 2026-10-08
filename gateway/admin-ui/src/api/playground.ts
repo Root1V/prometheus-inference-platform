@@ -1,6 +1,6 @@
 import { useMutation } from "@tanstack/react-query";
 import { getStoredToken } from "./auth";
-import { AUTH_EXPIRED_EVENT, rootClient } from "./client";
+import { AUTH_EXPIRED_EVENT, playgroundClient } from "./client";
 
 export interface ToolCall {
   id: string;
@@ -83,12 +83,15 @@ export function usePlaygroundChat() {
       params: PlaygroundParams;
     }) =>
       (
-        await rootClient.post<ChatCompletionResponse>("/v1/chat/completions", {
-          model,
-          messages,
-          stream: false,
-          ...params,
-        })
+        await playgroundClient.post<ChatCompletionResponse>(
+          "/v1/chat/completions",
+          {
+            model,
+            messages,
+            stream: false,
+            ...params,
+          },
+        )
       ).data,
   });
 }
@@ -109,7 +112,7 @@ export function useEmbeddings() {
   return useMutation({
     mutationFn: async ({ model, input }: { model: string; input: string }) =>
       (
-        await rootClient.post<EmbeddingsResponse>("/v1/embeddings", {
+        await playgroundClient.post<EmbeddingsResponse>("/v1/embeddings", {
           model,
           input,
         })
@@ -157,7 +160,7 @@ export function useZeroShot() {
       multiLabel: boolean;
     }) => {
       const raw = (
-        await rootClient.post<ZeroShotResponse | ZeroShotResponse[]>(
+        await playgroundClient.post<ZeroShotResponse | ZeroShotResponse[]>(
           `/v1/models/${encodeURIComponent(model)}/predict`,
           {
             inputs: input,
@@ -203,7 +206,7 @@ export function useClassify() {
   return useMutation({
     mutationFn: async ({ model, input }: { model: string; input: string }) => {
       const raw = (
-        await rootClient.post<
+        await playgroundClient.post<
           { label: string; score: number }[] | { label: string; score: number }
         >(`/v1/models/${encodeURIComponent(model)}/predict`, { inputs: input })
       ).data;
@@ -247,7 +250,7 @@ export function useTypedDecision() {
       questions: unknown;
     }) =>
       (
-        await rootClient.post<TypedDecisionResponse>(
+        await playgroundClient.post<TypedDecisionResponse>(
           `/v1/models/${encodeURIComponent(model)}/predict`,
           { state, questions },
         )
@@ -286,7 +289,7 @@ export function useNli() {
       hypothesis: string;
     }) => {
       const raw = (
-        await rootClient.post<
+        await playgroundClient.post<
           | { label: string; score: number }[]
           | { label: string; score: number }[][]
         >(`/v1/models/${encodeURIComponent(model)}/predict`, {
@@ -329,13 +332,16 @@ export function useRerank() {
        */
       rawScores: boolean;
     }) => {
-      const response = await rootClient.post<RerankResponse>("/v1/rerank", {
-        model,
-        query,
-        documents,
-        ...(topN !== null ? { top_n: topN } : {}),
-        ...(rawScores ? { raw_scores: true } : {}),
-      });
+      const response = await playgroundClient.post<RerankResponse>(
+        "/v1/rerank",
+        {
+          model,
+          query,
+          documents,
+          ...(topN !== null ? { top_n: topN } : {}),
+          ...(rawScores ? { raw_scores: true } : {}),
+        },
+      );
       /**
        * PRM-217: which of those the engine threw away.
        *
@@ -384,7 +390,7 @@ export function useImageGenerations() {
       size: string;
     }) =>
       (
-        await rootClient.post<ImageGenerationResponse>(
+        await playgroundClient.post<ImageGenerationResponse>(
           "/v1/images/generations",
           {
             model,
