@@ -9099,3 +9099,22 @@ for all of it, with the section saying why.
 breakdowns on each consumer, window-named column headers, the Here-now membership rule, the
 usage-derived fallback for an untracked row, and `uptime_s` so a short-lived process can say why
 its own half of the window is thin.
+
+
+## PRM-239 — A refresh button, and the width
+
+**Why**: the page polls every ten seconds and had no way to ask it for an answer now. That gap
+matters right after you change something — issue a key, run a call, move a client to a tier — when
+the wait *is* the question "did that land". Ten seconds of it is long enough that the reflex is to
+reload the whole page, which costs far more than a button.
+
+**A timestamp, not "8s ago".** A relative label has to tick to stay true, which means a timer and
+a re-render of the table every few seconds to keep one word honest — and `Date.now()` during
+render is impure besides, which the lint says out loud. The clock time of the last answer is right
+the moment it is painted and stays right.
+
+**And the copy runs the full width.** Every explanatory paragraph was capped at `max-w-4xl`, which
+on a wide window wrapped three-line sentences beside half a screen of nothing.
+
+**Scope**: in — the refresh control, the last-updated timestamp, removing the width cap on this
+page's copy.
