@@ -388,6 +388,7 @@ class ActivityTracker:
     """
 
     _STALE_AFTER_S = 15 * 60
+    _WINDOW_BUCKETS = _STALE_AFTER_S // 60
 
     def __init__(self) -> None:
         self._lock = asyncio.Lock()
@@ -412,12 +413,19 @@ class ActivityTracker:
             entry["user_id"] = user_id
             entry["connection_type"] = connection_type
             entry["last_seen"] = now
-            counter = entry["actions"].get(action)
-            if counter is None:
-                entry["actions"][action] = {"count": 1, "last_seen": now}
-            else:
-                counter["count"] += 1
-                counter["last_seen"] = now
+            # PRM-237: counted in one-minute buckets, and the snapshot sums the
+            # ones inside the window. The first version kept a running total
+            # per action, which made the page say "284" under a heading that
+            # said "in the last 15 minutes" — a cumulative figure wearing a
+            # window's label. Fifteen ints per action per identity is the price
+            # of the two agreeing.
+            counter = entry["actions"].setdefault(action, {"buckets": {}, "last_seen": now})
+            counter["last_seen"] = now
+            bucket = int(now // 60)
+            counter["buckets"][bucket] = counter["buckets"].get(bucket, 0) + 1
+            oldest = bucket - self._WINDOW_BUCKETS
+            for stale in [b for b in counter["buckets"] if b < oldest]:
+                del counter["buckets"][stale]
 
     async def snapshot(self) -> list[dict[str, Any]]:
         """Active entries (seen in the last 15 min), most recent first.
@@ -438,15 +446,26 @@ class ActivityTracker:
                     **e,
                     "last_seen_ago_s": int(now - e["last_seen"]),
                     "actions": [
-                        {
-                            "action": action,
-                            "label": ACTION_LABELS.get(action, action),
-                            "count": c["count"],
-                            "last_seen_ago_s": int(now - c["last_seen"]),
-                        }
-                        for action, c in sorted(
-                            e["actions"].items(), key=lambda kv: -kv[1]["last_seen"]
+                        counted
+                        for counted in (
+                            {
+                                "action": action,
+                                "label": ACTION_LABELS.get(action, action),
+                                "count": sum(
+                                    n
+                                    for b, n in c["buckets"].items()
+                                    if b > int(now // 60) - self._WINDOW_BUCKETS
+                                ),
+                                "last_seen_ago_s": int(now - c["last_seen"]),
+                            }
+                            for action, c in sorted(
+                                e["actions"].items(), key=lambda kv: -kv[1]["last_seen"]
+                            )
                         )
+                        # An action whose every bucket has aged out is one this
+                        # identity is no longer doing. Reporting it at zero
+                        # would read as "did this, nil times".
+                        if counted["count"] > 0
                     ],
                 }
                 for e in self._entries.values()

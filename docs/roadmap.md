@@ -9018,3 +9018,26 @@ autouse fixture, like the caches beside it.
 grouping, `end_users_today`, the three-section page, the Playground header. Out — a per-request
 event log (this counts kinds, it does not list calls), and anything about the `/ui/*` chat, which
 authenticates by cookie and never reaches the tracker.
+
+
+## PRM-237 — The number under the label
+
+**Why**: two questions from one screenshot, and both were the page's fault.
+
+**The pill was a running total.** `Admin dashboard ×284` sat under a heading reading *credentials
+that have made a request in the last 15 minutes*, and the number was every request of that kind
+since the tracker first saw the credential — it only ever grew. Counted in one-minute buckets now,
+with the snapshot summing the buckets inside the window; an action whose buckets have all aged out
+is dropped rather than reported at zero, which would read as "did this, nil times". Fifteen ints
+per action per identity is the price of the number and its heading agreeing.
+
+**And the operator was the busiest consumer on their own platform.** Measured from the browser:
+248 requests in 15.4 minutes with nothing open but this page — `/admin/api/users` every 5 seconds
+and `/admin/api/activity` every 10. That is real traffic, it spends the admin bucket, and
+`MIN_ADMIN_RPM` exists because of it, so hiding it would be the page lying to protect itself.
+What was missing was the page saying whose it is: the row carries a `you` badge, from the server's
+own view of who is asking, and the section says the dashboard polls and roughly how much.
+
+**Scope**: in — minute-bucketed action counts, dropping aged-out actions, `is_you`, and the
+section copy. Out — reducing the polling itself, which is a different change with its own
+tradeoff, and one worth measuring across every page rather than from this one.
