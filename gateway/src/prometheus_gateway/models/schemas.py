@@ -101,7 +101,38 @@ def ignored_parameters(body: BaseModel) -> list[str]:
     return sorted(body.model_extra or {})
 
 
-class ChatCompletionRequest(BaseModel):
+class EndUserFields(BaseModel):
+    """The caller's own identifier for *its* user — PRM-235.
+
+    Every ceiling and every invoice in this platform stops at the credential:
+    a client is one row no matter how many people are behind it. The industry's
+    answer to that is a field on the request naming the end user, and both
+    spellings of it were arriving here and being dropped — measured against the
+    running gateway, which replied `x-prometheus-ignored-parameters:
+    safety_identifier, user` and meant it.
+
+    `user` is OpenAI's original; `safety_identifier` is what replaced it. A
+    gateway in front of several of those has to read both, and LiteLLM's
+    precedence is the one to copy: an explicit header first, then `user`, then
+    `safety_identifier` — see `router.resolve_end_user`.
+
+    **Declared, and deliberately not forwarded.** Declaring stops
+    `ignored_parameters` naming them, which would now be a lie: they are read.
+    Keeping them out of `to_llama_payload` is the other half — llama.cpp has no
+    use for them, and the allowlist exists to bound what leaves this process.
+    They are consumed here and written to the usage row.
+
+    What arrives is stored as sent, so a caller should send a stable opaque id
+    rather than an email — the SDK guide says so. Bounded at 128 characters
+    because this becomes a grouping key, and an unbounded one is an unbounded
+    index.
+    """
+
+    user: str | None = Field(default=None, max_length=128)
+    safety_identifier: str | None = Field(default=None, max_length=128)
+
+
+class ChatCompletionRequest(EndUserFields):
     """Allowlist schema — only these fields are forwarded to llama.cpp.
 
     Implements: memory/specs/001-gateway-core.md — AC-5, AC-6, security considerations
@@ -233,7 +264,7 @@ class ChatCompletionRequest(BaseModel):
         return payload
 
 
-class EmbeddingsRequest(BaseModel):
+class EmbeddingsRequest(EndUserFields):
     """Allowlist schema for /v1/embeddings — RM-09.
 
     Mirrors OpenAI's embeddings request shape (model + input only; the
@@ -250,7 +281,7 @@ class EmbeddingsRequest(BaseModel):
         return {"model": self.model, "input": self.input}
 
 
-class RerankRequest(BaseModel):
+class RerankRequest(EndUserFields):
     """Allowlist schema for /v1/rerank — PRM-106.
 
     The shape is the de-facto one (Cohere, Jina, and llama.cpp's own /rerank):
@@ -298,7 +329,7 @@ class RerankRequest(BaseModel):
         return payload
 
 
-class ImageGenerationRequest(BaseModel):
+class ImageGenerationRequest(EndUserFields):
     """Allowlist schema for /v1/images/generations — RM-38.
 
     Mirrors OpenAI's images request shape (model/prompt plus the optional

@@ -17,7 +17,13 @@ import {
   Terminal,
   Users,
 } from "lucide-react";
-import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
+import {
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+  type ReactNode,
+} from "react";
 import { createPortal } from "react-dom";
 import { NavLink } from "react-router-dom";
 import { useAuth } from "../context/AuthContext";
@@ -33,7 +39,7 @@ const NAV_ITEMS = [
   { to: "/usage", label: "Usage", icon: Coins },
   { to: "/billing", label: "Billing", icon: Receipt },
   { to: "/limits", label: "Limits", icon: Gauge },
-  { to: "/sessions", label: "Sessions", icon: Radio },
+  { to: "/activity", label: "Activity", icon: Radio },
   { to: "/users", label: "Users", icon: Users },
 ];
 
@@ -138,7 +144,8 @@ export function Sidebar() {
   // Collapsed, the three-way theme control has no room for three targets that
   // are still large enough to hit. One button that cycles keeps the choice
   // reachable without shrinking it into a 14px sliver.
-  const currentTheme = THEME_OPTIONS.find((o) => o.mode === mode) ?? THEME_OPTIONS[1];
+  const currentTheme =
+    THEME_OPTIONS.find((o) => o.mode === mode) ?? THEME_OPTIONS[1];
   const cycleTheme = () => {
     const i = THEME_OPTIONS.findIndex((o) => o.mode === mode);
     setMode(THEME_OPTIONS[(i + 1) % THEME_OPTIONS.length].mode);
@@ -154,17 +161,29 @@ export function Sidebar() {
         collapsed ? "w-16" : "w-60",
       )}
     >
-      <div className={cn("flex items-center py-5", collapsed ? "justify-center px-0" : "gap-2 px-5")}>
+      <div
+        className={cn(
+          "flex items-center py-5",
+          collapsed ? "justify-center px-0" : "gap-2 px-5",
+        )}
+      >
         <Flame size={20} className="shrink-0 text-primary" />
         {!collapsed && (
           <div className="min-w-0">
-            <p className="truncate text-base font-semibold text-white">Prometheus</p>
+            <p className="truncate text-base font-semibold text-white">
+              Prometheus
+            </p>
             <p className="truncate text-xs text-gray-400">Inference Admin</p>
           </div>
         )}
       </div>
 
-      <nav className={cn("flex-1 space-y-1 overflow-y-auto", collapsed ? "px-2" : "px-3")}>
+      <nav
+        className={cn(
+          "flex-1 space-y-1 overflow-y-auto",
+          collapsed ? "px-2" : "px-3",
+        )}
+      >
         {NAV_ITEMS.map(({ to, label, icon: Icon }) =>
           wrap(
             label,
@@ -190,7 +209,12 @@ export function Sidebar() {
         )}
       </nav>
 
-      <div className={cn("space-y-2 border-t border-gray-800 py-3", collapsed ? "px-2" : "px-3")}>
+      <div
+        className={cn(
+          "space-y-2 border-t border-gray-800 py-3",
+          collapsed ? "px-2" : "px-3",
+        )}
+      >
         {collapsed ? (
           <Rail label={`Theme: ${currentTheme.label}`}>
             <button

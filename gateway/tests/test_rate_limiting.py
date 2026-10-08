@@ -562,6 +562,7 @@ async def test_every_usage_recording_path_spends_the_token_budget(fake_redis):
             completion,
             rl_redis=fake_redis,
             endpoint_slug=slug,
+            end_user=None,
             request_kind=kind,
         )
         key = f"prometheus:rl:tpm:client-a:{slug}:{bucket}"
@@ -775,6 +776,7 @@ async def test_ipm_counts_what_came_back_not_what_was_asked_for(fake_redis):
         0,
         rl_redis=fake_redis,
         endpoint_slug="images",
+        end_user=None,
         request_kind="image",
         image_count=2,
     )
