@@ -219,6 +219,17 @@ def counter_layer(identity: str, endpoint: str) -> str:
 # router increments tpm_in/tpm_out at the all-endpoints key as well, while the
 # middleware only ever reads them per endpoint. Those two rows are measured
 # and unenforced, and a page that quietly dropped them would hide it.
+# PRM-231: counter dimension → the column on `rate_limit_tiers` that bounds it
+# client-wide. The names differ (`tpm_in` is the counter, `tpm_input` the
+# setting) and inferring one from the other is how a mapping becomes a guess.
+_CLIENT_TIER_FIELDS: dict[str, str] = {
+    "tpm_in": "tpm_input",
+    "tpm_out": "tpm_output",
+    "rpd": "rpd",
+    "tpd": "tpd",
+    "ipm": "ipm",
+}
+
 _LIVE_LIMIT_FIELDS: dict[tuple[str, str], str | None] = {
     ("platform", "rpm"): "rate_limit_rpm_platform",
     ("platform", "tpm"): "rate_limit_tpm_platform",
@@ -259,6 +270,15 @@ def live_limit_for(
             return int(chosen), "set"
         # PRM-227's default: the sum of the per-endpoint allowances.
         return int(getattr(settings, f"rate_limit_{dimension}")) * endpoint_count, "derived"
+
+    # PRM-231: the other five dimensions have a client-wide ceiling only when a
+    # tier supplies one — the platform's own `.env` values are per endpoint and
+    # are reported on those rows. Before this they were tier columns nothing
+    # read, and these counters were the "counted, not checked" rows that said
+    # so.
+    if layer == "client" and (tier_field := _CLIENT_TIER_FIELDS.get(dimension)):
+        tier_value = getattr(tier, tier_field, None) if tier is not None else None
+        return (int(tier_value), "tier") if tier_value is not None else (None, "none")
 
     field = _LIVE_LIMIT_FIELDS.get((layer, dimension))
     if field is None:

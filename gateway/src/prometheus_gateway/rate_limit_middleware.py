@@ -290,6 +290,8 @@ class RateLimitMiddleware:
         state: Any,
         noun: str,
         scope: str,
+        *,
+        code: str | None = None,
     ) -> JSONResponse:
         """One 429 for the two broader layers — PRM-227.
 
@@ -320,7 +322,11 @@ class RateLimitMiddleware:
         return _rl_problem(
             request,
             429,
-            f"rate-limit-exceeded-{noun}s",
+            # PRM-231: `noun` is the word in the sentence and the error code is
+            # the contract — "input token" reads correctly in the detail and
+            # would be a new, undocumented code. The catalogue has three
+            # rate-limit codes and this change adds none.
+            code or f"rate-limit-exceeded-{noun}s",
             "Rate Limit Exceeded",
             detail,
             retry_after=retry_after,
@@ -335,15 +341,25 @@ class RateLimitMiddleware:
         state: Any,
         noun: str,
         code: str,
+        *,
+        scope: str | None = None,
     ) -> JSONResponse:
         """One 429 for both daily dimensions — PRM-225. `retry_after` is to the
         next UTC midnight, which is a long wait and exactly the point: a daily
-        budget that reset sooner would not be one."""
+        budget that reset sooner would not be one.
+
+        PRM-231: `scope` distinguishes the two ceilings that now exist on the
+        same dimension. The platform default is per endpoint; a tier's number
+        is the client's whole day across every route, and telling a caller
+        "for endpoint 'embeddings'" when they have spent their day elsewhere
+        sends them to look in the wrong place.
+        """
         retry_after = max(1, state.reset_at - int(time.time()))
+        where = "across all endpoints" if scope == CLIENT_SCOPE else f"for endpoint '{slug}'"
         logger.warning(
             "rate_limit.daily_exceeded",
             identity=identity,
-            endpoint=slug,
+            endpoint=ALL_ENDPOINTS if scope == CLIENT_SCOPE else slug,
             dimension=noun,
             limit=state.limit,
         )
@@ -352,10 +368,10 @@ class RateLimitMiddleware:
             429,
             code,
             "Rate Limit Exceeded",
-            f"'{identity}' has exceeded the daily {noun} limit of {state.limit} for "
-            f"endpoint '{slug}'. Resets at the next UTC midnight, in {retry_after} seconds.",
+            f"'{identity}' has exceeded the daily {noun} limit of {state.limit} "
+            f"{where}. Resets at the next UTC midnight, in {retry_after} seconds.",
             retry_after=retry_after,
-            extra={"scope": slug},
+            extra={"scope": scope or slug},
         )
 
     def _resolve_limits(self, endpoint_slug: str) -> tuple[int, int]:
@@ -542,6 +558,68 @@ class RateLimitMiddleware:
             )
             if not state.allowed:
                 return self._layer_refusal(request, identity, state, "token", CLIENT_SCOPE)
+
+            # PRM-231: and the tier's other five dimensions, here rather than
+            # anywhere else.
+            #
+            # `rpd`, `tpd`, `tpm_input` and `tpm_output` were columns on
+            # `rate_limit_tiers` that nothing read — an admin could set them
+            # from the Users modal and the platform would ignore it in
+            # silence. PRM-230's live view is what made that visible: two of
+            # the counters they would bound were already being incremented at
+            # the all-endpoints key with no check reading them.
+            #
+            # **At this key, not the per-endpoint one.** A tier is what a
+            # client may consume, the same reading `tier.rpm` and `tier.tpm`
+            # already have. Overriding the per-endpoint default instead would
+            # make `rpd: 10,000` grant sixty thousand — the number saying one
+            # thing and the system doing another, which is PRM-129's shape.
+            # The platform's own `.env` defaults stay per endpoint, below.
+            if tier is not None:
+                if tier.rpd is not None:
+                    state = await self._limiter.check_and_increment_rpd(
+                        identity, ALL_ENDPOINTS, tier.rpd
+                    )
+                    if not state.allowed:
+                        return self._daily_refusal(
+                            request,
+                            identity,
+                            slug,
+                            state,
+                            "request",
+                            "rate-limit-exceeded-requests",
+                            scope=CLIENT_SCOPE,
+                        )
+                if tier.tpd is not None:
+                    state = await self._limiter.check_tpd_budget(identity, ALL_ENDPOINTS, tier.tpd)
+                    if not state.allowed:
+                        return self._daily_refusal(
+                            request,
+                            identity,
+                            slug,
+                            state,
+                            "token",
+                            "rate-limit-exceeded-tokens",
+                            scope=CLIENT_SCOPE,
+                        )
+                for outgoing, tier_limit, label in (
+                    (False, tier.tpm_input, "input token"),
+                    (True, tier.tpm_output, "output token"),
+                ):
+                    if tier_limit is None:
+                        continue
+                    state = await self._limiter.check_tpm_direction(
+                        identity, ALL_ENDPOINTS, tier_limit, outgoing=outgoing
+                    )
+                    if not state.allowed:
+                        return self._layer_refusal(
+                            request,
+                            identity,
+                            state,
+                            label,
+                            CLIENT_SCOPE,
+                            code="rate-limit-exceeded-tokens",
+                        )
 
         # PRM-225: the day's ceilings, where they are set.
         #

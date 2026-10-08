@@ -10,7 +10,7 @@ import { useToast } from "../context/ToastContext";
 import { cn } from "../lib/cn";
 import type { CurrencyCode } from "../lib/format";
 import { getErrorMessage } from "../lib/errors";
-import type { ClientBillingSettings } from "../types/billing";
+import type { ClientBillingSettings, RateLimitTier } from "../types/billing";
 
 interface ClientBillingSettingsModalProps {
   open: boolean;
@@ -131,8 +131,7 @@ function ClientBillingSettingsForm({
             {(tiersQuery.data ?? []).map((t) => (
               <option key={t.name} value={t.name}>
                 {t.name}
-                {t.rpm !== null ? ` \u2014 ${t.rpm} RPM` : ""}
-                {t.tpm !== null ? ` \u00b7 ${t.tpm.toLocaleString()} TPM` : ""}
+                {summariseTier(t)}
               </option>
             ))}
           </select>
@@ -211,6 +210,31 @@ function ClientBillingSettingsForm({
       </div>
     </>
   );
+}
+
+/**
+ * Every dimension a tier actually sets — PRM-231.
+ *
+ * This listed RPM and TPM, which was the whole truth while the other five were
+ * columns nothing read. Now that all seven are enforced, a tier whose point is
+ * `rpd: 10,000` would show as a bare name: the operator would be choosing an
+ * entitlement with its one meaningful number hidden.
+ */
+function summariseTier(t: RateLimitTier): string {
+  const parts = (
+    [
+      ["rpm", "RPM"],
+      ["tpm", "TPM"],
+      ["tpm_input", "in TPM"],
+      ["tpm_output", "out TPM"],
+      ["rpd", "RPD"],
+      ["tpd", "TPD"],
+      ["ipm", "IPM"],
+    ] as const
+  )
+    .filter(([key]) => t[key] !== null)
+    .map(([key, label]) => `${t[key]!.toLocaleString()} ${label}`);
+  return parts.length === 0 ? "" : ` \u2014 ${parts.join(" \u00b7 ")}`;
 }
 
 export function ClientBillingSettingsModal({
