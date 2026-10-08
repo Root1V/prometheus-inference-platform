@@ -8941,3 +8941,41 @@ the other calls it Layer 3.
 **Scope**: in — `LAYER_NUMBERS`, `n` on each layer and `layer_n` on each live counter, the chips on
 both views, and a test that the order is platform/client/endpoint so reordering the tuple cannot
 silently renumber the page.
+
+
+## PRM-235 — Activity, and the end user the gateway threw away
+
+**Why**: Sessions was three columns — credential, what kind of path it last called, how long ago —
+sourced from an in-process tracker that a restart empties. Measured on the live deployment right
+after a deploy: two consumers with 63 and 10 requests *that day* did not appear at all, because
+the only source that knew about them had been cleared. A page that goes blank after a restart says
+"nobody is using this platform", which is the mistake PRM-223 fixed on the circuit table.
+
+**It was also the wrong word.** In LLM tooling a *session* is the grouping of one conversation's or
+one agent run's calls — Langfuse groups traces by a session id, Helicone groups requests into a
+tree by id and path. What API gateways actually publish is traffic per consumer: Kong labels its
+request counters by Consumer and meters each call against one, LiteLLM breaks spend and requests
+down per key and per customer. Nobody ships a "who is connected" page, because tokens are
+stateless — the caveat already written in `ActivityTracker`'s own docstring.
+
+**Activity** is the second thing under the second name: per consumer, what it is spending this
+minute and against which ceiling (Redis, survives a restart), what it spent today (the usage rows),
+and last-seen where the tracker still has it. Top 50, because per-consumer series are
+high-cardinality — LiteLLM keeps end users out of its Prometheus export by default for the same
+reason.
+
+**And the end user, which was arriving and being dropped.** Every ceiling and every invoice here
+stops at the credential: one client is one row however many people are behind it. The industry's
+answer is a field on the request — OpenAI's `user`, now superseded by `safety_identifier` — and
+this gateway accepted both, named them in `x-prometheus-ignored-parameters`, and threw them away.
+Both are read now, with LiteLLM's precedence (header, then `user`, then `safety_identifier`), kept
+out of what is forwarded to any engine, and written to `usage_events`. The streaming path nearly
+missed it — `_stream_response` has its own local `body` — and the suite said so, which is the
+difference between this and `user` working for buffered requests and silently not for streamed ones.
+
+**Scope**: in — the identifier and its column, `/admin/api/activity`, the new page and the sidebar
+entry, `/#/sessions` redirecting rather than 404-ing, and the SDK guide. `GET /admin/api/sessions`
+stays: it is published, the dashboard no longer calls it, and removing it is a separate decision.
+Out — grouping calls into conversations the way Langfuse and Helicone do, which needs a session id
+per call and is a different feature from identifying a person; and per-end-user budgets, which the
+column now makes possible.

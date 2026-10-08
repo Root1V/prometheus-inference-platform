@@ -51,6 +51,7 @@ PUT    /admin/api/circuit-breaker                           — set them live, p
 DELETE /admin/api/circuit-breaker                           — drop the override, back to .env (RM-67)
 GET    /admin/api/config                                    — dashboard-facing settings (RM-31)
 GET    /admin/api/sessions                                  — clients active in the last 15m (RM-23)
+GET    /admin/api/activity                                  — who is consuming and how much (PRM-235)
 
 Implements: docs/roadmap.md — RM-10 (gateway admin dashboard, phase 1)
 Implements: docs/roadmap.md — RM-11 (Users section, dual login modes)
@@ -63,6 +64,7 @@ Implements: docs/roadmap.md — RM-48 (Models: discover/download/manage on Huggi
 
 from __future__ import annotations
 
+import datetime as _dt
 import json
 import time as _time
 from typing import Any
@@ -74,7 +76,7 @@ from fastapi.responses import JSONResponse
 from .. import audit, db, pricing, rate_limits, traffic_split
 from ..budget import resolve_client_limits
 from ..rate_limit_middleware import INFERENCE_ENDPOINT_SLUGS
-from ..rate_limiter import RateLimiter
+from ..rate_limiter import PLATFORM_IDENTITY, RateLimiter
 from ..config import Settings
 from ..router import _problem
 from ..telemetry import activity_tracker, get_logger
@@ -82,6 +84,12 @@ from .client import _CONTROL_TIMEOUT_S, ManagerApiClient
 from .nodes_client import fetch_nodes
 
 logger = get_logger(__name__)
+
+# PRM-235: how many consumers the Activity page lists. Per-consumer series are
+# high-cardinality — the reason LiteLLM keeps end users out of its Prometheus
+# export by default — and a page that renders every credential on a platform
+# built for hundreds is a page nobody reads. The rest are counted, not listed.
+_ACTIVITY_TOP_N = 50
 
 
 def _claims(request: Request) -> Any:
@@ -1495,9 +1503,185 @@ def create_admin_router(manager_client: ManagerApiClient) -> APIRouter:
     async def list_sessions(request: Request) -> Any:
         """Clients active in the last 15 minutes (RM-23) — a last-seen-based
         approximation, not a real connection registry. See ActivityTracker.
+
+        Superseded by /admin/api/activity (PRM-235) and kept because it is a
+        published endpoint: the dashboard no longer calls it, and removing it
+        is a separate decision from replacing the page.
         """
         if (forbidden := _require_scope(request, "admin:read")) is not None:
             return forbidden
         return {"sessions": await activity_tracker.snapshot()}
+
+    def _platform_cell(
+        settings: Settings, live: list[dict[str, Any]], dimension: str, endpoint_count: int
+    ) -> dict[str, Any] | None:
+        """The platform's own counter for one dimension — PRM-235.
+
+        Carries `percent` like every other cell on this page, and it is the
+        reason this is a function: assembled inline it was the one cell built
+        without it, which the page rendered as `undefined%`. Usually None here,
+        because the platform layer is opt-in and nothing sets a ceiling on it —
+        a counter with no ceiling has no percentage, not a zero one.
+        """
+        counter = next(
+            (c for c in live if c["identity"] == PLATFORM_IDENTITY and c["dimension"] == dimension),
+            None,
+        )
+        if counter is None:
+            return None
+        limit, source = rate_limits.live_limit_for(
+            settings,
+            layer="platform",
+            dimension=dimension,
+            endpoint=counter["endpoint"],
+            endpoint_count=endpoint_count,
+        )
+        return {
+            **counter,
+            "layer": "platform",
+            "limit": limit,
+            "limit_source": source,
+            "percent": round(counter["used"] / limit * 100, 1) if limit not in (None, 0) else None,
+        }
+
+    @router.get("/admin/api/activity")
+    async def get_activity(request: Request) -> Any:
+        """Who is consuming the platform, and how much — PRM-235.
+
+        Replaces the Sessions page, which listed presence and nothing else.
+        Three sources, because no one of them answers the question:
+
+        * **Redis counters** (PRM-230) — what a consumer is spending *this
+          minute*, and how close that is to each ceiling. Survives a gateway
+          restart, which is the reason they lead rather than the tracker.
+        * **`usage_events`** — today's requests, tokens and cost, per consumer
+          and per end user. The only source that knows about end users.
+        * **`ActivityTracker`** — last-seen and the kind of route last called.
+          In-process, so a restart empties it; a consumer with Redis or
+          database activity and no tracker entry is reported as such rather
+          than dropped. A page that goes blank after a deploy says "nobody is
+          using this platform", which is the mistake PRM-223 fixed elsewhere.
+
+        Top-N by request rate, with the rest counted but not listed: the
+        practice is explicit that per-consumer series are high-cardinality, and
+        LiteLLM does not even export end users to Prometheus by default.
+        """
+        if (forbidden := _require_scope(request, "admin:read")) is not None:
+            return forbidden
+        settings: Settings = request.app.state.settings
+        endpoint_count = len(INFERENCE_ENDPOINT_SLUGS)
+
+        # ── live counters ────────────────────────────────────────────────────
+        live: list[dict[str, Any]] = []
+        redis_client = getattr(request.app.state, "shared_redis", None)
+        if redis_client is not None:
+            try:
+                live = await RateLimiter(redis_client).live_counters()
+            except Exception as exc:  # pragma: no cover — advisory, never fatal
+                logger.warning("admin.activity_live_read_error", error=str(exc))
+
+        # ── today, from the usage rows ───────────────────────────────────────
+        today_rows: list[dict[str, Any]] = []
+        try:
+            today_rows = await db.query_activity_today(_dt.date.today())
+        except Exception as exc:  # pragma: no cover — advisory, never fatal
+            logger.warning("admin.activity_usage_read_error", error=str(exc))
+
+        # ── presence ─────────────────────────────────────────────────────────
+        seen = {e["client_id"]: e for e in await activity_tracker.snapshot()}
+
+        consumers: dict[str, dict[str, Any]] = {}
+
+        def _consumer(identity: str) -> dict[str, Any]:
+            if identity not in consumers:
+                tracked = seen.get(identity)
+                consumers[identity] = {
+                    "identity": identity,
+                    "last_seen_ago_s": tracked["last_seen_ago_s"] if tracked else None,
+                    "connection_type": tracked["connection_type"] if tracked else None,
+                    "rpm": None,
+                    "tpm": None,
+                    "worst": None,
+                    "today": {"request_count": 0, "total_tokens": 0, "cost_usd": 0.0},
+                    "end_users": [],
+                }
+            return consumers[identity]
+
+        tiers: dict[str, Any] = {}
+        for counter in live:
+            identity = counter["identity"]
+            if identity == PLATFORM_IDENTITY:
+                continue
+            layer = rate_limits.counter_layer(identity, counter["endpoint"])
+            if layer == "client" and identity not in tiers:
+                try:
+                    tiers[identity] = await resolve_client_limits(identity)
+                except Exception:  # pragma: no cover — tier read is advisory
+                    tiers[identity] = None
+            limit, source = rate_limits.live_limit_for(
+                settings,
+                layer=layer,
+                dimension=counter["dimension"],
+                endpoint=counter["endpoint"],
+                endpoint_count=endpoint_count,
+                tier=tiers.get(identity),
+            )
+            percent = round(counter["used"] / limit * 100, 1) if limit not in (None, 0) else None
+            cell = {
+                **counter,
+                "layer": layer,
+                "limit": limit,
+                "limit_source": source,
+                "percent": percent,
+            }
+            entry = _consumer(identity)
+            if layer == "client" and counter["dimension"] in ("rpm", "tpm"):
+                entry[counter["dimension"]] = cell
+            if percent is not None and (
+                entry["worst"] is None or percent > entry["worst"]["percent"]
+            ):
+                entry["worst"] = cell
+
+        for row in today_rows:
+            entry = _consumer(row["client_id"])
+            entry["today"]["request_count"] += row["request_count"]
+            entry["today"]["total_tokens"] += row["total_tokens"]
+            entry["today"]["cost_usd"] += row["cost_usd"] or 0.0
+            entry["end_users"].append(
+                {
+                    "end_user": row["end_user"],
+                    "request_count": row["request_count"],
+                    "total_tokens": row["total_tokens"],
+                    "cost_usd": row["cost_usd"],
+                    "last_seen": row["last_seen"],
+                }
+            )
+
+        for identity in seen:
+            _consumer(identity)
+
+        for entry in consumers.values():
+            # Named end users first, then the unnamed remainder — which is one
+            # row and is usually the biggest, so sorting it by size would bury
+            # every real end user beneath it.
+            entry["end_users"].sort(key=lambda u: (u["end_user"] is None, -u["request_count"]))
+
+        ordered = sorted(
+            consumers.values(),
+            key=lambda c: (
+                -(c["worst"]["percent"] if c["worst"] else -1),
+                -c["today"]["request_count"],
+                c["last_seen_ago_s"] if c["last_seen_ago_s"] is not None else 1 << 30,
+            ),
+        )
+        return {
+            "consumers": ordered[:_ACTIVITY_TOP_N],
+            "omitted": max(0, len(ordered) - _ACTIVITY_TOP_N),
+            "tracker_window_minutes": activity_tracker._STALE_AFTER_S // 60,
+            "platform": {
+                dimension: _platform_cell(settings, live, dimension, endpoint_count)
+                for dimension in ("rpm", "tpm")
+            },
+        }
 
     return router

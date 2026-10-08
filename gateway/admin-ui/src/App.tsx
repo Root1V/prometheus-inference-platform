@@ -10,7 +10,7 @@ import Models from "./routes/Models";
 import Nodes from "./routes/Nodes";
 import Overview from "./routes/Overview";
 import Playground from "./routes/Playground";
-import Sessions from "./routes/Sessions";
+import Activity from "./routes/Activity";
 import Usage from "./routes/Usage";
 import Users from "./routes/Users";
 
@@ -92,12 +92,19 @@ export default function App() {
               }
             />
             <Route
-              path="/sessions"
+              path="/activity"
               element={
                 <ProtectedRoute>
-                  <Sessions />
+                  <Activity />
                 </ProtectedRoute>
               }
+            />
+            {/* PRM-235: the old path still resolves. A bookmarked /#/sessions
+                landing on a 404 would be the page telling an operator it was
+                deleted, when it was renamed. */}
+            <Route
+              path="/sessions"
+              element={<Navigate to="/activity" replace />}
             />
             <Route
               path="/playground"

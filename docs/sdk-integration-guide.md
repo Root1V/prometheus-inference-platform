@@ -602,9 +602,20 @@ Reasoning that does happen comes back in `choices[0].message.reasoning_content`,
 does not report one. Measured on one small request: 38 completion tokens, of which the useful
 answer was a single character.
 
+**`user` and `safety_identifier` are read now (PRM-235).** They used to be in the ignored list
+below, truthfully. Send either — or the `X-Prometheus-End-User` header — to name the person or
+account behind a call, and the platform attributes that request to them: the Activity page groups
+your traffic by it, and it is stored on the usage row. Precedence is header, then `user`, then
+`safety_identifier`, the order [LiteLLM](https://docs.litellm.ai/docs/proxy/customers) uses, so a
+caller already configured for that proxy needs no change. The value is **not forwarded to any
+engine**.
+
+Send a stable, opaque id — a hash of your own user id, not an email. The platform stores what you
+send, bounded at 128 characters, and cannot tell one kind of string from the other.
+
 **Anything else is accepted, ignored, and named back to you (PRM-127).** This endpoint takes an
 OpenAI-compatible *subset*. A field outside it — `n`, `presence_penalty`, `frequency_penalty`,
-`logit_bias`, `user`, `seed` — does not fail your request and does not reach the engine either.
+`logit_bias`, `seed` — does not fail your request and does not reach the engine either.
 It comes back listed in a response header:
 
 ```

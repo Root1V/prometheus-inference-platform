@@ -1867,6 +1867,7 @@ def create_router(registry: ModelRegistry, pool: "BackendPool") -> APIRouter:
                         trace_id,
                         served_name=resolution.model_key,
                         billing_id=_billing_id(entry),
+                        end_user=resolve_end_user(request, body),
                         served_by_headers={
                             **_served_by_headers(entry),
                             **_variant_headers(served_variant),
@@ -2108,6 +2109,7 @@ def create_router(registry: ModelRegistry, pool: "BackendPool") -> APIRouter:
                         engine=entry.backend,
                         rl_redis=getattr(pool, "_redis", None),
                         endpoint_slug="chat_completions",
+                        end_user=resolve_end_user(request, body),
                     )
 
                     # RM-60: settle the spend-cap reservation with the real cost
@@ -2473,6 +2475,7 @@ def create_router(registry: ModelRegistry, pool: "BackendPool") -> APIRouter:
             engine=entry.backend,
             rl_redis=getattr(pool, "_redis", None),
             endpoint_slug="embeddings",
+            end_user=resolve_end_user(request, body),
         )
         if budget_redis is not None and reservation is not None and reservation.allowed:
             actual_cost = pricing.get_pricing_table().estimate_cost_usd(
@@ -2868,6 +2871,7 @@ def create_router(registry: ModelRegistry, pool: "BackendPool") -> APIRouter:
             engine=entry.backend,
             rl_redis=getattr(pool, "_redis", None),
             endpoint_slug="rerank",
+            end_user=resolve_end_user(request, body),
         )
         if budget_redis is not None and reservation is not None and reservation.allowed:
             actual_cost = pricing.get_pricing_table().estimate_cost_usd(
@@ -3106,6 +3110,7 @@ def create_router(registry: ModelRegistry, pool: "BackendPool") -> APIRouter:
             engine=entry.backend,
             rl_redis=getattr(pool, "_redis", None),
             endpoint_slug="predict",
+            end_user=resolve_end_user(request),
         )
         return JSONResponse(status_code=resp.status_code, content=resp_body)
 
@@ -3464,6 +3469,7 @@ def create_router(registry: ModelRegistry, pool: "BackendPool") -> APIRouter:
             engine=entry.backend,
             rl_redis=getattr(pool, "_redis", None),
             endpoint_slug="images",
+            end_user=resolve_end_user(request, body),
         )
         if budget_redis is not None and reservation is not None and reservation.allowed:
             actual_cost = pricing.get_pricing_table().estimate_image_cost_usd(
@@ -3579,6 +3585,35 @@ def _emit_genai_metrics(
         genai.record_cost(cost_usd=cost_usd, model=model)
 
 
+# PRM-235: the caller's own identifier for its user.
+#
+# Header first, then `user`, then `safety_identifier` — LiteLLM's precedence,
+# copied rather than invented because a caller that already works against that
+# proxy should not have to learn a different order here. The header exists for
+# the endpoints that have no body field to spare and for callers who would
+# rather not touch their payload at all.
+#
+# Not forwarded anywhere: it is read here and written to the usage row. What
+# arrives is stored as sent, so the SDK guide asks for a stable opaque id —
+# this gateway cannot tell an opaque id from an email address, and should not
+# pretend to by hashing something a caller may need to match on.
+END_USER_HEADER = "x-prometheus-end-user"
+_END_USER_MAX = 128
+
+
+def resolve_end_user(request: Request, body: Any = None) -> str | None:
+    """Who the caller says is behind this request, or None."""
+    candidates = (
+        request.headers.get(END_USER_HEADER),
+        getattr(body, "user", None),
+        getattr(body, "safety_identifier", None),
+    )
+    for raw in candidates:
+        if isinstance(raw, str) and (value := raw.strip()):
+            return value[:_END_USER_MAX]
+    return None
+
+
 async def _record_usage(
     claims: Any,
     model_id: str,
@@ -3597,6 +3632,12 @@ async def _record_usage(
     # limiter (tests, or a pool without Redis).
     rl_redis: Any,
     endpoint_slug: str,
+    # PRM-235: required for the same reason `rl_redis` and `endpoint_slug` are.
+    # A row without it is a request that can never be attributed below the
+    # credential, and the way that happens is a new handler forgetting — which
+    # is a type error here and a silent gap anywhere else. Pass None where the
+    # endpoint genuinely has no caller body to read it from.
+    end_user: str | None,
     request_kind: str = "chat",
     image_count: int = 0,
     instance_id: str | None = None,
@@ -3687,6 +3728,7 @@ async def _record_usage(
             model_id,
             prompt_tokens,
             completion_tokens,
+            end_user=end_user,
             request_kind=request_kind,
             image_count=image_count,
             instance_id=instance_id,
@@ -3814,6 +3856,12 @@ async def _stream_response(
     served_by_headers: dict[str, str] | None = None,
     idempotency_claim: "idempotency.Claim | None" = None,
     genai_request_attrs: dict[str, Any] | None = None,
+    # PRM-235: passed in rather than resolved here. This function has its own
+    # local `body` — the backend's error payload — so the caller's request body
+    # is not in scope at all, and resolving from headers alone would leave
+    # `user` working for a buffered request and silently not for a streamed
+    # one. "Covers some paths and not others" is the defect PRM-224 was.
+    end_user: str | None = None,
     # PRM-131: the backend engine, for `gen_ai.provider.name` on the metrics.
     # Taken raw rather than read back out of `genai_request_attrs`, where it is
     # already mapped — one mapping, done in `_provider_of`, called once.
@@ -4246,6 +4294,7 @@ async def _stream_response(
                     engine=engine,
                     rl_redis=getattr(pool, "_redis", None),
                     endpoint_slug="chat_completions",
+                    end_user=end_user,
                 )
 
                 # RM-60: settle the spend-cap reservation with the real cost

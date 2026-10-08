@@ -155,6 +155,13 @@ class UsageEvent(Base):
     # not even an administrator could go from a request identifier to what it
     # was charged. Nullable for rows written before this existed.
     request_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    # PRM-235: who the *caller* says is behind the request — OpenAI's `user`,
+    # its replacement `safety_identifier`, or the header. Every other column
+    # here stops at the credential, so a client with a thousand people behind
+    # it was a thousand requests from one row's point of view. Nullable, and
+    # usually null: a caller that sends nothing is not identifying anyone, and
+    # that is a legitimate answer rather than a gap to fill in.
+    end_user: Mapped[str | None] = mapped_column(String(128), nullable=True, index=True)
     # PRM-100: a subset of prompt_tokens, not a separate bucket — the OpenAI
     # convention, and what the response already reports as
     # prompt_tokens_details.cached_tokens. The row reported none of it, so a
@@ -605,6 +612,7 @@ async def record_usage(
     # it answered to when the row was written. Defaults to model_id so a caller
     # that has only one identifier still writes something truthful.
     model_slug: str | None = None,
+    end_user: str | None = None,
     day: date | None = None,
 ) -> float | None:
     """Record one request's usage: an immutable `usage_events` row (the audit
@@ -668,6 +676,7 @@ async def record_usage(
                 termination_reason=termination_reason,
                 interrupted=_interrupted_from(termination_reason),
                 request_id=request_id,
+                end_user=end_user,
                 cached_prompt_tokens=cached_prompt_tokens,
                 request_kind=request_kind,
                 prompt_tokens=prompt_tokens,
@@ -855,6 +864,49 @@ async def query_client_model_cost_range(start: date, end: date) -> list[dict[str
                 "image_count": int(row.image_count or 0),
                 "request_count": int(row.request_count or 0),
                 "unpriced_requests": int(row.unpriced_requests or 0),
+            }
+            for row in result
+        ]
+
+
+async def query_activity_today(day: date) -> list[dict[str, Any]]:
+    """Today's totals per (client, end user) — PRM-235.
+
+    One statement rather than one per client, for the reason
+    `query_client_model_cost_range` gives: thirteen round trips to fill one
+    table is a client working around a missing query. The caller rolls the
+    per-client total up from these rows instead of asking twice.
+
+    `end_user` is null for every row written before PRM-235 and for every
+    caller that identifies nobody, which is most of them. Grouping keeps those
+    rows together under a single null rather than dropping them — "the traffic
+    nobody is named for" is a real and usually large share, and omitting it
+    would make the per-client totals on this page disagree with Billing's.
+    """
+    session_factory = get_session_factory()
+    async with session_factory() as session:
+        stmt = (
+            select(
+                UsageEvent.client_id,
+                UsageEvent.end_user,
+                func.sum(UsageEvent.cost_usd).label("cost_usd"),
+                func.sum(UsageEvent.prompt_tokens).label("prompt_tokens"),
+                func.sum(UsageEvent.completion_tokens).label("completion_tokens"),
+                func.count().label("request_count"),
+                func.max(UsageEvent.recorded_at).label("last_seen"),
+            )
+            .where(UsageEvent.day == day)
+            .group_by(UsageEvent.client_id, UsageEvent.end_user)
+        )
+        result = await session.execute(stmt)
+        return [
+            {
+                "client_id": row.client_id,
+                "end_user": row.end_user,
+                "cost_usd": row.cost_usd,
+                "total_tokens": int((row.prompt_tokens or 0) + (row.completion_tokens or 0)),
+                "request_count": int(row.request_count or 0),
+                "last_seen": row.last_seen.isoformat() if row.last_seen else None,
             }
             for row in result
         ]
