@@ -2,13 +2,32 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { apiClient } from "./client";
 import { CONFIG_KEY } from "./config";
 
-/** The six limits an operator can edit. `null` on a per-endpoint override
- * means "no override — use the global value". */
+/**
+ * Every limit an operator can edit — PRM-232.
+ *
+ * Six of these until the migration that gave `RateLimitConfig` a column each;
+ * the other eleven were live and enforced and `.env`-only. `null` means the
+ * dimension's own default, which differs by layer and is the reason a blank
+ * field is not the same as a zero: no ceiling at all for the platform pair,
+ * PRM-227's derived sum for the client pair, the global value for a
+ * per-endpoint override.
+ */
 export interface RateLimitValues {
+  rate_limit_rpm_platform: number | null;
+  rate_limit_tpm_platform: number | null;
+  rate_limit_rpm_client: number | null;
+  rate_limit_tpm_client: number | null;
+  rate_limit_tpm_input: number | null;
+  rate_limit_tpm_output: number | null;
+  rate_limit_rpd: number | null;
+  rate_limit_tpd: number | null;
+  rate_limit_ipm: number | null;
   rate_limit_rpm: number;
   rate_limit_tpm: number;
   rate_limit_rpm_chat_completions: number | null;
   rate_limit_tpm_chat_completions: number | null;
+  rate_limit_rpm_predict: number | null;
+  rate_limit_tpm_predict: number | null;
   rate_limit_rpm_admin: number | null;
   rate_limit_tpm_admin: number | null;
 }

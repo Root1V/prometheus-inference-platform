@@ -8851,3 +8851,37 @@ counters, the tier dropdown listing every dimension a tier sets, and the SDK gui
 values (it still said the limit value is "per endpoint — not per client", which stopped being true
 at PRM-227). Also `_reset_cache_for_testing` clearing the tier cache PRM-228 added and left out.
 Out — a tier editor UI; tiers are still created through the API.
+
+
+## PRM-232 — The eleven become editable
+
+**Why**: PRM-224 through PRM-228 added eleven dimensions that were live, enforced and `.env`-only,
+and PRM-229 had the page admit it in a chip. The blocker was never the UI: `main.py` applies a
+saved override by reading `rate_limits.RATE_LIMIT_FIELDS` off a `RateLimitConfig` row with
+`getattr`, so a name in that list without a column is an `AttributeError` at startup — and only on
+deployments that have ever saved limits from the dashboard, which is the worst place for it to
+appear. PRM-182 nearly shipped exactly that and wrote the constraint down instead.
+
+**One migration, seventeen fields.** Eleven nullable columns, guarded for the pre-Alembic adoption
+path. `predict`'s pair comes with them: PRM-182 left it `.env`-only for want of this migration and
+said so in a test, which is now the test that it is editable.
+
+**The cards became the editor.** PRM-229 drew three read-only layer cards beside a form that edited
+six of the numbers on them. Growing the form to seventeen would have put every value on the page
+twice, and the second copy is the one that goes stale. Each dimension is now an input inside the
+card that explains what its layer bounds.
+
+**A blank box means three different things, so it says which.** No ceiling at all (the platform
+pair), PRM-227's computed sum (the client pair), or the global value (a per-endpoint override) —
+each one is the field's placeholder. And a `derived` value is deliberately *not* prefilled: a
+prefilled 360 would be saved as a fixed 360 by the next edit to any other field, and the consumer
+ceiling would quietly stop following the global it is computed from. Verified live: raising the
+global RPM to 100 moved the derived ceiling to 600 after a save that left it blank.
+
+**Saving makes this page the source for all seventeen** — the rule the six already followed, now
+stated on the page, with Reset restoring every `.env` value from the snapshot `create_app` takes
+before any row is applied.
+
+**Scope**: in — the migration, the eleven columns, `RATE_LIMIT_FIELDS` grown to seventeen, a PUT
+driven off that list with partial edits (absent = leave alone, null = clear), the editable cards.
+Out — per-model limits and sliding windows, still the two real gaps against the industry.

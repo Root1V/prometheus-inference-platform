@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import uuid
 import json
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -367,6 +367,21 @@ class RateLimitConfig(Base):
     rate_limit_tpm_chat_completions: Mapped[int | None] = mapped_column(Integer, nullable=True)
     rate_limit_rpm_admin: Mapped[int | None] = mapped_column(Integer, nullable=True)
     rate_limit_tpm_admin: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # PRM-232: the eleven PRM-224..228 added and left `.env`-only. Nullable
+    # throughout, and null keeps each one's existing meaning — no ceiling for
+    # the platform pair, PRM-227's derived default for the client pair, the
+    # global value for the per-endpoint ones.
+    rate_limit_rpm_platform: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    rate_limit_tpm_platform: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    rate_limit_rpm_client: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    rate_limit_tpm_client: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    rate_limit_tpm_input: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    rate_limit_tpm_output: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    rate_limit_rpd: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    rate_limit_tpd: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    rate_limit_ipm: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    rate_limit_rpm_predict: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    rate_limit_tpm_predict: Mapped[int | None] = mapped_column(Integer, nullable=True)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         nullable=False,
@@ -1315,27 +1330,26 @@ async def get_rate_limit_config() -> RateLimitConfig | None:
         return row
 
 
-async def upsert_rate_limit_config(
-    *,
-    rate_limit_rpm: int,
-    rate_limit_tpm: int,
-    rate_limit_rpm_chat_completions: int | None,
-    rate_limit_tpm_chat_completions: int | None,
-    rate_limit_rpm_admin: int | None,
-    rate_limit_tpm_admin: int | None,
-) -> RateLimitConfig:
+async def upsert_rate_limit_config(values: Mapping[str, int | None]) -> RateLimitConfig:
+    """Save the whole override row — PRM-232.
+
+    Six explicit keyword arguments until the dashboard could edit six limits;
+    seventeen of them would be a list to keep in step with two others. The
+    typo-safety the keywords bought is kept as a check instead: an unknown name
+    raises here rather than being silently dropped onto a row that does not
+    have it, which is the half of `setattr` worth being afraid of.
+    """
+    unknown = set(values) - {c.name for c in RateLimitConfig.__table__.columns}
+    if unknown:
+        raise ValueError(f"not columns on rate_limit_config: {sorted(unknown)}")
     session_factory = get_session_factory()
     async with session_factory() as session:
         row: RateLimitConfig | None = await session.get(RateLimitConfig, _RATE_LIMIT_CONFIG_ID)
         if row is None:
             row = RateLimitConfig(id=_RATE_LIMIT_CONFIG_ID)
             session.add(row)
-        row.rate_limit_rpm = rate_limit_rpm
-        row.rate_limit_tpm = rate_limit_tpm
-        row.rate_limit_rpm_chat_completions = rate_limit_rpm_chat_completions
-        row.rate_limit_tpm_chat_completions = rate_limit_tpm_chat_completions
-        row.rate_limit_rpm_admin = rate_limit_rpm_admin
-        row.rate_limit_tpm_admin = rate_limit_tpm_admin
+        for field, value in values.items():
+            setattr(row, field, value)
         await session.commit()
         await session.refresh(row)
         return row

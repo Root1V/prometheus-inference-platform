@@ -67,13 +67,30 @@ def test_every_dashboard_field_is_a_real_column():
     assert not missing, f"not columns on rate_limit_config: {missing}"
 
 
-def test_the_predict_bucket_is_not_dashboard_editable_yet(settings):
-    """Stated as a test so the asymmetry is deliberate rather than forgotten.
+def test_the_predict_bucket_is_dashboard_editable_now(settings):
+    """The asymmetry PRM-182 stated as a test, closed by PRM-232.
 
-    `predict` resolves from Settings (.env) but is not persisted, because that
-    needs the migration and UI that PRM-181 carries anyway.
+    `predict` had its own bucket and no way to set it from the dashboard,
+    because persisting it needed the migration this item finally carries. The
+    test is kept rather than deleted: it was the record of a deliberate gap,
+    and it is now the record that the gap is closed.
     """
     from prometheus_gateway.rate_limits import ENDPOINT_LIMIT_FIELDS, RATE_LIMIT_FIELDS
 
     predict_fields = ENDPOINT_LIMIT_FIELDS["predict"]
-    assert all(f not in RATE_LIMIT_FIELDS for f in predict_fields)
+    assert all(f in RATE_LIMIT_FIELDS for f in predict_fields)
+
+
+def test_every_dimension_the_page_shows_is_one_the_page_can_edit():
+    """PRM-232: the two lists that were allowed to differ, and no longer are.
+
+    `LIMIT_LAYERS` is what the page displays and `RATE_LIMIT_FIELDS` what it
+    may save; between PRM-224 and PRM-231 the first held eleven names the
+    second did not, which is what the `.env` chip on the cards meant. With the
+    migration there is no reason for them to differ, and a new dimension that
+    lands in one and not the other is the same silent gap wearing a new name.
+    """
+    from prometheus_gateway.rate_limits import LIMIT_LAYERS, RATE_LIMIT_FIELDS
+
+    shown = {field for _, _, fields in LIMIT_LAYERS for field in fields}
+    assert shown == set(RATE_LIMIT_FIELDS)
