@@ -870,7 +870,12 @@ async def query_client_model_cost_range(start: date, end: date) -> list[dict[str
 
 
 async def query_activity_today(day: date) -> list[dict[str, Any]]:
-    """Today's totals per (client, end user) — PRM-235.
+    """Today's totals per (client, end user, model, kind) — PRM-235, PRM-236.
+
+    PRM-236 added the last two columns to the grouping, because "who used the
+    platform today" and "what did they use it on" are the same question asked
+    twice and the page was answering only the first. The caller rolls the
+    per-client and per-end-user totals up from these rows.
 
     One statement rather than one per client, for the reason
     `query_client_model_cost_range` gives: thirteen round trips to fill one
@@ -889,6 +894,8 @@ async def query_activity_today(day: date) -> list[dict[str, Any]]:
             select(
                 UsageEvent.client_id,
                 UsageEvent.end_user,
+                UsageEvent.model_slug,
+                UsageEvent.request_kind,
                 func.sum(UsageEvent.cost_usd).label("cost_usd"),
                 func.sum(UsageEvent.prompt_tokens).label("prompt_tokens"),
                 func.sum(UsageEvent.completion_tokens).label("completion_tokens"),
@@ -896,13 +903,20 @@ async def query_activity_today(day: date) -> list[dict[str, Any]]:
                 func.max(UsageEvent.recorded_at).label("last_seen"),
             )
             .where(UsageEvent.day == day)
-            .group_by(UsageEvent.client_id, UsageEvent.end_user)
+            .group_by(
+                UsageEvent.client_id,
+                UsageEvent.end_user,
+                UsageEvent.model_slug,
+                UsageEvent.request_kind,
+            )
         )
         result = await session.execute(stmt)
         return [
             {
                 "client_id": row.client_id,
                 "end_user": row.end_user,
+                "model": row.model_slug,
+                "request_kind": row.request_kind,
                 "cost_usd": row.cost_usd,
                 "total_tokens": int((row.prompt_tokens or 0) + (row.completion_tokens or 0)),
                 "request_count": int(row.request_count or 0),

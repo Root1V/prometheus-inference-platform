@@ -341,6 +341,24 @@ def clear_jwks_cache():
 
 
 @pytest.fixture(autouse=True)
+def clear_activity_tracker():
+    """PRM-236: the tracker is a module-level singleton and nothing reset it.
+
+    Harmless while it held one connection type per client; now it counts what
+    each credential did, so a request another test made under the same
+    client_id shows up as that credential's own history. Caught by a test
+    asserting exactly two actions and getting three — the third was a 403 check
+    in a different test, which is a *real* request and was correctly recorded.
+    Same shape as the caches below.
+    """
+    from prometheus_gateway.telemetry import activity_tracker
+
+    activity_tracker._entries.clear()
+    yield
+    activity_tracker._entries.clear()
+
+
+@pytest.fixture(autouse=True)
 def clear_budget_settings_cache():
     """RM-60: budget.py's in-process billing-settings cache is keyed only by
     client_id, with no awareness of which (per-test, isolated) DB it came

@@ -317,13 +317,74 @@ metrics_store = MetricsStore()
 # ── In-process ActivityTracker — docs/roadmap.md RM-23 ───────────────────────
 
 
-class ActivityTracker:
-    """Last-seen-based "who's active right now" approximation.
+# PRM-236: what a caller was doing, not just that it was here.
+#
+# One label per kind of thing a credential can do through this gateway, from
+# the path. The set is closed and small on purpose: these become per-identity
+# counters in memory, and a label taken from the URL unbounded is an unbounded
+# dictionary. Anything unrecognised lands in `other` rather than minting a key.
+ACTION_LABELS: dict[str, str] = {
+    "chat": "Chat completions",
+    "embeddings": "Embeddings",
+    "rerank": "Rerank",
+    "predict": "Model pass-through",
+    "images": "Image generation",
+    "models.list": "Listed its models",
+    "backends": "Read backend status",
+    "usage": "Read its own usage",
+    "playground": "Playground",
+    "dashboard": "Admin dashboard",
+    "other": "Other",
+}
 
-    Not a real session registry — JWTs are stateless, there's no server-side
-    session object to track. This just records the most recent request per
-    client_id and reports anything seen within the last 15 minutes. Same
-    single-process in-memory pattern as MetricsStore.
+# The dashboard tells us when a call is the Playground rather than an SDK —
+# both are the same credential hitting the same route, so the path cannot
+# separate them. Self-reported, and only ever used as a label.
+SOURCE_HEADER = "x-prometheus-source"
+
+
+def classify_action(path: str, source: str | None = None) -> str:
+    """Which of `ACTION_LABELS` this request is."""
+    if source == "playground":
+        return "playground"
+    if path.startswith("/admin/api"):
+        return "dashboard"
+    if path == "/v1/models":
+        return "models.list"
+    if path == "/v1/backends":
+        return "backends"
+    if path.startswith("/v1/usage"):
+        return "usage"
+    if path == "/v1/chat/completions":
+        return "chat"
+    if path == "/v1/embeddings":
+        return "embeddings"
+    if path == "/v1/rerank":
+        return "rerank"
+    if path == "/v1/images/generations":
+        return "images"
+    if path.startswith("/v1/models/") and path.endswith("/predict"):
+        return "predict"
+    return "other"
+
+
+class ActivityTracker:
+    """Who is here, and what they are doing — PRM-236.
+
+    Not a session registry: JWTs are stateless and there is no server-side
+    session object to track. What this does have is every authenticated
+    request, so it can answer the question the old version could not — an
+    operator looking at a credential wants to know whether it ran inference,
+    listed its models, or opened the dashboard, and "connection_type: api"
+    answered none of that because it was the URL prefix of whichever request
+    happened to be last.
+
+    Still single-process memory, like MetricsStore, so a restart empties it.
+    The Activity page is built knowing that: Redis and the usage rows carry
+    what survives, and this carries what is happening *now*.
+
+    Bounded by construction — one entry per identity seen in the window, each
+    holding at most one counter per label in `ACTION_LABELS`.
     """
 
     _STALE_AFTER_S = 15 * 60
@@ -332,14 +393,31 @@ class ActivityTracker:
         self._lock = asyncio.Lock()
         self._entries: dict[str, dict[str, Any]] = {}
 
-    async def touch(self, client_id: str, user_id: str, connection_type: str) -> None:
+    async def touch(
+        self,
+        client_id: str,
+        user_id: str,
+        connection_type: str,
+        action: str = "other",
+    ) -> None:
+        now = time.time()
         async with self._lock:
-            self._entries[client_id] = {
-                "client_id": client_id,
-                "user_id": user_id,
-                "connection_type": connection_type,
-                "last_seen": time.time(),
-            }
+            entry = self._entries.get(client_id)
+            if entry is None:
+                entry = self._entries[client_id] = {
+                    "client_id": client_id,
+                    "user_id": user_id,
+                    "actions": {},
+                }
+            entry["user_id"] = user_id
+            entry["connection_type"] = connection_type
+            entry["last_seen"] = now
+            counter = entry["actions"].get(action)
+            if counter is None:
+                entry["actions"][action] = {"count": 1, "last_seen": now}
+            else:
+                counter["count"] += 1
+                counter["last_seen"] = now
 
     async def snapshot(self) -> list[dict[str, Any]]:
         """Active entries (seen in the last 15 min), most recent first.
@@ -356,7 +434,22 @@ class ActivityTracker:
             for cid in stale_ids:
                 del self._entries[cid]
             active = [
-                {**e, "last_seen_ago_s": int(now - e["last_seen"])} for e in self._entries.values()
+                {
+                    **e,
+                    "last_seen_ago_s": int(now - e["last_seen"]),
+                    "actions": [
+                        {
+                            "action": action,
+                            "label": ACTION_LABELS.get(action, action),
+                            "count": c["count"],
+                            "last_seen_ago_s": int(now - c["last_seen"]),
+                        }
+                        for action, c in sorted(
+                            e["actions"].items(), key=lambda kv: -kv[1]["last_seen"]
+                        )
+                    ],
+                }
+                for e in self._entries.values()
             ]
         active.sort(key=lambda e: e["last_seen_ago_s"])
         return active

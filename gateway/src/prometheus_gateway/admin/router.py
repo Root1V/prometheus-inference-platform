@@ -1599,11 +1599,19 @@ def create_admin_router(manager_client: ManagerApiClient) -> APIRouter:
                     "identity": identity,
                     "last_seen_ago_s": tracked["last_seen_ago_s"] if tracked else None,
                     "connection_type": tracked["connection_type"] if tracked else None,
+                    # PRM-236: what this credential has been doing, from the
+                    # tracker — inference, listing its models, the dashboard,
+                    # the Playground. Empty when the tracker has no entry,
+                    # which after a restart is every consumer, and is why the
+                    # page says that rather than showing an empty list as
+                    # "did nothing".
+                    "actions": tracked["actions"] if tracked else [],
                     "rpm": None,
                     "tpm": None,
                     "worst": None,
                     "today": {"request_count": 0, "total_tokens": 0, "cost_usd": 0.0},
                     "end_users": [],
+                    "models": [],
                 }
             return consumers[identity]
 
@@ -1642,20 +1650,59 @@ def create_admin_router(manager_client: ManagerApiClient) -> APIRouter:
             ):
                 entry["worst"] = cell
 
+        # PRM-236: the usage rows group by model and kind as well now, so the
+        # per-consumer and per-end-user totals are rolled up here rather than
+        # asked for a second time. Two dictionaries, keyed the way the page
+        # reads them: "who did this client serve" and "what did it run".
+        per_user: dict[tuple[str, str | None], dict[str, Any]] = {}
+        per_model: dict[tuple[str, str | None, str], dict[str, Any]] = {}
         for row in today_rows:
             entry = _consumer(row["client_id"])
             entry["today"]["request_count"] += row["request_count"]
             entry["today"]["total_tokens"] += row["total_tokens"]
             entry["today"]["cost_usd"] += row["cost_usd"] or 0.0
-            entry["end_users"].append(
-                {
+
+            user_key = (row["client_id"], row["end_user"])
+            user_entry = per_user.get(user_key)
+            if user_entry is None:
+                user_entry = per_user[user_key] = {
                     "end_user": row["end_user"],
-                    "request_count": row["request_count"],
-                    "total_tokens": row["total_tokens"],
-                    "cost_usd": row["cost_usd"],
+                    "request_count": 0,
+                    "total_tokens": 0,
+                    "cost_usd": 0.0,
                     "last_seen": row["last_seen"],
+                    "models": [],
+                }
+                entry["end_users"].append(user_entry)
+            user_entry["request_count"] += row["request_count"]
+            user_entry["total_tokens"] += row["total_tokens"]
+            user_entry["cost_usd"] += row["cost_usd"] or 0.0
+            if row["last_seen"] and (
+                user_entry["last_seen"] is None or row["last_seen"] > user_entry["last_seen"]
+            ):
+                user_entry["last_seen"] = row["last_seen"]
+            user_entry["models"].append(
+                {
+                    "model": row["model"],
+                    "request_kind": row["request_kind"],
+                    "request_count": row["request_count"],
                 }
             )
+
+            model_key = (row["client_id"], row["model"], row["request_kind"])
+            model_entry = per_model.get(model_key)
+            if model_entry is None:
+                model_entry = per_model[model_key] = {
+                    "model": row["model"],
+                    "request_kind": row["request_kind"],
+                    "request_count": 0,
+                    "total_tokens": 0,
+                    "cost_usd": 0.0,
+                }
+                entry["models"].append(model_entry)
+            model_entry["request_count"] += row["request_count"]
+            model_entry["total_tokens"] += row["total_tokens"]
+            model_entry["cost_usd"] += row["cost_usd"] or 0.0
 
         for identity in seen:
             _consumer(identity)
@@ -1665,6 +1712,9 @@ def create_admin_router(manager_client: ManagerApiClient) -> APIRouter:
             # row and is usually the biggest, so sorting it by size would bury
             # every real end user beneath it.
             entry["end_users"].sort(key=lambda u: (u["end_user"] is None, -u["request_count"]))
+            entry["models"].sort(key=lambda m: -m["request_count"])
+            for user_entry in entry["end_users"]:
+                user_entry["models"].sort(key=lambda m: -m["request_count"])
 
         ordered = sorted(
             consumers.values(),
@@ -1674,7 +1724,37 @@ def create_admin_router(manager_client: ManagerApiClient) -> APIRouter:
                 c["last_seen_ago_s"] if c["last_seen_ago_s"] is not None else 1 << 30,
             ),
         )
+        # PRM-236: and the same day seen from the other side. "Which end users
+        # interacted today" is its own question — one person can appear under
+        # several consumers, and a list nested inside each consumer cannot be
+        # read across them.
+        end_users_today: dict[str, dict[str, Any]] = {}
+        for row in today_rows:
+            if row["end_user"] is None:
+                continue
+            seen_user = end_users_today.setdefault(
+                row["end_user"],
+                {
+                    "end_user": row["end_user"],
+                    "request_count": 0,
+                    "total_tokens": 0,
+                    "cost_usd": 0.0,
+                    "consumers": [],
+                    "models": [],
+                },
+            )
+            seen_user["request_count"] += row["request_count"]
+            seen_user["total_tokens"] += row["total_tokens"]
+            seen_user["cost_usd"] += row["cost_usd"] or 0.0
+            if row["client_id"] not in seen_user["consumers"]:
+                seen_user["consumers"].append(row["client_id"])
+            if row["model"] and row["model"] not in seen_user["models"]:
+                seen_user["models"].append(row["model"])
+
         return {
+            "end_users_today": sorted(end_users_today.values(), key=lambda u: -u["request_count"])[
+                :_ACTIVITY_TOP_N
+            ],
             "consumers": ordered[:_ACTIVITY_TOP_N],
             "omitted": max(0, len(ordered) - _ACTIVITY_TOP_N),
             "tracker_window_minutes": activity_tracker._STALE_AFTER_S // 60,

@@ -8979,3 +8979,42 @@ stays: it is published, the dashboard no longer calls it, and removing it is a s
 Out — grouping calls into conversations the way Langfuse and Helicone do, which needs a session id
 per call and is a different feature from identifying a person; and per-end-user budgets, which the
 column now makes possible.
+
+
+## PRM-236 — What did they do, not just how much
+
+**Why**: PRM-235 built a page about consumption and left the question underneath it unanswered. A
+row saying 63 requests says a credential was busy; it does not say whether that was inference,
+listing its models, or an operator poking at the Playground. `connection_type` looked like the
+answer and was not — it is the URL prefix of whichever request happened to be last, so a client
+that listed its models once after a thousand completions reads the same as one that only listed.
+
+The page also said `not in the window`, which named the mechanism instead of the fact. An operator
+does not know that there is a window, or that it is the gateway's own memory, or that a restart
+empties it.
+
+**Three sections, one per question.** *Here now* — who called in the last 15 minutes, what kind of
+call it was, and what they are spending this minute. *Consumers today* — who ran something and on
+which models, from the usage rows, which outlive both the window and the process. *End users
+today* — the same day from the other side, because one person can be served by several consumers
+and a list nested inside each one cannot be read across them. Expanding a consumer gives the row
+the question asks for: this user, this many requests, these models.
+
+**The tracker counts actions now.** One bounded label per kind of call — chat, embeddings, rerank,
+predict, images, listed its models, read backend status, read its own usage, dashboard, Playground
+— and a count and last-seen for each. Closed set by construction: these are per-identity counters
+in memory, and a label taken from an unbounded URL is an unbounded dictionary.
+
+**The Playground identifies itself**, with a header, because it and an SDK are the same credential
+on the same route and nothing in the request can separate them. Self-reported, and only ever used
+as a label.
+
+**And a test-isolation gap the change exposed**: the tracker is a module-level singleton that
+nothing reset between tests. Harmless while it held one connection type per client; counting
+actions made another test's 403 check appear as this credential's own history. Cleared by an
+autouse fixture, like the caches beside it.
+
+**Scope**: in — `classify_action` and the per-action counters, model and kind in the usage
+grouping, `end_users_today`, the three-section page, the Playground header. Out — a per-request
+event log (this counts kinds, it does not list calls), and anything about the `/ui/*` chat, which
+authenticates by cookie and never reaches the tracker.
