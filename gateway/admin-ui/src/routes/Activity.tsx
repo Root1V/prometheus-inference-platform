@@ -1,4 +1,4 @@
-import { ChevronDown, ChevronRight } from "lucide-react";
+import { ChevronDown, ChevronRight, RefreshCw } from "lucide-react";
 import { useState } from "react";
 import {
   useActivity,
@@ -361,6 +361,18 @@ export default function Activity() {
   const activityQuery = useActivity();
   const usersQuery = useUsers();
 
+  // Re-rendered on its own so "updated 4s ago" ages while the page sits
+  // still; the query only re-renders when it answers.
+  // The clock time of the last answer, not "8s ago".
+  //
+  // A relative label has to tick to stay true, which means a timer and a
+  // re-render of the whole table every few seconds to keep one word honest —
+  // and `Date.now()` during render is impure besides. A timestamp is right
+  // the moment it is painted and stays right.
+  const updatedAt = activityQuery.dataUpdatedAt
+    ? new Date(activityQuery.dataUpdatedAt).toLocaleTimeString()
+    : null;
+
   const names = new Map(
     (usersQuery.data ?? []).map((u) => [
       u.client_id,
@@ -392,8 +404,43 @@ export default function Activity() {
     <div className="flex min-h-screen bg-background">
       <Sidebar />
       <main className="min-w-0 flex-1 px-8 py-8">
-        <h1 className="text-2xl font-semibold text-text">Activity</h1>
-        <p className="mt-1 max-w-4xl text-sm text-text-muted">
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <h1 className="text-2xl font-semibold text-text">Activity</h1>
+          {/* PRM-239: the page refreshes itself every ten seconds, which is
+              not the same as being able to ask it to. After changing
+              something — issuing a key, running a call — the wait is the
+              question "did that land", and ten seconds of it is long enough
+              to reload the whole page instead, which costs more than this
+              button does. */}
+          <div className="flex items-center gap-3 text-xs text-text-muted">
+            <span className="tabular-nums">
+              {activityQuery.isFetching
+                ? "refreshing…"
+                : updatedAt === null
+                  ? ""
+                  : `updated ${updatedAt}`}
+            </span>
+            <button
+              type="button"
+              onClick={() => {
+                void activityQuery.refetch();
+                void usersQuery.refetch();
+              }}
+              disabled={activityQuery.isFetching}
+              title="Read the counters and the usage rows again now, instead of waiting for the next ten-second poll."
+              className="flex items-center gap-1.5 rounded-lg bg-primary px-3 py-1.5 text-sm font-medium text-primary-foreground hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              <RefreshCw
+                size={14}
+                className={
+                  activityQuery.isFetching ? "animate-spin" : undefined
+                }
+              />
+              Refresh
+            </button>
+          </div>
+        </div>
+        <p className="mt-1 text-sm text-text-muted">
           Who is calling this platform, what they are doing, and who they are
           doing it for. Live figures come from the rate-limit counters and the
           gateway&rsquo;s own memory; today&rsquo;s come from the usage rows,
@@ -411,7 +458,7 @@ export default function Activity() {
         <h2 className="mt-8 text-sm font-medium uppercase tracking-wide text-text-muted">
           Here now
         </h2>
-        <p className="mt-1 max-w-4xl text-sm text-text-muted">
+        <p className="mt-1 text-sm text-text-muted">
           Credentials that have made a request in the last {windowMinutes}{" "}
           minutes, what kind of request it was, and what they are spending this
           minute. Each count is for that window, not a running total. There is
@@ -479,7 +526,7 @@ export default function Activity() {
         <h2 className="mt-10 text-sm font-medium uppercase tracking-wide text-text-muted">
           Consumers today
         </h2>
-        <p className="mt-1 max-w-4xl text-sm text-text-muted">
+        <p className="mt-1 text-sm text-text-muted">
           Everything billed <span className="text-text">since midnight</span>,
           from the usage rows &mdash; a different window from the section above,
           and a longer one, so these numbers are larger and a gateway restart
@@ -527,7 +574,7 @@ export default function Activity() {
         <h2 className="mt-10 text-sm font-medium uppercase tracking-wide text-text-muted">
           End users today
         </h2>
-        <p className="mt-1 max-w-4xl text-sm text-text-muted">
+        <p className="mt-1 text-sm text-text-muted">
           The same day from the other side. One person can be served by several
           consumers, which a list nested inside each one cannot show. Only
           requests that carried <code>user</code>,{" "}
