@@ -79,7 +79,8 @@ from ..rate_limit_middleware import INFERENCE_ENDPOINT_SLUGS
 from ..rate_limiter import PLATFORM_IDENTITY, RateLimiter
 from ..config import Settings
 from ..router import _problem
-from ..telemetry import activity_tracker, get_logger
+from ..telemetry import ACTION_LABELS as telemetry_actions
+from ..telemetry import activity_tracker, get_logger, metrics_store
 from .client import _CONTROL_TIMEOUT_S, ManagerApiClient
 from .nodes_client import fetch_nodes
 
@@ -1544,6 +1545,73 @@ def create_admin_router(manager_client: ManagerApiClient) -> APIRouter:
             "percent": round(counter["used"] / limit * 100, 1) if limit not in (None, 0) else None,
         }
 
+    # PRM-238: a billable request kind, as the action label for the same thing.
+    # `request_kind` is what the usage row stores and `ACTION_LABELS` is what
+    # the tracker counts; they name the same five things with two spellings.
+    _KIND_TO_ACTION = {
+        "chat": "chat",
+        "embedding": "embeddings",
+        "rerank": "rerank",
+        "predict": "predict",
+        "image": "images",
+    }
+
+    # The actions that should leave a usage row behind. `playground` is one of
+    # them — it is inference, labelled by who sent it rather than by what it
+    # was — while `dashboard`, `models.list`, `backends` and `usage` bill
+    # nothing and must not count against the billed total.
+    _BILLABLE_ACTIONS = frozenset(
+        {"chat", "embeddings", "rerank", "predict", "images", "playground"}
+    )
+
+    def _ago_seconds(iso: str | None, now: float) -> int | None:
+        """Seconds since an ISO timestamp from the usage rows, which SQLite
+        hands back without a zone — read as UTC, which is how it was written."""
+        if not iso:
+            return None
+        try:
+            stamp = _dt.datetime.fromisoformat(iso)
+        except ValueError:  # pragma: no cover — defensive
+            return None
+        if stamp.tzinfo is None:
+            stamp = stamp.replace(tzinfo=_dt.timezone.utc)
+        return max(0, int(now - stamp.timestamp()))
+
+    def _actions_from_usage(rows: list[dict[str, Any]], now: float) -> list[dict[str, Any]]:
+        """What a consumer did, read off the usage rows — PRM-238.
+
+        For when the tracker has no entry, which after a restart is every
+        consumer that called before it. The row read "not tracked since the
+        gateway started" in every column and then showed seven requests in its
+        own detail: an empty row with a full drawer under it.
+
+        Covers only what bills, so it cannot see a model listing. That is why
+        it is the fallback and not the source.
+        """
+        counted: dict[str, dict[str, Any]] = {}
+        for row in rows:
+            action = _KIND_TO_ACTION.get(row["request_kind"], "other")
+            entry = counted.setdefault(
+                action,
+                {
+                    "action": action,
+                    "label": telemetry_actions.get(action, action),
+                    "count": 0,
+                    "last_seen_ago_s": None,
+                    "source": "usage",
+                },
+            )
+            entry["count"] += row["request_count"]
+            ago = _ago_seconds(row["last_seen"], now)
+            if ago is not None and (
+                entry["last_seen_ago_s"] is None or ago < entry["last_seen_ago_s"]
+            ):
+                entry["last_seen_ago_s"] = ago
+        for entry in counted.values():
+            if entry["last_seen_ago_s"] is None:
+                entry["last_seen_ago_s"] = 0
+        return sorted(counted.values(), key=lambda a: a["last_seen_ago_s"])
+
     @router.get("/admin/api/activity")
     async def get_activity(request: Request) -> Any:
         """Who is consuming the platform, and how much — PRM-235.
@@ -1580,10 +1648,32 @@ def create_admin_router(manager_client: ManagerApiClient) -> APIRouter:
             except Exception as exc:  # pragma: no cover — advisory, never fatal
                 logger.warning("admin.activity_live_read_error", error=str(exc))
 
-        # ── today, from the usage rows ───────────────────────────────────────
+        # ── today, and the live window, from the usage rows ──────────────────
+        #
+        # PRM-238: two queries because the page has two tables and they answer
+        # for different spans. The live one's detail used to be the day's,
+        # which put `×23` directly above `89 requests` for one consumer.
+        window_started_at = activity_tracker.window_started_at()
+        # PRM-238: whether the two halves of the window are comparable at all.
+        #
+        # The tracker is empty at startup, so its counts cover the uptime; the
+        # usage rows cover the full fifteen minutes regardless. Measured right
+        # after a restart: two calls arrived and four billed — the page
+        # reporting fewer requests than results, which cannot happen. Clamping
+        # the query to the uptime would make them agree by throwing away the
+        # detail that survives a restart, which is the thing PRM-235 built. So
+        # the detail keeps the whole window and the *subtraction* is withheld
+        # until the process has been up for all of it.
+        window_is_comparable = metrics_store.uptime_seconds() >= _time.time() - window_started_at
         today_rows: list[dict[str, Any]] = []
+        window_rows: list[dict[str, Any]] = []
         try:
             today_rows = await db.query_activity_today(_dt.date.today())
+            window_rows = await db.query_activity_since(
+                _dt.datetime.fromtimestamp(window_started_at, tz=_dt.timezone.utc).replace(
+                    tzinfo=None
+                )
+            )
         except Exception as exc:  # pragma: no cover — advisory, never fatal
             logger.warning("admin.activity_usage_read_error", error=str(exc))
 
@@ -1607,6 +1697,9 @@ def create_admin_router(manager_client: ManagerApiClient) -> APIRouter:
                     "is_you": identity == getattr(_claims(request), "client_id", None),
                     "last_seen_ago_s": tracked["last_seen_ago_s"] if tracked else None,
                     "connection_type": tracked["connection_type"] if tracked else None,
+                    # Where last-seen came from, because after a restart it
+                    # comes from the usage rows and those know only what bills.
+                    "last_seen_source": "tracker" if tracked else None,
                     # PRM-236: what this credential has been doing, from the
                     # tracker — inference, listing its models, the dashboard,
                     # the Playground. Empty when the tracker has no entry,
@@ -1620,6 +1713,26 @@ def create_admin_router(manager_client: ManagerApiClient) -> APIRouter:
                     "today": {"request_count": 0, "total_tokens": 0, "cost_usd": 0.0},
                     "end_users": [],
                     "models": [],
+                    # PRM-238: the same two breakdowns for the live window, so
+                    # the detail under a live row adds up to the pills on it.
+                    "window": {"request_count": 0, "total_tokens": 0, "cost_usd": 0.0},
+                    # PRM-238: how many inference calls *arrived* in the window,
+                    # against the `window.request_count` that produced a usage
+                    # row. The two differ for real reasons — a stream still
+                    # open, a caller that disconnected, a request refused
+                    # before it reached a backend — and the page showed them as
+                    # two bare numbers one line apart. Measured on this
+                    # deployment: ten arrived, six billed, and the gateway log
+                    # agreed (10 auth.ok, 5 inference.complete). That gap is a
+                    # finding, so the page does the subtraction out loud
+                    # instead of asking the reader to.
+                    #
+                    # None when the actions were reconstructed from the usage
+                    # rows, where arrived and billed are the same number by
+                    # construction and the line would say nothing.
+                    "window_arrived": None,
+                    "window_end_users": [],
+                    "window_models": [],
                 }
             return consumers[identity]
 
@@ -1662,67 +1775,115 @@ def create_admin_router(manager_client: ManagerApiClient) -> APIRouter:
         # per-consumer and per-end-user totals are rolled up here rather than
         # asked for a second time. Two dictionaries, keyed the way the page
         # reads them: "who did this client serve" and "what did it run".
-        per_user: dict[tuple[str, str | None], dict[str, Any]] = {}
-        per_model: dict[tuple[str, str | None, str], dict[str, Any]] = {}
-        for row in today_rows:
-            entry = _consumer(row["client_id"])
-            entry["today"]["request_count"] += row["request_count"]
-            entry["today"]["total_tokens"] += row["total_tokens"]
-            entry["today"]["cost_usd"] += row["cost_usd"] or 0.0
+        per_user: dict[tuple[str, str, str | None], dict[str, Any]] = {}
+        per_model: dict[tuple[str, str, str | None, str], dict[str, Any]] = {}
+        # One loop over both spans, keyed by which one — the alternative is the
+        # same twenty lines twice, which is how two breakdowns of the same
+        # thing come to disagree.
+        for span, rows_for_span, users_field, models_field in (
+            ("today", today_rows, "end_users", "models"),
+            ("window", window_rows, "window_end_users", "window_models"),
+        ):
+            for row in rows_for_span:
+                entry = _consumer(row["client_id"])
+                entry[span]["request_count"] += row["request_count"]
+                entry[span]["total_tokens"] += row["total_tokens"]
+                entry[span]["cost_usd"] += row["cost_usd"] or 0.0
 
-            user_key = (row["client_id"], row["end_user"])
-            user_entry = per_user.get(user_key)
-            if user_entry is None:
-                user_entry = per_user[user_key] = {
-                    "end_user": row["end_user"],
-                    "request_count": 0,
-                    "total_tokens": 0,
-                    "cost_usd": 0.0,
-                    "last_seen": row["last_seen"],
-                    "models": [],
-                }
-                entry["end_users"].append(user_entry)
-            user_entry["request_count"] += row["request_count"]
-            user_entry["total_tokens"] += row["total_tokens"]
-            user_entry["cost_usd"] += row["cost_usd"] or 0.0
-            if row["last_seen"] and (
-                user_entry["last_seen"] is None or row["last_seen"] > user_entry["last_seen"]
-            ):
-                user_entry["last_seen"] = row["last_seen"]
-            user_entry["models"].append(
-                {
-                    "model": row["model"],
-                    "request_kind": row["request_kind"],
-                    "request_count": row["request_count"],
-                }
-            )
+                user_key = (span, row["client_id"], row["end_user"])
+                user_entry = per_user.get(user_key)
+                if user_entry is None:
+                    user_entry = per_user[user_key] = {
+                        "end_user": row["end_user"],
+                        "request_count": 0,
+                        "total_tokens": 0,
+                        "cost_usd": 0.0,
+                        "last_seen": row["last_seen"],
+                        "models": [],
+                    }
+                    entry[users_field].append(user_entry)
+                user_entry["request_count"] += row["request_count"]
+                user_entry["total_tokens"] += row["total_tokens"]
+                user_entry["cost_usd"] += row["cost_usd"] or 0.0
+                if row["last_seen"] and (
+                    user_entry["last_seen"] is None or row["last_seen"] > user_entry["last_seen"]
+                ):
+                    user_entry["last_seen"] = row["last_seen"]
+                user_entry["models"].append(
+                    {
+                        "model": row["model"],
+                        "request_kind": row["request_kind"],
+                        "request_count": row["request_count"],
+                    }
+                )
 
-            model_key = (row["client_id"], row["model"], row["request_kind"])
-            model_entry = per_model.get(model_key)
-            if model_entry is None:
-                model_entry = per_model[model_key] = {
-                    "model": row["model"],
-                    "request_kind": row["request_kind"],
-                    "request_count": 0,
-                    "total_tokens": 0,
-                    "cost_usd": 0.0,
-                }
-                entry["models"].append(model_entry)
-            model_entry["request_count"] += row["request_count"]
-            model_entry["total_tokens"] += row["total_tokens"]
-            model_entry["cost_usd"] += row["cost_usd"] or 0.0
+                model_key = (span, row["client_id"], row["model"], row["request_kind"])
+                model_entry = per_model.get(model_key)
+                if model_entry is None:
+                    model_entry = per_model[model_key] = {
+                        "model": row["model"],
+                        "request_kind": row["request_kind"],
+                        "request_count": 0,
+                        "total_tokens": 0,
+                        "cost_usd": 0.0,
+                    }
+                    entry[models_field].append(model_entry)
+                model_entry["request_count"] += row["request_count"]
+                model_entry["total_tokens"] += row["total_tokens"]
+                model_entry["cost_usd"] += row["cost_usd"] or 0.0
 
         for identity in seen:
             _consumer(identity)
 
+        now_ts = _time.time()
         for entry in consumers.values():
+            # PRM-238: a consumer the tracker never saw still said what it did,
+            # in the usage rows the drawer below it was already reading. The
+            # row used to read "not tracked since the gateway started" in every
+            # column with seven requests in its own detail — an empty row with
+            # a full drawer under it.
+            if not entry["actions"] and entry["window_end_users"]:
+                entry["actions"] = _actions_from_usage(
+                    [row for row in window_rows if row["client_id"] == entry["identity"]],
+                    now_ts,
+                )
+            if entry["last_seen_ago_s"] is None:
+                agos = [
+                    ago
+                    for ago in (
+                        _ago_seconds(row["last_seen"], now_ts)
+                        for row in today_rows
+                        if row["client_id"] == entry["identity"]
+                    )
+                    if ago is not None
+                ]
+                # Only inside the window. Filling it from any time today put a
+                # consumer last seen seventeen minutes ago into a table whose
+                # first line promises the last fifteen — fixing one
+                # incoherence by writing another.
+                if agos and min(agos) <= now_ts - window_started_at:
+                    entry["last_seen_ago_s"] = min(agos)
+                    entry["last_seen_source"] = "usage"
+            # The arithmetic behind the two numbers the drawer shows.
+            if (
+                window_is_comparable
+                and entry["actions"]
+                and all(a.get("source") != "usage" for a in entry["actions"])
+            ):
+                entry["window_arrived"] = sum(
+                    a["count"] for a in entry["actions"] if a["action"] in _BILLABLE_ACTIONS
+                )
             # Named end users first, then the unnamed remainder — which is one
             # row and is usually the biggest, so sorting it by size would bury
             # every real end user beneath it.
-            entry["end_users"].sort(key=lambda u: (u["end_user"] is None, -u["request_count"]))
-            entry["models"].sort(key=lambda m: -m["request_count"])
-            for user_entry in entry["end_users"]:
-                user_entry["models"].sort(key=lambda m: -m["request_count"])
+            for users_field, models_field in (
+                ("end_users", "models"),
+                ("window_end_users", "window_models"),
+            ):
+                entry[users_field].sort(key=lambda u: (u["end_user"] is None, -u["request_count"]))
+                entry[models_field].sort(key=lambda m: -m["request_count"])
+                for user_entry in entry[users_field]:
+                    user_entry["models"].sort(key=lambda m: -m["request_count"])
 
         ordered = sorted(
             consumers.values(),
@@ -1766,6 +1927,20 @@ def create_admin_router(manager_client: ManagerApiClient) -> APIRouter:
             "consumers": ordered[:_ACTIVITY_TOP_N],
             "omitted": max(0, len(ordered) - _ACTIVITY_TOP_N),
             "tracker_window_minutes": activity_tracker._STALE_AFTER_S // 60,
+            # PRM-238: the boundary both halves of the live window are counted
+            # from — the action buckets and the usage rows — so the page can
+            # say what "now" means rather than implying it.
+            # How long this process has been up. When that is less than the
+            # window, the tracker's half of it covers a shorter span than the
+            # table says, and the page should say so rather than look thin.
+            "uptime_s": metrics_store.uptime_seconds(),
+            # False while this process has been up for less than the window:
+            # the detail still covers all of it, but "arrived" would be counting
+            # a shorter span than "billed".
+            "window_is_comparable": window_is_comparable,
+            "window_started_at": _dt.datetime.fromtimestamp(
+                window_started_at, tz=_dt.timezone.utc
+            ).isoformat(),
             "platform": {
                 dimension: _platform_cell(settings, live, dimension, endpoint_count)
                 for dimension in ("rpm", "tpm")

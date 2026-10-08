@@ -41,6 +41,9 @@ export interface EndUserToday {
 export interface ConsumerAction {
   action: string;
   label: string;
+  /** "usage" when the tracker had nothing and the row was reconstructed from
+   *  the usage rows — which only know about calls that bill. */
+  source?: "usage";
   /** Requests of this kind **inside the window**, not since the gateway
    *  started — PRM-237 made the number and its heading agree. */
   count: number;
@@ -65,6 +68,9 @@ export interface ActivityConsumer {
   /** Null when the in-process tracker has no entry — including after a gateway
    *  restart, which empties it while Redis and the database keep theirs. */
   last_seen_ago_s: number | null;
+  /** Where last-seen came from: the in-process tracker, or the usage rows
+   *  after a restart emptied it. */
+  last_seen_source?: "tracker" | "usage" | null;
   connection_type: "dashboard" | "api" | "other" | null;
   rpm: ActivityCounter | null;
   tpm: ActivityCounter | null;
@@ -77,6 +83,16 @@ export interface ActivityConsumer {
   actions: ConsumerAction[];
   /** What it ran today, per model. */
   models: ModelUse[];
+  /** PRM-238: the same three figures for the live window, so the detail under
+   *  a live row adds up to the pills on it instead of to the day. */
+  window: { request_count: number; total_tokens: number; cost_usd: number };
+  /** PRM-238: inference calls that *arrived* in the window, against the
+   *  `window.request_count` that produced a usage row. Null when the actions
+   *  were reconstructed from those same rows, where the two are equal by
+   *  construction. */
+  window_arrived: number | null;
+  window_end_users: EndUserToday[];
+  window_models: ModelUse[];
 }
 
 export interface ActivityResponse {
@@ -87,6 +103,17 @@ export interface ActivityResponse {
   /** Consumers beyond the top N — counted, not listed. */
   omitted: number;
   tracker_window_minutes: number;
+  /** Seconds this gateway process has been up. Shorter than the window means
+   *  the tracker's half of it covers less than the table says. */
+  uptime_s: number;
+  /** False while the gateway has been up for less than the window: the detail
+   *  still covers all of it, but "arrived" would count a shorter span than
+   *  "billed", so the page withholds the subtraction rather than printing one
+   *  that reads backwards. */
+  window_is_comparable: boolean;
+  /** When the live window opens — one boundary for the action counters and
+   *  the usage rows alike. */
+  window_started_at: string;
   platform: { rpm: ActivityCounter | null; tpm: ActivityCounter | null };
 }
 
