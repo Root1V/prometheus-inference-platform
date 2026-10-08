@@ -309,6 +309,29 @@ function RateLimitsFormLoaded({ data }: { data: RateLimitsResponse }) {
         ))}
       </div>
 
+      {data.login_throttle && (
+        <div className="mt-4 rounded-xl border border-border bg-surface px-4 py-3">
+          {/* PRM-233: the ceiling this page never showed. Every limit above is
+              keyed on a credential and therefore applies after authentication;
+              this is the only one that applies to someone who does not have
+              one yet. Read-only, and deliberately: a login throttle an
+              attacker could widen through the admin API is not obviously one
+              worth making editable through the admin API. */}
+          <p className="flex flex-wrap items-baseline gap-x-2 text-sm">
+            <span className="font-medium text-text">
+              Login attempts: {data.login_throttle.rpm} per minute, per source
+              IP
+            </span>
+            <span className="text-text-muted">
+              {data.login_throttle.active
+                ? "The only ceiling here that applies before a credential is accepted — everything above is counted per client."
+                : "Inactive: the /ui/* surface is disabled on this deployment, so nothing reaches this check."}
+            </span>
+            <span className="text-xs text-text-muted">(.env only)</span>
+          </p>
+        </div>
+      )}
+
       {data.capacity?.reporting > 0 && (
         <p className="mt-3 max-w-3xl text-xs text-text-muted">
           {/* RM-71 decision #8: observed capacity beside the limit, never used

@@ -73,6 +73,10 @@ export interface RateLimitsResponse {
   /** Floor the server enforces on the admin bucket, to keep the dashboard
    * itself reachable. */
   min_admin_rpm: number;
+  /** PRM-233: the per-IP throttle on /ui/login — the only ceiling here that
+   *  applies before a credential is accepted, and the one this page never
+   *  showed. Read-only: it is set in .env. */
+  login_throttle?: { rpm: number; active: boolean };
   /** RM-71: concurrent slots the running backends actually report. Shown beside
    * the limit so it isn't set blind; never used to derive one. `reporting` is
    * how many backends the number covers — engines like sd.cpp report none. */
@@ -155,5 +159,11 @@ export function useLiveLimits() {
     // about whether something is being refused *now*. Ten seconds is often
     // enough to watch a budget fill and rare enough not to be the traffic.
     refetchInterval: 10_000,
+    // PRM-233: no retries. Three attempts with backoff left the panel saying
+    // "Reading the counters…" for seven seconds against a gateway that does
+    // not have this endpoint — which is what an operator running an older
+    // build sees, and a diagnostic that looks like it is still thinking is
+    // worse than one that says it failed.
+    retry: false,
   });
 }

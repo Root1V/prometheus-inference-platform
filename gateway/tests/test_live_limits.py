@@ -373,3 +373,78 @@ async def test_strict_mode_with_no_store_refuses_the_page_itself(
 async def test_the_live_view_needs_admin_read(live_app, caller_headers):
     async with AsyncClient(transport=ASGITransport(app=live_app), base_url="http://test") as c:
         assert (await c.get("/admin/api/limits/live", headers=caller_headers)).status_code == 403
+
+
+# ── PRM-233: counted before a ceiling exists ─────────────────────────────────
+
+
+async def test_the_platform_is_counted_even_with_no_platform_ceiling(
+    live_app, caller_headers, live_headers
+):
+    """ "How much is this platform doing right now" was answerable only after
+    someone had already chosen a ceiling.
+
+    The platform's TPM counter has always been written on every request; its
+    RPM counter only existed once `RATE_LIMIT_RPM_PLATFORM` was set. So the
+    dashboard could show what the platform was spending in tokens and not in
+    requests, and the operator deciding what the number should be was the one
+    person who could not see it.
+    """
+    from prometheus_gateway.rate_limiter import PLATFORM_IDENTITY
+
+    async with AsyncClient(transport=ASGITransport(app=live_app), base_url="http://test") as c:
+        with respx.mock:
+            respx.post("http://127.0.0.1:18081/v1/chat/completions").mock(
+                return_value=Response(200, json=LLAMA_RESPONSE)
+            )
+            assert (
+                await c.post("/v1/chat/completions", json=VALID_BODY, headers=caller_headers)
+            ).status_code == 200
+        body = (await c.get("/admin/api/limits/live", headers=live_headers)).json()
+
+    assert live_app.state.settings.rate_limit_rpm_platform is None
+    rows = {(r["layer"], r["dimension"]): r for r in body["rows"]}
+    platform_rpm = rows[("platform", "rpm")]
+    # Two requests reached the middleware: the inference call and this read of
+    # /admin/api/limits/live itself.
+    assert platform_rpm["identity"] == PLATFORM_IDENTITY
+    assert platform_rpm["used"] >= 1
+    # Counted, and refusing nothing — which is the state the row has to be
+    # able to express without inventing a ceiling for it.
+    assert platform_rpm["limit"] is None
+    assert platform_rpm["limit_source"] == "none"
+    assert platform_rpm["percent"] is None
+
+
+async def test_an_unset_platform_ceiling_still_refuses_nothing(live_app, caller_headers):
+    """Counting is not enforcing. The counter is unconditional now, so the
+    claim that the platform layer is opt-in needs its own test rather than
+    resting on the absence of a Redis key."""
+    async with AsyncClient(transport=ASGITransport(app=live_app), base_url="http://test") as c:
+        with respx.mock:
+            respx.post("http://127.0.0.1:18081/v1/chat/completions").mock(
+                return_value=Response(200, json=LLAMA_RESPONSE)
+            )
+            # `live_settings` allows 3/min per endpoint, so three pass and the
+            # fourth is refused by the endpoint layer — never the platform.
+            for _ in range(3):
+                await c.post("/v1/chat/completions", json=VALID_BODY, headers=caller_headers)
+            refused = await c.post("/v1/chat/completions", json=VALID_BODY, headers=caller_headers)
+
+    assert refused.status_code == 429
+    assert refused.json()["scope"] != "platform"
+
+
+async def test_the_login_throttle_is_reported(live_app, live_headers):
+    """The rate limit the Limits page never showed: every ceiling it listed is
+    keyed on a credential, and this is the one that applies to someone who does
+    not have one yet."""
+    from prometheus_gateway import db
+
+    await db.create_tables(db.get_engine())
+    async with AsyncClient(transport=ASGITransport(app=live_app), base_url="http://test") as c:
+        body = (await c.get("/admin/api/limits", headers=live_headers)).json()
+
+    throttle = body["login_throttle"]
+    assert throttle["rpm"] == live_app.state.settings.ui_login_rate_limit_rpm
+    assert throttle["active"] is live_app.state.settings.ui_enabled

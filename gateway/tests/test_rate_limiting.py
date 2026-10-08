@@ -911,8 +911,12 @@ async def test_the_consumer_layer_is_on_without_being_configured(
 
     assert r.status_code == 429
     assert r.json()["scope"] == "client"
-    # And the platform layer did not fire, because nobody set one.
-    assert await fake_redis.get(f"prometheus:rl:rpm:*platform*:*:{bucket}") is None
+    # And the platform layer did not fire, because nobody set one — which is
+    # the claim worth making. PRM-233 made its counter unconditional so the
+    # dashboard can answer "how much is this platform doing" before an
+    # operator has to choose a ceiling, so the counter existing is no longer
+    # evidence of anything. The refusal is.
+    assert await fake_redis.get(f"prometheus:rl:rpm:*platform*:*:{bucket}") == b"1"
 
 
 def test_endpoint_slug_maps_admin_api_prefix():

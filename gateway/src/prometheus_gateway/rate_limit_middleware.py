@@ -411,12 +411,20 @@ class RateLimitMiddleware:
         # 503 because the contract a caller already handles is Retry-After,
         # but `scope: platform` says this is not their quota — they did
         # nothing wrong and nothing about their own usage will fix it.
-        if (platform_rpm := self.settings.rate_limit_rpm_platform) is not None:
-            state = await self._limiter.check_and_increment_rpm(
-                PLATFORM_IDENTITY, ALL_ENDPOINTS, platform_rpm
-            )
-            if not state.allowed:
-                return self._layer_refusal(request, "platform", state, "request", PLATFORM_SCOPE)
+        #
+        # PRM-233: counted whether or not a ceiling is set. The platform's TPM
+        # counter has always been written unconditionally — the router does it
+        # on every request — and its RPM counter only existed when someone had
+        # configured a ceiling, so the dashboard could show what the platform
+        # was spending in tokens and not in requests. "How much is this
+        # platform doing right now" is the question an operator asks *before*
+        # choosing a number, and it was answerable only after choosing one.
+        platform_rpm = self.settings.rate_limit_rpm_platform
+        state = await self._limiter.check_and_increment_rpm(
+            PLATFORM_IDENTITY, ALL_ENDPOINTS, platform_rpm if platform_rpm is not None else 0
+        )
+        if platform_rpm is not None and not state.allowed:
+            return self._layer_refusal(request, "platform", state, "request", PLATFORM_SCOPE)
         if (platform_tpm := self.settings.rate_limit_tpm_platform) is not None:
             state = await self._limiter.check_tpm_budget(
                 PLATFORM_IDENTITY, ALL_ENDPOINTS, platform_tpm, 0
