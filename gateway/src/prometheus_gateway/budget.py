@@ -142,8 +142,14 @@ def invalidate_rate_limit_tier_cache(name: str | None = None) -> None:
 def _reset_cache_for_testing() -> None:
     """Reset module-level cache state. For use in test fixtures only —
     mirrors auth/jwks.py's _reset_cache_for_testing().
+
+    PRM-231: the tier cache too. PRM-228 added it and left this function
+    clearing only one of the two, so a tier name reused across tests would be
+    served from an earlier test's database — the exact leak the docstring
+    above describes, reintroduced one cache later.
     """
     _settings_cache.clear()
+    _tier_cache.clear()
 
 
 @dataclass

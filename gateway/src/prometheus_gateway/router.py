@@ -33,6 +33,7 @@ from .budget import (
     BudgetTracker,
     get_client_billing_settings_cached,
     parse_thresholds,
+    resolve_client_limits,
 )
 from .models.backends import TRANSIENT_STATUS_CODES
 from .models import rerank_dialects
@@ -3232,12 +3233,21 @@ def create_router(registry: ModelRegistry, pool: "BackendPool") -> APIRouter:
         ipm_settings = getattr(getattr(request.app, "state", None), "settings", None)
         ipm_limit = getattr(ipm_settings, "rate_limit_ipm", None) if ipm_settings else None
         rl_redis_images = getattr(pool, "_redis", None)
+        # PRM-231: the tier's `ipm`, which lives here and not in the middleware
+        # because this gate needs `n`. Client-wide (`ALL_ENDPOINTS`) when a tier
+        # sets it, per endpoint when it is the platform's `.env` default — the
+        # same split as the four dimensions the consumer layer now enforces.
+        ipm_scope = "images"
+        if claims is not None:
+            image_tier = await resolve_client_limits(claims.client_id)
+            if image_tier is not None and image_tier.ipm is not None:
+                ipm_limit, ipm_scope = image_tier.ipm, ALL_ENDPOINTS
         if ipm_limit is not None and rl_redis_images is not None and claims is not None:
             requested_images = body.n or 1
             ipm_limiter = RateLimiter(rl_redis_images)
             for identity in filter(None, {claims.client_id, claims.user_id}):
                 headroom = await ipm_limiter.check_ipm_headroom(
-                    identity, "images", ipm_limit, requested_images
+                    identity, ipm_scope, ipm_limit, requested_images
                 )
                 if not headroom.allowed:
                     retry_after = max(1, headroom.reset_at - int(time.time()))
@@ -3655,6 +3665,13 @@ async def _record_usage(
                     await limiter.increment_tpm(
                         identity, ALL_ENDPOINTS, prompt_tokens, completion_tokens
                     )
+                    # PRM-231: and the day's, for the same reason one line up.
+                    # A tier's `tpd` is the client's whole day across every
+                    # route, so it reads this key — and a ceiling whose
+                    # counter is never written is a ceiling that cannot fire.
+                    await limiter.increment_tpd(identity, ALL_ENDPOINTS, total_tokens_for_rl)
+                if image_count > 0:
+                    await limiter.increment_ipm(identity, ALL_ENDPOINTS, image_count)
             # The platform's own counter, once per request rather than once per
             # identity — client and user are two views of one call.
             if total_tokens_for_rl > 0:

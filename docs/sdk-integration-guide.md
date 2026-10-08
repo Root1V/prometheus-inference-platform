@@ -938,12 +938,19 @@ designing for:
   refused. If you pace requests, pace against `X-RateLimit-Remaining-Requests` rather than
   against an assumed rate.
 - **The budget is counted per credential**, so one client's traffic never consumes another's.
-  The *limit value*, however, is platform configuration per endpoint — not per client — so a
-  429 means your own credential exhausted its own bucket, and raising it is an operator action.
+  Raising a limit is always an operator action.
 
-Each **scope** in `X-RateLimit-Scope` is its own bucket with its own limit. A 429 on one does
-not imply the others are exhausted, which is exactly what that header exists to tell you — back
-off the scope it names, not the whole API.
+**A request passes three ceilings, not one** (PRM-227, PRM-231). The `scope` field in a 429
+body says which one refused, and they call for different reactions:
+
+| `scope` | What it means | What to do |
+|---|---|---|
+| an endpoint slug (`chat_completions`, `embeddings`, `rerank`, `predict`, `images`, `default`, `admin`) | Your credential exhausted that one route's bucket. | Back off **that route**; the others still have room. |
+| `client` | Your credential exhausted its own ceiling **across every endpoint** — moving the traffic to another route will not help. This is where a client's tier applies, when it has one: requests and tokens per minute, input and output tokens separately, requests and tokens per day, and images per minute. | Back off **overall**, or ask the operator for a wider tier. |
+| `platform` | Everyone at once hit a shared ceiling. **Not your quota** — you did nothing wrong, and nothing about your own usage will change it. | Retry after `Retry-After`; do not reduce your own entitlement in response. |
+
+Each **scope** is its own bucket with its own limit. A 429 on one does not imply the others are
+exhausted, which is exactly what that field exists to tell you.
 
 **Read the set from the header rather than from a list here.** The previous revision of this
 paragraph enumerated it and got it wrong: it said `default`, `chat_completions`, `admin` and

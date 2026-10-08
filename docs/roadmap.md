@@ -8819,3 +8819,35 @@ the "Right now" section, and moving `_resolve_limits` into `rate_limits.endpoint
 and the middleware read one fact. Out — editing the eleven (still the migration, still next), and
 enforcing a tier's other five dimensions: `rpd`, `tpd`, `ipm`, `tpm_input` and `tpm_output` are
 columns on `rate_limit_tiers` that nothing reads, which this view is what made visible.
+
+
+## PRM-231 — The tier dimensions nothing read
+
+**Why**: PRM-228 built the tier catalogue with seven dimensions and the middleware read two. An
+operator could set `rpd`, `tpd`, `tpm_input`, `tpm_output` or `ipm` on a tier, see it validated,
+saved and returned by the admin API, and the platform would ignore it in silence. A control that
+does nothing is worse than one that is missing: the missing one is visible. PRM-230's live view is
+what surfaced it — two of the counters those ceilings would bound were already being incremented at
+the all-endpoints key with nothing reading them, and the page printed `counted, not checked`.
+
+**Client-wide, not per endpoint.** A tier is what a client may consume, which is the reading
+`tier.rpm` and `tier.tpm` already had, so all seven now live at the same key. The alternative —
+overriding the platform's per-endpoint default — would make `rpd: 10,000` grant sixty thousand
+across six routes: the number saying one thing and the system doing another, which is PRM-129's
+shape. The platform's own `.env` values stay per endpoint and are unchanged; a tier silent on a
+dimension changes nothing about it.
+
+**Two counters had to start being written.** `tpd` and `ipm` were only ever incremented per
+endpoint, so a tier reading them across all endpoints would have read zero forever. PRM-227 is the
+precedent: a ceiling whose counter is never written is not a ceiling, and nothing says so.
+
+**The guard is the point.** `test_every_tier_dimension_refuses_something` sets one dimension at a
+time to 1 and asserts a request is refused, without looking at how any of them is enforced. The bug
+it replaces was five columns whose every part had a passing test.
+
+**Scope**: in — the five dimensions at the consumer layer, `tier.ipm` in the images gate, the `tpd`
+and `ipm` increments at the all-endpoints key, the live view reporting a `tier` source on those
+counters, the tier dropdown listing every dimension a tier sets, and the SDK guide's three `scope`
+values (it still said the limit value is "per endpoint — not per client", which stopped being true
+at PRM-227). Also `_reset_cache_for_testing` clearing the tier cache PRM-228 added and left out.
+Out — a tier editor UI; tiers are still created through the API.
