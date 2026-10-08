@@ -9041,3 +9041,61 @@ own view of who is asking, and the section says the dashboard polls and roughly 
 **Scope**: in — minute-bucketed action counts, dropping aged-out actions, `is_you`, and the
 section copy. Out — reducing the polling itself, which is a different change with its own
 tradeoff, and one worth measuring across every page rather than from this one.
+
+
+## PRM-238 — One window per table
+
+**Why**: the same consumer showed `Chat completions ×23` and, one line below in its own expanded
+detail, `89 requests`. Both numbers were right — the first is the last fifteen minutes from the
+tracker, the second is today from the usage rows — and nothing on the page said they were measuring
+different spans. Two true numbers that read as a contradiction are worse than one number.
+
+**Each table answers for its own window.** The first attempt removed the expansion from the live
+rows, which fixed the contradiction by deleting half of it; the live section is exactly where an
+operator asks *who is this consumer serving right now*. `query_activity_since` gives that section
+its own breakdown, and both halves of the window start at the same instant —
+`ActivityTracker.window_started_at`, the opening edge of the oldest minute bucket the snapshot
+sums. A rolling 900 seconds would have included requests the pills exclude, and the detail would
+not have added up to the summary above it. Verified live: a pill reading `Chat completions ×3` over
+a detail reading 2 + 1.
+
+They can still differ honestly — the pills count every authenticated request and only billable
+inference writes a usage row — so the live detail says so rather than leaving the reader to find
+out by subtracting.
+
+**And every column names its own span**: `Doing (last 15 min)`, `Requests in this window`,
+`Requests today`, with each section stating which window it covers.
+
+**Here now stopped trusting one source.** It listed whoever the in-process tracker had seen, so a
+consumer with 27 requests inside the window was missing from it after a restart emptied that
+tracker — the mistake PRM-235 fixed one section down, still live one section up. Either source
+counts now, and a row with usage but no tracker entry says `since a restart` instead of claiming it
+has not called.
+
+**And a row that reported the tracker's silence as the consumer's.** With no tracker entry, every
+visible column read `—` or "not tracked since the gateway started" while the drawer under it showed
+seven requests: an empty row with a full drawer. What the usage rows know is filled in now — the
+kinds of call, counted from `request_kind`, and last-seen from the newest row — marked `*` because
+that source only knows what bills and cannot see a model listing. Reconstructing last-seen from
+*any* row today put a consumer last seen seventeen minutes ago into a table promising fifteen, so
+it is filled only from inside the window; a test holds that line.
+
+**And the two numbers that were left to be subtracted.** A pill reading `Chat completions ×7` sat
+above a detail reading `6`: requests that *arrived* against requests that *produced a usage row*.
+Measured on the live deployment the gap was four and stable, and the gateway log agreed — ten
+`auth.ok`, five `inference.complete`. That gap is a finding, not noise: a stream still open, a
+caller that disconnected, a request refused before it reached a backend. The drawer states it —
+"7 arrived, 6 produced a usage row, 1 did not" — because a reader who has to do the subtraction
+concludes the page is broken.
+
+It is withheld where it cannot be trusted. The first attempt printed `2 arrived, 4 billed` right
+after a restart, the page reporting fewer requests than results: the tracker had been up for
+seconds while the usage rows covered the full fifteen minutes. Clamping the query to the uptime
+would have made them agree by discarding the detail that survives a restart, which is what PRM-235
+built — so the detail keeps the whole window and the arithmetic waits until the process has been up
+for all of it, with the section saying why.
+
+**Scope**: in — `query_activity_since`, `window_started_at` as the one boundary, per-window
+breakdowns on each consumer, window-named column headers, the Here-now membership rule, the
+usage-derived fallback for an untracked row, and `uptime_s` so a short-lived process can say why
+its own half of the window is thin.

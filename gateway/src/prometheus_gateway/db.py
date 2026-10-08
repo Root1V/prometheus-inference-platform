@@ -869,6 +869,56 @@ async def query_client_model_cost_range(start: date, end: date) -> list[dict[str
         ]
 
 
+async def query_activity_since(since: datetime) -> list[dict[str, Any]]:
+    """The same grouping as `query_activity_today`, for a rolling window —
+    PRM-238.
+
+    The live section of the Activity page counts the last fifteen minutes and
+    its detail was showing the whole day, so one consumer read `×23` above
+    `89 requests` with nothing saying the spans differed. A table answers for
+    one window; this is the query that lets the live one answer for its own.
+
+    `recorded_at` rather than `day`, because the window crosses midnight like
+    any other fifteen minutes.
+    """
+    session_factory = get_session_factory()
+    async with session_factory() as session:
+        stmt = (
+            select(
+                UsageEvent.client_id,
+                UsageEvent.end_user,
+                UsageEvent.model_slug,
+                UsageEvent.request_kind,
+                func.sum(UsageEvent.cost_usd).label("cost_usd"),
+                func.sum(UsageEvent.prompt_tokens).label("prompt_tokens"),
+                func.sum(UsageEvent.completion_tokens).label("completion_tokens"),
+                func.count().label("request_count"),
+                func.max(UsageEvent.recorded_at).label("last_seen"),
+            )
+            .where(UsageEvent.recorded_at >= since)
+            .group_by(
+                UsageEvent.client_id,
+                UsageEvent.end_user,
+                UsageEvent.model_slug,
+                UsageEvent.request_kind,
+            )
+        )
+        result = await session.execute(stmt)
+        return [
+            {
+                "client_id": row.client_id,
+                "end_user": row.end_user,
+                "model": row.model_slug,
+                "request_kind": row.request_kind,
+                "cost_usd": row.cost_usd,
+                "total_tokens": int((row.prompt_tokens or 0) + (row.completion_tokens or 0)),
+                "request_count": int(row.request_count or 0),
+                "last_seen": row.last_seen.isoformat() if row.last_seen else None,
+            }
+            for row in result
+        ]
+
+
 async def query_activity_today(day: date) -> list[dict[str, Any]]:
     """Today's totals per (client, end user, model, kind) — PRM-235, PRM-236.
 

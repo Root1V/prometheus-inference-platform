@@ -300,9 +300,38 @@ async def test_a_consumer_the_tracker_forgot_is_still_listed(app, caller, admin)
         body = (await c.get("/admin/api/activity", headers=admin)).json()
 
     consumer = next(c for c in body["consumers"] if c["identity"] == CLIENT)
-    assert consumer["last_seen_ago_s"] is None
-    assert consumer["connection_type"] is None
     assert consumer["today"]["request_count"] == 1
+    # PRM-238: and the row is not blank. The first version reported the tracker's
+    # silence as the consumer's — "not tracked since the gateway started" across
+    # every column, above a drawer showing seven requests. What the usage rows
+    # know is filled in, and flagged as coming from them.
+    assert consumer["last_seen_source"] == "usage"
+    assert consumer["last_seen_ago_s"] is not None
+    assert [(a["action"], a["count"], a["source"]) for a in consumer["actions"]] == [
+        ("chat", 1, "usage")
+    ]
+    # The connection type genuinely has no second source: nothing but the
+    # tracker ever knew which kind of route it was.
+    assert consumer["connection_type"] is None
+
+
+async def test_a_reconstructed_row_cannot_show_what_never_bills(app, caller, admin):
+    """The fallback's own limit, stated as a test.
+
+    Usage rows exist for inference and nothing else, so a credential that only
+    listed its models leaves no trace there. After a restart its row is empty
+    — correctly — and that is why this is the fallback and not the source.
+    """
+    from prometheus_gateway.telemetry import activity_tracker
+
+    await db.create_tables(db.get_engine())
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
+        await c.get("/v1/models", headers=caller)
+        async with activity_tracker._lock:
+            activity_tracker._entries.clear()
+        body = (await c.get("/admin/api/activity", headers=admin)).json()
+
+    assert all(c["identity"] != CLIENT for c in body["consumers"])
 
 
 async def test_activity_requires_admin_read(app, caller):
@@ -507,3 +536,229 @@ async def test_the_page_says_which_row_is_you(app, caller, admin):
     mine = [c["identity"] for c in body["consumers"] if c["is_you"]]
     assert mine == ["admin"]
     assert next(c for c in body["consumers"] if c["identity"] == CLIENT)["is_you"] is False
+
+
+# ── PRM-238: each table answers for its own window ───────────────────────────
+
+
+async def test_the_live_detail_counts_the_live_window_not_the_day(app, caller, admin):
+    """The contradiction the page used to print.
+
+    One consumer showed `Chat completions ×23` — the last fifteen minutes —
+    directly above its own detail reading `89 requests`, which was the day.
+    Both true, neither labelled. Here the day holds a request from outside the
+    window, and the two breakdowns have to disagree *by exactly that one*.
+    """
+    import datetime as _dt
+
+    await db.create_tables(db.get_engine())
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
+        with respx.mock:
+            respx.post("http://127.0.0.1:18081/v1/chat/completions").mock(
+                return_value=Response(200, json=CHAT_RESPONSE)
+            )
+            await c.post("/v1/chat/completions", json={**CHAT, "user": "alice"}, headers=caller)
+
+        # An hour-old row for the same client and day, written directly: it
+        # belongs to today and not to the live window.
+        await db.record_usage(
+            CLIENT,
+            "small-model",
+            5,
+            3,
+            end_user="alice",
+            model_slug="small-model",
+            request_id="older",
+        )
+        async with db.get_session_factory()() as session:
+            from sqlalchemy import update
+
+            await session.execute(
+                update(db.UsageEvent)
+                .where(db.UsageEvent.request_id == "older")
+                .values(
+                    recorded_at=_dt.datetime.now(_dt.timezone.utc).replace(tzinfo=None)
+                    - _dt.timedelta(hours=1)
+                )
+            )
+            await session.commit()
+
+        body = (await c.get("/admin/api/activity", headers=admin)).json()
+
+    consumer = next(c for c in body["consumers"] if c["identity"] == CLIENT)
+    assert consumer["today"]["request_count"] == 2
+    assert consumer["window"]["request_count"] == 1, "the live window swallowed the day"
+    assert [u["request_count"] for u in consumer["window_end_users"]] == [1]
+    assert [u["request_count"] for u in consumer["end_users"]] == [2]
+
+
+def test_both_halves_of_the_window_start_at_the_same_instant():
+    """The action counters are minute buckets and the detail is a timestamp
+    filter on the usage rows. A rolling 900 seconds would include requests the
+    buckets exclude, and the detail would not add up to the pill above it."""
+    import time as _time
+
+    from prometheus_gateway.telemetry import ActivityTracker
+
+    now = _time.time()
+    start = ActivityTracker.window_started_at(now)
+    # Exactly on a bucket boundary, and covering the 15 buckets the snapshot
+    # sums — never a fraction of a sixteenth.
+    assert start % 60 == 0
+    assert int(now // 60) - int(start // 60) == ActivityTracker._WINDOW_BUCKETS - 1
+
+
+async def test_a_last_call_from_outside_the_window_does_not_put_you_in_it(app, caller, admin):
+    """The fix that nearly wrote a second incoherence.
+
+    When the tracker forgets, last-seen is reconstructed from the usage rows —
+    but reconstructing it from *any* row today listed a consumer last seen
+    seventeen minutes ago in a table whose first line promises the last
+    fifteen. Only rows inside the window count.
+    """
+    import datetime as _dt
+
+    from prometheus_gateway.telemetry import activity_tracker
+
+    await db.create_tables(db.get_engine())
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
+        with respx.mock:
+            respx.post("http://127.0.0.1:18081/v1/chat/completions").mock(
+                return_value=Response(200, json=CHAT_RESPONSE)
+            )
+            await c.post("/v1/chat/completions", json=CHAT, headers=caller)
+        async with db.get_session_factory()() as session:
+            from sqlalchemy import update
+
+            await session.execute(
+                update(db.UsageEvent)
+                .where(db.UsageEvent.client_id == CLIENT)
+                .values(
+                    recorded_at=_dt.datetime.now(_dt.timezone.utc).replace(tzinfo=None)
+                    - _dt.timedelta(minutes=40)
+                )
+            )
+            await session.commit()
+        async with activity_tracker._lock:
+            activity_tracker._entries.clear()
+        body = (await c.get("/admin/api/activity", headers=admin)).json()
+
+    consumer = next(c for c in body["consumers"] if c["identity"] == CLIENT)
+    assert consumer["last_seen_ago_s"] is None, "40 minutes ago is not 'here now'"
+    assert consumer["window"]["request_count"] == 0
+    # Still on the page, under today, where it belongs.
+    assert consumer["today"]["request_count"] == 1
+
+
+async def test_a_tracked_consumer_says_so(app, caller, admin):
+    """The two sources are distinguishable, because one of them is partial."""
+    await db.create_tables(db.get_engine())
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
+        with respx.mock:
+            respx.post("http://127.0.0.1:18081/v1/chat/completions").mock(
+                return_value=Response(200, json=CHAT_RESPONSE)
+            )
+            await c.post("/v1/chat/completions", json=CHAT, headers=caller)
+        body = (await c.get("/admin/api/activity", headers=admin)).json()
+
+    consumer = next(c for c in body["consumers"] if c["identity"] == CLIENT)
+    assert consumer["last_seen_source"] == "tracker"
+    assert all(a.get("source") != "usage" for a in consumer["actions"])
+
+
+async def test_the_drawer_shows_the_subtraction(app, caller, admin, rsa_keys):
+    """Ten arrived and six billed, a line apart, read as a bug.
+
+    They differ for real reasons — a stream still open, a caller that
+    disconnected, a request refused before it reached a backend — and measured
+    on the live deployment the gap was four, with the gateway log agreeing
+    (10 auth.ok, 5 inference.complete). A page that shows both numbers has to
+    name the difference, or every reader does the subtraction and concludes
+    the page is broken.
+
+    Here one request is refused for a model it was never granted, so it
+    arrives and never bills.
+    """
+    import time as _time
+
+    from prometheus_gateway.telemetry import metrics_store
+
+    # The subtraction is only offered once the process has been up for the
+    # whole window; a test process is seconds old. See the test below.
+    metrics_store._start_time = _time.monotonic() - 3600
+    await db.create_tables(db.get_engine())
+    ungranted = {
+        "Authorization": "Bearer "
+        + make_token(
+            rsa_keys["private"],
+            # No `model:small-model` — RM-07 is deny-by-default.
+            scope="inference:read",
+            sub=CLIENT,
+            azp=CLIENT,
+        )
+    }
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
+        with respx.mock:
+            respx.post("http://127.0.0.1:18081/v1/chat/completions").mock(
+                return_value=Response(200, json=CHAT_RESPONSE)
+            )
+            await c.post("/v1/chat/completions", json=CHAT, headers=caller)
+            refused = await c.post("/v1/chat/completions", json=CHAT, headers=ungranted)
+        body = (await c.get("/admin/api/activity", headers=admin)).json()
+
+    assert refused.status_code == 403
+    consumer = next(c for c in body["consumers"] if c["identity"] == CLIENT)
+    assert consumer["window_arrived"] == 2, "both requests arrived"
+    assert consumer["window"]["request_count"] == 1, "only one of them billed"
+
+
+async def test_a_reconstructed_row_claims_no_subtraction(app, caller, admin):
+    """When the actions come from the usage rows, arrived and billed are the
+    same number by construction — printing "1 arrived, 1 billed" there would be
+    the page asserting something it did not measure."""
+    from prometheus_gateway.telemetry import activity_tracker
+
+    await db.create_tables(db.get_engine())
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
+        with respx.mock:
+            respx.post("http://127.0.0.1:18081/v1/chat/completions").mock(
+                return_value=Response(200, json=CHAT_RESPONSE)
+            )
+            await c.post("/v1/chat/completions", json=CHAT, headers=caller)
+        async with activity_tracker._lock:
+            activity_tracker._entries.clear()
+        body = (await c.get("/admin/api/activity", headers=admin)).json()
+
+    consumer = next(c for c in body["consumers"] if c["identity"] == CLIENT)
+    assert consumer["window_arrived"] is None
+
+
+async def test_the_subtraction_is_withheld_on_a_young_process(app, caller, admin):
+    """A gateway up for two minutes has counted two minutes of arrivals, while
+    the usage rows still cover the whole fifteen.
+
+    Measured right after a restart: two calls arrived and four billed — a page
+    reporting fewer requests than results, which cannot happen. Clamping the
+    query to the uptime would make the two agree by throwing away the detail
+    that survives a restart, which is the thing PRM-235 built. The detail keeps
+    the window; the arithmetic waits.
+    """
+    import time as _time
+
+    from prometheus_gateway.telemetry import metrics_store
+
+    metrics_store._start_time = _time.monotonic() - 30
+    await db.create_tables(db.get_engine())
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
+        with respx.mock:
+            respx.post("http://127.0.0.1:18081/v1/chat/completions").mock(
+                return_value=Response(200, json=CHAT_RESPONSE)
+            )
+            await c.post("/v1/chat/completions", json=CHAT, headers=caller)
+        body = (await c.get("/admin/api/activity", headers=admin)).json()
+
+    assert body["window_is_comparable"] is False
+    consumer = next(c for c in body["consumers"] if c["identity"] == CLIENT)
+    assert consumer["window_arrived"] is None
+    # The detail is untouched — it never depended on the tracker.
+    assert consumer["window"]["request_count"] == 1

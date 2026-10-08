@@ -190,6 +190,17 @@ class MetricsStore:
         idx = max(0, int(len(sorted_samples) * pct / 100) - 1)
         return sorted_samples[min(idx, len(sorted_samples) - 1)]
 
+    def uptime_seconds(self) -> int:
+        """How long this process has been up — PRM-238.
+
+        Public because the Activity page needs it for a different reason than
+        the metrics endpoint: when the gateway started less than fifteen
+        minutes ago, its in-memory view of who did what covers a shorter span
+        than the table around it, and that is worth saying rather than leaving
+        a reader to notice the numbers are thin.
+        """
+        return int(time.monotonic() - self._start_time)
+
     async def snapshot(self, pool: Any | None = None) -> dict[str, Any]:
         """Return a JSON-serialisable metrics snapshot.
 
@@ -207,7 +218,7 @@ class MetricsStore:
             backend_prompt_tps_copy = {k: list(v) for k, v in self._backend_prompt_tps.items()}
             backend_model_copy = dict(self._backend_model)
 
-        uptime = int(time.monotonic() - self._start_time)
+        uptime = self.uptime_seconds()
         inference: dict[str, Any] = {
             "requests_total": self._requests_total,
             "requests_active": self._requests_active,
@@ -390,6 +401,19 @@ class ActivityTracker:
     _STALE_AFTER_S = 15 * 60
     _WINDOW_BUCKETS = _STALE_AFTER_S // 60
 
+    @classmethod
+    def window_started_at(cls, now: float | None = None) -> float:
+        """The instant the live window opens — PRM-238.
+
+        One definition, because two tables now count the same window from two
+        stores: these minute buckets, and `usage_events` filtered by
+        `recorded_at`. A rolling 900 seconds would include requests the buckets
+        exclude, which is how the page would show a detail that does not add up
+        to the summary above it.
+        """
+        bucket = int((now if now is not None else time.time()) // 60)
+        return (bucket - cls._WINDOW_BUCKETS + 1) * 60.0
+
     def __init__(self) -> None:
         self._lock = asyncio.Lock()
         self._entries: dict[str, dict[str, Any]] = {}
@@ -454,7 +478,7 @@ class ActivityTracker:
                                 "count": sum(
                                     n
                                     for b, n in c["buckets"].items()
-                                    if b > int(now // 60) - self._WINDOW_BUCKETS
+                                    if b * 60 >= self.window_started_at(now)
                                 ),
                                 "last_seen_ago_s": int(now - c["last_seen"]),
                             }

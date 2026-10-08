@@ -92,9 +92,9 @@ function ActionChips({ consumer }: { consumer: ActivityConsumer }) {
     return (
       <span
         className="text-xs text-text-muted"
-        title="The gateway tracks this in memory, so it knows nothing from before its last restart. Today's totals come from the database and are unaffected."
+        title="Nothing this consumer did in the window produced a usage row — a model listing, for instance — and the gateway's own memory of it was lost in a restart."
       >
-        not tracked since the gateway started
+        nothing billable in this window
       </span>
     );
   }
@@ -104,25 +104,37 @@ function ActionChips({ consumer }: { consumer: ActivityConsumer }) {
         <span
           key={a.action}
           className="rounded-full bg-primary/10 px-2 py-0.5 text-[11px] text-primary"
-          title={`${a.count} request${a.count === 1 ? "" : "s"} of this kind in the last 15 minutes — last one ${formatAgo(a.last_seen_ago_s)}`}
+          title={
+            a.source === "usage"
+              ? `${a.count} of these were billed in the last 15 minutes — reconstructed from the usage rows, because the gateway restarted and lost its own count. Calls that bill nothing are missing.`
+              : `${a.count} request${a.count === 1 ? "" : "s"} of this kind in the last 15 minutes — last one ${formatAgo(a.last_seen_ago_s)}`
+          }
         >
           {a.label}
           <span className="ml-1 tabular-nums opacity-70">×{a.count}</span>
+          {a.source === "usage" && <span className="ml-1 opacity-60">*</span>}
         </span>
       ))}
     </span>
   );
 }
 
-function EndUserRows({ users }: { users: EndUserToday[] }) {
+function EndUserRows({
+  users,
+  today,
+}: {
+  users: EndUserToday[];
+  today: boolean;
+}) {
+  const span = today ? "today" : "in this window";
   return (
     <table className="mt-2 w-full text-left text-sm">
       <thead>
         <tr className="text-[11px] uppercase tracking-wide text-text-muted">
           <th className="py-1 pr-4 font-medium">End user</th>
-          <th className="py-1 pr-4 font-medium">Requests</th>
-          <th className="py-1 pr-4 font-medium">Tokens</th>
-          <th className="py-1 pr-4 font-medium">Cost</th>
+          <th className="py-1 pr-4 font-medium">Requests {span}</th>
+          <th className="py-1 pr-4 font-medium">Tokens {span}</th>
+          <th className="py-1 pr-4 font-medium">Cost {span}</th>
           <th className="py-1 font-medium">Models</th>
         </tr>
       </thead>
@@ -175,7 +187,15 @@ function ConsumerRow({
   showLive: boolean;
 }) {
   const [open, setOpen] = useState(false);
-  const expandable = consumer.end_users.length > 0;
+  // PRM-238: each row expands into its own window.
+  //
+  // The detail used to be the day's in both tables, which put `Chat
+  // completions ×23` — the last fifteen minutes — a line above `89 requests`,
+  // the day, with nothing saying the spans differed. Two true numbers that
+  // read as a contradiction are worse than one number. A live row now opens
+  // the live window's breakdown, and it adds up to the pills beside it.
+  const users = showLive ? consumer.window_end_users : consumer.end_users;
+  const expandable = users.length > 0;
 
   return (
     <>
@@ -222,6 +242,14 @@ function ConsumerRow({
                   ? "—"
                   : formatAgo(consumer.last_seen_ago_s)}
               </p>
+              {consumer.last_seen_source === "usage" && (
+                <p
+                  className="mt-0.5 text-[11px] text-text-muted"
+                  title="From the usage rows, which survive a restart — the gateway's own memory of this consumer did not. Figures marked * are reconstructed the same way and cover only calls that bill."
+                >
+                  from the usage rows *
+                </p>
+              )}
             </td>
             <td className="px-4 py-3">
               <ActionChips consumer={consumer} />
@@ -275,11 +303,53 @@ function ConsumerRow({
         <tr className="border-b border-border bg-background/40 last:border-0">
           <td colSpan={showLive ? 6 : 5} className="px-4 py-3">
             <p className="text-xs text-text-muted">
-              Who this consumer served today, from the <code>user</code> /{" "}
-              <code>safety_identifier</code> field or the{" "}
-              <code>x-prometheus-end-user</code> header.
+              Who this consumer served {showLive ? "in this window" : "today"},
+              from the <code>user</code> / <code>safety_identifier</code> field
+              or the <code>x-prometheus-end-user</code> header.
+              {showLive && (
+                <>
+                  {" "}
+                  Counted from the usage rows, so a call that bills nothing
+                  &mdash; listing your models, for instance &mdash; is in the
+                  pills above and not here.
+                </>
+              )}
             </p>
-            <EndUserRows users={consumer.end_users} />
+            {/* PRM-238: the subtraction, done out loud. Two bare numbers a
+                line apart that differ by four read as a bug; the same two with
+                the difference named read as what they are — requests that
+                arrived and have not billed. */}
+            {showLive && consumer.window_arrived !== null && (
+              <p className="mt-1 text-xs text-text-muted">
+                <span className="tabular-nums text-text">
+                  {consumer.window_arrived.toLocaleString()}
+                </span>{" "}
+                inference call
+                {consumer.window_arrived === 1 ? "" : "s"} arrived in this
+                window,{" "}
+                <span className="tabular-nums text-text">
+                  {consumer.window.request_count.toLocaleString()}
+                </span>{" "}
+                produced a usage row
+                {consumer.window_arrived > consumer.window.request_count && (
+                  <>
+                    {" "}
+                    &mdash;{" "}
+                    <span
+                      className="text-text underline decoration-dotted"
+                      title="A stream still open, a caller that disconnected mid-response, a request refused before it reached a backend, or one still running when this page last read the counters. Worth a look if it stays."
+                    >
+                      {(
+                        consumer.window_arrived - consumer.window.request_count
+                      ).toLocaleString()}{" "}
+                      did not
+                    </span>
+                  </>
+                )}
+                .
+              </p>
+            )}
+            <EndUserRows users={users} today={!showLive} />
           </td>
         </tr>
       )}
@@ -303,9 +373,14 @@ export default function Activity() {
   const consumers = data?.consumers ?? [];
   const windowMinutes = data?.tracker_window_minutes ?? 15;
   // "Here now" is a measurement with a definition, so the page states it: a
-  // request inside the tracker's window. Everything else is today's history,
-  // which outlives both the window and the process.
-  const here = consumers.filter((c) => c.last_seen_ago_s !== null);
+  // request inside the window. Two sources say so — the tracker, and a usage
+  // row with a recent enough timestamp — and either is enough. The tracker
+  // alone was the first version and it hid a consumer with 27 requests in the
+  // window because a restart had emptied the only place that knew about it,
+  // which is the mistake PRM-235 fixed one section down.
+  const here = consumers.filter(
+    (c) => c.last_seen_ago_s !== null || c.window.request_count > 0,
+  );
   const today = consumers.filter((c) => c.today.request_count > 0);
   const endUsers = data?.end_users_today ?? [];
 
@@ -352,6 +427,17 @@ export default function Activity() {
             you
           </span>{" "}
           is mostly these pages refreshing themselves.
+          {data && !data.window_is_comparable && (
+            <>
+              {" "}
+              {/* Said once, here, rather than as a caveat on every row. */}
+              <span className="text-text">
+                This gateway started {formatAgo(data.uptime_s)}
+              </span>
+              , so its own record of who did what is younger than this window
+              &mdash; the figures below come from the usage rows, which are not.
+            </>
+          )}
         </p>
         <div className="mt-3 overflow-x-auto rounded-xl border border-border bg-surface">
           {activityQuery.isLoading ? (
@@ -364,7 +450,12 @@ export default function Activity() {
                 <tr className="border-b border-border text-xs uppercase tracking-wide text-text-muted">
                   <th className="px-4 py-3 font-medium">Consumer</th>
                   <th className="px-4 py-3 font-medium">Last call</th>
-                  <th className="px-4 py-3 font-medium">What they are doing</th>
+                  <th className="px-4 py-3 font-medium">
+                    Doing{" "}
+                    <span className="normal-case">
+                      (last {windowMinutes} min)
+                    </span>
+                  </th>
                   <th className="px-4 py-3 font-medium">Requests / min</th>
                   <th className="px-4 py-3 font-medium">Tokens / min</th>
                   <th className="px-4 py-3 font-medium">Closest ceiling</th>
@@ -389,11 +480,12 @@ export default function Activity() {
           Consumers today
         </h2>
         <p className="mt-1 max-w-4xl text-sm text-text-muted">
-          Every credential that ran something today and what it ran. From the
-          usage rows, so a gateway restart does not change this &mdash; and a
-          consumer here with nothing in &ldquo;Here now&rdquo; simply has not
-          called in the last {windowMinutes} minutes. Expand a row for the
-          people behind it.
+          Everything billed <span className="text-text">since midnight</span>,
+          from the usage rows &mdash; a different window from the section above,
+          and a longer one, so these numbers are larger and a gateway restart
+          does not change them. A consumer here with nothing in &ldquo;Here
+          now&rdquo; simply has not called in the last {windowMinutes} minutes.
+          Expand a row for the people behind it.
         </p>
         <div className="mt-3 overflow-x-auto rounded-xl border border-border bg-surface">
           {activityQuery.isLoading ? (
@@ -405,10 +497,16 @@ export default function Activity() {
               <thead>
                 <tr className="border-b border-border text-xs uppercase tracking-wide text-text-muted">
                   <th className="px-4 py-3 font-medium">Consumer</th>
-                  <th className="px-4 py-3 font-medium">Models used</th>
-                  <th className="px-4 py-3 text-right font-medium">Requests</th>
-                  <th className="px-4 py-3 text-right font-medium">Tokens</th>
-                  <th className="px-4 py-3 text-right font-medium">Cost</th>
+                  <th className="px-4 py-3 font-medium">Models used today</th>
+                  <th className="px-4 py-3 text-right font-medium">
+                    Requests today
+                  </th>
+                  <th className="px-4 py-3 text-right font-medium">
+                    Tokens today
+                  </th>
+                  <th className="px-4 py-3 text-right font-medium">
+                    Cost today
+                  </th>
                 </tr>
               </thead>
               <tbody>
