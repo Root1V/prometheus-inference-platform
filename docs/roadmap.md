@@ -8791,3 +8791,31 @@ this is one change rather than two, and it is the next item.
 **Scope**: in — `limits_by_layer` with effective values, the three cards, the corrected form hints
 and page intro. Out — editing the eleven (needs the migration), and a live view of which layer is
 currently refusing, which is the diagnostic item after it.
+
+
+## PRM-230 — Which ceiling is refusing right now
+
+**Why**: PRM-229 made the configuration honest and left the question the page is actually opened
+with unanswered. A request passes three conjoined layers across seven dimensions; a caller sees one
+429 and the reason is whichever of about twenty counters crossed first. No arrangement of settings
+cards answers that — it is a measurement, and the page had none.
+
+**Read the counters, do not re-derive them.** `live_counters()` scans the current minute and day
+buckets; the layer comes from the key shape (`*platform*`, the all-endpoints `*`, or a real consumer
+on a real route) rather than from where a setting is *grouped*, because those disagree —
+`rate_limit_tpm_input` sits in the client group and is checked per endpoint. Each row is paired with
+the ceiling the middleware would use, tier included, through the same resolver the middleware now
+calls.
+
+**What it found on the first real read.** Twenty-three counters standing, and **fifteen of them with
+no ceiling at all**: PRM-224..226 shipped input/output, daily and image meters, and nobody set the
+numbers, so they count faithfully and refuse nothing. The platform layer is in the same state — its
+TPM counter is incremented on every request and `RATE_LIMIT_TPM_PLATFORM` is unset. Those rows say
+`counted, not checked` instead of showing a plausible number, because a measured, unenforced
+dimension is a finding and inventing a ceiling for it would bury the finding.
+
+**Scope**: in — `live_counters`, `counter_layer` / `live_limit_for`, `GET /admin/api/limits/live`,
+the "Right now" section, and moving `_resolve_limits` into `rate_limits.endpoint_limits` so the view
+and the middleware read one fact. Out — editing the eleven (still the migration, still next), and
+enforcing a tier's other five dimensions: `rpd`, `tpd`, `ipm`, `tpm_input` and `tpm_output` are
+columns on `rate_limit_tiers` that nothing reads, which this view is what made visible.

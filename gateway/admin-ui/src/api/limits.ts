@@ -95,3 +95,46 @@ export function useResetRateLimits() {
     },
   });
 }
+
+// ── PRM-230: which ceiling is refusing right now ─────────────────────────────
+
+/** One counter standing in the current bucket, against the ceiling that reads
+ *  it. `limit: null` is not "unlimited" — it is "no check reads this counter",
+ *  which the page prints rather than hides. */
+export interface LiveCounter {
+  dimension: "rpm" | "tpm" | "tpm_in" | "tpm_out" | "rpd" | "tpd" | "ipm";
+  identity: string;
+  endpoint: string;
+  window: "minute" | "day";
+  used: number;
+  layer: "platform" | "client" | "endpoint";
+  limit: number | null;
+  /** `tier` — this client's tier chose it. `set` — a configured number.
+   *  `derived` — PRM-227's sum of the per-endpoint allowances. `none` — nothing
+   *  checks this counter. */
+  limit_source: "tier" | "set" | "derived" | "none";
+  /** Null where there is no ceiling. Not 0, which would sort with the idle
+   *  rows and read as headroom. */
+  percent: number | null;
+}
+
+export interface LiveLimitsResponse {
+  available: boolean;
+  /** Why there is nothing to show, when there isn't. */
+  reason: string | null;
+  /** Closest to refusing first; unmetered counters last. */
+  rows: LiveCounter[];
+  minute_resets_in?: number;
+}
+
+export function useLiveLimits() {
+  return useQuery({
+    queryKey: ["rate-limits", "live"],
+    queryFn: async () =>
+      (await apiClient.get<LiveLimitsResponse>("/limits/live")).data,
+    // The counters are per-minute buckets, so a stale read is a wrong answer
+    // about whether something is being refused *now*. Ten seconds is often
+    // enough to watch a budget fill and rare enough not to be the traffic.
+    refetchInterval: 10_000,
+  });
+}

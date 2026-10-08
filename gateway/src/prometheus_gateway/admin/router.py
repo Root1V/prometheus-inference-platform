@@ -64,6 +64,7 @@ Implements: docs/roadmap.md — RM-48 (Models: discover/download/manage on Huggi
 from __future__ import annotations
 
 import json
+import time as _time
 from typing import Any
 
 import httpx
@@ -71,7 +72,9 @@ from fastapi import APIRouter, Request, Response
 from fastapi.responses import JSONResponse
 
 from .. import audit, db, pricing, rate_limits, traffic_split
+from ..budget import resolve_client_limits
 from ..rate_limit_middleware import INFERENCE_ENDPOINT_SLUGS
+from ..rate_limiter import RateLimiter
 from ..config import Settings
 from ..router import _problem
 from ..telemetry import activity_tracker, get_logger
@@ -1209,6 +1212,97 @@ def create_admin_router(manager_client: ManagerApiClient) -> APIRouter:
             return forbidden
         row = await db.get_rate_limit_config()
         return _limits_payload(request, is_overridden=row is not None)
+
+    @router.get("/admin/api/limits/live")
+    async def get_live_limits(request: Request) -> Any:
+        """Every counter standing this minute, against the ceiling it is
+        measured by — PRM-230.
+
+        The question a limits page is actually opened with is "something is
+        being refused, which ceiling did it hit". Three conjoined layers and
+        seven dimensions make that un-deducible from a settings screen: a
+        caller sees one 429, and the reason is whichever of twenty-one
+        counters crossed first. So this reports measurements, not
+        configuration, and the configuration cards above it keep their job.
+
+        Nothing here is a ceiling *forecast*. A row at 96% is a row that was
+        at 96% when Redis was read, in a bucket that resets within the minute.
+        """
+        if (forbidden := _require_scope(request, "admin:read")) is not None:
+            return forbidden
+        redis_client = getattr(request.app.state, "shared_redis", None)
+        if redis_client is None:
+            # Not an error, and worth saying rather than rendering an empty
+            # table that reads as quiet traffic. Only reachable in fail-open
+            # mode: under `rate_limit_strict` the middleware 503s every path
+            # including this one, so there is no page to put a message on.
+            return {
+                "available": False,
+                "reason": "No rate-limit store configured — nothing is being counted or refused",
+                "rows": [],
+            }
+
+        settings: Settings = request.app.state.settings
+        limiter = RateLimiter(redis_client)
+        try:
+            counters = await limiter.live_counters()
+        except Exception as exc:
+            logger.warning("admin.live_limits_read_error", error=str(exc))
+            return {
+                "available": False,
+                "reason": f"Could not read the rate-limit store: {exc}",
+                "rows": [],
+            }
+
+        # One tier read per distinct consumer, and only for the rows a tier can
+        # change — the client layer's own two dimensions. Cached in `budget`,
+        # so a second row for the same client costs nothing.
+        endpoint_count = len(INFERENCE_ENDPOINT_SLUGS)
+        tiers: dict[str, Any] = {}
+        for counter in counters:
+            identity = counter["identity"]
+            layer = rate_limits.counter_layer(identity, counter["endpoint"])
+            if layer == "client" and identity not in tiers:
+                try:
+                    tiers[identity] = await resolve_client_limits(identity)
+                except Exception:  # pragma: no cover — tier read is advisory
+                    tiers[identity] = None
+
+        rows = []
+        for counter in counters:
+            layer = rate_limits.counter_layer(counter["identity"], counter["endpoint"])
+            limit, source = rate_limits.live_limit_for(
+                settings,
+                layer=layer,
+                dimension=counter["dimension"],
+                endpoint=counter["endpoint"],
+                endpoint_count=endpoint_count,
+                tier=tiers.get(counter["identity"]),
+            )
+            rows.append(
+                {
+                    **counter,
+                    "layer": layer,
+                    "limit": limit,
+                    "limit_source": source,
+                    # Server-side so the sort below and the page agree. A
+                    # counter with no ceiling has no percentage — not 0%,
+                    # which would sort it with the idle ones and read as
+                    # "plenty of room" rather than "nothing is watching".
+                    "percent": round(counter["used"] / limit * 100, 1)
+                    if limit not in (None, 0)
+                    else None,
+                }
+            )
+        # Closest to refusing first; unmetered counters last, where they read
+        # as a finding rather than as headroom.
+        rows.sort(key=lambda r: (r["percent"] is None, -(r["percent"] or 0)))
+        return {
+            "available": True,
+            "reason": None,
+            "rows": rows,
+            "minute_resets_in": max(0, (int(_time.time()) // 60 + 1) * 60 - int(_time.time())),
+        }
 
     @router.put("/admin/api/limits")
     async def put_rate_limits(body: dict[str, Any], request: Request) -> Any:

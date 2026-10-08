@@ -17,7 +17,7 @@ from .config import Settings
 from .rate_limiter import RateLimiter
 from .budget import resolve_client_limits
 from .rate_limiter import ALL_ENDPOINTS, PLATFORM_IDENTITY
-from .rate_limits import ENDPOINT_LIMIT_FIELDS
+from .rate_limits import endpoint_limits
 from .telemetry import get_logger
 
 logger = get_logger(__name__)
@@ -362,22 +362,14 @@ class RateLimitMiddleware:
         """Return (rpm_limit, tpm_limit) for the given endpoint, applying per-endpoint overrides.
 
         Implements: memory/specs/007-rate-limiting-and-throughput.md — AC-13
+
+        PRM-182 moved the slug-to-field map into `rate_limits` because the
+        dashboard's editable-field list is built from the same fact. PRM-230
+        moved the resolution itself for the same reason: the live view has to
+        report the ceiling this method acts on, and inferring it a second time
+        is how the two would drift.
         """
-        rpm = self.settings.rate_limit_rpm
-        tpm = self.settings.rate_limit_tpm
-
-        # PRM-182: the slug-to-field map lives in `rate_limits` now, because the
-        # dashboard's editable-field list is built from the same fact and the two
-        # were separate chains that had to be remembered together.
-        fields = ENDPOINT_LIMIT_FIELDS.get(endpoint_slug)
-        if fields is not None:
-            rpm_field, tpm_field = fields
-            if (override := getattr(self.settings, rpm_field, None)) is not None:
-                rpm = override
-            if (override := getattr(self.settings, tpm_field, None)) is not None:
-                tpm = override
-
-        return rpm, tpm
+        return endpoint_limits(self.settings, endpoint_slug)
 
     async def _check_limits(
         self,

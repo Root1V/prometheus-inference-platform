@@ -330,6 +330,60 @@ class RateLimiter:
             reset_at=self._reset_at(),
         )
 
+    async def live_counters(self) -> list[dict[str, Any]]:
+        """Every counter standing in this minute and this day — PRM-230.
+
+        The page this feeds answers one question: *which ceiling is refusing
+        me right now*. With three conjoined layers and seven dimensions that
+        is no longer deducible from a configuration screen — a caller sees one
+        429 and the reason is in whichever of twenty-one counters crossed.
+
+        Scanned rather than assembled from a list of identities, because the
+        set of identities is not knowable here: `user_id` and `client_id` are
+        counted separately and principals live in another service. SCAN with a
+        bounded COUNT is acceptable for an admin read; it is not on any
+        inference path.
+        """
+        minute, day = self._bucket(), self._day_bucket()
+        patterns = {
+            "rpm": (f"prometheus:rl:rpm:*:*:{minute}", "minute"),
+            "tpm": (f"prometheus:rl:tpm:*:*:{minute}", "minute"),
+            "tpm_in": (f"prometheus:rl:tpm_in:*:*:{minute}", "minute"),
+            "tpm_out": (f"prometheus:rl:tpm_out:*:*:{minute}", "minute"),
+            "ipm": (f"prometheus:rl:ipm:*:*:{minute}", "minute"),
+            "rpd": (f"prometheus:rl:rpd:*:*:{day}", "day"),
+            "tpd": (f"prometheus:rl:tpd:*:*:{day}", "day"),
+        }
+        found: list[tuple[str, str, str, str]] = []
+        for dimension, (pattern, window) in patterns.items():
+            async for raw_key in self._redis.scan_iter(match=pattern, count=500):
+                key = raw_key.decode() if isinstance(raw_key, bytes) else str(raw_key)
+                parts = key.split(":")
+                # prometheus:rl:<dim>:<identity>:<endpoint>:<bucket> — identity
+                # is a UUID or the reserved platform name, neither of which
+                # contains a colon, so a plain split holds.
+                if len(parts) != 6:
+                    continue
+                found.append((dimension, parts[3], parts[4], window))
+        if not found:
+            return []
+
+        keys = [
+            f"prometheus:rl:{d}:{i}:{e}:{minute if w == 'minute' else day}" for d, i, e, w in found
+        ]
+        values = await self._redis.mget(keys)
+        return [
+            {
+                "dimension": dimension,
+                "identity": identity,
+                "endpoint": endpoint,
+                "window": window,
+                "used": int(value),
+            }
+            for (dimension, identity, endpoint, window), value in zip(found, values, strict=True)
+            if value is not None and int(value) > 0
+        ]
+
     async def get_rpm_count(self, identity: str, endpoint: str) -> int:
         """Return current RPM count for the given identity+endpoint (for /v1/backends).
 
