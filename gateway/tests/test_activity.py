@@ -443,3 +443,67 @@ async def test_an_end_user_row_names_the_models_it_ran(app, caller, admin):
         ("small-model", "chat"),
         ("emb", "embedding"),
     }
+
+
+# ── PRM-237: the number under the label ──────────────────────────────────────
+
+
+async def test_the_action_count_is_the_window_not_a_running_total():
+    """The pill said 284 under a heading that said "in the last 15 minutes".
+
+    It was a cumulative count since the tracker first saw that credential, so
+    an operator with the dashboard open read their own polling as a
+    fifteen-minute figure that only ever grew. Counted in minute buckets now,
+    and the snapshot sums the ones inside the window.
+    """
+    import time as _time
+
+    from prometheus_gateway.telemetry import ActivityTracker
+
+    tracker = ActivityTracker()
+    now = _time.time()
+    bucket = int(now // 60)
+    await tracker.touch("c", "c", "dashboard", "dashboard")
+    # Two buckets that aged out, planted directly: one inside the window and
+    # one beyond it, so the sum can be wrong in both directions.
+    entry = tracker._entries["c"]["actions"]["dashboard"]
+    entry["buckets"][bucket - 3] = 50
+    entry["buckets"][bucket - 100] = 900
+
+    actions = {a["action"]: a["count"] for a in (await tracker.snapshot())[0]["actions"]}
+    assert actions["dashboard"] == 51, "the window must exclude what fell out of it"
+
+
+async def test_an_action_that_aged_out_entirely_is_not_listed():
+    """Zero is not a thing a credential did. A row reading "Chat completions
+    ×0" would be the page reporting an absence as an activity."""
+    import time as _time
+
+    from prometheus_gateway.telemetry import ActivityTracker
+
+    tracker = ActivityTracker()
+    await tracker.touch("c", "c", "api", "chat")
+    await tracker.touch("c", "c", "dashboard", "dashboard")
+    old_bucket = int(_time.time() // 60) - 99
+    tracker._entries["c"]["actions"]["chat"]["buckets"] = {old_bucket: 7}
+
+    actions = [a["action"] for a in (await tracker.snapshot())[0]["actions"]]
+    assert actions == ["dashboard"]
+
+
+async def test_the_page_says_which_row_is_you(app, caller, admin):
+    """An operator who has only opened this page finds themselves at the top of
+    it, because the dashboard polls. The traffic is real and belongs here; what
+    was missing was the page saying whose it is."""
+    await db.create_tables(db.get_engine())
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
+        with respx.mock:
+            respx.post("http://127.0.0.1:18081/v1/chat/completions").mock(
+                return_value=Response(200, json=CHAT_RESPONSE)
+            )
+            await c.post("/v1/chat/completions", json=CHAT, headers=caller)
+        body = (await c.get("/admin/api/activity", headers=admin)).json()
+
+    mine = [c["identity"] for c in body["consumers"] if c["is_you"]]
+    assert mine == ["admin"]
+    assert next(c for c in body["consumers"] if c["identity"] == CLIENT)["is_you"] is False

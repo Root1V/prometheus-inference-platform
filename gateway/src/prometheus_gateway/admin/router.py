@@ -1597,6 +1597,14 @@ def create_admin_router(manager_client: ManagerApiClient) -> APIRouter:
                 tracked = seen.get(identity)
                 consumers[identity] = {
                     "identity": identity,
+                    # PRM-237: whether this row is the credential reading the
+                    # page. The dashboard polls several endpoints every few
+                    # seconds, so an operator who has only opened Activity
+                    # finds themselves at the top of it with hundreds of
+                    # requests — measured: 248 in 15 minutes from one tab. The
+                    # traffic is real and belongs here; what was missing was
+                    # the page saying whose it is.
+                    "is_you": identity == getattr(_claims(request), "client_id", None),
                     "last_seen_ago_s": tracked["last_seen_ago_s"] if tracked else None,
                     "connection_type": tracked["connection_type"] if tracked else None,
                     # PRM-236: what this credential has been doing, from the

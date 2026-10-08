@@ -41,6 +41,8 @@ export interface EndUserToday {
 export interface ConsumerAction {
   action: string;
   label: string;
+  /** Requests of this kind **inside the window**, not since the gateway
+   *  started — PRM-237 made the number and its heading agree. */
   count: number;
   last_seen_ago_s: number;
 }
@@ -57,6 +59,9 @@ export interface EndUserAcrossConsumers {
 
 export interface ActivityConsumer {
   identity: string;
+  /** PRM-237: this row is the credential reading the page. The dashboard
+   *  polls, so an operator who only opened Activity is on it. */
+  is_you: boolean;
   /** Null when the in-process tracker has no entry — including after a gateway
    *  restart, which empties it while Redis and the database keep theirs. */
   last_seen_ago_s: number | null;

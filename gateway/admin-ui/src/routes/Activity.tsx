@@ -104,7 +104,7 @@ function ActionChips({ consumer }: { consumer: ActivityConsumer }) {
         <span
           key={a.action}
           className="rounded-full bg-primary/10 px-2 py-0.5 text-[11px] text-primary"
-          title={`${a.count} request${a.count === 1 ? "" : "s"}, last ${formatAgo(a.last_seen_ago_s)}`}
+          title={`${a.count} request${a.count === 1 ? "" : "s"} of this kind in the last 15 minutes — last one ${formatAgo(a.last_seen_ago_s)}`}
         >
           {a.label}
           <span className="ml-1 tabular-nums opacity-70">×{a.count}</span>
@@ -197,7 +197,17 @@ function ConsumerRow({
               )}
             </span>
             <span className="min-w-0">
-              <span className="block truncate text-text">{name}</span>
+              <span className="block truncate text-text">
+                {name}
+                {consumer.is_you && (
+                  <span
+                    className="ml-2 rounded bg-background px-1.5 py-0.5 text-[10px] font-medium text-text-muted"
+                    title="The credential you are signed in with. This dashboard polls while it is open, so most of its requests are this page refreshing itself."
+                  >
+                    you
+                  </span>
+                )}
+              </span>
               <span className="mt-0.5 block truncate font-mono text-[11px] text-text-muted">
                 {consumer.identity}
               </span>
@@ -329,8 +339,19 @@ export default function Activity() {
         <p className="mt-1 max-w-4xl text-sm text-text-muted">
           Credentials that have made a request in the last {windowMinutes}{" "}
           minutes, what kind of request it was, and what they are spending this
-          minute. There is no connection to list &mdash; tokens are stateless,
-          so &ldquo;here&rdquo; means &ldquo;called recently&rdquo;.
+          minute. Each count is for that window, not a running total. There is
+          no connection to list &mdash; tokens are stateless, so
+          &ldquo;here&rdquo; means &ldquo;called recently&rdquo;.
+          {/* PRM-237: said plainly, because the first reading of this table is
+              "why am I the busiest consumer on my own platform". */}{" "}
+          <span className="text-text">
+            This dashboard polls while it is open
+          </span>
+          , about 18 requests a minute per tab, so the row marked{" "}
+          <span className="rounded bg-background px-1 py-0.5 text-[10px] font-medium">
+            you
+          </span>{" "}
+          is mostly these pages refreshing themselves.
         </p>
         <div className="mt-3 overflow-x-auto rounded-xl border border-border bg-surface">
           {activityQuery.isLoading ? (
