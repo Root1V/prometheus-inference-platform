@@ -448,3 +448,38 @@ async def test_the_login_throttle_is_reported(live_app, live_headers):
     throttle = body["login_throttle"]
     assert throttle["rpm"] == live_app.state.settings.ui_login_rate_limit_rpm
     assert throttle["active"] is live_app.state.settings.ui_enabled
+
+
+# ── PRM-234: the layers are numbered, once ───────────────────────────────────
+
+
+def test_the_layer_numbers_follow_the_order_a_request_meets_them():
+    """Broadest first, which is both the enforcement order and the order the
+    middleware's comments have called them since PRM-227 — "Layer 1: the
+    platform", "Layer 3 alone bounds a route".
+
+    Derived from `LIMIT_LAYERS` rather than written out again, so this test is
+    really about the tuple's order: reordering it renumbers the page, and the
+    page is where someone reads which ceiling is the broad one.
+    """
+    from prometheus_gateway.rate_limits import LAYER_NUMBERS
+
+    assert LAYER_NUMBERS == {"platform": 1, "client": 2, "endpoint": 3}
+
+
+async def test_both_payloads_number_the_layers_the_same_way(live_app, live_headers):
+    """The configuration cards and the live counters are two views of three
+    layers. Numbering them separately would let one page say Layer 2 while the
+    other said Layer 3 about the same ceiling."""
+    from prometheus_gateway import db
+    from prometheus_gateway.rate_limits import LAYER_NUMBERS
+
+    await db.create_tables(db.get_engine())
+
+    async with AsyncClient(transport=ASGITransport(app=live_app), base_url="http://test") as c:
+        limits = (await c.get("/admin/api/limits", headers=live_headers)).json()
+        live = (await c.get("/admin/api/limits/live", headers=live_headers)).json()
+
+    assert {layer["layer"]: layer["n"] for layer in limits["layers"]} == LAYER_NUMBERS
+    for row in live["rows"]:
+        assert row["layer_n"] == LAYER_NUMBERS[row["layer"]]

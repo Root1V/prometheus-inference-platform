@@ -8922,3 +8922,22 @@ limits payload and its panel, `retry: false` on the live query. Out — the auth
 per-IP limit on token issuance (another service's configuration, and the gateway cannot read it),
 and that the admin login reaches it through the gateway's address rather than the operator's, so
 all operators share one bucket.
+
+
+## PRM-234 — Name the layers by number
+
+**Why**: the page opens by saying a request passes three layers, and then labels the cards
+`PLATFORM`, `CLIENT`, `ENDPOINT`. Which of the three is in front of you — the broadest or the
+narrowest — was the one thing those names did not carry, and it is the content of the distinction:
+PRM-227's whole argument is about which layer catches what the others cannot see.
+
+**Numbered by the server.** `LAYER_NUMBERS` is derived from `LIMIT_LAYERS`' order, which is the
+order a request meets them and the order the middleware's comments have used since PRM-227 ("Layer
+1: the platform", "Layer 3 alone bounds a route"). The dashboard renders the number rather than
+working it out: the configuration cards and the live counters are two views of the same three
+layers, and two places counting independently is how one ends up calling a ceiling Layer 2 while
+the other calls it Layer 3.
+
+**Scope**: in — `LAYER_NUMBERS`, `n` on each layer and `layer_n` on each live counter, the chips on
+both views, and a test that the order is platform/client/endpoint so reordering the tuple cannot
+silently renumber the page.
