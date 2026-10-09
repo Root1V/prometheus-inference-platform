@@ -62,3 +62,50 @@ def test_the_catalogue_is_not_empty_and_carries_keywords():
     assert all(len(k.split()) >= 3 for k in entries), (
         "an entry with one or two keywords is only findable by its own name"
     )
+
+
+def test_every_row_prefix_the_search_emits_is_marked_on_a_row():
+    """PRM-248: the half the first version missed.
+
+    Section headings were anchored and rows were not, so searching a client
+    landed on Users with fifteen identical rows and nothing marked — the
+    search answering "it is on this page somewhere", which is the part that
+    costs the time. The keys here are built per row (`client:<id>`), so what
+    can be checked is that each prefix the dashboard emits is a prefix some
+    component writes.
+    """
+    overview = (_UI / "routes/Overview.tsx").read_text()
+    emitted = set(re.findall(r'focusLink\("/[a-z]+", `([a-z]+):\$\{', overview))
+    assert emitted, "the search stopped linking to rows"
+
+    marked = set()
+    for path in _UI.rglob("*.tsx"):
+        source = path.read_text()
+        # Either written straight onto the element, or handed to a row
+        # component as `focusKey` — the prop is how a table gets it onto
+        # the `<tr>` it does not render itself.
+        marked.update(re.findall(r"data-focus=\{`([a-z]+):\$\{", source))
+        marked.update(re.findall(r"focusKey=\{`([a-z]+):\$\{", source))
+
+    missing = sorted(emitted - marked)
+    assert not missing, (
+        "the search points at row keys no component writes, so the result "
+        f"lands on the page and marks nothing: {missing}"
+    )
+
+
+def test_every_page_with_focus_targets_listens_for_the_parameter():
+    """A `data-focus` on a page that never calls `useFocusFlash` is a mark
+    nothing ever reads."""
+    offenders = []
+    for path in sorted((_UI / "routes").glob("*.tsx")):
+        source = path.read_text()
+        if "data-focus" in source and "useFocusFlash" not in source:
+            offenders.append(path.name)
+    # Row components live under `components/`; their page is what must listen.
+    pages_with_rows = {"Users.tsx", "Dashboard.tsx", "Models.tsx"}
+    for name in sorted(pages_with_rows):
+        source = (_UI / "routes" / name).read_text()
+        if "useFocusFlash" not in source:
+            offenders.append(name)
+    assert not offenders, f"these render focus targets and never look for one: {offenders}"

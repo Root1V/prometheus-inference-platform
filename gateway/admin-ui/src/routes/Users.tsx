@@ -5,6 +5,7 @@ import { ClientBillingSettingsModal } from "../components/ClientBillingSettingsM
 import { CreateUserModal } from "../components/CreateUserModal";
 import { CredentialRevealDialog } from "../components/CredentialRevealDialog";
 import { Sidebar } from "../components/Sidebar";
+import { useFocusFlash } from "../lib/focus";
 import { UserTable } from "../components/UserTable";
 import type { CreatePrincipalResponse, Principal } from "../types/user";
 
@@ -18,6 +19,7 @@ type ModalState =
 type RevealState = { clientId: string; secret: string; label: string } | null;
 
 export default function Users() {
+  useFocusFlash();
   // PRM-240: the one page where a stale list is a real problem — you create
   // a client here and want to see it. Everywhere else the list is only a
   // client_id-to-name map and does not need re-fetching every five seconds.

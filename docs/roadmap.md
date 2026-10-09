@@ -9347,3 +9347,25 @@ run.
 **Scope**: in — the chart, the windows, the bar panels, the three-column layout, the header,
 search over features, the focus-flash mechanism and its anchors on Limits, Billing and Activity.
 Out — quick-action tiles, which would need a decision about which four actions earn the space.
+
+## PRM-248 — The search highlights the row, not just the page
+
+**Why**: PRM-247's search reached the right page and stopped there. The only `data-focus` anchors
+were section headings, so searching for a client, a model or an instance landed on a table of
+twenty rows with nothing marked — the scan the search exists to replace. The reader said it
+plainly: nothing showed what had been found.
+
+Two failures only appeared with the page in front of me. The flash gave up after two fixed
+retries (60ms, then 900ms), which covers a page that answers from cache and misses Models
+entirely — it takes over three seconds to list a node's catalogue, by which time the window had
+closed. And Models shows one node at a time, so a model on a node the page was not showing never
+rendered at all; the link now carries `?node=`. The retry became a poll to an eight-second
+deadline, stopping the moment the element appears.
+
+The flash also needed a background tint, not only a ring: on a `<tr>` a box-shadow is clipped or
+dropped depending on the border model, so the highlight was invisible on exactly the rows this
+item is about.
+
+**Scope**: in — row-level `data-focus` on users, instances and downloaded models; `?node=` on
+model links; the deadline poll; the background tint; `useFocusFlash` on Users, Dashboard and
+Models. Out — highlighting a row inside a collapsed drawer, which would have to expand it first.

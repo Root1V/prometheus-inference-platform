@@ -25,27 +25,38 @@ export function useFocusFlash(): void {
   useEffect(() => {
     const key = new URLSearchParams(search).get(FOCUS_PARAM);
     if (!key) return;
-    // A frame of delay: the element is usually rendered from data that has
-    // not arrived when the route does, so querying immediately finds
-    // nothing. One retry covers the fetch without a loop that could chase a
-    // key that is never going to exist.
+    // Polled to a deadline, not tried twice.
+    //
+    // The element is rendered from data the route does not wait for, so
+    // querying on arrival finds nothing. Two fixed retries (60ms, 900ms)
+    // covered a page that answers quickly and missed Models entirely, which
+    // takes over three seconds to list a node's catalogue — by the time the
+    // row existed the window had closed and the highlight never ran. Every
+    // 250ms for eight seconds, stopping the moment it appears, so a slow
+    // page still lands and a key that will never match costs eight seconds
+    // of a timer and nothing else.
     let cancelled = false;
+    const deadline = Date.now() + 8000;
+    let timer = 0;
+
     const find = () => {
       if (cancelled) return;
       const element = document.querySelector<HTMLElement>(
         `[data-focus="${CSS.escape(key)}"]`,
       );
-      if (!element) return;
-      element.scrollIntoView({ behavior: "smooth", block: "center" });
-      element.classList.add("focus-flash");
-      window.setTimeout(() => element.classList.remove("focus-flash"), 3200);
+      if (element) {
+        element.scrollIntoView({ behavior: "smooth", block: "center" });
+        element.classList.add("focus-flash");
+        window.setTimeout(() => element.classList.remove("focus-flash"), 3200);
+        return;
+      }
+      if (Date.now() < deadline) timer = window.setTimeout(find, 250);
     };
-    const first = window.setTimeout(find, 60);
-    const second = window.setTimeout(find, 900);
+    find();
+
     return () => {
       cancelled = true;
-      window.clearTimeout(first);
-      window.clearTimeout(second);
+      window.clearTimeout(timer);
     };
   }, [search]);
 }

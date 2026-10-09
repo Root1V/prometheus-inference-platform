@@ -28,7 +28,9 @@ import {
   type OverviewResponse,
 } from "../api/overview";
 import { useUsers } from "../api/users";
+import { useModelCatalog } from "../api/models";
 import { matchFeatures } from "../lib/features";
+import { focusLink } from "../lib/focus";
 import {
   AttentionTable,
   type AttentionEntry,
@@ -432,6 +434,10 @@ export default function Overview() {
   const instancesQuery = useInstances();
   const nodesQuery = useNodeRegistry();
   const usersQuery = useUsers();
+  // Names only, so no polling — PRM-240's rule. The catalogue is here for
+  // the search: a model is the third thing an operator looks for and it was
+  // the one the search could not find.
+  const catalogQuery = useModelCatalog();
 
   const data = overviewQuery.data;
   const names = new Map(
@@ -464,6 +470,10 @@ export default function Overview() {
     needle === ""
       ? []
       : [
+          // PRM-248: the link carries the row's own key, so the destination
+          // rings it. Landing on Users with fifteen rows and no mark is the
+          // search answering "it is on this page somewhere", which is the
+          // part that costs the time.
           ...(usersQuery.data ?? [])
             .filter((u) =>
               `${u.client_name} ${u.label ?? ""} ${u.client_id}`
@@ -473,11 +483,24 @@ export default function Overview() {
             .map((u) => ({
               kind: "client",
               label: u.label || u.client_name || u.client_id,
-              to: "/users",
+              to: focusLink("/users", `client:${u.client_id}`),
+            })),
+          ...(catalogQuery.data?.models ?? [])
+            .filter((m) => m.id.toLowerCase().includes(needle))
+            .map((m) => ({
+              kind: "model",
+              label: m.id,
+              // The node too: Models renders one node at a time, so a link
+              // without it lands on a page that does not contain the row.
+              to: `${focusLink("/models", `model:${m.id}`)}&node=${encodeURIComponent(m.node)}`,
             })),
           ...instances
             .filter((i) => i.id.toLowerCase().includes(needle))
-            .map((i) => ({ kind: "instance", label: i.id, to: "/instances" })),
+            .map((i) => ({
+              kind: "instance",
+              label: i.id,
+              to: focusLink("/instances", `instance:${i.id}`),
+            })),
           ...matchFeatures(needle).map((f) => ({
             kind: f.where.toLowerCase(),
             label: f.label,
