@@ -1,6 +1,6 @@
 # Prometheus Gateway — SDK Integration Guide
 
-**Revision**: 2026-10-06b · `PRM-196/197`
+**Revision**: 2026-10-08 · `PRM-196/197/235/242`
 <!-- Consumers vendor this file and diff it. The date and commit above are what to quote
      when asking whether a copy is current; they change whenever this document does. -->
 
@@ -94,6 +94,21 @@ grant_type=client_credentials&client_id=<id>&client_secret=<secret>&scope=infere
 
 `scope` in the response is the actual effective (sorted) scope granted — always read this back
 rather than assuming what you asked for was granted verbatim.
+
+**Omit `scope` entirely and the response tells you everything your client has.** This is the way
+to enumerate your own grant, and it was missing from this guide until aeon found it by trying
+(2026-10-08): `GET /v1/models` is filtered by the scope of the token you hold since PRM-167, so it
+can never reveal a `model:<id>` grant whose id you have not already guessed. The token can. Ask
+for none and read the `scope` back:
+
+```
+inference:read inference:stream
+model:fara-7b  model:gpt-oss-20b-mxfp4  model:qwen3-0.6b
+model:qwen3-embedding  model:qwen3-vl-8b  model:qwen3vl-30b-a3b
+```
+
+Then `GET /v1/models/mine` gives the modality of each. This does not tell you what the deployment
+*hosts* — only an operator can say that — but it does tell you, exactly, what you may call.
 
 **Error response** (`400`/`401`), RFC 6749 §5.2 shape — note this is a *different* envelope
 from the gateway's own error format described in §5:
@@ -904,9 +919,17 @@ unchanged. Max 255 characters.
 - A replay is **not billed and does not use the model**; it carries `Idempotent-Replay: true`
   and `X-Idempotent-Replay-Of`, the `x-request-id` of the generation that *was* billed. Use that
   id with §3.8 — a replay's own id has no usage row, correctly.
-- The key is scoped to your client and **fingerprinted against the path and payload**, so
-  reusing one with different parameters is refused rather than answered with the earlier
-  result. Reusing it for a different endpoint is the same refusal.
+- The key is scoped to your client and **fingerprinted against the path and the payload you
+  sent**, so reusing one with different parameters is refused rather than answered with the
+  earlier result. Reusing it for a different endpoint is the same refusal.
+- **"The payload you sent" is exact, and it was not always true (PRM-242).** The fingerprint used
+  to be taken over the request *after* this gateway parsed it, defaults and all — so adding one
+  optional field to a request schema moved the fingerprint of every request on that route, and
+  every key stored before that deploy answered `409` for the rest of its 24-hour window. Veritium
+  measured it on the morning it happened. A field you do not send is now not in the fingerprint,
+  so an additive change here can no longer invalidate a key of yours. A field you *do* send is,
+  including one whose value equals the default — you said something about it, so it is part of
+  the request you are identifying.
 - Streaming works: the SSE body is stored and replayed.
 - The four ways a key can be refused are four distinct `type` suffixes, in §5.2. Only one of
   them resolves by waiting, so branch on the suffix — never on the message.
@@ -1198,13 +1221,40 @@ vocabulary more than meaning, and on the harder pair it does not hedge: it inver
 
 The gateway's own backend-forwarding timeout is **600 seconds** for non-streaming requests
 (chat/embeddings/images alike) — deliberately long because some image-generation backends
-legitimately take 2–8 minutes per request. **A client-side timeout shorter than this, combined
-with a client-side retry, is a known failure mode**: the backend keeps computing after the
-gateway/SDK gives up waiting, and a naive retry just queues a second expensive generation on
-top of the first one that's still running. Recommendation: set the SDK's own non-streaming
+legitimately take 2–8 minutes per request. Recommendation: set the SDK's own non-streaming
 read timeout to **at least 600s** (ideally configurable per-call, since a chat completion
 rarely needs that long but an image generation might), and think carefully before
 auto-retrying on a client-side timeout at all.
+
+### 4.1 What happens when you give up waiting — and whether it is still billed
+
+This paragraph used to say, flatly, that the backend keeps computing after you walk away and
+that a retry queues a second generation on top of the first. **That stopped being true for chat
+completions at `PRM-196` and this guide did not say so**, which Axonium raised because five of
+their SDKs carry a rule resting on it. Per route, measured:
+
+| route | when you close the connection | retry races a live generation? |
+|---|---|---|
+| `POST /v1/chat/completions`, **streamed** | the engine stops, ~0 s. Always did — a streamed response is a generator, so hanging up raises `GeneratorExit` and the upstream socket closes | No |
+| `POST /v1/chat/completions`, **non-streamed** | the engine stops (`PRM-196`). Before it, a caller cut at 4 s left the slot busy a further **~45 s** producing the full 3,000 tokens for nobody | No |
+| `/v1/embeddings`, `/v1/rerank`, `/v1/models/{id}/predict` | runs to completion — deliberately out of scope, they finish in milliseconds | In practice no; they are over before you time out |
+| `POST /v1/images/generations` | **runs to completion.** Measured: sd-server does not abort on connection close | **Yes** — the original warning holds here exactly |
+
+**What counts as "abandoned" is the connection closing**, which is what aborting a `fetch` or
+hitting a client read timeout does. It does not take a dying process. The gateway races a
+listener awaiting `receive()` against the handler, so the disconnect is observed while the
+request is still in flight; the chat route then answers `499` (nginx's convention) for the
+record, which you will never see, because you are gone.
+
+**Cancelling is not the same as not billing, and the choice is deliberate (RM-87).** You are
+charged for what was generated before the cut, not for nothing and not for the full response.
+A caller who walks away mid-generation is the case most worth charging for — the alternative is
+a platform that pays for work whenever a client hangs up.
+
+So the honest form of the old rule: **a retry after a client timeout no longer races a
+still-running generation on chat completions — but the first attempt was already billed for
+what it produced.** A retry costs you that partial generation plus a fresh one. On
+`/v1/images/generations` the stronger, original warning is still exactly right.
 
 Streaming requests use a **120-second** read timeout on the gateway's own connection to the
 backend (applied uniformly to connect/read/write phases) — set the SDK's SSE read timeout
@@ -1312,7 +1362,7 @@ model" as something only the SDK can catch.
 | 400 | `unknown-instance` | `X-Prometheus-Instance` (§3.7) names something that does not serve this model. A pin never falls back to another replica. | No (fix or drop the header) |
 | 400 | `inconsistent-model-group` | The replicas serving this model disagree about their modality, so the gateway refuses the whole group rather than quietly dropping the odd one — answering a chat request from an embedding backend produces confident nonsense, not an error. The detail names each instance and what it claims. | No — needs operator action |
 | 400 | `invalid-idempotency-key` | `Idempotency-Key` is malformed or over 255 characters. A `400`, not a `409`, on purpose: it never conflicted with anything, and calling it a conflict would tell you that you had repeated a request. | No (fix the key) |
-| 409 | `idempotency-key-reuse` | The key was already used for a *different* request — the fingerprint spans path and payload. Retrying never helps; generate a new key, or resend the original request unchanged. | No |
+| 409 | `idempotency-key-reuse` | The key was already used for a *different* request — the fingerprint spans the path and **the payload you sent** (§6). **Resending the original request unchanged is a replay, not this error**; if you get this, the body genuinely differs from the one the key was claimed with. **Do not reach for a new key without checking that.** A new key on an unchanged body buys a *second billable generation* for work the first request may already have finished — the exact harm the key exists to prevent. If the body changed, a new key is right and the error did its job. | No |
 | 409 | `idempotency-in-progress` | The first call with this key is still running. The one idempotency refusal that resolves by waiting, and the only one carrying `Retry-After`. | **Yes**, after `Retry-After` |
 | 409 | `idempotency-response-not-retained` | The original succeeded, but its response was too large to store (over 1 MiB — in practice only images), so there is nothing to replay. Retrying **generates and bills again**; that is why this is refused rather than silently regenerated. | No — a deliberate decision, not a retry |
 | 4xx | `predict-backend-rejected` | Only on `POST /v1/models/{model}/predict` (§3.10) — the engine refused the request. **The engine's own error body is preserved verbatim under the `backend_error` extension member**, and the engine's status code is kept (a 422 stays a 422). Named for what the gateway can see: a 429 or 403 from the engine is also a 4xx and is not about the payload, so the type does not claim a cause — `backend_error` and the status carry that. | No, unless the status says so |

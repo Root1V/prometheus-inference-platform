@@ -9207,3 +9207,44 @@ own conclusion.
 **Scope**: in — the fingerprint, the helper signature, the transitional acceptance, the four call
 sites, and the test whose comment had documented the defect as the intent. Out — a fingerprint
 schema version, which the above argues against.
+
+
+## PRM-243 — The guide says what the platform does
+
+**Why**: three gaps in `docs/sdk-integration-guide.md`, each raised by a consumer who had already
+paid for it.
+
+**The `409` remedy was the expensive one.** §5.2 told callers to *«generate a new key, or resend
+the original request unchanged»*. After PRM-235 the second half produced the error, and Axonium
+had copied the first half into five SDKs, five error messages and a public site — where it buys a
+second billable generation for work the first request may have finished. PRM-242 makes "resend
+unchanged" true again; the entry now says so and names the cost of the other branch. §6 stops
+saying "path and payload" and says "the path and the payload you sent", with what changed and why.
+
+**§4 claimed the backend keeps generating when you walk away.** True before PRM-196, false for
+chat completions since, and still exactly true for `/v1/images/generations` — measured: sd-server
+does not abort on connection close. Five SDKs carry a rule resting on that premise, so it is now a
+table per route, with what counts as abandoned (the connection closing, which is what aborting a
+`fetch` does) and the part nobody had written down: **what was generated before the cut is
+billed**, by RM-87's deliberate choice.
+
+**And how to enumerate your own grant.** `GET /v1/models` is scope-filtered since PRM-167, so it
+cannot reveal a `model:<id>` grant whose id you have not guessed. A token requested with no
+`scope` comes back with the full grant in its own `scope` field. aeon found that by trying it; it
+should not have needed finding.
+
+**Scope**: in — the three sections, the revision header, and the mirrored copy the push hook
+checks.
+
+## PRM-244 — Admission headroom per model
+
+**Why**: `admission_headroom` is one float for the whole deployment, and the comment above it
+already says why that cannot be right — *"the right headroom depends on how long the model's
+requests take: a 200ms embedding tolerates a deep queue, a 40-second completion does not"*. With a
+single number an operator chooses between protecting the completion and throttling the embedding.
+Asked for by Veritium (`VRT-PRM-001` §4).
+
+**Scope**: in — a per-model override resolved like the per-endpoint rate limits are, with the
+global as the default. Out — turning it on by default, which PRM-157's note already argues
+against: it would start refusing traffic on an existing deployment at the first restart, on a
+number nobody chose.
