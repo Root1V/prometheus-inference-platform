@@ -1612,6 +1612,10 @@ def create_admin_router(manager_client: ManagerApiClient) -> APIRouter:
                 entry["last_seen_ago_s"] = 0
         return sorted(counted.values(), key=lambda a: a["last_seen_ago_s"])
 
+    # PRM-247: the windows the page offers, and the one it opens on. Fourteen
+    # days is wide enough to show a weekly shape and narrow enough that a
+    # change three days ago is still visible in it.
+    _OVERVIEW_WINDOWS = (7, 14, 30)
     _OVERVIEW_DAYS = 14
     # What counts as close enough to a ceiling to say so. Below this a number
     # is headroom and printing it is noise; above it, an operator can still
@@ -1640,9 +1644,19 @@ def create_admin_router(manager_client: ManagerApiClient) -> APIRouter:
         if (forbidden := _require_scope(request, "admin:read")) is not None:
             return forbidden
 
+        try:
+            days = int(request.query_params.get("days", _OVERVIEW_DAYS))
+        except ValueError:
+            days = _OVERVIEW_DAYS
+        # Clamped to the offered set rather than honoured freely: the page has
+        # three buttons, and an arbitrary `?days=400` is a table scan nobody
+        # asked for through a control that does not exist.
+        if days not in _OVERVIEW_WINDOWS:
+            days = _OVERVIEW_DAYS
+
         today = _dt.datetime.now(_dt.timezone.utc).date()
         yesterday = today - _dt.timedelta(days=1)
-        start = today - _dt.timedelta(days=_OVERVIEW_DAYS - 1)
+        start = today - _dt.timedelta(days=days - 1)
 
         series: list[dict[str, Any]] = []
         models: list[dict[str, Any]] = []
@@ -1769,8 +1783,83 @@ def create_admin_router(manager_client: ManagerApiClient) -> APIRouter:
         movers.sort(key=lambda r: -r["request_count"])
 
         latency_by_model = {row["model"]: row for row in latency}
+
+        # ── PRM-247: who is at a ceiling right now ───────────────────────────
+        #
+        # The live column of the page. Attention above only fires past 80%;
+        # this shows the shape below it too, because "nobody is near a limit"
+        # and "three consumers are at 40%" are different things to know before
+        # raising a tier.
+        pressure: list[dict[str, Any]] = []
+        if redis_client is not None:
+            try:
+                worst: dict[str, dict[str, Any]] = {}
+                for counter in await RateLimiter(redis_client).live_counters():
+                    identity = counter["identity"]
+                    layer = rate_limits.counter_layer(identity, counter["endpoint"])
+                    if layer == "platform":
+                        continue
+                    limit, _ = rate_limits.live_limit_for(
+                        settings,
+                        layer=layer,
+                        dimension=counter["dimension"],
+                        endpoint=counter["endpoint"],
+                        endpoint_count=len(INFERENCE_ENDPOINT_SLUGS),
+                    )
+                    if not limit:
+                        continue
+                    percent = round(counter["used"] / limit * 100, 1)
+                    held = worst.get(identity)
+                    if held is None or percent > held["percent"]:
+                        worst[identity] = {
+                            "identity": identity,
+                            "percent": percent,
+                            "dimension": counter["dimension"],
+                            "endpoint": counter["endpoint"],
+                            "used": counter["used"],
+                            "limit": limit,
+                        }
+                pressure = sorted(worst.values(), key=lambda r: -r["percent"])[:6]
+            except Exception as exc:  # pragma: no cover — advisory
+                logger.warning("admin.overview_pressure_read_error", error=str(exc))
+
+        # ── what changed, and who changed it ─────────────────────────────────
+        #
+        # The audit table, which exists (PRM-157) and had no way in from the
+        # dashboard. On a platform where a limit, a price or a grant can be
+        # edited from the UI, "what changed recently" belongs beside "what is
+        # happening", because the second is often explained by the first.
+        changes: list[dict[str, Any]] = []
+        try:
+            # Over-fetched and filtered: the table records every mutating
+            # request, and signing in is the most frequent of them by far —
+            # measured here, 64 logins against 10 configuration changes. A
+            # panel called "what changed" whose rows are all logins is a panel
+            # that hides the thing it exists to show. Authentication is not a
+            # change to the platform; the audit page still has every row.
+            for event in await db.list_audit_events(limit=60):
+                if event.action.endswith("/auth/login"):
+                    continue
+                changes.append(
+                    {
+                        "at": event.at.isoformat() if event.at else None,
+                        "actor": event.actor_email or event.actor_client_id,
+                        # Trimmed of the prefix every row shares; what
+                        # distinguishes them is the verb and the resource.
+                        "action": event.action.replace("/admin/api/", " "),
+                        "target": event.target,
+                        "outcome": event.outcome,
+                    }
+                )
+                if len(changes) == 8:
+                    break
+        except Exception as exc:  # pragma: no cover — advisory
+            logger.warning("admin.overview_audit_read_error", error=str(exc))
+
+        claims = _claims(request)
         return {
-            "days": _OVERVIEW_DAYS,
+            "days": days,
+            "windows": list(_OVERVIEW_WINDOWS),
             "attention": attention,
             "signals": {
                 "requests": _delta("request_count"),
@@ -1802,6 +1891,17 @@ def create_admin_router(manager_client: ManagerApiClient) -> APIRouter:
                 for row in sorted(models, key=lambda r: -(r.get("request_count") or 0))[:8]
             ],
             "clients": movers[:8],
+            "pressure": pressure,
+            "changes": changes,
+            # Who is reading the page, from the token rather than from the
+            # browser — the same reason Activity's `is_you` comes from here.
+            # The id only: `Claims` carries no email, and a field that is
+            # always null promises something it never has. The page resolves
+            # the display name from the principal list it already loads.
+            "you": {
+                "client_id": getattr(claims, "client_id", None),
+                "user_id": getattr(claims, "user_id", None),
+            },
             # Kept, and demoted: counts of things that exist answer "is the
             # fleet where I left it", which is a glance and not a decision.
             "fleet": {

@@ -7,6 +7,7 @@ import { CircuitBadge } from "../components/CircuitBadge";
 import { CircuitBreakerForm } from "../components/CircuitBreakerForm";
 import { RateLimitsForm } from "../components/RateLimitsForm";
 import { Sidebar } from "../components/Sidebar";
+import { useFocusFlash } from "../lib/focus";
 import { StatCard } from "../components/StatCard";
 import { AlertOctagon, RotateCw } from "lucide-react";
 import { useState } from "react";
@@ -440,6 +441,7 @@ function LiveCeilings() {
 }
 
 export default function Limits() {
+  useFocusFlash();
   const configQuery = useDashboardConfig();
   const metricsQuery = useMetrics();
   const instancesQuery = useInstances();
@@ -486,7 +488,10 @@ export default function Limits() {
         {/* PRM-230: measurements before configuration. The page used to answer
             "what are the limits", and the question it gets opened with is
             "which one is refusing me". */}
-        <h2 className="mt-8 text-sm font-medium uppercase tracking-wide text-text-muted">
+        <h2
+          data-focus="right-now"
+          className="mt-8 text-sm font-medium uppercase tracking-wide text-text-muted"
+        >
           Right now
         </h2>
         <p className="mt-1 text-sm text-text-muted">
@@ -503,7 +508,7 @@ export default function Limits() {
             beside a form that edited six of the numbers on them; with all
             seventeen editable that would have been every value twice, and the
             second copy is the one that goes stale. */}
-        <h2 className="mt-8 text-sm font-medium uppercase tracking-wide text-text-muted">
+        <h2 data-focus="rate-limits" className="mt-8 text-sm font-medium uppercase tracking-wide text-text-muted">
           Rate limits
         </h2>
         <div className="mt-2">
@@ -528,7 +533,7 @@ export default function Limits() {
           </p>
         </div>
 
-        <h2 className="mt-10 text-sm font-medium uppercase tracking-wide text-text-muted">
+        <h2 data-focus="circuit-breaker" className="mt-10 text-sm font-medium uppercase tracking-wide text-text-muted">
           Circuit breaker
         </h2>
         <div className="mt-3 grid grid-cols-1 gap-4 sm:grid-cols-3">

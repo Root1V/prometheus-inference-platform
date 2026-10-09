@@ -9305,3 +9305,45 @@ named after the measurement.
 
 **Scope**: in — `/admin/api/overview`, the per-day error aggregates on `query_daily_cost_range`,
 the page. Out — a per-model drill-down from here, which is what Usage and Billing already are.
+
+
+## PRM-247 — The dashboard, more visual and with fewer lists
+
+**Why**: PRM-246 made the figures true and left them in tables. A table of eight models with four
+numeric columns is a thing you read; the question underneath it — *which model eats the traffic and
+which eats the money* — needs the two numbers next to each other, and nobody divides them in their
+head.
+
+**Three series at once.** Requests, tokens and cost on one chart, each scaled to its own peak,
+because 28 against 64,780 against 0.035 on a shared axis is two flat lines on the floor. The axis
+says `%` and the tooltip carries the real values; clicking a metric isolates it and the axis
+becomes that series' own units, since with one line there is nothing to normalise for. Windows of
+7, 14 and 30 days.
+
+**The tables became bars**, and the first thing that showed was the contrast they had been hiding:
+`gpt-oss-20b-mxfp4` takes 4,544 requests for USD 5.99 while `qwen3vl-8b-q4` takes 3,385 for USD
+10.31. Two bars per model, traffic above cost, and the gap between them is the finding.
+
+**Three columns paired by height.** The first arrangement put an eight-row panel beside a two-row
+one, twice, so half the lower page was blank. The two tall panels take the outer columns and the
+two short ones stack between them.
+
+**A header that says who is reading**, from the token rather than the browser, with the fleet
+demoted to one line.
+
+**A search that reaches what you cannot point at.** Clients and instances are names an operator
+already knows; rate-limit tiers live inside Limits and currency rates inside Billing, and those are
+what a search is for. The field widens leftwards on focus — it sits at the right edge — and a
+result carries `?focus=<key>` so the destination scrolls to the thing and rings it for three
+seconds, because landing on a page of seventeen inputs is not the same as finding one of them.
+
+**Two bugs the live data found.** The audit feed coloured every row as a failure: it compared
+`outcome` against `"success"`, a value the recorder never writes — it writes `"ok"`. And the feed
+was 64 logins deep, burying the ten configuration changes it exists to show; signing in is not a
+change to the platform. A Python guard now checks that every searchable feature points at a route
+that exists and a `data-focus` some page actually marks — it caught one missing anchor on its first
+run.
+
+**Scope**: in — the chart, the windows, the bar panels, the three-column layout, the header,
+search over features, the focus-flash mechanism and its anchors on Limits, Billing and Activity.
+Out — quick-action tiles, which would need a decision about which four actions earn the space.

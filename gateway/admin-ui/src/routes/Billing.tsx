@@ -28,6 +28,7 @@ import { BudgetAlertBanner } from "../components/BudgetAlertBanner";
 import { CurrencyRatesForm } from "../components/CurrencyRatesForm";
 import { ModelPricingTable } from "../components/ModelPricingTable";
 import { Sidebar } from "../components/Sidebar";
+import { useFocusFlash } from "../lib/focus";
 import { StatCard } from "../components/StatCard";
 import { useToast } from "../context/ToastContext";
 import { cn } from "../lib/cn";
@@ -396,6 +397,7 @@ function PeriodHistoryRow({
 }
 
 export default function Billing() {
+  useFocusFlash();
   const usersQuery = useUsers();
   const users = usersQuery.data ?? [];
   const [clientId, setClientId] = useState("");
@@ -480,7 +482,9 @@ export default function Billing() {
         </div>
 
         <div className="mt-4">
-          <BudgetAlertBanner />
+          <div data-focus="alerts">
+            <BudgetAlertBanner />
+          </div>
         </div>
 
         {/* PRM-221: the platform first.
@@ -783,7 +787,10 @@ export default function Billing() {
             </div>
 
             <div className="mt-8">
-              <h2 className="text-sm font-medium uppercase tracking-wide text-text-muted">
+              <h2
+                data-focus="export"
+                className="text-sm font-medium uppercase tracking-wide text-text-muted"
+              >
                 Period history
               </h2>
               <div className="mt-3 overflow-x-auto rounded-xl border border-border bg-surface">
@@ -822,7 +829,9 @@ export default function Billing() {
         )}
 
         <div className="mt-8">
-          <CurrencyRatesForm />
+          <div data-focus="currency-rates">
+            <CurrencyRatesForm />
+          </div>
         </div>
 
         <div className="mt-8">
@@ -835,7 +844,9 @@ export default function Billing() {
           </p>
           <div className="mt-3 rounded-xl border border-border bg-surface">
             <div className="max-h-[35rem] overflow-y-auto overflow-x-auto">
-              <ModelPricingTable />
+              <div data-focus="pricing">
+                <ModelPricingTable />
+              </div>
             </div>
           </div>
         </div>

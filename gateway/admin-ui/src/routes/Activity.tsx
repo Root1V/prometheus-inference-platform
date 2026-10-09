@@ -9,6 +9,7 @@ import {
 } from "../api/activity";
 import { useUsers } from "../api/users";
 import { Sidebar } from "../components/Sidebar";
+import { useFocusFlash } from "../lib/focus";
 import { getErrorMessage } from "../lib/errors";
 import { formatAgo, formatUsdCost } from "../lib/format";
 
@@ -358,6 +359,7 @@ function ConsumerRow({
 }
 
 export default function Activity() {
+  useFocusFlash();
   const activityQuery = useActivity();
   const usersQuery = useUsers();
 
@@ -455,7 +457,7 @@ export default function Activity() {
         )}
 
         {/* ── Here now ───────────────────────────────────────────────────── */}
-        <h2 className="mt-8 text-sm font-medium uppercase tracking-wide text-text-muted">
+        <h2 data-focus="here-now" className="mt-8 text-sm font-medium uppercase tracking-wide text-text-muted">
           Here now
         </h2>
         <p className="mt-1 text-sm text-text-muted">
@@ -576,7 +578,7 @@ export default function Activity() {
         </div>
 
         {/* ── Today, by end user ─────────────────────────────────────────── */}
-        <h2 className="mt-10 text-sm font-medium uppercase tracking-wide text-text-muted">
+        <h2 data-focus="end-users" className="mt-10 text-sm font-medium uppercase tracking-wide text-text-muted">
           End users today
         </h2>
         <p className="mt-1 text-sm text-text-muted">

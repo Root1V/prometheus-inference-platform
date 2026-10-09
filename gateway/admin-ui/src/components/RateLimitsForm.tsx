@@ -318,7 +318,10 @@ function RateLimitsFormLoaded({ data }: { data: RateLimitsResponse }) {
       </div>
 
       {data.login_throttle && (
-        <div className="mt-4 rounded-xl border border-border bg-surface px-4 py-3">
+        <div
+          data-focus="login-throttle"
+          className="mt-4 rounded-xl border border-border bg-surface px-4 py-3"
+        >
           {/* PRM-233: the ceiling this page never showed. Every limit above is
               keyed on a credential and therefore applies after authentication;
               this is the only one that applies to someone who does not have

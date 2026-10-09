@@ -52,8 +52,31 @@ export interface OverviewClient {
   percent: number | null;
 }
 
+/** PRM-247: a consumer's closest ceiling right now. Below the threshold that
+ *  earns a place in `attention`, because "nobody is near a limit" and "three
+ *  consumers sit at 40%" are different things to know before raising a tier. */
+export interface Pressure {
+  identity: string;
+  percent: number;
+  dimension: string;
+  endpoint: string;
+  used: number;
+  limit: number;
+}
+
+/** One administrative change, from the audit table. */
+export interface Change {
+  at: string | null;
+  actor: string | null;
+  action: string;
+  target: string | null;
+  outcome: string;
+}
+
 export interface OverviewResponse {
   days: number;
+  /** The windows the page may ask for. */
+  windows: number[];
   attention: AttentionItem[];
   signals: {
     requests: Delta;
@@ -65,14 +88,22 @@ export interface OverviewResponse {
   series: OverviewDay[];
   models: OverviewModel[];
   clients: OverviewClient[];
+  pressure: Pressure[];
+  changes: Change[];
+  /** Who is reading the page, from the token. The name is resolved from the
+   *  principal list — `Claims` carries no email. */
+  you: { client_id: string | null; user_id: string | null };
   fleet: { uptime_seconds: number | null; requests_active: number | null };
 }
 
-export function useOverview() {
+export function useOverview(days: number) {
   return useQuery({
-    queryKey: ["overview"],
+    // The window is part of the key, so switching to 30 days and back does
+    // not re-fetch what is already cached.
+    queryKey: ["overview", days],
     queryFn: async () =>
-      (await apiClient.get<OverviewResponse>("/overview")).data,
+      (await apiClient.get<OverviewResponse>("/overview", { params: { days } }))
+        .data,
     refetchInterval: 15_000,
     retry: false,
   });
