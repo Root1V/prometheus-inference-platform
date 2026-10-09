@@ -9169,3 +9169,41 @@ hours from theirs here.
 
 **Scope**: in — the UTC date at the call site, the guard, the page copy, the two tests that asked
 the same question the same wrong way.
+
+
+## PRM-242 — The idempotency fingerprint covers what the client sent
+
+**Why**: reported as `VRT-PRM-004` by Veritium, CC Axonium and synaptum, the morning PRM-235 was
+deployed — and caused by it. `_begin_idempotent` was handed `body.model_dump()`, the gateway's
+model *with its defaults*, so the fingerprint covered fields the client had never sent. PRM-235
+added `user` and `safety_identifier` to `ChatCompletionRequest`; every chat request's fingerprint
+moved, and every key stored before 07:18 answered `409 idempotency-key-reuse` for the rest of its
+24-hour window. The gateway telling a caller it had misused its key, on the retry-after-a-crash
+path that is the only reason the key exists.
+
+Their framing is the one that matters and is wider than the incident: with the fingerprint taken
+over the gateway's model, **any additive change to any request schema invalidates every in-flight
+key on that route**, and neither side can see it coming.
+
+**The fix is theirs**: `model_dump(exclude_unset=True)`. The dump moved *into* `_begin_idempotent`,
+which now takes the model rather than a volume of it — four call sites each passed their own
+`model_dump()`, and fixing four lines leaves the fifth route waiting for someone to copy the wrong
+one.
+
+**And a transitional acceptance, because the fix moves the fingerprint again.** Keys stored between
+the PRM-235 deploy and this one carry the full-dump fingerprint, so the fix on its own would deal
+the reported error one more time, to the team that reported it. `begin()` also accepts the legacy
+fingerprint; the old payload is the new one plus defaults, so a match means the same request and
+the acceptance never widens what counts as equal — a test holds that half. Removable after
+2026-10-10, one window past the deploy, and the comment says so.
+
+**Axonium asked whether the 409 could distinguish the two causes.** It cannot: the record stores a
+hash, not the body, so on a mismatch the gateway cannot tell a changed body from a moved
+fingerprint. Distinguishing would need a fingerprint-schema version stored alongside, and even then
+the only honest message is "this was computed under different rules" — it still could not replay,
+having no way to verify the body matches. Removing the cause is the better trade, which is their
+own conclusion.
+
+**Scope**: in — the fingerprint, the helper signature, the transitional acceptance, the four call
+sites, and the test whose comment had documented the defect as the intent. Out — a fingerprint
+schema version, which the above argues against.

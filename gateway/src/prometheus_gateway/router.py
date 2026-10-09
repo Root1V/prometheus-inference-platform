@@ -19,6 +19,7 @@ from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any, Literal, NamedTuple
 
 import httpx
+from pydantic import BaseModel
 import structlog
 from opentelemetry import context as otel_context
 from fastapi import APIRouter, Request, Response
@@ -540,9 +541,26 @@ async def _replay_stream(body: str) -> "AsyncIterator[str]":
 
 
 async def _begin_idempotent(
-    request: Request, claims: Any, path: str, payload: Any, model_key: str | None = None
+    request: Request,
+    claims: Any,
+    path: str,
+    body: BaseModel,
+    model_key: str | None = None,
 ) -> Response | None:
     """Honour an Idempotency-Key header — RM-78.
+
+    **Takes the model, not a dump of it — PRM-242.** The four call sites each
+    passed `body.model_dump()`, which is the gateway's model *with its
+    defaults*, so the fingerprint covered fields the client never sent. Adding
+    one optional field to a request schema then moved the fingerprint of every
+    request on that route, and every key stored before the deploy answered
+    `409 idempotency-key-reuse` for the rest of the 24-hour window — telling a
+    caller it had misused its key when it had done exactly the right thing.
+    PRM-235 did that with `user` and `safety_identifier`, and Veritium
+    measured it the same morning (`VRT-PRM-004`).
+
+    The dump happens here so a fifth endpoint cannot reintroduce it by
+    copying one of the four.
 
     A returned response means stop: either the stored result, replayed, or a
     409 explaining why the key can't be honoured. None means proceed — the
@@ -557,7 +575,19 @@ async def _begin_idempotent(
     key = request.headers.get(idempotency.HEADER)
     if not key or claims is None:
         return None
-    outcome = await idempotency.begin(claims.client_id, key, path, payload, model_key=model_key)
+    # `exclude_unset`: what the client sent, not what the model filled in.
+    payload = body.model_dump(exclude_unset=True)
+    outcome = await idempotency.begin(
+        claims.client_id,
+        key,
+        path,
+        payload,
+        model_key=model_key,
+        # Transitional, removable after 2026-10-10 — see `idempotency.begin`.
+        # Without it this fix would deal the reported error one more time, to
+        # every key stored by the build that caused it.
+        also_accept=body.model_dump(),
+    )
     if isinstance(outcome, idempotency.Replay):
         # Deliberately no budget reserve, no usage row, no metrics: replaying
         # is not a second use of the model, which is the entire point.
@@ -1715,7 +1745,7 @@ def create_router(registry: ModelRegistry, pool: "BackendPool") -> APIRouter:
             # RM-78/RM-82: before the budget reserve, because replaying must
             # not reserve, bill or meter.
             replay = await _begin_idempotent(
-                request, claims, "/v1/chat/completions", body.model_dump(), resolution.model_key
+                request, claims, "/v1/chat/completions", body, resolution.model_key
             )
             if replay is not None:
                 return replay
@@ -2286,7 +2316,7 @@ def create_router(registry: ModelRegistry, pool: "BackendPool") -> APIRouter:
         # RM-78: before the budget reserve — replaying must not reserve, bill
         # or meter, which is the whole point.
         replay = await _begin_idempotent(
-            request, claims, "/v1/embeddings", body.model_dump(), resolution.model_key
+            request, claims, "/v1/embeddings", body, resolution.model_key
         )
         if replay is not None:
             return replay
@@ -2607,9 +2637,7 @@ def create_router(registry: ModelRegistry, pool: "BackendPool") -> APIRouter:
                 "Contact the platform operator.",
             )
 
-        replay = await _begin_idempotent(
-            request, claims, "/v1/rerank", body.model_dump(), resolution.model_key
-        )
+        replay = await _begin_idempotent(request, claims, "/v1/rerank", body, resolution.model_key)
         if replay is not None:
             return replay
 
@@ -3192,7 +3220,7 @@ def create_router(registry: ModelRegistry, pool: "BackendPool") -> APIRouter:
         # RM-78: before the budget reserve — replaying must not reserve, bill
         # or meter, which is the whole point.
         replay = await _begin_idempotent(
-            request, claims, "/v1/images/generations", body.model_dump(), resolution.model_key
+            request, claims, "/v1/images/generations", body, resolution.model_key
         )
         if replay is not None:
             return replay
