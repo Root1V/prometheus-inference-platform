@@ -218,6 +218,7 @@ export function InstanceTable({
         <tbody>
           {pageItems.map((instance) => (
             <InstanceRow
+              focusKey={`instance:${instance.id}`}
               key={`${instance.node}-${instance.id}`}
               view={view}
               selected={selected.has(keyOf(instance.id, instance.node))}

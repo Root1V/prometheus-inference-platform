@@ -85,6 +85,7 @@ const menuItemClass =
   "flex w-full items-center gap-2 px-3 py-2 text-left text-sm transition-colors disabled:cursor-not-allowed disabled:opacity-40";
 
 export function InstanceRow({
+  focusKey,
   instance,
   metrics,
   view,
@@ -93,6 +94,8 @@ export function InstanceRow({
   onEdit,
   onAddInstance,
 }: {
+  /** PRM-248: so a search result can ring this row on arrival. */
+  focusKey?: string;
   instance: InstanceEntry;
   view: "health" | "performance";
   selected: boolean;
@@ -142,7 +145,10 @@ export function InstanceRow({
 
   return (
     <>
-      <tr className="group/row border-b border-border last:border-0 hover:bg-background/60">
+      <tr
+        data-focus={focusKey}
+        className="group/row border-b border-border last:border-0 hover:bg-background/60"
+      >
         <td className="w-10 px-4 py-3">
           <input
             type="checkbox"

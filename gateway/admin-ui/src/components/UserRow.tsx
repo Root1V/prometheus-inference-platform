@@ -116,12 +116,15 @@ function Identifier({ value, isOauth }: { value: string; isOauth: boolean }) {
 }
 
 export function UserRow({
+  focusKey,
   user,
   highlight,
   onEdit,
   onBilling,
   onRevealCredential,
 }: {
+  /** PRM-248: so a search result can ring this row on arrival. */
+  focusKey?: string;
   user: Principal;
   /** Lowercased search term, so a matching model chip can be surfaced even when
    * it would otherwise be folded away — searching for a model and seeing a row
@@ -209,7 +212,10 @@ export function UserRow({
 
   return (
     <>
-      <tr className="group/row border-b border-border align-middle last:border-0 hover:bg-background/60">
+      <tr
+        data-focus={focusKey}
+        className="group/row border-b border-border align-middle last:border-0 hover:bg-background/60"
+      >
         <td className="min-w-[11rem] px-4 py-3">
           {/* A minimum, because with one search result the table shrinks to its
               content and a name like `rm46-verify` broke across two lines. */}

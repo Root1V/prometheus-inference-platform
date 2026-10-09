@@ -7,6 +7,7 @@ import { InstanceTable } from "../components/InstanceTable";
 import { AddInstanceModal } from "../components/AddInstanceModal";
 import { RegisterModelModal } from "../components/RegisterModelModal";
 import { Sidebar } from "../components/Sidebar";
+import { useFocusFlash } from "../lib/focus";
 import { StatCard } from "../components/StatCard";
 import { WarningBanner } from "../components/WarningBanner";
 import type { InstanceEntry } from "../types/instance";
@@ -29,6 +30,7 @@ type ModalState =
   | null;
 
 export default function Dashboard() {
+  useFocusFlash();
   const instancesQuery = useInstances();
   const metricsQuery = useMetrics();
   const nodesQuery = useNodes();

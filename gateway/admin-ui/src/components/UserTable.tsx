@@ -165,6 +165,7 @@ export function UserTable({
             <tbody>
               {shown.map((user) => (
                 <UserRow
+                focusKey={`client:${user.client_id}`}
                   key={user.client_id}
                   user={user}
                   highlight={term || undefined}

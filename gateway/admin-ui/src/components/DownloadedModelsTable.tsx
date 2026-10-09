@@ -101,6 +101,7 @@ function DownloadedModelRow({
   return (
     <>
       <tr
+        data-focus={`model:${model.id}`}
         onClick={onSelect}
         className={cn(
           "cursor-pointer border-b border-border last:border-0 hover:bg-background",

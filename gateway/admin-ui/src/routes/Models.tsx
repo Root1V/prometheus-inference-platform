@@ -30,6 +30,8 @@ import { ModelCardView } from "../components/ModelCardView";
 import { ModelPreviewPanel } from "../components/ModelPreviewPanel";
 import { ModelSettingsModal } from "../components/ModelSettingsModal";
 import { Sidebar } from "../components/Sidebar";
+import { useFocusFlash } from "../lib/focus";
+import { useSearchParams } from "react-router-dom";
 import { StatCard } from "../components/StatCard";
 import { useToast } from "../context/ToastContext";
 import { cn } from "../lib/cn";
@@ -347,6 +349,7 @@ function DownloadRow({ entry, node }: { entry: DownloadEntry; node: string }) {
 type Tab = "discover" | "library";
 
 export default function Models() {
+  useFocusFlash();
   const { showToast } = useToast();
   const nodesQuery = useNodeRegistry();
   // Only active nodes are actually reachable — fetch_nodes() on the manager-api
@@ -354,8 +357,16 @@ export default function Models() {
   const nodes = (nodesQuery.data ?? [])
     .filter((n) => n.is_active)
     .map((n) => n.name);
+  // PRM-248: a search result can name a model that lives on the node this
+  // page is not showing. Without this the row simply is not rendered, the
+  // highlight finds nothing, and the search looks like it lost the thing it
+  // just offered — which is how a model on `local` behaved while the page
+  // sat on `lab`. The link carries the node; the reader can still switch.
+  const [searchParams] = useSearchParams();
+  const askedNode = searchParams.get("node") ?? "";
   const [node, setNode] = useState("");
-  const selectedNode = node || nodes[0] || "";
+  const selectedNode =
+    node || (nodes.includes(askedNode) ? askedNode : "") || nodes[0] || "";
 
   const [tab, setTab] = useState<Tab>("library");
   const [settingsOpen, setSettingsOpen] = useState(false);
