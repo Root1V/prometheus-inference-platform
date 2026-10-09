@@ -9248,3 +9248,27 @@ Asked for by Veritium (`VRT-PRM-001` §4).
 global as the default. Out — turning it on by default, which PRM-157's note already argues
 against: it would start refusing traffic on an existing deployment at the first restart, on a
 number nobody chose.
+
+
+## PRM-245 — How long it took, on the usage row
+
+**Why**: the dashboard reported `p95 17,351 ms · p99 17,351 ms`. Two percentiles that are always
+equal is a distribution with one point in it — they came from five requests since the last
+restart, because latency lived only in `metrics_store`'s process memory. The numbers themselves
+already existed: the router has computed `duration_s` and `ttft_s` since PRM-131 and hands them to
+the GenAI metrics. The one place that persists anything dropped them.
+
+**Two nullable columns**, and null means *not timed* rather than zero. A request nobody measured is
+not a fast request, and counting it as zero is how a p95 improves the more instrumentation is
+missing.
+
+**Percentiles in Python, nearest-rank.** SQLite has no `percentile_cont`, and the window-function
+alternative is accepted by only one of the two engines this runs on. Nearest-rank returns a
+duration some request actually had; interpolation invents one that none did, which is a poor thing
+to print beside a model's name.
+
+`ttft_ms` is the *visible* first token, the same one PRM-131 chose and for its measured reason:
+63.7% of spans carry a first token of any kind, 4.4% the first visible one.
+
+**Scope**: in — the columns, the migration, the router passing what it already held,
+`query_latency_by_model`. Out — backfilling, which has nothing to backfill from.

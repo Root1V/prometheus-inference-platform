@@ -162,6 +162,20 @@ class UsageEvent(Base):
     # usually null: a caller that sends nothing is not identifying anyone, and
     # that is a legitimate answer rather than a gap to fill in.
     end_user: Mapped[str | None] = mapped_column(String(128), nullable=True, index=True)
+    # PRM-245: how long it took, kept rather than only emitted.
+    #
+    # The router has computed both since PRM-131 and handed them to the GenAI
+    # metrics; the row kept neither, so latency existed only in the gateway's
+    # process memory and a restart erased it. The dashboard showed `p95 17,351
+    # ms · p99 17,351 ms` — identical because they came from five requests
+    # since the last restart, which is not a distribution. Nullable: rows
+    # written before this have no answer, and an embedding that was never
+    # timed should say so rather than claim zero.
+    duration_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # Streaming only, and deliberately the *visible* first token — PRM-131
+    # measured the gap: 63.7% of spans carry a first token of any kind, 4.4%
+    # the first visible one.
+    ttft_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
     # PRM-100: a subset of prompt_tokens, not a separate bucket — the OpenAI
     # convention, and what the response already reports as
     # prompt_tokens_details.cached_tokens. The row reported none of it, so a
@@ -613,6 +627,8 @@ async def record_usage(
     # that has only one identifier still writes something truthful.
     model_slug: str | None = None,
     end_user: str | None = None,
+    duration_ms: int | None = None,
+    ttft_ms: int | None = None,
     day: date | None = None,
 ) -> float | None:
     """Record one request's usage: an immutable `usage_events` row (the audit
@@ -677,6 +693,8 @@ async def record_usage(
                 interrupted=_interrupted_from(termination_reason),
                 request_id=request_id,
                 end_user=end_user,
+                duration_ms=duration_ms,
+                ttft_ms=ttft_ms,
                 cached_prompt_tokens=cached_prompt_tokens,
                 request_kind=request_kind,
                 prompt_tokens=prompt_tokens,
@@ -974,6 +992,59 @@ async def query_activity_today(day: date) -> list[dict[str, Any]]:
             }
             for row in result
         ]
+
+
+async def query_latency_by_model(start: date, end: date) -> list[dict[str, Any]]:
+    """Latency percentiles per model for [start, end] — PRM-245.
+
+    Percentiles in Python rather than SQL: SQLite has no `percentile_cont`,
+    and the alternative is a window-function expression that only one of the
+    two engines this runs on would accept. The row count here is a day or two
+    of traffic per model, which is a list, not a scan.
+
+    Rows with no `duration_ms` are skipped rather than counted as zero — a
+    request nobody timed is not a fast request, and averaging it in is how a
+    p95 comes out better the more instrumentation is missing.
+    """
+    session_factory = get_session_factory()
+    async with session_factory() as session:
+        stmt = (
+            select(
+                UsageEvent.model_slug,
+                UsageEvent.duration_ms,
+            )
+            .where(
+                UsageEvent.day >= start,
+                UsageEvent.day <= end,
+                UsageEvent.duration_ms.is_not(None),
+            )
+            .order_by(UsageEvent.model_slug)
+        )
+        rows = (await session.execute(stmt)).all()
+
+    by_model: dict[str, list[int]] = {}
+    for model, duration in rows:
+        by_model.setdefault(model or "unknown", []).append(int(duration))
+
+    def _percentile(values: list[int], fraction: float) -> int:
+        # Nearest-rank, which is the one that returns a value that actually
+        # happened. Interpolating invents a duration no request had.
+        index = min(len(values) - 1, max(0, round(fraction * len(values)) - 1))
+        return values[index]
+
+    out = []
+    for model, values in by_model.items():
+        values.sort()
+        out.append(
+            {
+                "model": model,
+                "count": len(values),
+                "p50_ms": _percentile(values, 0.50),
+                "p95_ms": _percentile(values, 0.95),
+                "p99_ms": _percentile(values, 0.99),
+            }
+        )
+    return sorted(out, key=lambda r: -r["count"])
 
 
 async def query_model_cost_range(
