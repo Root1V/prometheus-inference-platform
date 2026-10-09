@@ -11,6 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..crypto import issue_token
 from ..db import Principal, get_session_factory
+from ..login_throttle import LoginThrottle
 from ..schemas import OAuth2Error, TokenResponse, invalid_scopes
 from ..telemetry import get_logger, get_tracer
 
@@ -18,6 +19,48 @@ logger = get_logger(__name__)
 _tracer = get_tracer("auth-service.oauth2")
 
 router = APIRouter(tags=["oauth2"])
+
+# PRM-250: a real cost-12 hash of a value no credential equals — the same cost
+# `admin.py` stores every password and secret with. Hardcoded rather than
+# generated at import, so the dummy path cannot drift from the real one and
+# startup does not pay 160ms for it.
+_DUMMY_HASH = b"$2b$12$hzURTyfGjqcrWaNq23mtE.4mBOU7BgzQlch10D6tILsrxu/fPO2mC"
+
+
+def _credential_matches(supplied: str, stored: str | None) -> bool:
+    """Compare, paying the bcrypt cost even when there is nothing to compare to.
+
+    Measured against the running deployment before this existed: a wrong
+    password for a real account answered in 179ms, and for an address with no
+    account in 4.5ms, because the handler returned before bcrypt ran. The
+    refusal was worded identically either way, so the message gave nothing
+    away and the clock gave away everything — every valid operator address was
+    discoverable at roughly a hundred guesses a second.
+
+    The dummy comparison has to sit on the path that actually runs. The
+    published advisories for this bug class describe a dummy branch that the
+    caller's own early return skipped, leaving the hole open.
+    """
+    if stored is None:
+        bcrypt.checkpw(supplied.encode(), _DUMMY_HASH)
+        return False
+    return bcrypt.checkpw(supplied.encode(), stored.encode())
+
+
+def _throttled(
+    request: Request, grant_type: str, client_id: str, username: str
+) -> list[tuple[LoginThrottle, str]]:
+    """The (throttle, key) pairs this attempt spends from.
+
+    Two of them, because the two attacks look different: one account with many
+    guesses, and many accounts with one guess each.
+    """
+    identity = client_id if grant_type == "client_credentials" else username
+    address = request.client.host if request.client else "unknown"
+    return [
+        (request.app.state.login_throttle, f"id:{identity.lower()}"),
+        (request.app.state.login_throttle_by_address, f"ip:{address}"),
+    ]
 
 
 async def _get_db() -> AsyncSession:  # type: ignore[misc]
@@ -48,6 +91,20 @@ async def token(
         span.set_attribute("grant_type", grant_type)
         span.set_attribute("scope", scope or "")
 
+        # PRM-250: refuse before looking at the credential, so a caller out of
+        # budget costs this service nothing.
+        throttles = _throttled(request, grant_type, client_id, username)
+        waits = [w for t, k in throttles if (w := t.retry_after(k)) is not None]
+        if waits:
+            span.set_attribute("http.status_code", 429)
+            span.set_status(StatusCode.ERROR, "too_many_attempts")
+            logger.warning("oauth2.too_many_attempts", grant_type=grant_type)
+            return _too_many_attempts(max(waits))
+
+        def record_failure() -> None:
+            for throttle, key in throttles:
+                throttle.record_failure(key)
+
         if grant_type == "client_credentials":
             span.set_attribute("client_id", client_id)
             result = await db.execute(select(Principal).where(Principal.client_id == client_id))
@@ -55,21 +112,21 @@ async def token(
 
             # AC-3: unknown client_id, or a password-only principal, is invalid_client
             if principal is None or principal.auth_method != "oauth2":
+                _credential_matches(client_secret, None)
                 logger.warning(
                     "oauth2.invalid_client", client_id=client_id, reason="unknown_client_id"
                 )
                 span.set_attribute("http.status_code", 401)
                 span.set_status(StatusCode.ERROR, "invalid_client")
+                record_failure()
                 return _invalid_client()
 
             # AC-3: verify secret — constant-time bcrypt comparison
-            secret_hash = principal.client_secret_hash
-            if secret_hash is None or not bcrypt.checkpw(
-                client_secret.encode(), secret_hash.encode()
-            ):
+            if not _credential_matches(client_secret, principal.client_secret_hash):
                 logger.warning("oauth2.invalid_client", client_id=client_id, reason="bad_secret")
                 span.set_attribute("http.status_code", 401)
                 span.set_status(StatusCode.ERROR, "invalid_client")
+                record_failure()
                 return _invalid_client()
 
         elif grant_type == "password":
@@ -79,18 +136,18 @@ async def token(
 
             # Unknown email, or an oauth2-only principal, is invalid_client
             if principal is None or principal.auth_method != "password":
+                _credential_matches(password, None)
                 logger.warning("oauth2.invalid_client", username=username, reason="unknown_email")
                 span.set_attribute("http.status_code", 401)
                 span.set_status(StatusCode.ERROR, "invalid_client")
+                record_failure()
                 return _invalid_client()
 
-            password_hash = principal.password_hash
-            if password_hash is None or not bcrypt.checkpw(
-                password.encode(), password_hash.encode()
-            ):
+            if not _credential_matches(password, principal.password_hash):
                 logger.warning("oauth2.invalid_client", username=username, reason="bad_password")
                 span.set_attribute("http.status_code", 401)
                 span.set_status(StatusCode.ERROR, "invalid_client")
+                record_failure()
                 return _invalid_client()
 
         else:
@@ -119,6 +176,11 @@ async def token(
                     error_description="This client has been deactivated.",
                 ).model_dump(),
             )
+
+        # A sign-in that lands clears the budget: four typos and then the right
+        # password has cost the platform nothing worth counting.
+        for throttle, key in throttles:
+            throttle.clear(key)
 
         settings = request.app.state.settings
         private_key = request.app.state.private_key
@@ -190,6 +252,20 @@ def _issue_for_principal(
             expires_in=expires_in,
             scope=effective_scope,
         ).model_dump()
+    )
+
+
+def _too_many_attempts(retry_after: int) -> JSONResponse:
+    """Deliberately says nothing about which account, or whether one exists."""
+    return JSONResponse(
+        status_code=429,
+        headers={"Retry-After": str(retry_after)},
+        content=OAuth2Error(
+            error="invalid_client",
+            error_description=(
+                f"Too many failed sign-in attempts. Try again in {retry_after} seconds."
+            ),
+        ).model_dump(),
     )
 
 

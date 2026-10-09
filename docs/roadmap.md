@@ -9406,3 +9406,41 @@ but the clock is not. That is a backend fix and gets its own item.
 return route, the five-minute banner, autocomplete, show/hide, the Caps Lock hint, the 401
 wording. Out — the timing oracle and login throttling (PRM-250), and any password-reset flow,
 which has no endpoint behind it.
+
+## PRM-250 — The login stops saying who exists
+
+**Why**: PRM-249 measured two holes in the sign-in path and deliberately left them, because a
+dashboard redesign and an auth-service security change should not be reviewed as one diff.
+
+**The timing oracle.** A wrong password for a real account answered in 179ms; for an address
+with no account, 4.5ms. Both grants returned before `bcrypt.checkpw` when the lookup came back
+empty, so only existing accounts paid the hash. The refusal is worded identically either way —
+that part was right — which means the message gave nothing away and the clock gave away
+everything. Every valid operator address was discoverable at roughly a hundred guesses a
+second. Fixed by comparing against a fixed cost-12 dummy hash on the paths that return early,
+the same cost `admin.py` stores real hashes with. The dummy sits on the path that actually runs:
+the published advisories for this bug class describe a dummy branch that the caller's own early
+return skipped. Measured after: 163.9ms against 163.9ms.
+
+**The limiter that was never consulted.** `auth_rate_limit_rpm` defaults to 10, `create_app`
+built a slowapi `Limiter` from it, and no route ever applied it — `default_limits` bind through
+`@limiter.limit` or `SlowAPIMiddleware`, and this service had neither. Fifteen wrong passwords
+in a row were all answered at full speed. No test noticed, and the test fixture even set the
+limit to 1000 "to disable effective rate limiting", which it never had.
+
+Replaced with a failure budget: failures are counted, successes are not, so an integration
+refreshing its token on a schedule never spends any of it. Two buckets — by identity (one
+account, many guesses) and by source address (many accounts, one guess each, which is what
+enumeration looks like). The address budget is the larger because the dashboard's sign-ins all
+arrive from the gateway's address: it proxies them server-side and does not forward the
+caller's, so every operator shares one bucket. A successful sign-in clears what the typos spent.
+
+**Known limitation, stated not hidden**: the counter is per worker, so N workers allow N times
+the budget. For a self-hosted service that is still the difference between ten thousand guesses
+and a few dozen, and a Redis round trip on the path that exists to be cheap buys precision this
+does not need.
+
+**Scope**: in — the dummy-hash equalisation on both grants, the failure budget and its settings,
+the 429 with `Retry-After`. Out — moving the counter to Redis, and forwarding the caller's IP
+from the gateway so the address bucket can distinguish operators, which needs a decision about
+trusting a forwarded header.
