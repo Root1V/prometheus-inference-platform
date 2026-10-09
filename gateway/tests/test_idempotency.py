@@ -458,15 +458,19 @@ async def test_only_the_waitable_refusal_carries_a_hint(gw):
 
 @respx.mock
 async def test_the_http_refusal_sets_the_retry_after_header(gw, rsa_keys):
-    # Same payload shape the handler fingerprints: Pydantic's dump, defaults
-    # included — not the raw dict a caller writes.
+    # Same payload shape the handler fingerprints — PRM-242: Pydantic's dump
+    # with `exclude_unset`, which is what the caller sent and not what the
+    # model filled in. This comment used to say "defaults included", stating
+    # the defect as if it were the intent: with defaults in the fingerprint,
+    # adding one optional field to the request schema moved every stored key
+    # on the route, which is what `VRT-PRM-004` measured.
     from prometheus_gateway.models.schemas import ChatCompletionRequest
 
     claim = await idempotency.begin(
         "client-abc",
         "http-wait",
         "/v1/chat/completions",
-        ChatCompletionRequest(**_chat()).model_dump(),
+        ChatCompletionRequest(**_chat()).model_dump(exclude_unset=True),
         "solo",
     )
     assert isinstance(claim, idempotency.Claim)
