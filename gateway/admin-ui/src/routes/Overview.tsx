@@ -1,260 +1,556 @@
 import {
-  Activity,
   AlertOctagon,
   AlertTriangle,
-  Boxes,
-  Coins,
-  Gauge,
-  HardDrive,
-  Timer,
-  Trophy,
-  Users as UsersIcon,
+  ArrowDownRight,
+  ArrowUpRight,
+  CircleCheck,
+  RefreshCw,
 } from "lucide-react";
+import { useState } from "react";
 import { Link } from "react-router-dom";
-import { useMetrics } from "../api/metrics";
+import {
+  Area,
+  AreaChart,
+  CartesianGrid,
+  ResponsiveContainer,
+  Tooltip,
+  XAxis,
+  YAxis,
+} from "recharts";
 import { useInstances } from "../api/instances";
 import { useNodeRegistry } from "../api/nodes";
-import { useUsage } from "../api/usage";
+import {
+  useOverview,
+  type AttentionItem,
+  type Delta,
+  type OverviewResponse,
+} from "../api/overview";
 import { useUsers } from "../api/users";
-import { AttentionTable, type AttentionEntry } from "../components/AttentionTable";
-import { BudgetAlertBanner } from "../components/BudgetAlertBanner";
+import {
+  AttentionTable,
+  type AttentionEntry,
+} from "../components/AttentionTable";
 import { Sidebar } from "../components/Sidebar";
-import { StatCard } from "../components/StatCard";
 import { formatUptime, formatUsdCost } from "../lib/format";
 
-/** Higher = more urgent. An actual crash outranks a tripped circuit. */
-function attentionScore(entry: AttentionEntry): number {
-  return (entry.instance.state === "error" ? 2 : 0) + (entry.circuitState === "open" ? 2 : entry.circuitState === "half-open" ? 1 : 0);
-}
+/**
+ * Overview — rebuilt by PRM-246.
+ *
+ * What it replaced read `metrics_store`, which is the gateway's process
+ * memory, so after a restart the platform's headline figures were
+ * `0 active · 5 total` requests and a p95 equal to its p99 — five requests
+ * since the deploy, printed as though they described a platform that had
+ * served thousands. Beside them sat counts of things that exist (nodes,
+ * instances, users), which answer "is the fleet where I left it" and not one
+ * question anybody acts on.
+ *
+ * Everything that can come from the usage rows now does, so a deploy no
+ * longer resets the dashboard. The order is the one the practice recommends
+ * and the reason it recommends it: what needs attention, then the signals
+ * with something to compare against, then the trend, then who and on what.
+ */
 
 const linkChipClass =
   "rounded-full border border-border bg-surface px-3 py-1.5 text-xs font-medium text-text-muted hover:bg-background hover:text-text";
 
+/** Higher = more urgent. An actual crash outranks a tripped circuit. */
+function attentionScore(entry: AttentionEntry): number {
+  return (
+    (entry.instance.state === "error" ? 2 : 0) +
+    (entry.circuitState === "open"
+      ? 2
+      : entry.circuitState === "half-open"
+        ? 1
+        : 0)
+  );
+}
+
+/**
+ * A signal and what it was yesterday — PRM-246.
+ *
+ * A number on its own is not a signal; it becomes one next to the question
+ * "more or less than before". `percent: null` is a real state and prints as
+ * "no comparison" rather than as 0% — a first day of traffic has not stayed
+ * flat, it has nothing behind it.
+ *
+ * **Only failures are coloured.** Traffic, tokens and cost have no good
+ * direction: spending less can be a quiet week or a broken integration, and
+ * the first version of this painted a 77.6% fall in cost red — alarming an
+ * operator about a bill going down. Failures do have one, and a dashboard
+ * that paints a rise in them green is worse than one with no colour at all.
+ */
+function Signal({
+  label,
+  delta,
+  format = (n: number) => n.toLocaleString(),
+  lowerIsBetter = false,
+  sub,
+}: {
+  label: string;
+  delta: Delta;
+  format?: (n: number) => string;
+  lowerIsBetter?: boolean;
+  sub?: string;
+}) {
+  const percent = delta.percent;
+  const rising = percent !== null && percent > 0;
+  const flat = percent === null || Math.abs(percent) < 0.5;
+  const tone = !lowerIsBetter
+    ? "text-text-muted"
+    : flat
+      ? "text-text-muted"
+      : rising
+        ? "text-red-500"
+        : "text-emerald-600 dark:text-emerald-400";
+  return (
+    <div className="rounded-xl border border-border bg-surface p-4">
+      <p className="text-xs font-medium uppercase tracking-wide text-text-muted">
+        {label}
+      </p>
+      <p className="mt-2 text-2xl font-semibold tabular-nums text-text">
+        {format(delta.today)}
+      </p>
+      <p
+        className={`mt-1 flex items-center gap-1 text-xs tabular-nums ${tone}`}
+      >
+        {percent === null ? (
+          <span className="text-text-muted">
+            nothing yesterday to compare with
+          </span>
+        ) : (
+          <>
+            {rising ? <ArrowUpRight size={12} /> : <ArrowDownRight size={12} />}
+            {Math.abs(percent)}%
+            <span className="text-text-muted">
+              vs {format(delta.yesterday)} yesterday
+            </span>
+          </>
+        )}
+      </p>
+      {sub && <p className="mt-1 text-[11px] text-text-muted">{sub}</p>}
+    </div>
+  );
+}
+
+function Attention({ items }: { items: AttentionItem[] }) {
+  if (items.length === 0) {
+    return (
+      <div className="mt-3 flex items-center gap-2 rounded-xl border border-border bg-surface px-4 py-3 text-sm text-text-muted">
+        <CircleCheck
+          size={16}
+          className="text-emerald-600 dark:text-emerald-400"
+        />
+        Nothing is near a ceiling, over a cap, or refusing requests.
+      </div>
+    );
+  }
+  return (
+    <div className="mt-3 space-y-2">
+      {items.map((item, i) => (
+        <Link
+          key={`${item.kind}-${i}`}
+          to={item.where.replace("/#", "")}
+          className={
+            "flex items-center gap-2 rounded-xl border px-4 py-3 text-sm hover:opacity-90 " +
+            (item.severity === "critical"
+              ? "border-red-500/30 bg-red-500/5 text-red-500"
+              : "border-amber-500/30 bg-amber-500/5 text-amber-600 dark:text-amber-400")
+          }
+        >
+          {item.severity === "critical" ? (
+            <AlertOctagon size={16} />
+          ) : (
+            <AlertTriangle size={16} />
+          )}
+          <span className="font-medium">{item.what}</span>
+        </Link>
+      ))}
+    </div>
+  );
+}
+
+type Metric = "request_count" | "tokens" | "cost_usd";
+
+const METRICS: { key: Metric; label: string; format: (n: number) => string }[] =
+  [
+    {
+      key: "request_count",
+      label: "Requests",
+      format: (n) => n.toLocaleString(),
+    },
+    { key: "tokens", label: "Tokens", format: (n) => n.toLocaleString() },
+    { key: "cost_usd", label: "Cost", format: (n) => formatUsdCost(n) },
+  ];
+
+function Trend({ data }: { data: OverviewResponse }) {
+  const [metric, setMetric] = useState<Metric>("request_count");
+  const chosen = METRICS.find((m) => m.key === metric)!;
+  // Same series, three readings. Separate charts would be three answers to
+  // "has this been growing", read one at a time, on a screen meant to be
+  // taken in at a glance.
+  return (
+    <div className="mt-3 rounded-xl border border-border bg-surface p-4">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <p className="text-sm text-text-muted">
+          Last {data.days} days, from the usage rows — a restart does not change
+          this.
+        </p>
+        <div className="flex gap-1">
+          {METRICS.map((m) => (
+            <button
+              key={m.key}
+              type="button"
+              onClick={() => setMetric(m.key)}
+              className={
+                "rounded-lg px-2.5 py-1 text-xs font-medium " +
+                (metric === m.key
+                  ? "bg-primary text-primary-foreground"
+                  : "border border-border text-text-muted hover:bg-background")
+              }
+            >
+              {m.label}
+            </button>
+          ))}
+        </div>
+      </div>
+      <div className="mt-3 h-56">
+        <ResponsiveContainer width="100%" height="100%">
+          <AreaChart
+            data={data.series}
+            margin={{ top: 4, right: 8, left: 0, bottom: 0 }}
+          >
+            <defs>
+              <linearGradient id="overviewFill" x1="0" y1="0" x2="0" y2="1">
+                <stop
+                  offset="0%"
+                  stopColor="var(--color-primary)"
+                  stopOpacity={0.35}
+                />
+                <stop
+                  offset="100%"
+                  stopColor="var(--color-primary)"
+                  stopOpacity={0.02}
+                />
+              </linearGradient>
+            </defs>
+            <CartesianGrid
+              strokeDasharray="3 3"
+              stroke="var(--color-border)"
+              vertical={false}
+            />
+            <XAxis
+              dataKey="day"
+              tick={{ fontSize: 11, fill: "var(--color-text-muted)" }}
+              tickFormatter={(d: string) => d.slice(5)}
+              stroke="var(--color-border)"
+            />
+            <YAxis
+              tick={{ fontSize: 11, fill: "var(--color-text-muted)" }}
+              stroke="var(--color-border)"
+              width={56}
+            />
+            <Tooltip
+              formatter={(value: unknown) =>
+                chosen.format(
+                  typeof value === "number" ? value : Number(value ?? 0),
+                )
+              }
+              contentStyle={{
+                background: "var(--color-surface)",
+                border: "1px solid var(--color-border)",
+                borderRadius: 8,
+                fontSize: 12,
+              }}
+            />
+            <Area
+              type="monotone"
+              dataKey={metric}
+              stroke="var(--color-primary)"
+              strokeWidth={2}
+              fill="url(#overviewFill)"
+            />
+          </AreaChart>
+        </ResponsiveContainer>
+      </div>
+    </div>
+  );
+}
+
 export default function Overview() {
-  const nodesQuery = useNodeRegistry();
+  const overviewQuery = useOverview();
   const instancesQuery = useInstances();
+  const nodesQuery = useNodeRegistry();
   const usersQuery = useUsers();
-  const metricsQuery = useMetrics();
-  const usageQuery = useUsage();
 
-  const nodes = nodesQuery.data ?? [];
+  const data = overviewQuery.data;
+  const names = new Map(
+    (usersQuery.data ?? []).map((u) => [
+      u.client_id,
+      u.label || u.client_name || u.client_id,
+    ]),
+  );
+
+  // The fleet, kept and demoted to one line: counts of things that exist are
+  // a glance, not a decision, and they were the headline.
   const instances = instancesQuery.data?.instances ?? [];
-  const users = usersQuery.data ?? [];
-
+  const running = instances.filter((i) => i.state === "ready").length;
+  const nodes = nodesQuery.data ?? [];
   const activeNodes = nodes.filter((n) => n.is_active).length;
-  const runningInstances = instances.filter((i) => i.state === "ready").length;
-  const stoppedInstances = instances.filter((i) => i.state === "stopped").length;
-  const activeUsers = users.filter((u) => u.is_active).length;
 
-  const inference = metricsQuery.data?.inference;
-  const backendEntries = Object.values(metricsQuery.data?.backends ?? {});
-  const openCircuits = backendEntries.filter((b) => b.circuit_state === "open").length;
-  const halfOpenCircuits = backendEntries.filter((b) => b.circuit_state === "half-open").length;
-  const errorRate =
-    inference && inference.requests_total > 0
-      ? `${((inference.errors_total / inference.requests_total) * 100).toFixed(1)}%`
-      : "0.0%";
-
-  /**
-   * PRM-205: a rate needs its denominator before it means anything.
-   *
-   * This dashboard read `33.3%` while the gateway had served **three
-   * requests** — one failure out of three, after a restart. Colouring that red
-   * is a false alarm, and false alarms are how a colour stops being read. Below
-   * a usable sample the card stays neutral and says how many requests it is
-   * talking about, so the number can be dismissed rather than believed.
-   */
-  const MEANINGFUL_SAMPLE = 20;
-  const requestsSeen = inference?.requests_total ?? 0;
-  const errorFraction =
-    inference && requestsSeen > 0 ? inference.errors_total / requestsSeen : 0;
-  const errorTone =
-    requestsSeen < MEANINGFUL_SAMPLE
-      ? "neutral"
-      : errorFraction >= 0.1
-        ? "bad"
-        : errorFraction >= 0.01
-          ? "warn"
-          : "good";
-  const errorReason =
-    requestsSeen < MEANINGFUL_SAMPLE
-      ? `Only ${requestsSeen} request${requestsSeen === 1 ? "" : "s"} since the gateway started — too few to read a rate from.`
-      : errorTone === "bad"
-        ? `${inference?.errors_total} of ${requestsSeen} requests failed.`
-        : errorTone === "warn"
-          ? `${inference?.errors_total} of ${requestsSeen} requests failed.`
-          : `${requestsSeen} requests, essentially none failing.`;
-
-  const backends = metricsQuery.data?.backends ?? {};
-  const attentionEntries: AttentionEntry[] = instances
-    .map((instance) => ({ instance, circuitState: backends[instance.id]?.circuit_state }))
-    .filter(
-      ({ instance, circuitState }) =>
-        instance.state === "error" || circuitState === "open" || circuitState === "half-open",
-    )
+  const unhealthy: AttentionEntry[] = instances
+    .filter((i) => i.state === "error")
+    .map((i) => ({ instance: i, circuitState: "closed" as const }))
     .sort((a, b) => attentionScore(b) - attentionScore(a));
 
-  // RM-34: today's usage & cost, aggregated from RM-32/33's per-client/per-model data.
-  const usageEntries = usageQuery.data?.data ?? [];
-  const tokensToday = usageEntries.reduce((sum, e) => sum + e.total_tokens, 0);
-  const hasAnyCost = usageEntries.some((e) => e.estimated_cost_usd !== null);
-  const spendToday = usageEntries.reduce((sum, e) => sum + (e.estimated_cost_usd ?? 0), 0);
-  const modelTotals = new Map<string, number>();
-  for (const e of usageEntries) {
-    for (const m of e.by_model) {
-      modelTotals.set(m.model_id, (modelTotals.get(m.model_id) ?? 0) + m.total_tokens);
-    }
-  }
-  const topModel = [...modelTotals.entries()].sort((a, b) => b[1] - a[1])[0];
+  const errorsToday =
+    (data?.signals.interrupted.today ?? 0) +
+    (data?.signals.upstream_errors.today ?? 0);
+  const requestsToday = data?.signals.requests.today ?? 0;
 
   return (
     <div className="flex min-h-screen bg-background">
       <Sidebar />
       <main className="min-w-0 flex-1 px-8 py-8">
-        <h1 className="text-2xl font-semibold text-text">Overview</h1>
-
-        {metricsQuery.data?.dependencies?.redis.reachable === false && (
-          <div className="mt-4 flex items-start gap-2 rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-800 dark:border-red-900 dark:bg-red-500/10 dark:text-red-300">
-            <AlertTriangle size={18} className="mt-0.5 shrink-0" />
-            <span>
-              {/* RM-79: not dismissible. The platform is answering 401 to
-                  everything, and /health still reads green — this is the only
-                  place that says so. */}
-              <strong>Redis is unreachable.</strong>{" "}
-              {metricsQuery.data.dependencies.redis.impact}
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <h1 className="text-2xl font-semibold text-text">Overview</h1>
+          <div className="flex items-center gap-3 text-xs text-text-muted">
+            <span className="tabular-nums">
+              {activeNodes}/{nodes.length} nodes · {running} running · up{" "}
+              {formatUptime(data?.fleet.uptime_seconds ?? 0)}
             </span>
+            <button
+              type="button"
+              onClick={() => void overviewQuery.refetch()}
+              disabled={overviewQuery.isFetching}
+              className="flex items-center gap-1.5 rounded-lg bg-primary px-3 py-1.5 text-sm font-medium text-primary-foreground hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              <RefreshCw
+                size={14}
+                className={
+                  overviewQuery.isFetching ? "animate-spin" : undefined
+                }
+              />
+              Refresh
+            </button>
           </div>
+        </div>
+
+        {overviewQuery.isError && (
+          <p className="mt-4 rounded-xl border border-border bg-surface px-4 py-3 text-sm text-red-600">
+            Could not read the platform figures.
+          </p>
         )}
 
-        <div className="mt-4">
-          <BudgetAlertBanner />
-        </div>
-
-        <div className="mt-6 grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
-          <StatCard
-            label="Nodes"
-            value={`${activeNodes} / ${nodes.length}`}
-            sub="active"
-            // Also unambiguous: a configured node that is not active is capacity
-            // the platform believes it has and does not.
-            tone={nodes.length === 0 ? "neutral" : activeNodes < nodes.length ? "bad" : "good"}
-            toneReason={
-              nodes.length === 0
-                ? undefined
-                : activeNodes < nodes.length
-                  ? `${nodes.length - activeNodes} configured node${nodes.length - activeNodes === 1 ? " is" : "s are"} not active.`
-                  : "Every configured node is active."
-            }
-            icon={HardDrive}
-          />
-          <StatCard
-            label="Instances"
-            value={instances.length}
-            sub={`${runningInstances} running · ${stoppedInstances} stopped`}
-            icon={Boxes}
-          />
-          <StatCard label="Users" value={activeUsers} sub={`of ${users.length} active`} icon={UsersIcon} />
-          <StatCard
-            label="Gateway uptime"
-            value={metricsQuery.data ? formatUptime(metricsQuery.data.uptime_seconds) : "—"}
-            icon={Timer}
-          />
-        </div>
-
-        <h2 className="mt-10 text-sm font-medium uppercase tracking-wide text-text-muted">
-          Request health
-        </h2>
-        <div className="mt-3 grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
-          <StatCard
-            label="Requests"
-            value={inference?.requests_active ?? "—"}
-            sub={inference ? `active now · ${inference.requests_total} total` : undefined}
-            icon={Activity}
-          />
-          <StatCard
-            label="Error rate"
-            value={inference ? errorRate : "—"}
-            sub={requestsSeen > 0 ? `of ${requestsSeen.toLocaleString()} requests` : undefined}
-            tone={errorTone}
-            toneReason={errorReason}
-            icon={AlertTriangle}
-          />
-          <StatCard
-            label="Latency (p50)"
-            value={inference ? `${inference.latency_p50_ms} ms` : "—"}
-            sub={inference ? `p95 ${inference.latency_p95_ms}ms · p99 ${inference.latency_p99_ms}ms` : undefined}
-            toneReason="Deliberately uncoloured: what counts as slow depends entirely on the model and the request. A threshold here would invent alarms."
-            icon={Gauge}
-          />
-          <StatCard
-            label="Circuits open"
-            value={openCircuits}
-            // RM-73: these are backends, not models. With replicas the old
-            // "of N models" was simply wrong — two instances of one model read
-            // as two models.
-            sub={`of ${backendEntries.length} instance${backendEntries.length === 1 ? "" : "s"}${halfOpenCircuits > 0 ? ` · ${halfOpenCircuits} half-open` : ""}`}
-            // Unambiguous, unlike latency: a tripped breaker means the gateway
-            // has stopped sending traffic to a backend. There is no reading of
-            // that which is fine.
-            tone={openCircuits > 0 ? "bad" : halfOpenCircuits > 0 ? "warn" : "good"}
-            toneReason={
-              openCircuits > 0
-                ? `${openCircuits} backend${openCircuits === 1 ? " is" : "s are"} being skipped because its circuit tripped.`
-                : halfOpenCircuits > 0
-                  ? `${halfOpenCircuits} backend${halfOpenCircuits === 1 ? " is" : "s are"} being probed after a trip.`
-                  : "Every backend is taking traffic."
-            }
-            icon={AlertOctagon}
-          />
-        </div>
-        <p className="mt-2 text-xs text-text-muted">
-          Counters are process-memory only — they reset when the gateway restarts, and reflect the
-          current snapshot rather than a historical trend.
-        </p>
-
-        <h2 className="mt-10 text-sm font-medium uppercase tracking-wide text-text-muted">
+        {/* ── 1 · what needs attention ─────────────────────────────────── */}
+        <h2 className="mt-8 text-sm font-medium uppercase tracking-wide text-text-muted">
           Needs attention
         </h2>
-        <div className="mt-3">
-          <AttentionTable entries={attentionEntries} />
+        <Attention items={data?.attention ?? []} />
+
+        {/* ── 2 · the signals, each against yesterday ──────────────────── */}
+        <h2 className="mt-8 text-sm font-medium uppercase tracking-wide text-text-muted">
+          Today
+        </h2>
+        <div className="mt-3 grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
+          {data ? (
+            <>
+              <Signal label="Requests" delta={data.signals.requests} />
+              <Signal label="Tokens" delta={data.signals.tokens} />
+              <Signal
+                label="Cost"
+                delta={data.signals.cost_usd}
+                format={(n) => formatUsdCost(n)}
+              />
+              <Signal
+                label="Failed or abandoned"
+                delta={{
+                  today: errorsToday,
+                  yesterday:
+                    data.signals.interrupted.yesterday +
+                    data.signals.upstream_errors.yesterday,
+                  percent: null,
+                }}
+                lowerIsBetter
+                sub={
+                  requestsToday
+                    ? `${((errorsToday / requestsToday) * 100).toFixed(1)}% of today's requests · ${data.signals.upstream_errors.today} backend, ${data.signals.interrupted.today} abandoned`
+                    : "nothing billed today yet"
+                }
+              />
+            </>
+          ) : (
+            <div className="col-span-full rounded-xl border border-border bg-surface p-6 text-sm text-text-muted">
+              Reading the usage rows…
+            </div>
+          )}
         </div>
 
-        <h2 className="mt-10 text-sm font-medium uppercase tracking-wide text-text-muted">
-          Usage &amp; cost
+        {/* ── 3 · the trend ────────────────────────────────────────────── */}
+        <h2 className="mt-8 text-sm font-medium uppercase tracking-wide text-text-muted">
+          Trend
         </h2>
-        <div className="mt-3 grid grid-cols-1 gap-4 sm:grid-cols-3">
-          <StatCard
-            label="Tokens today"
-            value={usageQuery.data ? tokensToday.toLocaleString() : "—"}
-            sub={usageQuery.data ? `${usageEntries.length} client${usageEntries.length === 1 ? "" : "s"}` : undefined}
-            icon={Activity}
-          />
-          <StatCard
-            label="Est. spend today"
-            value={usageQuery.data ? (hasAnyCost ? formatUsdCost(spendToday) : "—") : "—"}
-            sub={usageQuery.data && !hasAnyCost ? "No pricing configured" : undefined}
-            icon={Coins}
-          />
-          <StatCard
-            label="Top model"
-            value={topModel ? topModel[0] : "—"}
-            sub={topModel ? `${topModel[1].toLocaleString()} tokens today` : undefined}
-            icon={Trophy}
-          />
+        {data && <Trend data={data} />}
+
+        {/* ── 4 · who, and on what ─────────────────────────────────────── */}
+        {/* Two columns only from `xl`: at 1080px each table was ~280px wide
+            against a 420px minimum, so the cost column fell off the right.
+            A 13-inch laptop is not an edge case. */}
+        <div className="mt-8 grid grid-cols-1 gap-4 xl:grid-cols-2">
+          <div>
+            <h2 className="text-sm font-medium uppercase tracking-wide text-text-muted">
+              Models, last {data?.days ?? 14} days
+            </h2>
+            <div className="mt-3 overflow-x-auto rounded-xl border border-border bg-surface">
+              <table className="w-full min-w-[420px] text-left text-sm">
+                <thead>
+                  <tr className="border-b border-border text-xs uppercase tracking-wide text-text-muted">
+                    <th className="px-4 py-3 font-medium">Model</th>
+                    <th className="px-4 py-3 text-right font-medium">
+                      Requests
+                    </th>
+                    <th className="px-4 py-3 text-right font-medium">p95</th>
+                    <th className="px-4 py-3 text-right font-medium">Cost</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {(data?.models ?? []).map((m) => (
+                    <tr
+                      key={m.model_id}
+                      className="border-b border-border last:border-0"
+                    >
+                      <td className="px-4 py-3 font-mono text-xs text-text">
+                        {m.model_id}
+                      </td>
+                      <td className="px-4 py-3 text-right tabular-nums text-text-muted">
+                        {m.request_count.toLocaleString()}
+                      </td>
+                      <td className="px-4 py-3 text-right tabular-nums text-text-muted">
+                        {m.latency ? (
+                          `${(m.latency.p95_ms / 1000).toFixed(1)}s`
+                        ) : (
+                          <span
+                            className="text-[11px]"
+                            title="No request of this model carries a duration — rows written before PRM-245 have none."
+                          >
+                            —
+                          </span>
+                        )}
+                      </td>
+                      <td className="px-4 py-3 text-right tabular-nums text-text-muted">
+                        {formatUsdCost(m.cost_usd)}
+                      </td>
+                    </tr>
+                  ))}
+                  {(data?.models ?? []).length === 0 && (
+                    <tr>
+                      <td
+                        colSpan={4}
+                        className="p-8 text-center text-text-muted"
+                      >
+                        Nothing billed in this window.
+                      </td>
+                    </tr>
+                  )}
+                </tbody>
+              </table>
+            </div>
+          </div>
+
+          <div>
+            <h2 className="text-sm font-medium uppercase tracking-wide text-text-muted">
+              Consumers today
+            </h2>
+            <div className="mt-3 overflow-x-auto rounded-xl border border-border bg-surface">
+              <table className="w-full min-w-[420px] text-left text-sm">
+                <thead>
+                  <tr className="border-b border-border text-xs uppercase tracking-wide text-text-muted">
+                    <th className="px-4 py-3 font-medium">Consumer</th>
+                    <th className="px-4 py-3 text-right font-medium">
+                      Requests
+                    </th>
+                    <th className="px-4 py-3 text-right font-medium">
+                      vs yesterday
+                    </th>
+                    <th className="px-4 py-3 text-right font-medium">Cost</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {(data?.clients ?? []).map((c) => (
+                    <tr
+                      key={c.client_id}
+                      className="border-b border-border last:border-0"
+                    >
+                      <td className="px-4 py-3 text-text">
+                        {names.get(c.client_id) ?? c.client_id}
+                      </td>
+                      <td className="px-4 py-3 text-right tabular-nums text-text-muted">
+                        {c.request_count.toLocaleString()}
+                      </td>
+                      <td className="px-4 py-3 text-right tabular-nums">
+                        {c.percent === null ? (
+                          <span
+                            className="text-[11px] text-text-muted"
+                            title="No traffic yesterday"
+                          >
+                            new today
+                          </span>
+                        ) : (
+                          <span
+                            className={
+                              c.percent > 0
+                                ? "text-amber-600 dark:text-amber-400"
+                                : "text-text-muted"
+                            }
+                          >
+                            {c.percent > 0 ? "+" : ""}
+                            {c.percent}%
+                          </span>
+                        )}
+                      </td>
+                      <td className="px-4 py-3 text-right tabular-nums text-text-muted">
+                        {formatUsdCost(c.cost_usd)}
+                      </td>
+                    </tr>
+                  ))}
+                  {(data?.clients ?? []).length === 0 && (
+                    <tr>
+                      <td
+                        colSpan={4}
+                        className="p-8 text-center text-text-muted"
+                      >
+                        Nobody has been billed today yet.
+                      </td>
+                    </tr>
+                  )}
+                </tbody>
+              </table>
+            </div>
+          </div>
         </div>
+
+        {unhealthy.length > 0 && (
+          <>
+            <h2 className="mt-8 text-sm font-medium uppercase tracking-wide text-text-muted">
+              Instances in error
+            </h2>
+            <div className="mt-3">
+              <AttentionTable entries={unhealthy} />
+            </div>
+          </>
+        )}
 
         <div className="mt-8 flex flex-wrap gap-2">
+          <Link to="/activity" className={linkChipClass}>
+            → Who is calling now
+          </Link>
+          <Link to="/limits" className={linkChipClass}>
+            → Limits
+          </Link>
+          <Link to="/billing" className={linkChipClass}>
+            → Billing
+          </Link>
           <Link to="/instances" className={linkChipClass}>
             → Instances
-          </Link>
-          <Link to="/nodes" className={linkChipClass}>
-            → Nodes
-          </Link>
-          <Link to="/usage" className={linkChipClass}>
-            → Usage
-          </Link>
-          <Link to="/users" className={linkChipClass}>
-            → Users
           </Link>
         </div>
       </main>

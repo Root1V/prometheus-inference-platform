@@ -135,3 +135,29 @@ async def test_the_percentile_is_a_duration_that_actually_happened():
     row = next(r for r in await db.query_latency_by_model(today, today) if r["model"] == "mm")
     assert row["p95_ms"] in (10, 20, 30, 40, 1000)
     assert row["p99_ms"] == 1000, "the outlier must be visible at p99"
+
+
+async def test_latency_is_keyed_the_way_the_cost_rows_are():
+    """So the dashboard can join them. PRM-113 keeps `model_id` (the catalogue
+    id, stable) separate from `model_slug` (the name it answered to), and the
+    first version of this query grouped by the slug while the cost query
+    grouped by the id — so every model's p95 came out empty against the live
+    deployment. The join key is the thing being asserted."""
+    import datetime as _dt
+
+    await db.create_tables(db.get_engine())
+    today = _dt.datetime.now(_dt.timezone.utc).date()
+    await db.record_usage(
+        "c3",
+        "catalog-id",
+        1,
+        1,
+        model_slug="the-name-it-answered-to",
+        duration_ms=42,
+        request_id="join",
+    )
+
+    latency = {r["model"] for r in await db.query_latency_by_model(today, today)}
+    costed = {r["model_id"] for r in await db.query_model_cost_range(today, today)}
+    assert "catalog-id" in latency
+    assert latency & costed, "the two queries cannot be joined"

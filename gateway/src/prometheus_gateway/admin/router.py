@@ -73,7 +73,7 @@ import httpx
 from fastapi import APIRouter, Request, Response
 from fastapi.responses import JSONResponse
 
-from .. import audit, db, pricing, rate_limits, traffic_split
+from .. import audit, billing, db, pricing, rate_limits, traffic_split
 from ..budget import resolve_client_limits
 from ..rate_limit_middleware import INFERENCE_ENDPOINT_SLUGS
 from ..rate_limiter import PLATFORM_IDENTITY, RateLimiter
@@ -1611,6 +1611,204 @@ def create_admin_router(manager_client: ManagerApiClient) -> APIRouter:
             if entry["last_seen_ago_s"] is None:
                 entry["last_seen_ago_s"] = 0
         return sorted(counted.values(), key=lambda a: a["last_seen_ago_s"])
+
+    _OVERVIEW_DAYS = 14
+    # What counts as close enough to a ceiling to say so. Below this a number
+    # is headroom and printing it is noise; above it, an operator can still
+    # act before anyone is refused.
+    _NEAR_CEILING_PERCENT = 80.0
+
+    @router.get("/admin/api/overview")
+    async def get_overview(request: Request) -> Any:
+        """The dashboard, assembled once — PRM-246.
+
+        One call rather than the six the page used to make, because the page
+        is a single screen and six independent polls make it a single screen
+        that is never consistent with itself.
+
+        **Everything here that can come from the usage rows does**, and that
+        is the difference from what it replaced: the old page read
+        `metrics_store`, which is process memory, so after a restart it
+        announced `5 total requests` and a p95 equal to its p99 on a platform
+        that had served thousands. A dashboard whose numbers reset when you
+        deploy is a dashboard nobody can use to decide anything.
+
+        Ordered the way the practice says to read one — what needs attention,
+        then the signals with something to compare against, then the trend,
+        then who and on what.
+        """
+        if (forbidden := _require_scope(request, "admin:read")) is not None:
+            return forbidden
+
+        today = _dt.datetime.now(_dt.timezone.utc).date()
+        yesterday = today - _dt.timedelta(days=1)
+        start = today - _dt.timedelta(days=_OVERVIEW_DAYS - 1)
+
+        series: list[dict[str, Any]] = []
+        models: list[dict[str, Any]] = []
+        latency: list[dict[str, Any]] = []
+        clients_today: list[dict[str, Any]] = []
+        clients_yesterday: list[dict[str, Any]] = []
+        try:
+            series = await db.query_daily_cost_range(start, today)
+            models = await db.query_model_cost_range(start, today)
+            latency = await db.query_latency_by_model(start, today)
+            clients_today = await db.query_client_cost_range(today, today)
+            clients_yesterday = await db.query_client_cost_range(yesterday, yesterday)
+        except Exception as exc:  # pragma: no cover — advisory, never fatal
+            logger.warning("admin.overview_usage_read_error", error=str(exc))
+
+        by_day = {row["day"]: row for row in series}
+        day_now = by_day.get(today, {})
+        day_before = by_day.get(yesterday, {})
+
+        def _delta(key: str) -> dict[str, Any]:
+            """Today against yesterday. `None` where there is nothing to
+            compare to — a first day of traffic is not a 100% rise."""
+            now = day_now.get(key) or 0
+            before = day_before.get(key) or 0
+            return {
+                "today": now,
+                "yesterday": before,
+                "percent": round((now - before) / before * 100, 1) if before else None,
+            }
+
+        # ── what needs attention ─────────────────────────────────────────────
+        attention: list[dict[str, Any]] = []
+
+        redis_client = getattr(request.app.state, "shared_redis", None)
+        settings: Settings = request.app.state.settings
+        if redis_client is not None:
+            try:
+                for counter in await RateLimiter(redis_client).live_counters():
+                    layer = rate_limits.counter_layer(counter["identity"], counter["endpoint"])
+                    limit, _ = rate_limits.live_limit_for(
+                        settings,
+                        layer=layer,
+                        dimension=counter["dimension"],
+                        endpoint=counter["endpoint"],
+                        endpoint_count=len(INFERENCE_ENDPOINT_SLUGS),
+                    )
+                    if not limit:
+                        continue
+                    percent = round(counter["used"] / limit * 100, 1)
+                    if percent >= _NEAR_CEILING_PERCENT:
+                        attention.append(
+                            {
+                                "kind": "ceiling",
+                                "severity": "critical" if percent >= 100 else "warning",
+                                "what": f"{counter['identity']} at {percent}% of its "
+                                f"{counter['dimension']} ceiling",
+                                "where": "/#/limits",
+                            }
+                        )
+            except Exception as exc:  # pragma: no cover — advisory
+                logger.warning("admin.overview_limits_read_error", error=str(exc))
+
+        try:
+            for alert in await billing.build_alerts_listing(redis_client):
+                cap = alert.get("monthly_spend_cap_usd")
+                spend = alert.get("spend_usd") or 0.0
+                percent = round(spend / cap * 100, 1) if cap else None
+                attention.append(
+                    {
+                        "kind": "budget",
+                        "severity": "critical" if percent and percent >= 100 else "warning",
+                        "what": (
+                            f"{alert['client_id']} at {percent}% of its monthly cap"
+                            if percent is not None
+                            else f"{alert['client_id']} crossed a spend threshold"
+                        ),
+                        "where": "/#/billing",
+                    }
+                )
+        except Exception as exc:  # pragma: no cover — advisory
+            logger.warning("admin.overview_alerts_read_error", error=str(exc))
+
+        metrics = await metrics_store.snapshot()
+        for backend_id, backend in (metrics.get("backends") or {}).items():
+            if backend.get("circuit_state") == "open":
+                attention.append(
+                    {
+                        "kind": "circuit",
+                        "severity": "critical",
+                        "what": f"{backend_id}: circuit open, requests are being refused",
+                        "where": "/#/limits",
+                    }
+                )
+
+        # A model serving traffic that bills nothing. Measured history here:
+        # this is how an unpriced model goes a month before anyone notices.
+        unpriced = day_now.get("unpriced_requests") or 0
+        if unpriced:
+            attention.append(
+                {
+                    "kind": "unpriced",
+                    "severity": "warning",
+                    "what": f"{unpriced} request(s) today billed nothing — a model has no price",
+                    "where": "/#/billing",
+                }
+            )
+
+        severity_order = {"critical": 0, "warning": 1}
+        attention.sort(key=lambda a: severity_order.get(a["severity"], 2))
+
+        # ── who moved, today against yesterday ───────────────────────────────
+        before_by_client = {row["client_id"]: row for row in clients_yesterday}
+        movers = []
+        for row in clients_today:
+            was = (before_by_client.get(row["client_id"]) or {}).get("request_count") or 0
+            now = row["request_count"]
+            movers.append(
+                {
+                    **row,
+                    "request_count_yesterday": was,
+                    "percent": round((now - was) / was * 100, 1) if was else None,
+                }
+            )
+        movers.sort(key=lambda r: -r["request_count"])
+
+        latency_by_model = {row["model"]: row for row in latency}
+        return {
+            "days": _OVERVIEW_DAYS,
+            "attention": attention,
+            "signals": {
+                "requests": _delta("request_count"),
+                "tokens": _delta("tokens"),
+                "cost_usd": _delta("cost_usd"),
+                "interrupted": _delta("interrupted"),
+                "upstream_errors": _delta("upstream_errors"),
+            },
+            "series": [
+                {
+                    "day": row["day"].isoformat()
+                    if hasattr(row["day"], "isoformat")
+                    else row["day"],
+                    "request_count": row["request_count"],
+                    "tokens": row["tokens"],
+                    "cost_usd": row["cost_usd"] or 0.0,
+                    "interrupted": row["interrupted"],
+                    "upstream_errors": row["upstream_errors"],
+                }
+                for row in series
+            ],
+            # Sorted before slicing — `query_model_cost_range` returns them in
+            # whatever order the group-by produced, so taking the first eight
+            # gave the first eight *alphabetically* under a heading that
+            # promises the ones that matter. Measured: the busiest model on
+            # the deployment, with 4,535 requests, was not among them.
+            "models": [
+                {**row, "latency": latency_by_model.get(row.get("model_id") or "")}
+                for row in sorted(models, key=lambda r: -(r.get("request_count") or 0))[:8]
+            ],
+            "clients": movers[:8],
+            # Kept, and demoted: counts of things that exist answer "is the
+            # fleet where I left it", which is a glance and not a decision.
+            "fleet": {
+                "uptime_seconds": metrics.get("uptime_seconds"),
+                "requests_active": (metrics.get("inference") or {}).get("requests_active"),
+            },
+        }
 
     @router.get("/admin/api/activity")
     async def get_activity(request: Request) -> Any:
