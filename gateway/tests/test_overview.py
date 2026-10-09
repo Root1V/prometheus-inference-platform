@@ -205,3 +205,121 @@ async def test_a_measured_model_carries_its_percentiles(app, admin):
     model = next(m for m in body["models"] if m["model_id"] == "catalog-id")
     assert model["latency"] is not None, "cost and latency were keyed differently again"
     assert model["latency"]["count"] == 4
+
+
+# ── PRM-247 ──────────────────────────────────────────────────────────────────
+
+
+async def test_the_window_is_one_of_the_three_the_page_offers(app, admin):
+    """Clamped rather than honoured freely: the page has three buttons, and
+    `?days=400` is a table scan through a control that does not exist."""
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
+        await db.create_tables(db.get_engine())
+        for asked, expected in ((7, 7), (30, 30), (400, 14), (-1, 14)):
+            body = (await c.get(f"/admin/api/overview?days={asked}", headers=admin)).json()
+            assert body["days"] == expected, asked
+        assert body["windows"] == [7, 14, 30]
+
+
+async def test_pressure_shows_what_attention_is_still_quiet_about(app, admin, fake_redis):
+    """Attention fires past 80%. The live column shows the shape below it,
+    because "nobody is near a limit" and "a consumer sits at 40%" are
+    different facts and only one of them is quiet."""
+    import time as _time
+
+    await db.create_tables(db.get_engine())
+    bucket = int(_time.time() // 60)
+    # 24 of the 60 RPM endpoint ceiling — 40%, well under the attention bar.
+    await fake_redis.set(f"prometheus:rl:rpm:steady-client:chat_completions:{bucket}", 24)
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
+        body = (await c.get("/admin/api/overview", headers=admin)).json()
+
+    assert body["attention"] == [], "40% should not raise an alarm"
+    row = next(r for r in body["pressure"] if r["identity"] == "steady-client")
+    assert row["percent"] == 40.0
+    assert row["used"] == 24 and row["limit"] == 60
+
+
+async def test_pressure_keeps_only_each_consumer_worst_counter(app, admin, fake_redis):
+    """One row per consumer, or a client hitting six endpoints fills the
+    panel with itself and buries everyone else."""
+    import time as _time
+
+    await db.create_tables(db.get_engine())
+    bucket = int(_time.time() // 60)
+    for endpoint, used in (("chat_completions", 6), ("embeddings", 30), ("rerank", 12)):
+        await fake_redis.set(f"prometheus:rl:rpm:busy:{endpoint}:{bucket}", used)
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
+        body = (await c.get("/admin/api/overview", headers=admin)).json()
+
+    mine = [r for r in body["pressure"] if r["identity"] == "busy"]
+    assert len(mine) == 1
+    assert mine[0]["endpoint"] == "embeddings", "the worst of the three must win"
+
+
+async def test_what_changed_comes_from_the_audit_table(app, admin):
+    """PRM-157's table existed with no way in from the dashboard."""
+    await db.create_tables(db.get_engine())
+    await db.record_audit_event(
+        actor_client_id="admin-1",
+        actor_user_id="admin-1",
+        actor_email="ops@example.com",
+        action="limits.update",
+        target="rate_limit_rpm",
+        outcome="ok",
+        status_code=200,
+    )
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
+        body = (await c.get("/admin/api/overview", headers=admin)).json()
+
+    assert body["changes"][0]["action"] == "limits.update"
+    assert body["changes"][0]["actor"] == "ops@example.com"
+    # The value `audit.record` actually writes. The page coloured every row
+    # red because it compared against "success", which never occurs.
+    assert body["changes"][0]["outcome"] == "ok"
+
+
+async def test_signing_in_is_not_a_change(app, admin):
+    """Measured on the deployment: 64 logins against 10 configuration
+    changes. A panel called "what changed" whose rows are all logins hides
+    the thing it exists to show."""
+    await db.create_tables(db.get_engine())
+    for i in range(12):
+        await db.record_audit_event(
+            actor_client_id="a",
+            actor_user_id="a",
+            actor_email="ops@example.com",
+            action="POST /admin/api/auth/login",
+            target=None,
+            outcome="ok",
+            status_code=200,
+        )
+    await db.record_audit_event(
+        actor_client_id="a",
+        actor_user_id="a",
+        actor_email="ops@example.com",
+        action="PUT /admin/api/limits",
+        target="rate_limit_rpm",
+        outcome="ok",
+        status_code=200,
+    )
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
+        body = (await c.get("/admin/api/overview", headers=admin)).json()
+
+    assert all("auth/login" not in c["action"] for c in body["changes"])
+    assert any("limits" in c["action"] for c in body["changes"])
+
+
+async def test_the_page_is_told_who_is_reading_it(app, admin):
+    """From the token, not the browser — the same reason Activity's `is_you`
+    comes from the server. The id only: `Claims` has no email, and a field
+    that is always null is worse than no field."""
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
+        body = (await c.get("/admin/api/overview", headers=admin)).json()
+
+    assert body["you"]["client_id"] == "a"
+    assert "email" not in body["you"]

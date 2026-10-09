@@ -72,3 +72,35 @@ body {
 .animate-bounce-dot {
   animation: bounce-dot 1.2s ease-in-out infinite;
 }
+
+/*
+ * PRM-247: where the search landed you.
+ *
+ * Jumping to another page leaves the reader to find the thing they searched
+ * for among everything else on it — on Limits that is seventeen inputs. The
+ * ring fades on its own because a highlight that stays becomes part of the
+ * furniture and the next search has nothing left to say.
+ */
+@keyframes focus-flash {
+  0%,
+  60% {
+    box-shadow: 0 0 0 3px var(--color-primary);
+  }
+  100% {
+    box-shadow: 0 0 0 3px transparent;
+  }
+}
+
+.focus-flash {
+  animation: focus-flash 3s ease-out forwards;
+  border-radius: 0.75rem;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  /* Still marked, just not animated — the point is finding it, and that
+     survives without movement. */
+  .focus-flash {
+    animation: none;
+    box-shadow: 0 0 0 3px var(--color-primary);
+  }
+}
