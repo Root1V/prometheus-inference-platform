@@ -1,6 +1,7 @@
 import type { ReactNode } from "react";
 import { HashRouter, Navigate, Route, Routes } from "react-router-dom";
 import { AuthProvider, useAuth } from "./context/AuthContext";
+import { SessionExpiryBanner } from "./components/SessionExpiryBanner";
 import { ToastProvider } from "./context/ToastContext";
 import Billing from "./routes/Billing";
 import Dashboard from "./routes/Dashboard";
@@ -24,6 +25,7 @@ export default function App() {
   return (
     <AuthProvider>
       <ToastProvider>
+        <SessionExpiryBanner />
         <HashRouter>
           <Routes>
             <Route path="/login" element={<Login />} />

@@ -9369,3 +9369,40 @@ item is about.
 **Scope**: in — row-level `data-focus` on users, instances and downloaded models; `?node=` on
 model links; the deadline poll; the background tint; `useFocusFlash` on Users, Dashboard and
 Models. Out — highlighting a row inside a collapsed drawer, which would have to expand it first.
+
+## PRM-249 — The login page tells you why you are there
+
+**Why**: the last page of the sweep, and the one with the least excuse for being vague — it is
+where an operator arrives already having lost something.
+
+The sign-in reply carries `expires_in`, which on this deployment is 10800: three hours. Nothing
+read it. The token was stored and the clock ignored, so a session ended in silence — the next
+call 401'd, the reader was thrown here, and the page said nothing about why. `navigate("/")`
+then discarded the route they were interrupted on. The deadline is stored now, the session ends
+on time rather than arriving as a wall of failed panels, and the page distinguishes an expiry
+from a sign-out and names the route it will return them to. A banner in the last five minutes
+says when the session ends — not a toast, which clears itself after six seconds, and not a
+countdown, because the useful fact is a wall-clock time that does not change.
+
+A refused sign-in read `Invalid Credentials — Invalid client credentials.` — doubled, because
+the generic handler joins an RFC 9457 title to a detail repeating it, and written for the
+machine grant. A person who mistyped a password was told about credentials they had never been
+shown.
+
+The client-id tab is gone. A client id belongs to a software integration, which takes its token
+from the auth-service's token endpoint; this dashboard signs in people. The endpoint still
+accepts the other grant — this is the dashboard declining to offer it. A line on the page says
+so, so nobody hunts for a control that was removed on purpose.
+
+The form also carried no `autocomplete` tokens at all, so password managers mostly declined to
+fill the one screen where they matter most.
+
+**Measured, and handed to PRM-250**: a wrong password against a real account answers in 179ms
+and against an unknown one in 4.5ms, because bcrypt only runs when the account exists — and
+eight failed attempts in a row are served at full speed. The message is identical either way,
+but the clock is not. That is a backend fix and gets its own item.
+
+**Scope**: in — the page, email-only sign-in, stored expiry, the expiry/sign-out notice and
+return route, the five-minute banner, autocomplete, show/hide, the Caps Lock hint, the 401
+wording. Out — the timing oracle and login throttling (PRM-250), and any password-reset flow,
+which has no endpoint behind it.
