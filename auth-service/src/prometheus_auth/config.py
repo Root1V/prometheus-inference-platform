@@ -44,6 +44,15 @@ class Settings(BaseSettings):
     # ── Rate limiting ────────────────────────────────────────────────────────
     auth_rate_limit_rpm: int = 10
 
+    # ── Failed sign-in budget — PRM-250 ──────────────────────────────────────
+    # Failures only, so a working integration refreshing its token on a
+    # schedule never spends any of it. The per-address budget is the larger of
+    # the two because the dashboard's sign-ins all arrive from the gateway's
+    # address — it proxies them server-side without forwarding the caller's.
+    auth_login_max_failures_per_identity: int = 5
+    auth_login_max_failures_per_address: int = 30
+    auth_login_failure_window_seconds: int = 300
+
     # ── Per-role TTLs (overridable via env) ──────────────────────────────────
     auth_ttl_admin_seconds: int = 10800
     auth_ttl_cognitive_seconds: int = 3600
