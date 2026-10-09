@@ -768,6 +768,20 @@ async def query_daily_cost_range(
                 func.sum(case((UsageEvent.cost_usd.is_(None), 1), else_=0)).label(
                     "unpriced_requests"
                 ),
+                # PRM-246: the errors signal, per day and surviving a restart.
+                # `interrupted` is RM-83's mark for a stream that broke after
+                # producing tokens; `upstream_error` is the backend failing.
+                # Two columns rather than one because they are two different
+                # problems — a caller that hung up and a model that fell over
+                # — and a dashboard that added them would send an operator to
+                # look at the wrong one.
+                func.sum(case((UsageEvent.interrupted == 1, 1), else_=0)).label("interrupted"),
+                func.sum(
+                    case(
+                        (UsageEvent.termination_reason == TERMINATION_UPSTREAM_ERROR, 1),
+                        else_=0,
+                    )
+                ).label("upstream_errors"),
             )
             .where(UsageEvent.day >= start, UsageEvent.day <= end)
             .group_by(UsageEvent.day)
@@ -783,6 +797,8 @@ async def query_daily_cost_range(
                 "tokens": int(row.tokens or 0),
                 "request_count": int(row.request_count or 0),
                 "unpriced_requests": int(row.unpriced_requests or 0),
+                "interrupted": int(row.interrupted or 0),
+                "upstream_errors": int(row.upstream_errors or 0),
             }
             for row in result
         ]
@@ -1005,12 +1021,19 @@ async def query_latency_by_model(start: date, end: date) -> list[dict[str, Any]]
     Rows with no `duration_ms` are skipped rather than counted as zero — a
     request nobody timed is not a fast request, and averaging it in is how a
     p95 comes out better the more instrumentation is missing.
+
+    Grouped by `model_id`, **not** `model_slug`, so the caller can join this
+    onto `query_model_cost_range` — PRM-113 separated the two deliberately
+    (the catalogue id never changes; the slug is the name it answered to
+    then), and joining a cost row to a latency row on different keys is how
+    every model's p95 comes out empty. Which it did, measured against the
+    live deployment before this line said so.
     """
     session_factory = get_session_factory()
     async with session_factory() as session:
         stmt = (
             select(
-                UsageEvent.model_slug,
+                UsageEvent.model_id,
                 UsageEvent.duration_ms,
             )
             .where(
@@ -1018,7 +1041,7 @@ async def query_latency_by_model(start: date, end: date) -> list[dict[str, Any]]
                 UsageEvent.day <= end,
                 UsageEvent.duration_ms.is_not(None),
             )
-            .order_by(UsageEvent.model_slug)
+            .order_by(UsageEvent.model_id)
         )
         rows = (await session.execute(stmt)).all()
 

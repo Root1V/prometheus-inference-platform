@@ -9272,3 +9272,36 @@ to print beside a model's name.
 
 **Scope**: in — the columns, the migration, the router passing what it already held,
 `query_latency_by_model`. Out — backfilling, which has nothing to backfill from.
+
+
+## PRM-246 — The dashboard answers what to do
+
+**Why**: it read `metrics_store`, which is process memory. After a restart the platform's headline
+was `0 active · 5 total` requests and a p95 equal to its p99 — on a deployment with fourteen days
+of history and 4,535 requests to one model. Beside that sat counts of things that exist (nodes,
+instances, users), which answer "is the fleet where I left it" and not one question anybody acts
+on. A dashboard whose numbers reset when you deploy cannot be used to decide anything.
+
+**Rebuilt in the order the practice recommends** — attention, then signals with something to
+compare against, then the trend, then who and on what — and everything that can come from the
+usage rows does, so a deploy no longer changes it. One endpoint rather than the six independent
+polls the page used to make, because a single screen assembled from six clocks is a single screen
+that is never consistent with itself.
+
+**Attention is computed, not left to be spotted**: a consumer within 20% of a ceiling, a client
+near its monthly cap, an open circuit, and requests that billed nothing — which is how an unpriced
+model goes a month unnoticed. Empty says so in words, because an empty list and a healthy platform
+look identical.
+
+**Only failures are coloured.** The first version painted a 77.6% fall in cost red, alarming an
+operator about a bill going down. Traffic, tokens and cost have no good direction; failures do.
+
+**Two bugs the live data found, both of the same family — a claim the code did not check.** The
+model table promised the ones that matter and sliced the first eight of whatever order the
+group-by returned, which was alphabetical: the busiest model on the deployment, at 4,535 requests,
+was not in it. And every p95 came out empty because the cost rows are keyed by `model_id` while
+the latency query grouped by `model_slug` — the two PRM-113 separated on purpose. Both have tests
+named after the measurement.
+
+**Scope**: in — `/admin/api/overview`, the per-day error aggregates on `query_daily_cost_range`,
+the page. Out — a per-model drill-down from here, which is what Usage and Billing already are.
