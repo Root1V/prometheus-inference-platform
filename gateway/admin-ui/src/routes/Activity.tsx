@@ -527,12 +527,17 @@ export default function Activity() {
           Consumers today
         </h2>
         <p className="mt-1 text-sm text-text-muted">
-          Everything billed <span className="text-text">since midnight</span>,
-          from the usage rows &mdash; a different window from the section above,
-          and a longer one, so these numbers are larger and a gateway restart
-          does not change them. A consumer here with nothing in &ldquo;Here
-          now&rdquo; simply has not called in the last {windowMinutes} minutes.
-          Expand a row for the people behind it.
+          {/* PRM-241: whose midnight. The usage row stamps its day in UTC
+              because billing is reconciled against it, so "today" here is a
+              UTC day and says so — five hours out of step with the reader's
+              own evening, on the machine this was written on. */}
+          Everything billed{" "}
+          <span className="text-text">since midnight UTC</span>, from the usage
+          rows &mdash; a different window from the section above, and a longer
+          one, so these numbers are larger and a gateway restart does not change
+          them. A consumer here with nothing in &ldquo;Here now&rdquo; simply
+          has not called in the last {windowMinutes} minutes. Expand a row for
+          the people behind it.
         </p>
         <div className="mt-3 overflow-x-auto rounded-xl border border-border bg-surface">
           {activityQuery.isLoading ? (
