@@ -3757,6 +3757,9 @@ async def _record_usage(
             prompt_tokens,
             completion_tokens,
             end_user=end_user,
+            # PRM-245: the same two numbers the GenAI metrics get, kept.
+            duration_ms=round(duration_s * 1000) if duration_s is not None else None,
+            ttft_ms=round(ttft_s * 1000) if ttft_s is not None else None,
             request_kind=request_kind,
             image_count=image_count,
             instance_id=instance_id,
