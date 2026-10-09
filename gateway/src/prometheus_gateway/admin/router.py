@@ -1668,7 +1668,14 @@ def create_admin_router(manager_client: ManagerApiClient) -> APIRouter:
         today_rows: list[dict[str, Any]] = []
         window_rows: list[dict[str, Any]] = []
         try:
-            today_rows = await db.query_activity_today(_dt.date.today())
+            # PRM-241: UTC, not `date.today()`.
+            #
+            # `record_usage` stamps `day` from UTC because billing does, so a
+            # local date disagrees with every row for as many hours as the
+            # offset — five, here, which is why this page emptied itself every
+            # evening at seven. Two other tests already carried this exact
+            # warning in a comment; a guard now carries it for the source.
+            today_rows = await db.query_activity_today(_dt.datetime.now(_dt.timezone.utc).date())
             window_rows = await db.query_activity_since(
                 _dt.datetime.fromtimestamp(window_started_at, tz=_dt.timezone.utc).replace(
                     tzinfo=None

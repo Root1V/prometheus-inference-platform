@@ -210,7 +210,11 @@ async def test_the_end_user_survives_every_path_that_bills(app, caller):
 
     import datetime as _dt
 
-    rows = [r for r in await db.query_activity_today(_dt.date.today()) if r["client_id"] == CLIENT]
+    rows = [
+        r
+        for r in await db.query_activity_today(_dt.datetime.now(_dt.timezone.utc).date())
+        if r["client_id"] == CLIENT
+    ]
     by_user: dict[str | None, int] = {}
     for row in rows:
         by_user[row["end_user"]] = by_user.get(row["end_user"], 0) + row["request_count"]
@@ -239,7 +243,11 @@ async def test_traffic_with_no_end_user_is_kept_under_one_null_row(app, caller):
 
     import datetime as _dt
 
-    rows = [r for r in await db.query_activity_today(_dt.date.today()) if r["client_id"] == CLIENT]
+    rows = [
+        r
+        for r in await db.query_activity_today(_dt.datetime.now(_dt.timezone.utc).date())
+        if r["client_id"] == CLIENT
+    ]
     assert {(r["end_user"], r["request_count"]) for r in rows} == {("alice", 1), (None, 1)}
 
 

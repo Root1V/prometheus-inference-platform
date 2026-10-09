@@ -9145,3 +9145,27 @@ this would silently become two copies of the same list instead of one.
 
 **Scope**: in — the two hooks, their live callers, the guard. Out — the other nine polls, which
 are on the pages that own the data they poll and watch things that change on their own.
+
+
+## PRM-241 — A day is a UTC day
+
+**Why**: `db.record_usage` stamps `usage_events.day` from UTC, because that is what billing is
+reconciled against. PRM-235's Activity endpoint asked for "today" with `date.today()` — the
+machine's local date. The two agree for nineteen hours a day and disagree for five, so the page
+emptied its two "today" sections every evening at seven, and the twenty tests that covered them
+went red twenty minutes after going green with no code change between.
+
+Caught by `.githooks/pre-push` on the way to the first push of this work, which is the one job that
+hook has and the reason it runs on everything rather than on what seems risky.
+
+**The trap was already known.** `test_default_prices.py` and `test_model_groups.py` each carry a
+hand-written comment saying `record_usage` stamps the day in UTC and `date.today()` is wrong. A
+comment in two tests did not stop a third caller walking into it, so the rule is a test now: no
+source file asks the local clock what day it is, and the fact it rests on — that the usage row
+stamps UTC — is asserted beside it, because if that ever changes the rule inverts.
+
+**And the page says whose midnight it is.** "Since midnight" reads as the reader's; it is UTC, five
+hours from theirs here.
+
+**Scope**: in — the UTC date at the call site, the guard, the page copy, the two tests that asked
+the same question the same wrong way.
