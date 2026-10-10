@@ -403,6 +403,16 @@ class RateLimitMiddleware:
         """
         assert self._limiter is not None
 
+        # PRM-255: resolved once, here, because two layers need it now.
+        #
+        # It used to be read inside layer 2, which runs after the endpoint
+        # layer. That was fine while the endpoint layer's token ceiling was
+        # never enforced; the moment it is, a tier that raises a client's
+        # allowance has to be visible to it, or the per-endpoint default
+        # refuses the client the tier was written to let through — and the
+        # operator's way to grant more stops working.
+        tier = await resolve_client_limits(claims.client_id)
+
         # ── Layer 1: the platform ───────────────────────────────────────────
         #
         # Broadest first, and deliberately: if the hardware is saturated the
@@ -494,17 +504,56 @@ class RateLimitMiddleware:
                     extra={"scope": slug},
                 )
 
-        # TPM pre-flight check — read the request body max_tokens hint if present
-        # The actual body is parsed by the router; here we do a lightweight check
-        # based on max_tokens from query or a default sentinel
-        # Full pre-check happens in the router; this only guards the counter read
+        # ── The endpoint's token ceiling, which now refuses ─────────────────
+        #
+        # PRM-255: this check ran, produced an answer, and nobody read it. The
+        # result was stored on `request.state` and used in two places, both of
+        # them header injection — so the ceiling was computed, published in
+        # `X-RateLimit-*`, drawn on the Activity page, and never enforced.
+        # Measured: one consumer sitting at 274% of it for minutes, refused
+        # nothing, while the layer-2 ceiling beside it read 46%. The dashboard
+        # was calling the one limit that could not refuse "closest ceiling".
+        #
+        # This default governs the clients the operator has not spoken about.
+        # A tier's `tpm` is a client-wide allowance, so where one exists it is
+        # layer 2 that bounds them and layer 2 that says so — enforcing the
+        # per-endpoint default underneath it would refuse the very client the
+        # tier was written to let through, and would announce the tier's own
+        # number as if it were a rule about one route. That is the operator's
+        # way to grant more: give the client a tier.
+        #
+        # Counted, not estimated: a request's token cost is unknown until it
+        # has run, so this refuses the *next* caller once the minute is spent
+        # rather than the one that spent it. A single prompt larger than the
+        # ceiling therefore still goes through, once.
+        governed_by_tier = tier is not None and tier.tpm is not None
         tpm_state = await self._limiter.check_tpm_budget(
             claims.client_id,
             slug,
             tpm_limit,
-            0,  # 0 tokens for the gate check only
+            0,  # the gate reads the counter; the cost is added after the call
         )
         request.state._rl_tpm_state = tpm_state
+        if not tpm_state.allowed and not governed_by_tier:
+            retry_after = max(1, tpm_state.reset_at - int(time.time()))
+            logger.warning(
+                "rate_limit.endpoint_tpm_exceeded",
+                client_id=claims.client_id,
+                endpoint=slug,
+                limit=tpm_limit,
+                used=tpm_limit - tpm_state.remaining,
+            )
+            return _rl_problem(
+                request,
+                429,
+                "rate-limit-exceeded-tokens",
+                "Rate Limit Exceeded",
+                f"Client '{claims.client_id}' has exceeded the token rate limit of "
+                f"{tpm_limit} TPM for endpoint '{slug}'. "
+                f"Reset in {retry_after} seconds.",
+                retry_after=retry_after,
+                extra={"scope": slug},
+            )
 
         # ── Layer 2: the client, across every endpoint ──────────────────────
         #
@@ -549,7 +598,6 @@ class RateLimitMiddleware:
         # opinion. A null dimension on a tier means "whatever the platform
         # says" rather than "unlimited" — a tier that omits `rpm` is saying
         # nothing about requests, not granting them freely.
-        tier = await resolve_client_limits(claims.client_id)
         if tier is not None:
             if tier.rpm is not None:
                 client_rpm_limit = tier.rpm

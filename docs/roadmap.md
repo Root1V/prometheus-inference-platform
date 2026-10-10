@@ -9554,3 +9554,35 @@ snapshot taken mid-burst shows a gap that closes by itself.
 
 **Scope**: in — the path capture, its cap, the endpoint field and the chip. Out — recording the
 HTTP status of an unrecognised path, which would need the response and not just the request.
+
+## PRM-255 — The endpoint's token ceiling refuses
+
+**Why**: asked what `CLOSEST CEILING 274.4%` meant. It meant a ceiling that could not refuse.
+
+The per-endpoint TPM gate ran on every request, produced a `RateLimitState`, and nothing read
+the `allowed` field. The result was stored on `request.state._rl_tpm_state`, whose only two
+readers build the `X-RateLimit-*` headers. So the limit was computed, published to callers, drawn
+on the Activity page in red — and never enforced. Measured: one consumer at 109,775 TPM against
+a 40,000 ceiling, 274%, for minutes, refused nothing, while the client-layer ceiling beside it
+sat at 46% and was the only one doing any work.
+
+The instrument that should have caught it ended `assert r.status_code in (200, 429)` with a
+comment saying enforcement happened "via post-charge" somewhere else. It happened nowhere, and a
+test that accepts both outcomes cannot fail.
+
+**Where the grant lives.** A tier's `tpm` is a client-wide allowance, so where a client has one
+it is layer 2 that bounds them and layer 2 that says so. Enforcing the per-endpoint default
+underneath a tier would refuse the very client the tier was written to let through, and would
+announce the tier's number as though it were a rule about one route — which a test from PRM-231
+catches. So the default governs the clients the operator has not spoken about, and giving a
+client a tier is how they get more. The tier is now resolved once, before the endpoint layer,
+because two layers need it.
+
+**Counted, not estimated**: a request's token cost is unknown until it has run, so this refuses
+the next caller once the minute is spent rather than the one that spent it. A single prompt
+larger than the ceiling still goes through once — which, for a consumer sending whole documents,
+is the normal case.
+
+**Scope**: in — the enforcement, the tier exemption, the single tier resolution, the 429's scope
+and log line, and rewriting the test that could not fail. Out — recalibrating the 40,000 default,
+which is a decision about what the platform sells, not about whether a ceiling works.
