@@ -287,6 +287,23 @@ function ConsumerRow({
             </td>
             <td className="px-4 py-3">
               <ActionChips consumer={consumer} />
+              {/* PRM-254: an "Other" count is only useful with the URL under
+                  it — it means this gateway has no such route, which on an
+                  integration is a bug and not an activity. */}
+              {consumer.other_paths.length > 0 && (
+                <span className="mt-1 flex flex-wrap gap-1">
+                  {consumer.other_paths.map((p) => (
+                    <span
+                      key={p.path}
+                      title="This gateway has no route for that path, so the call did nothing. Usually an integration pointing at a URL that does not exist here."
+                      className="rounded border border-border bg-background px-1.5 py-0.5 text-[11px] text-text-muted"
+                    >
+                      <span className="font-mono text-text">{p.path}</span>
+                      <span className="ml-1">&times;{p.count} &middot; no such route</span>
+                    </span>
+                  ))}
+                </span>
+              )}
               <RefusalChips refusals={consumer.refusals} />
             </td>
             <td className="px-4 py-3">

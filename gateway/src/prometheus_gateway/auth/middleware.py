@@ -225,6 +225,9 @@ class JWTAuthMiddleware:
             # PRM-236: and *what* they did, which the connection type never
             # said — it is the URL prefix of whichever request was last.
             classify_action(request.url.path, request.headers.get(SOURCE_HEADER)),
+            # PRM-254: so an unrecognised path can be named rather than counted
+            # as "Other" and left at that.
+            path=request.url.path,
         )
         await self.app(scope, receive, send)
 

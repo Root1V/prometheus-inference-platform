@@ -103,6 +103,9 @@ export interface ActivityConsumer {
   /** PRM-253: models asked for and refused in the window — never billed, so
    *  they appear in no usage row and used to be invisible on this page. */
   refusals: ModelRefusal[];
+  /** PRM-254: the URLs behind an "Other" count — paths this gateway does
+   *  not recognise, which is the one case where the path is the answer. */
+  other_paths: { path: string; count: number }[];
 }
 
 export interface ActivityResponse {
