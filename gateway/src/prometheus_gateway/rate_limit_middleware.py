@@ -541,7 +541,12 @@ class RateLimitMiddleware:
                 client_id=claims.client_id,
                 endpoint=slug,
                 limit=tpm_limit,
-                used=tpm_limit - tpm_state.remaining,
+                # Not `used`: `remaining` saturates at zero, so limit minus it
+                # reports the ceiling back as the consumption every time and
+                # says nothing about how far over the caller is. A field that
+                # reads 40000/40000 when the counter holds 55000 is worse than
+                # no field — recovering the real figure needs the counter, and
+                # the live view on the Activity page already reads it.
             )
             return _rl_problem(
                 request,
