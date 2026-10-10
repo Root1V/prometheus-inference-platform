@@ -418,12 +418,17 @@ class ActivityTracker:
         self._lock = asyncio.Lock()
         self._entries: dict[str, dict[str, Any]] = {}
 
+    # Distinct unclassified paths remembered per identity. A caller looping on
+    # a wrong URL produces one of these, not thousands.
+    _MAX_OTHER_PATHS = 10
+
     async def touch(
         self,
         client_id: str,
         user_id: str,
         connection_type: str,
         action: str = "other",
+        path: str | None = None,
     ) -> None:
         now = time.time()
         async with self._lock:
@@ -444,6 +449,18 @@ class ActivityTracker:
             # window's label. Fifteen ints per action per identity is the price
             # of the two agreeing.
             counter = entry["actions"].setdefault(action, {"buckets": {}, "last_seen": now})
+            # PRM-254: "Other" on its own names nothing.
+            #
+            # It is the label for a path this gateway does not recognise, which
+            # is the one case where the reader needs the path itself: an
+            # integration calling a URL that does not exist looks, on this
+            # page, exactly like one doing something unremarkable. Only for
+            # `other`, and only the distinct paths, so a classified request
+            # costs nothing extra.
+            if action == "other" and path:
+                paths = entry.setdefault("other_paths", {})
+                if path in paths or len(paths) < self._MAX_OTHER_PATHS:
+                    paths[path] = paths.get(path, 0) + 1
             counter["last_seen"] = now
             bucket = int(now // 60)
             counter["buckets"][bucket] = counter["buckets"].get(bucket, 0) + 1
@@ -528,6 +545,13 @@ class ActivityTracker:
                     # inside the window. Same bucket arithmetic as the actions,
                     # and the same reason for it: a count under a heading that
                     # says "last 15 minutes" has to mean that.
+                    # PRM-254: the paths behind an "Other" count.
+                    "other_paths": [
+                        {"path": pth, "count": n}
+                        for pth, n in sorted(
+                            e.get("other_paths", {}).items(), key=lambda kv: -kv[1]
+                        )
+                    ],
                     "refusals": [
                         counted
                         for counted in (

@@ -2037,6 +2037,8 @@ def create_admin_router(manager_client: ManagerApiClient) -> APIRouter:
                     # of them looked like a consumer calling one. Empty after a
                     # restart, like `actions`, because the tracker is memory.
                     "refusals": tracked.get("refusals", []) if tracked else [],
+                    # PRM-254: which URLs the "Other" count is made of.
+                    "other_paths": tracked.get("other_paths", []) if tracked else [],
                     "rpm": None,
                     "tpm": None,
                     "worst": None,

@@ -9533,3 +9533,24 @@ them which URL that is; this item makes the model refusals visible, not the rout
 **Scope**: in — the refusal helper, its logging, the tracker's per-model counters with a cap, the
 endpoint field and the page chips, the source guard. Out — surfacing refusals in the usage rows
 or in Billing, where a request that consumed nothing does not belong.
+
+## PRM-254 — "Other" says which path it was
+
+**Why**: asked directly — what is "Other"? It is `classify_action`'s fallback: a path that is
+not any of the inference, catalog, usage or dashboard routes. Checked against the running
+gateway's OpenAPI: **no documented route classifies as "Other"**, so the label only ever means
+a URL this gateway has no route for. On an integration that is a bug — a call that did nothing
+and billed nothing — and it was being reported as an activity with no way to find out which.
+
+The tracker now keeps the distinct unrecognised paths per identity, capped, and only for
+`other`, so a classified request costs nothing extra. The row reads
+`/v1/completions ×2 · no such route`.
+
+**What it settled**: the consumer that prompted PRM-253 was observed over a full window after
+this shipped — 37 calls arrived, 37 billed, every one `gpt-oss-20b-mxfp4`, no refusals and no
+unrecognised paths. The earlier "20 arrived, 3 produced a usage row — 17 did not" was not loss:
+their generations run to 107s at the tail, and a usage row is written on completion, so a
+snapshot taken mid-burst shows a gap that closes by itself.
+
+**Scope**: in — the path capture, its cap, the endpoint field and the chip. Out — recording the
+HTTP status of an unrecognised path, which would need the response and not just the request.

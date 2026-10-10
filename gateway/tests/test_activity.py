@@ -853,3 +853,43 @@ def test_every_model_refusal_goes_through_the_helper():
         "these model refusals bypass _refuse_model, so they write no usage row, "
         f"move no counter and log nothing — router.py lines {stragglers}"
     )
+
+
+async def test_an_unclassified_path_is_named_not_just_counted():
+    """PRM-254: "Other ×2" on its own tells an operator nothing.
+
+    It is the label for a path this gateway has no route for, which on an
+    integration is a bug — and the one case where the path itself is the
+    answer. Reported from the field as exactly that: a consumer showing
+    "Other" with no way to find out what it was.
+    """
+    from prometheus_gateway.telemetry import ActivityTracker
+
+    tracker = ActivityTracker()
+    await tracker.touch("c1", "u1", "api", action="other", path="/v1/completions")
+    await tracker.touch("c1", "u1", "api", action="other", path="/v1/completions")
+    await tracker.touch("c1", "u1", "api", action="chat", path="/v1/chat/completions")
+
+    entry = next(e for e in await tracker.snapshot() if e["client_id"] == "c1")
+    assert entry["other_paths"] == [{"path": "/v1/completions", "count": 2}]
+
+
+async def test_a_classified_path_is_not_remembered():
+    """Only the unrecognised ones — a working route needs no URL beside it."""
+    from prometheus_gateway.telemetry import ActivityTracker
+
+    tracker = ActivityTracker()
+    await tracker.touch("c1", "u1", "api", action="chat", path="/v1/chat/completions")
+    entry = next(e for e in await tracker.snapshot() if e["client_id"] == "c1")
+    assert entry["other_paths"] == []
+
+
+async def test_the_unclassified_paths_cannot_grow_without_bound():
+    """A caller looping on wrong URLs must not be a leak."""
+    from prometheus_gateway.telemetry import ActivityTracker
+
+    tracker = ActivityTracker()
+    for i in range(ActivityTracker._MAX_OTHER_PATHS + 15):
+        await tracker.touch("c1", "u1", "api", action="other", path=f"/nope/{i}")
+    entry = next(e for e in await tracker.snapshot() if e["client_id"] == "c1")
+    assert len(entry["other_paths"]) == ActivityTracker._MAX_OTHER_PATHS
