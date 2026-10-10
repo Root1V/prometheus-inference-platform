@@ -267,3 +267,39 @@ async def test_a_trusted_proxy_separates_one_caller_from_another(settings_with_p
     assert other.status_code == 401, (
         "one caller exhausting their budget locked out everyone behind the proxy"
     )
+
+
+# ── PRM-252: the trace carries what the caller is not told ───────────────────
+
+
+async def test_the_span_names_the_attempt_its_source_and_why_it_failed(client):
+    """Asserted, not assumed.
+
+    The refusal is deliberately uninformative to the caller, so the span is
+    where an operator finds out which attempt it was, from where, and whether
+    the account even exists. Setting the attributes and exporting them are
+    different things, and only the second one is any use at 3am.
+    """
+    from opentelemetry.sdk.trace import TracerProvider
+    from opentelemetry.sdk.trace.export import SimpleSpanProcessor
+    from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
+
+    import prometheus_auth.routers.oauth2 as oauth2_module
+
+    exporter = InMemorySpanExporter()
+    provider = TracerProvider()
+    provider.add_span_processor(SimpleSpanProcessor(exporter))
+    previous_tracer = oauth2_module._tracer
+    oauth2_module._tracer = provider.get_tracer("test")
+    try:
+        await _fail_from(client, "traced@example.com")
+    finally:
+        oauth2_module._tracer = previous_tracer
+
+    spans = [s for s in exporter.get_finished_spans() if s.name == "token.issuance"]
+    assert spans, "the sign-in produced no token.issuance span"
+    attributes = dict(spans[-1].attributes or {})
+    assert attributes.get("auth.identity") == "traced@example.com"
+    assert attributes.get("auth.source_address") == "127.0.0.1"
+    assert attributes.get("auth.failure_reason") == "unknown_email"
+    assert attributes.get("http.status_code") == 401

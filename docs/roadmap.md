@@ -9482,3 +9482,18 @@ type, which said nothing about who was being refused or from where.
 enriched log fields and span attributes. Out — moving the counter to Redis, and a shared secret
 between gateway and auth-service, which would only matter on a deployment where the
 auth-service is reachable from somewhere other than the gateway's host.
+
+## PRM-252 — The trace is asserted, not assumed
+
+**Why**: PRM-251 set three span attributes and claimed the refusal was traceable. Nothing
+checked that they were exported. Setting an attribute and exporting it are different things,
+and only the second is any use when someone is reading a trace at 3am — which makes this the
+same defect this platform keeps producing: the instrument asserting something it never
+measured.
+
+An in-memory span exporter now asserts that a refused sign-in produces a `token.issuance` span
+carrying `auth.identity`, `auth.source_address`, `auth.failure_reason` and the 401. Removing
+any one of them fails the test.
+
+**Scope**: in — the span assertion. Out — asserting the log fields the same way, which the
+structured logger already writes through a path other tests cover.
