@@ -5,6 +5,7 @@ import {
   type ActivityConsumer,
   type ActivityCounter,
   type EndUserToday,
+  type ModelRefusal,
   type ModelUse,
 } from "../api/activity";
 import { useUsers } from "../api/users";
@@ -81,6 +82,38 @@ function ModelChips({ models }: { models: ModelUse[] }) {
         >
           <span className="font-mono text-text">{m.model ?? "unknown"}</span>
           <span className="ml-1 tabular-nums">×{m.request_count}</span>
+        </span>
+      ))}
+    </span>
+  );
+}
+
+/** Models asked for and refused, in the same window — PRM-253.
+ *
+ *  A refusal is billed to nobody, so it writes no usage row and the models
+ *  column beside it can only ever list what worked. A consumer calling two
+ *  models and being refused on one therefore read as a consumer calling one —
+ *  which is exactly how it was reported to us. This is the other half.
+ */
+function RefusalChips({ refusals }: { refusals: ModelRefusal[] }) {
+  if (refusals.length === 0) return null;
+  return (
+    <span className="mt-1 flex flex-wrap gap-1">
+      {refusals.map((r) => (
+        <span
+          key={`${r.model}:${r.reason}`}
+          title={
+            r.reason === "unknown_model"
+              ? "This name is not registered on the platform — check it against GET /v1/models."
+              : "This credential has no grant for that model. A human admin issues it."
+          }
+          className="rounded border border-amber-300 bg-amber-50 px-1.5 py-0.5 text-[11px] text-amber-900 dark:border-amber-800/60 dark:bg-amber-950/40 dark:text-amber-200"
+        >
+          <span className="font-mono">{r.model}</span>
+          <span className="ml-1">
+            refused ×{r.count} &middot;{" "}
+            {r.reason === "unknown_model" ? "not registered" : "not granted"}
+          </span>
         </span>
       ))}
     </span>
@@ -254,6 +287,7 @@ function ConsumerRow({
             </td>
             <td className="px-4 py-3">
               <ActionChips consumer={consumer} />
+              <RefusalChips refusals={consumer.refusals} />
             </td>
             <td className="px-4 py-3">
               <Meter row={consumer.rpm} />

@@ -2030,6 +2030,13 @@ def create_admin_router(manager_client: ManagerApiClient) -> APIRouter:
                     # page says that rather than showing an empty list as
                     # "did nothing".
                     "actions": tracked["actions"] if tracked else [],
+                    # PRM-253: models this credential asked for and did not
+                    # get, in the same window as the actions. A refusal writes
+                    # no usage row, so without this the page can only list the
+                    # models that worked — which is how a consumer calling two
+                    # of them looked like a consumer calling one. Empty after a
+                    # restart, like `actions`, because the tracker is memory.
+                    "refusals": tracked.get("refusals", []) if tracked else [],
                     "rpm": None,
                     "tpm": None,
                     "worst": None,

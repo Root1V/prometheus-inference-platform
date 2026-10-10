@@ -451,6 +451,39 @@ class ActivityTracker:
             for stale in [b for b in counter["buckets"] if b < oldest]:
                 del counter["buckets"][stale]
 
+    # A caller can ask for any string, so this is capped per identity. Twenty
+    # distinct (model, reason) pairs is far more than a working integration
+    # produces and still bounds the memory a typo loop can cost.
+    _MAX_REFUSALS = 20
+
+    async def refuse(self, client_id: str, model: str | None, reason: str) -> None:
+        """A request that named a model and never reached one — PRM-253.
+
+        Counted here because nothing else counts it. A refusal writes no usage
+        row (nothing was consumed), does not touch `errors_total` (the backend
+        was never asked), and so leaves the Activity page showing only the
+        models that *worked* — which is how a consumer calling two models
+        appears to be calling one. Measured on this deployment: one consumer
+        with twenty chat completions in the window and four usage rows all day.
+        """
+        now = time.time()
+        async with self._lock:
+            entry = self._entries.get(client_id)
+            if entry is None:
+                return
+            refusals = entry.setdefault("refusals", {})
+            key = (model or "unnamed", reason)
+            counter = refusals.get(key)
+            if counter is None:
+                if len(refusals) >= self._MAX_REFUSALS:
+                    return
+                counter = refusals[key] = {"buckets": {}}
+            bucket = int(now // 60)
+            counter["buckets"][bucket] = counter["buckets"].get(bucket, 0) + 1
+            oldest = bucket - self._WINDOW_BUCKETS
+            for stale in [b for b in counter["buckets"] if b < oldest]:
+                del counter["buckets"][stale]
+
     async def snapshot(self) -> list[dict[str, Any]]:
         """Active entries (seen in the last 15 min), most recent first.
 
@@ -489,6 +522,26 @@ class ActivityTracker:
                         # An action whose every bucket has aged out is one this
                         # identity is no longer doing. Reporting it at zero
                         # would read as "did this, nil times".
+                        if counted["count"] > 0
+                    ],
+                    # PRM-253: models this credential asked for and was refused
+                    # inside the window. Same bucket arithmetic as the actions,
+                    # and the same reason for it: a count under a heading that
+                    # says "last 15 minutes" has to mean that.
+                    "refusals": [
+                        counted
+                        for counted in (
+                            {
+                                "model": model,
+                                "reason": reason,
+                                "count": sum(
+                                    n
+                                    for b, n in c["buckets"].items()
+                                    if b * 60 >= self.window_started_at(now)
+                                ),
+                            }
+                            for (model, reason), c in e.get("refusals", {}).items()
+                        )
                         if counted["count"] > 0
                     ],
                 }
