@@ -770,3 +770,86 @@ async def test_the_subtraction_is_withheld_on_a_young_process(app, caller, admin
     assert consumer["window_arrived"] is None
     # The detail is untouched — it never depended on the tracker.
     assert consumer["window"]["request_count"] == 1
+
+
+# ── PRM-253: a model that was asked for and refused ──────────────────────────
+
+
+async def test_a_refused_model_is_counted_against_the_consumer():
+    """Reported by a consumer running two models and seeing one.
+
+    A refusal writes no usage row — nothing was consumed — never reaches
+    `errors_total` because no backend was asked, and logged nothing. The only
+    mark it left was the tracker counting a chat completion, so the models
+    beside it could only ever be the ones that worked.
+    """
+    from prometheus_gateway.telemetry import ActivityTracker
+
+    tracker = ActivityTracker()
+    await tracker.touch("c1", "u1", "api", action="chat")
+    await tracker.refuse("c1", "qwen3vl-30b-a3b", "not_granted")
+    await tracker.refuse("c1", "qwen3vl-30b-a3b", "not_granted")
+    await tracker.refuse("c1", "typo-model", "unknown_model")
+
+    entry = next(e for e in await tracker.snapshot() if e["client_id"] == "c1")
+    refusals = {(r["model"], r["reason"]): r["count"] for r in entry["refusals"]}
+    assert refusals == {
+        ("qwen3vl-30b-a3b", "not_granted"): 2,
+        ("typo-model", "unknown_model"): 1,
+    }
+
+
+async def test_a_refusal_for_an_unseen_credential_is_dropped_not_invented():
+    """`refuse` never creates an entry: the tracker's window is "who called",
+    and a credential with no authenticated request in it has not."""
+    from prometheus_gateway.telemetry import ActivityTracker
+
+    tracker = ActivityTracker()
+    await tracker.refuse("ghost", "whatever", "unknown_model")
+    assert await tracker.snapshot() == []
+
+
+async def test_the_refusal_list_cannot_grow_without_bound():
+    """A caller can ask for any string, so a typo loop must not be a leak."""
+    from prometheus_gateway.telemetry import ActivityTracker
+
+    tracker = ActivityTracker()
+    await tracker.touch("c1", "u1", "api", action="chat")
+    for i in range(ActivityTracker._MAX_REFUSALS + 25):
+        await tracker.refuse("c1", f"model-{i}", "unknown_model")
+
+    entry = next(e for e in await tracker.snapshot() if e["client_id"] == "c1")
+    assert len(entry["refusals"]) == ActivityTracker._MAX_REFUSALS
+
+
+def test_every_model_refusal_goes_through_the_helper():
+    """A new endpoint must not reintroduce a refusal nobody can see.
+
+    The hole this closes was not one bad line — it was ten of them, each
+    correct in isolation, none of which told anyone what had been asked for.
+    """
+    import re
+    from pathlib import Path
+
+    source = (Path(__file__).resolve().parents[1] / "src/prometheus_gateway/router.py").read_text()
+
+    stragglers = []
+    for match in re.finditer(r"return _problem\(", source):
+        start = match.start()
+        depth = 0
+        opened = source.index("(", start)
+        for end in range(opened, len(source)):
+            if source[end] == "(":
+                depth += 1
+            elif source[end] == ")":
+                depth -= 1
+                if depth == 0:
+                    break
+        block = source[start : end + 1]
+        if '"unknown-model"' in block or "not authorized to use model" in block:
+            stragglers.append(source[:start].count("\n") + 1)
+
+    assert not stragglers, (
+        "these model refusals bypass _refuse_model, so they write no usage row, "
+        f"move no counter and log nothing — router.py lines {stragglers}"
+    )

@@ -9497,3 +9497,39 @@ any one of them fails the test.
 
 **Scope**: in — the span assertion. Out — asserting the log fields the same way, which the
 structured logger already writes through a path other tests cover.
+
+## PRM-253 — Activity shows the model you were refused
+
+**Why**: Veritium reported that they run two models and Activity only ever shows `gpt-oss`.
+
+It was not the page. A request refused because the model is not registered, or because the
+credential has no grant for it, was invisible to every instrument on the platform at once. It
+writes no usage row, which is correct — nothing was consumed. It never reaches `errors_total`,
+which is also defensible — no backend was asked. And it logged nothing at all, which is not
+defensible: the one fact worth keeping is the model string the caller used, and that was thrown
+away.
+
+Measured on the live deployment before the fix: 406 JWT validations, 4 inference requests, 0
+errors, and `grep` for any refusal line returned nothing. Two probes — one naming an
+unregistered model, one naming a model the client may not use — returned 400 and 403 in
+milliseconds, moved no counter and produced no log line.
+
+The only mark a refusal left was the activity tracker counting a chat completion, because the
+tracker records on authentication. So the live row said "Chat completions ×20" while the models
+column — built from usage rows — could only list the ones that worked. A consumer calling two
+models and being refused on one read, everywhere, as a consumer calling one.
+
+Ten refusal sites (five endpoints × two reasons) now go through one helper that logs
+`inference.model_refused` with the client, the model string and the reason, and records it
+against the consumer's fifteen-minute window. The live row shows it beside what they did:
+`qwen3vl-30b-a3b refused ×2 · not granted`. A source guard fails the build if a new endpoint
+reintroduces a refusal that bypasses the helper — the hole was not one bad line but ten, each
+correct on its own.
+
+**Also found, not fixed here**: while measuring, Veritium's live row showed `Other×1` against
+`rpm · default`, meaning a path the gateway does not classify as inference at all. Worth asking
+them which URL that is; this item makes the model refusals visible, not the routing.
+
+**Scope**: in — the refusal helper, its logging, the tracker's per-model counters with a cap, the
+endpoint field and the page chips, the source guard. Out — surfacing refusals in the usage rows
+or in Billing, where a request that consumed nothing does not belong.

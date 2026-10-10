@@ -60,6 +60,13 @@ export interface EndUserAcrossConsumers {
   models: string[];
 }
 
+export interface ModelRefusal {
+  model: string;
+  /** "unknown_model" — not registered; "not_granted" — no scope for it. */
+  reason: string;
+  count: number;
+}
+
 export interface ActivityConsumer {
   identity: string;
   /** PRM-237: this row is the credential reading the page. The dashboard
@@ -93,6 +100,9 @@ export interface ActivityConsumer {
   window_arrived: number | null;
   window_end_users: EndUserToday[];
   window_models: ModelUse[];
+  /** PRM-253: models asked for and refused in the window — never billed, so
+   *  they appear in no usage row and used to be invisible on this page. */
+  refusals: ModelRefusal[];
 }
 
 export interface ActivityResponse {

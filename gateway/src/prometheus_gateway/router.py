@@ -48,7 +48,7 @@ from .models.schemas import (
     ignored_parameters,
 )
 from .notifications import send_budget_alert_email
-from .telemetry import get_logger, get_tracer, metrics_store
+from .telemetry import activity_tracker, get_logger, get_tracer, metrics_store
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Sequence
@@ -67,6 +67,47 @@ _CHARS_PER_TOKEN = 4
 _IMAGE_TOKEN_ESTIMATE = 512
 # RM-60: cap a single CSV export to ~1 year of usage_events at a time.
 _MAX_EXPORT_RANGE_DAYS = 366
+
+
+async def _refuse_model(
+    request: Request,
+    status: int,
+    error_type: str,
+    title: str,
+    detail: str,
+    *,
+    model: str | None,
+    reason: str,
+) -> JSONResponse:
+    """Refuse a request that named a model, and leave evidence it happened.
+
+    PRM-253: these refusals were invisible to every instrument on the platform.
+    They write no usage row — nothing was consumed — they never reach
+    `errors_total` because no backend was asked, and nothing logged the model
+    string the caller used. The only mark left was the activity tracker
+    counting a chat completion, so a consumer calling two models and refused on
+    one appeared, everywhere, to be calling one.
+
+    Measured here before the fix: a request naming an unregistered model and
+    one naming a model the client may not use both returned in milliseconds,
+    moved no counter, and produced not a single log line.
+
+    The caller learns nothing new — it is told its own model string and why.
+    The operator gets the part that was missing.
+    """
+    claims = getattr(getattr(request, "state", None), "claims", None)
+    client_id = getattr(claims, "client_id", None)
+    logger.warning(
+        "inference.model_refused",
+        client_id=client_id,
+        model=model,
+        reason=reason,
+        status_code=status,
+        path=request.url.path,
+    )
+    if client_id:
+        await activity_tracker.refuse(client_id, model, reason)
+    return _problem(request, status, error_type, title, detail)
 
 
 def _problem(
@@ -1598,13 +1639,15 @@ def create_router(registry: ModelRegistry, pool: "BackendPool") -> APIRouter:
             resolution, served_variant = _resolve_requested(registry, body.model)
             if resolution is None:
                 inf_span.set_attribute("http.status_code", 400)
-                return _problem(
+                return await _refuse_model(
                     request,
                     400,
                     "unknown-model",
                     "Unknown Model",
                     f"Model {body.model!r} is not registered. "
                     f"Use GET /v1/models for the list of available models.",
+                    model=body.model,
+                    reason="unknown_model",
                 )
             if resolution.mismatch is not None:
                 inf_span.set_attribute("http.status_code", 400)
@@ -1642,13 +1685,15 @@ def create_router(registry: ModelRegistry, pool: "BackendPool") -> APIRouter:
             # scope at all has no model access, even with inference:read/stream.
             if not (_may_use(claims, body.model, resolution) or is_admin_bypass):
                 inf_span.set_attribute("http.status_code", 403)
-                return _problem(
+                return await _refuse_model(
                     request,
                     403,
                     "forbidden",
                     "Forbidden",
                     f"This client is not authorized to use model {body.model!r}. "
                     "Contact the platform operator to request access.",
+                    model=body.model,
+                    reason="not_granted",
                 )
 
             # RM-66: reject any model whose modality isn't chat-capable at all —
@@ -2252,13 +2297,15 @@ def create_router(registry: ModelRegistry, pool: "BackendPool") -> APIRouter:
         # RM-57: may name one instance or a catalog model with replicas.
         resolution, served_variant = _resolve_requested(registry, body.model)
         if resolution is None:
-            return _problem(
+            return await _refuse_model(
                 request,
                 400,
                 "unknown-model",
                 "Unknown Model",
                 f"Model {body.model!r} is not registered. "
                 f"Use GET /v1/models for the list of available models.",
+                model=body.model,
+                reason="unknown_model",
             )
         if resolution.mismatch is not None:
             return _problem(
@@ -2293,13 +2340,15 @@ def create_router(registry: ModelRegistry, pool: "BackendPool") -> APIRouter:
             )
 
         if not (_may_use(claims, body.model, resolution) or is_admin_bypass):
-            return _problem(
+            return await _refuse_model(
                 request,
                 403,
                 "forbidden",
                 "Forbidden",
                 f"This client is not authorized to use model {body.model!r}. "
                 "Contact the platform operator to request access.",
+                model=body.model,
+                reason="not_granted",
             )
 
         # RM-57: no replica of this model is up (not just "the one").
@@ -2573,12 +2622,14 @@ def create_router(registry: ModelRegistry, pool: "BackendPool") -> APIRouter:
 
         resolution, served_variant = _resolve_requested(registry, body.model)
         if resolution is None:
-            return _problem(
+            return await _refuse_model(
                 request,
                 400,
                 "unknown-model",
                 "Unknown Model",
                 f"Model {body.model!r} is not registered. Use GET /v1/models to list them.",
+                model=body.model,
+                reason="unknown_model",
             )
         if resolution.mismatch:
             return _problem(
@@ -2609,13 +2660,15 @@ def create_router(registry: ModelRegistry, pool: "BackendPool") -> APIRouter:
                 "This endpoint requires inference:read scope.",
             )
         if not (_may_use(claims, body.model, resolution) or is_admin_bypass):
-            return _problem(
+            return await _refuse_model(
                 request,
                 403,
                 "forbidden",
                 "Forbidden",
                 f"This client is not authorized to use model {body.model!r}. "
                 "Contact the platform operator to request access.",
+                model=body.model,
+                reason="not_granted",
             )
 
         if not body.documents:
@@ -2965,12 +3018,14 @@ def create_router(registry: ModelRegistry, pool: "BackendPool") -> APIRouter:
 
         resolution, served_variant = _resolve_requested(registry, model)
         if resolution is None:
-            return _problem(
+            return await _refuse_model(
                 request,
                 400,
                 "unknown-model",
                 "Unknown Model",
                 f"Model {model!r} is not registered. Use GET /v1/models to list them.",
+                model=model,
+                reason="unknown_model",
             )
         if resolution.mismatch:
             return _problem(
@@ -3005,13 +3060,15 @@ def create_router(registry: ModelRegistry, pool: "BackendPool") -> APIRouter:
                 "This endpoint requires inference:read scope.",
             )
         if not (_may_use(claims, model, resolution) or is_admin_bypass):
-            return _problem(
+            return await _refuse_model(
                 request,
                 403,
                 "forbidden",
                 "Forbidden",
                 f"This client is not authorized to use model {model!r}. "
                 "Contact the platform operator to request access.",
+                model=model,
+                reason="not_granted",
             )
 
         try:
@@ -3159,13 +3216,15 @@ def create_router(registry: ModelRegistry, pool: "BackendPool") -> APIRouter:
         # RM-57: may name one instance or a catalog model with replicas.
         resolution, served_variant = _resolve_requested(registry, body.model)
         if resolution is None:
-            return _problem(
+            return await _refuse_model(
                 request,
                 400,
                 "unknown-model",
                 "Unknown Model",
                 f"Model {body.model!r} is not registered. "
                 f"Use GET /v1/models for the list of available models.",
+                model=body.model,
+                reason="unknown_model",
             )
         if resolution.mismatch is not None:
             return _problem(
@@ -3197,13 +3256,15 @@ def create_router(registry: ModelRegistry, pool: "BackendPool") -> APIRouter:
             )
 
         if not (_may_use(claims, body.model, resolution) or is_admin_bypass):
-            return _problem(
+            return await _refuse_model(
                 request,
                 403,
                 "forbidden",
                 "Forbidden",
                 f"This client is not authorized to use model {body.model!r}. "
                 "Contact the platform operator to request access.",
+                model=body.model,
+                reason="not_granted",
             )
 
         # RM-57: no replica of this model is up (not just "the one").
