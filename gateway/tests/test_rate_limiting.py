@@ -226,10 +226,17 @@ async def test_rate_limit_tpm_exceeded_AC2(
             )
             r = await c.post("/v1/chat/completions", json=body, headers=headers)
 
-    # TPM check is done post-request, not pre-flight in the router
-    # The middleware only does a gate check; actual TPM enforcement is via post-charge
-    # AC-2 is satisfied: the counter is incremented after response
-    assert r.status_code in (200, 429)  # either way is valid depending on timing
+    # PRM-255: this used to end `assert r.status_code in (200, 429)`, with a
+    # comment explaining that enforcement happened "via post-charge" somewhere
+    # else. It did not happen anywhere: the gate's answer was stored on
+    # `request.state` and read only by the header builder. A test that accepts
+    # both outcomes cannot fail, which is why a ceiling nobody enforced stayed
+    # green for as long as it did.
+    #
+    # 95 of 100 spent is *under* the ceiling, and the gate adds nothing for a
+    # cost it cannot know yet — so this request is allowed, and it is the next
+    # one that pays. Asserted exactly, because "either is valid" was the bug.
+    assert r.status_code == 200
 
 
 # ── AC-3: Atomic counter increments ─────────────────────────────────────────
@@ -1415,4 +1422,106 @@ async def test_both_response_paths_send_the_same_rate_limit_headers(rl_app, rsa_
     assert rl(allowed) == rl(refused), (
         f"the two paths disagree: only on 200 {rl(allowed) - rl(refused)}, "
         f"only on 429 {rl(refused) - rl(allowed)}"
+    )
+
+
+# ── PRM-255: the endpoint's token ceiling refuses ───────────────────────────
+
+
+async def test_endpoint_tpm_refuses_once_the_minute_is_spent(
+    rl_settings, small_registry, fake_redis, rsa_keys
+):
+    """The ceiling that was computed, published and never enforced.
+
+    Measured on the live deployment: a consumer sat at 274% of this limit for
+    minutes and was refused nothing, while the dashboard drew it in red as the
+    "closest ceiling". The gate ran, produced an answer, and the only readers
+    of that answer were the two that build `X-RateLimit-*` headers.
+    """
+    import time as _time
+
+    bucket = int(_time.time() // 60)
+    # Over the 100 TPM ceiling: the minute is spent, so the next caller pays.
+    await fake_redis.set(f"prometheus:rl:tpm:client-a:chat_completions:{bucket}", 140)
+
+    from prometheus_gateway.main import create_app
+
+    app = create_app(settings=rl_settings, registry=small_registry, redis_client=fake_redis)
+    token = make_token(
+        rsa_keys["private"],
+        scope="inference:read inference:stream model:small-model",
+        sub="user-x",
+        azp="client-a",
+    )
+    headers = {"Authorization": f"Bearer {token}"}
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
+        with respx.mock:
+            respx.post("http://127.0.0.1:18081/v1/chat/completions").mock(
+                return_value=Response(200, json=LLAMA_RESPONSE)
+            )
+            r = await c.post("/v1/chat/completions", json=VALID_BODY, headers=headers)
+
+    assert r.status_code == 429, "the endpoint token ceiling still refuses nothing"
+    body = r.json()
+    assert "rate-limit-exceeded-tokens" in body["type"]
+    # The scope has to name the route, because that is what the caller backs
+    # off from — a client over one endpoint's tokens may still use the others.
+    assert body["scope"] == "chat_completions"
+    assert "Retry-After" in r.headers
+
+
+async def test_a_tier_is_what_grants_more_and_the_endpoint_default_does_not_override_it(
+    rl_settings, small_registry, fake_redis, rsa_keys, monkeypatch
+):
+    """The operator's way to raise a ceiling has to still work.
+
+    A tier's `tpm` is a client-wide allowance. Enforcing the per-endpoint
+    default underneath it would refuse the very client the tier was written to
+    let through — the grant would be configurable and inert, which is the shape
+    PRM-231 already had to fix once.
+    """
+    import time as _time
+
+    from prometheus_gateway import rate_limit_middleware
+
+    class _Tier:
+        rpm = None
+        tpm = 100_000
+        rpd = None
+        tpd = None
+        tpm_input = None
+        tpm_output = None
+        ipm = None
+
+    async def _tier(_client_id):
+        return _Tier()
+
+    monkeypatch.setattr(rate_limit_middleware, "resolve_client_limits", _tier)
+
+    bucket = int(_time.time() // 60)
+    # Far over the 100 TPM endpoint default, far under the tier's 100,000.
+    await fake_redis.set(f"prometheus:rl:tpm:client-a:chat_completions:{bucket}", 5_000)
+
+    from prometheus_gateway.main import create_app
+
+    app = create_app(settings=rl_settings, registry=small_registry, redis_client=fake_redis)
+    token = make_token(
+        rsa_keys["private"],
+        scope="inference:read inference:stream model:small-model",
+        sub="user-x",
+        azp="client-a",
+    )
+    headers = {"Authorization": f"Bearer {token}"}
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
+        with respx.mock:
+            respx.post("http://127.0.0.1:18081/v1/chat/completions").mock(
+                return_value=Response(200, json=LLAMA_RESPONSE)
+            )
+            r = await c.post("/v1/chat/completions", json=VALID_BODY, headers=headers)
+
+    assert r.status_code == 200, (
+        "the per-endpoint default refused a client whose tier allows far more — "
+        "raising a client's tpm would not raise what actually refuses them"
     )
