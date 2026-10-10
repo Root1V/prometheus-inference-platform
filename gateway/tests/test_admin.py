@@ -1293,3 +1293,47 @@ async def test_put_circuit_breaker_caps_recovery_timeout(gw, rsa_keys, admin_app
     # Nothing applied or persisted.
     assert admin_app.state.settings.circuit_breaker_recovery_timeout == 30
     assert await db.get_circuit_breaker_config() is None
+
+
+# ── PRM-251: the gateway tells the auth-service who is actually knocking ──────
+
+
+async def test_login_forwards_the_caller_address(gw):
+    """Without this every dashboard sign-in reaches the auth-service from this
+    gateway's address and shares one failed-attempt budget — which is a lockout,
+    not just coarse bucketing: a stranger failing against the public login
+    spends the budget the platform's own operators draw from.
+    """
+    with respx.mock:
+        route = respx.post(AUTH_TOKEN_URL).mock(
+            return_value=Response(200, json={"access_token": "t", "expires_in": 10800})
+        )
+        await gw.post(
+            "/admin/api/auth/login",
+            json={"email": "someone@example.com", "password": "s3cr3t"},
+        )
+    assert "x-forwarded-for" in route.calls[0].request.headers, (
+        "the auth-service cannot tell one caller from another"
+    )
+
+
+async def test_login_does_not_let_the_caller_choose_its_own_address(gw):
+    """The header is set from the socket, never copied.
+
+    A caller that could name its own address could put a different one on every
+    request and never run out of failed-attempt budget — which would make
+    forwarding worse than not forwarding at all.
+    """
+    with respx.mock:
+        route = respx.post(AUTH_TOKEN_URL).mock(
+            return_value=Response(200, json={"access_token": "t", "expires_in": 10800})
+        )
+        await gw.post(
+            "/admin/api/auth/login",
+            json={"email": "someone@example.com", "password": "s3cr3t"},
+            headers={"X-Forwarded-For": "203.0.113.77"},
+        )
+    forwarded = route.calls[0].request.headers.get("x-forwarded-for", "")
+    assert "203.0.113.77" not in forwarded, (
+        f"the caller's own X-Forwarded-For reached the auth-service: {forwarded!r}"
+    )

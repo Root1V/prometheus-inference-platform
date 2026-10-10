@@ -53,6 +53,20 @@ class Settings(BaseSettings):
     auth_login_max_failures_per_address: int = 30
     auth_login_failure_window_seconds: int = 300
 
+    # PRM-251: addresses whose `X-Forwarded-For` this service believes, as a
+    # comma-separated list. Empty by default — believing the header by default
+    # would turn the address budget into a bypass, since anything that can set
+    # a header could then mint a fresh bucket per request.
+    #
+    # The gateway proxies the dashboard's sign-ins server-side, so without this
+    # every operator shares one bucket with every attacker who can reach the
+    # public login. List the gateway's address here to spend the real caller's
+    # budget instead. What it trusts: any process that can open a socket to
+    # this service *from a listed address*. On a loopback-only deployment that
+    # is every local process — which is also every process that could simply
+    # send unlabelled attempts, so it concedes nothing new there.
+    auth_trusted_proxy_ips: str = ""
+
     # ── Per-role TTLs (overridable via env) ──────────────────────────────────
     auth_ttl_admin_seconds: int = 10800
     auth_ttl_cognitive_seconds: int = 3600

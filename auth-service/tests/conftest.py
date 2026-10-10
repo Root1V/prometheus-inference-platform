@@ -58,6 +58,11 @@ def settings(rsa_key_pem_files):
         auth_db_url="sqlite+aiosqlite:///:memory:",
         auth_revocation_redis_url=None,
         auth_rate_limit_rpm=1000,  # disable effective rate limiting in tests
+        # PRM-251: pinned for the reason every setting above is — a test that
+        # reads the developer's own .env passes or fails by accident. This one
+        # decides whether X-Forwarded-For is believed, so leaving it ambient
+        # would make the anti-spoofing test agree with whatever is configured.
+        auth_trusted_proxy_ips="",
         share_token_encryption_key="a" * 64,  # 32 bytes of 0xAA — valid test key (AC-15/16)
     )
 
