@@ -228,11 +228,29 @@ def create_admin_router(manager_client: ManagerApiClient) -> APIRouter:
                 "client_secret": body.get("client_secret", ""),
                 "scope": "admin:read admin:write",
             }
+        # PRM-251: tell the auth-service who is actually knocking.
+        #
+        # This call is server-side, so without it every dashboard sign-in
+        # reaches the auth-service from this gateway's address and shares one
+        # failed-attempt budget. That is not only coarse, it is a lockout: a
+        # stranger failing thirty times against the public login would spend
+        # the budget every operator of this platform draws from, and the
+        # refusal is issued before the password is looked at — so the right
+        # password would be refused too.
+        #
+        # Set from the socket this gateway is serving, never copied from the
+        # caller: anything the caller put in this header is discarded here, so
+        # a header cannot buy a fresh budget. The auth-service believes it only
+        # from addresses it was explicitly configured to believe.
+        caller = request.client.host if request.client else ""
+        headers = {"x-forwarded-for": caller} if caller else {}
         try:
             async with httpx.AsyncClient(
                 timeout=10.0, verify=settings.auth_service_tls_verify
             ) as client:
-                resp = await client.post(settings.auth_service_token_url, data=form)
+                resp = await client.post(
+                    settings.auth_service_token_url, data=form, headers=headers
+                )
         except Exception as exc:
             return _proxy_error_response(request, exc)
 

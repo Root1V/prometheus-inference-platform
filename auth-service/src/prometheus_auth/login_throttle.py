@@ -39,6 +39,35 @@ from __future__ import annotations
 import time
 from collections import deque
 
+from fastapi import Request
+
+
+def trusted_proxies(raw: str) -> frozenset[str]:
+    """Parse the configured list once, at startup."""
+    return frozenset(part.strip() for part in raw.split(",") if part.strip())
+
+
+def client_address(request: Request, trusted: frozenset[str]) -> str:
+    """The address whose budget this attempt spends — PRM-251.
+
+    The socket peer, unless the peer is a proxy this service was explicitly
+    told to believe, in which case the leftmost `X-Forwarded-For` entry.
+
+    Believing the header unconditionally would be worse than not forwarding at
+    all: a caller could put a different address on every request and never run
+    out of budget. Believing it only from a listed peer means the header is
+    only as trustworthy as that peer, and the gateway — the only one listed on
+    this deployment — sets it from the socket it is actually serving and
+    discards whatever the caller sent.
+    """
+    peer = request.client.host if request.client else "unknown"
+    if peer not in trusted:
+        return peer
+    forwarded = request.headers.get("x-forwarded-for", "")
+    # Leftmost is the original caller; a single trusted hop writes only that.
+    first = forwarded.split(",")[0].strip()
+    return first or peer
+
 
 class LoginThrottle:
     """Sliding-window failure counter, keyed by arbitrary strings."""

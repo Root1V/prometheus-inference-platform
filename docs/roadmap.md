@@ -9444,3 +9444,41 @@ does not need.
 the 429 with `Retry-After`. Out — moving the counter to Redis, and forwarding the caller's IP
 from the gateway so the address bucket can distinguish operators, which needs a decision about
 trusting a forwarded header.
+
+## PRM-251 — The budget belongs to whoever spent it, and the refusal leaves a trail
+
+**Why**: PRM-250's per-address budget was shared by everyone, and that was worse than coarse.
+
+The gateway proxies the dashboard's sign-ins server-side and forwarded nothing, so every
+attempt reached the auth-service from the gateway's own address. Thirty failures in five
+minutes was therefore a *platform-wide* allowance — and because the 429 is issued before the
+password is looked at, a stranger failing thirty times against the public login would get every
+operator refused, correct password and all. A rate limit that locks out the people it protects
+is not a rate limit.
+
+**Why forwarding had to be made safe first.** Believing `X-Forwarded-For` unconditionally would
+have turned the budget into a bypass: a different address on each request is an unlimited
+allowance, which is strictly worse than the shared bucket it replaced. Two things prevent that.
+The gateway sets the header from the socket it is actually serving and discards whatever the
+caller sent, so nobody reaching the public login can name their own address. The auth-service
+believes the header only from peers listed in `AUTH_TRUSTED_PROXY_IPS`, which is **empty by
+default** — a fresh deployment forwards nothing and trusts nothing until an operator says
+otherwise.
+
+What listing an address concedes, stated plainly: any process that can open a socket to the
+auth-service *from a listed address* can then choose its own bucket. On a loopback-only
+deployment that is every local process — which is also every process that could simply send
+unlabelled attempts, so it concedes nothing that was not already conceded. The per-identity
+budget is not spoofable either way.
+
+**The trail.** The refusal is deliberately uninformative to the caller: one message, one
+timing, whether or not the account exists. The operator gets the opposite. Each refusal logs
+its reason (`unknown_email` tells an absent account from `bad_password`) together with the
+identity and the real source address, and the span carries `auth.identity`,
+`auth.source_address` and `auth.failure_reason`. The throttled case used to log only the grant
+type, which said nothing about who was being refused or from where.
+
+**Scope**: in — the forwarded address, the trusted-proxy setting and its empty default, the
+enriched log fields and span attributes. Out — moving the counter to Redis, and a shared secret
+between gateway and auth-service, which would only matter on a deployment where the
+auth-service is reachable from somewhere other than the gateway's host.

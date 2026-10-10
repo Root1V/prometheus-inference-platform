@@ -11,7 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..crypto import issue_token
 from ..db import Principal, get_session_factory
-from ..login_throttle import LoginThrottle
+from ..login_throttle import LoginThrottle, client_address
 from ..schemas import OAuth2Error, TokenResponse, invalid_scopes
 from ..telemetry import get_logger, get_tracer
 
@@ -56,7 +56,7 @@ def _throttled(
     guesses, and many accounts with one guess each.
     """
     identity = client_id if grant_type == "client_credentials" else username
-    address = request.client.host if request.client else "unknown"
+    address = client_address(request, request.app.state.trusted_proxies)
     return [
         (request.app.state.login_throttle, f"id:{identity.lower()}"),
         (request.app.state.login_throttle_by_address, f"ip:{address}"),
@@ -94,14 +94,32 @@ async def token(
         # PRM-250: refuse before looking at the credential, so a caller out of
         # budget costs this service nothing.
         throttles = _throttled(request, grant_type, client_id, username)
+        identity = client_id if grant_type == "client_credentials" else username
+        address = client_address(request, request.app.state.trusted_proxies)
+        # PRM-251: the caller is told nothing that distinguishes these cases.
+        # The operator is told everything — which attempt, from where, and why
+        # — because "a run of failures against one address" is a pattern only
+        # the logs and traces can show, and refusing quietly is not the same as
+        # refusing silently.
+        span.set_attribute("auth.identity", identity)
+        span.set_attribute("auth.source_address", address)
+
         waits = [w for t, k in throttles if (w := t.retry_after(k)) is not None]
         if waits:
             span.set_attribute("http.status_code", 429)
+            span.set_attribute("auth.failure_reason", "too_many_attempts")
             span.set_status(StatusCode.ERROR, "too_many_attempts")
-            logger.warning("oauth2.too_many_attempts", grant_type=grant_type)
+            logger.warning(
+                "oauth2.too_many_attempts",
+                grant_type=grant_type,
+                identity=identity,
+                source_address=address,
+                retry_after=max(waits),
+            )
             return _too_many_attempts(max(waits))
 
-        def record_failure() -> None:
+        def record_failure(reason: str) -> None:
+            span.set_attribute("auth.failure_reason", reason)
             for throttle, key in throttles:
                 throttle.record_failure(key)
 
@@ -114,19 +132,27 @@ async def token(
             if principal is None or principal.auth_method != "oauth2":
                 _credential_matches(client_secret, None)
                 logger.warning(
-                    "oauth2.invalid_client", client_id=client_id, reason="unknown_client_id"
+                    "oauth2.invalid_client",
+                    client_id=client_id,
+                    reason="unknown_client_id",
+                    source_address=address,
                 )
                 span.set_attribute("http.status_code", 401)
                 span.set_status(StatusCode.ERROR, "invalid_client")
-                record_failure()
+                record_failure("unknown_client_id")
                 return _invalid_client()
 
             # AC-3: verify secret — constant-time bcrypt comparison
             if not _credential_matches(client_secret, principal.client_secret_hash):
-                logger.warning("oauth2.invalid_client", client_id=client_id, reason="bad_secret")
+                logger.warning(
+                    "oauth2.invalid_client",
+                    client_id=client_id,
+                    reason="bad_secret",
+                    source_address=address,
+                )
                 span.set_attribute("http.status_code", 401)
                 span.set_status(StatusCode.ERROR, "invalid_client")
-                record_failure()
+                record_failure("bad_secret")
                 return _invalid_client()
 
         elif grant_type == "password":
@@ -137,17 +163,27 @@ async def token(
             # Unknown email, or an oauth2-only principal, is invalid_client
             if principal is None or principal.auth_method != "password":
                 _credential_matches(password, None)
-                logger.warning("oauth2.invalid_client", username=username, reason="unknown_email")
+                logger.warning(
+                    "oauth2.invalid_client",
+                    username=username,
+                    reason="unknown_email",
+                    source_address=address,
+                )
                 span.set_attribute("http.status_code", 401)
                 span.set_status(StatusCode.ERROR, "invalid_client")
-                record_failure()
+                record_failure("unknown_email")
                 return _invalid_client()
 
             if not _credential_matches(password, principal.password_hash):
-                logger.warning("oauth2.invalid_client", username=username, reason="bad_password")
+                logger.warning(
+                    "oauth2.invalid_client",
+                    username=username,
+                    reason="bad_password",
+                    source_address=address,
+                )
                 span.set_attribute("http.status_code", 401)
                 span.set_status(StatusCode.ERROR, "invalid_client")
-                record_failure()
+                record_failure("bad_password")
                 return _invalid_client()
 
         else:

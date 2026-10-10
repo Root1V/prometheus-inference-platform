@@ -12,7 +12,7 @@ from slowapi.util import get_remote_address
 from .config import Settings
 from .crypto import build_jwks, load_private_key, load_public_key
 from .db import create_tables, init_db_engine
-from .login_throttle import LoginThrottle
+from .login_throttle import LoginThrottle, trusted_proxies
 from .routers.admin import router as admin_router
 from .routers.oauth2 import router as oauth2_router
 from .routers.share import router as share_router
@@ -101,6 +101,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         max_failures=settings.auth_login_max_failures_per_address,
         window_seconds=settings.auth_login_failure_window_seconds,
     )
+    # Parsed once: an empty setting means no peer is believed, and the socket
+    # address is the only one that counts.
+    app.state.trusted_proxies = trusted_proxies(settings.auth_trusted_proxy_ips)
     app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)  # type: ignore[arg-type]
 
     # AC-9 (018): trace_id middleware — outermost so all events carry trace_id
