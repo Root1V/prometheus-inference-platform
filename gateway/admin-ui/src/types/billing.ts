@@ -27,6 +27,8 @@ export interface RateLimitTier {
   rpd: number | null;
   tpd: number | null;
   ipm: number | null;
+  /** PRM-256: how many clients this tier governs. Editing it edits theirs. */
+  client_count: number;
 }
 
 export type UpdateClientBillingSettingsRequest = Omit<ClientBillingSettings, "client_id">;

@@ -179,7 +179,17 @@ def create_billing_router(manager_client: "ManagerApiClient | None" = None) -> A
         """The tier catalogue — PRM-228."""
         if (err := _require_scope(request, "admin:read")) is not None:
             return err
-        return {"tiers": [_tier_json(t) for t in await db.list_rate_limit_tiers()]}
+        # PRM-256: and how many clients each one governs. A tier is shared, so
+        # editing one edits it for everyone on it — and the page could not say
+        # who that was. Raising `scale` for the client who asked raised it for
+        # another who had not, and nothing on screen would have shown it.
+        counts = await db.count_clients_per_tier()
+        return {
+            "tiers": [
+                {**_tier_json(t), "client_count": counts.get(t.name, 0)}
+                for t in await db.list_rate_limit_tiers()
+            ]
+        }
 
     @router.put("/admin/api/limits/tiers/{name}")
     async def put_tier(name: str, body: dict[str, Any], request: Request) -> Any:

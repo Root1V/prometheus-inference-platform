@@ -9587,81 +9587,35 @@ is the normal case.
 and log line, and rewriting the test that could not fail. Out — recalibrating the 40,000 default,
 which is a decision about what the platform sells, not about whether a ceiling works.
 
-## PRM-256 — A `custom` tier in the catalogue, with its price
+## PRM-256 — The tier catalogue is managed from the dashboard
 
-**Why**: Veritium asked for 200,000 TPM. The catalogue held `trial` (10k), `standard` (40k) and
-`scale` (150k), and the design is deliberately named tiers rather than per-client numbers — so
-there was nowhere to put the request. It was resolved by raising `scale` to 200,000, which also
-raised it for a client who had not asked.
+**Why**: Veritium asked for 200,000 TPM against a catalogue of 10k/40k/150k. It was resolved by
+raising `scale`, which also raised it for a client who had not asked — and nothing on the page
+would have shown that before pressing save.
 
-That works once. The second client with a number of their own forces the same choice again:
-move a shared tier under clients who did not ask, or start inventing a tier per customer, which
-is the per-client-values design that tiers exist to avoid.
+Two things turned out to be true when the code was read rather than assumed. The mechanism was
+already there: `PUT /admin/api/limits/tiers/{name}` creates or updates **any** named tier and has
+since PRM-228, so the catalogue was never fixed at three. And the gap was that nothing on the
+dashboard reached it — the page only did a `GET` to fill the per-client assignment picker. So the
+policy "tell us the ceiling you need and we will configure it" meant an operator asking someone
+with a terminal, which is not a policy a platform can offer.
 
-A `custom` tier closes it: a slot the operator configures on request, carrying the price agreed
-with that client, leaving the three standard tiers alone. The thing to get right is that
-`custom` is not one shared row — several clients can be on it with different numbers — so this
-is where the schema stops being "a tier has dimensions" and becomes "a client may have its own",
-and the per-client values need to live somewhere that `resolve_client_limits` already reads.
+So the item is not a new kind of tier. It is the catalogue becoming editable where the operator
+already is: create, edit and delete on the Limits page, with every dimension left blank meaning
+"the platform default for this one" rather than "unlimited" — the distinction the table has
+always made and the form now has to express.
 
-**Scope**: in — the `custom` tier, per-client dimension overrides under it, the agreed cost
-alongside them, and the Users modal able to set both. Out — a self-service path for a client to
-request or change their own tier; a human operator agrees the number and the price.
+**The client count is the part that came from being wrong.** A tier is shared, and the page could
+not say who was on one. Each row now carries it, the edit form warns before saving a tier that
+governs anyone, and a tier with clients on it refuses to be deleted. `custom` ships as an empty
+slot: named, described, with no dimension set, waiting for the first client who asks.
 
-## PRM-257 — The model's reasoning goes back to the model
+**Left undecided, deliberately**: the "associated cost". This platform prices per request, from
+model pricing — a tier changes what a client may consume, not what a request costs, so there is
+no obvious place for a price on it and no obvious meaning (monthly fee? minimum? multiplier?).
+That is a commercial decision, not a schema one, and inventing a column for it would be guessing.
 
-**Why**: we promised Veritium (`VRT-PRM-005`) to upgrade llama.cpp and measure whether a newer
-PEG parser accepted the 73 malformed outputs we had captured. Measuring before building changed
-the answer.
-
-llama.cpp issue #27720 is this exact failure — gpt-oss emitting a malformed Harmony channel
-header (`<|channel|>` followed by free text, `comment?commentary?`, `commentery?`) and failing
-the final parse. It is **closed as not fixable**: "handling garbage output is not feasible from a
-parsing perspective". So the upgrade we promised would not have fixed it, and that is worth
-knowing before spending a build.
-
-The thread identifies the cause and measures it: **7 failures in 120 turns with
-`reasoning_content` stripped, 0 in 120 with it handed back**. A reasoning model asked to continue
-from its own tool call, with its own analysis channel removed, produces erratic output.
-
-**And the stripping was ours.** `ChatMessage` declared `role`, `content`, `tool_calls` and
-`tool_call_id`. Pydantic drops what a model does not name, and `to_llama_payload` dumps each
-message wholesale — so a caller that correctly round-tripped `reasoning_content` had it removed
-here, silently, and had no way to tell. Every client of this platform had the round trip broken.
-
-Declared rather than opened with `extra="allow"`, which the request body above uses: there,
-extras are kept only so the gateway can name what it ignores, and `to_llama_payload` still
-forwards nothing it has not listed. Messages are dumped whole, so opening them would make a
-message the one place any caller field reaches the engine.
-
-**Scope**: in — the field and its round trip. Out — a general audit of what else `ChatMessage`
-drops (`name`, `refusal`, `annotations`), which is the same shape of bug and wants its own
-measurement rather than a speculative list.
-
-## PRM-258 — A message arrives with what the caller put on it
-
-**Why**: PRM-257 declared `reasoning_content` and fixed one field. The allowlist underneath it
-was the actual defect.
-
-`ChatMessage` named four fields; Pydantic drops what a model does not name; `to_llama_payload`
-dumps each message whole. That had already eaten `reasoning_content` silently for as long as the
-model has existed, and it took a client's 500s, an upstream issue closed as unfixable, and a
-measurement to find. The next field the ecosystem adds — `name`, `refusal`, `annotations` — would
-go the same way, and the only way to notice would be the same way.
-
-PRM-257's reasoning for the narrow fix was that opening messages would make them the one place a
-caller's field reaches the engine. That argument does not survive looking at it: the caller
-already authors the entire conversation, so there is no privileged key here to hand them, and
-both of the gateway's own readers take `.get("content")` or typed attributes rather than a closed
-key set. The measured cost of the allowlist is months of silent breakage for every client; the
-cost of passing a message through is nothing anyone could name.
-
-This is deliberately **not** what the request body does. There `extra="allow"` exists so the
-gateway can name what it ignores in `X-Prometheus-Ignored-Parameters`, and `to_llama_payload`
-forwards only what it lists — a parameter the engine may not honour is a different thing from a
-message field the caller wrote.
-
-**Scope**: in — `extra="allow"` on `ChatMessage`, the explicit `reasoning_content` declaration
-removed as redundant, and a test that a field invented after the test was written still arrives.
-Out — the same question for `tools` and `response_format`, which are the gateway's contract
-rather than the caller's text.
+**Scope**: in — the tier CRUD on Limits, the per-tier client count end to end, the delete guard.
+Out — the price, and per-client dimension overrides, which the `rate_limit_tiers` docstring argues
+against for reasons that still hold: tiers are what the industry does, and a hundred hand-tuned
+clients are fourteen decisions and eighty-six defaults nobody chose.

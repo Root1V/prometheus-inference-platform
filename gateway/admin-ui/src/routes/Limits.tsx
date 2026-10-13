@@ -8,6 +8,7 @@ import { CircuitBreakerForm } from "../components/CircuitBreakerForm";
 import { RateLimitsForm } from "../components/RateLimitsForm";
 import { Sidebar } from "../components/Sidebar";
 import { useFocusFlash } from "../lib/focus";
+import { RateLimitTiers } from "../components/RateLimitTiers";
 import { StatCard } from "../components/StatCard";
 import { AlertOctagon, RotateCw } from "lucide-react";
 import { useState } from "react";
@@ -559,6 +560,21 @@ export default function Limits() {
 
         <div className="mt-4">
           <CircuitBreakerForm />
+        </div>
+
+        {/* PRM-256: the catalogue, editable here rather than by curl. */}
+        <h2
+          data-focus="rate-limit-tiers"
+          className="mt-10 text-sm font-medium uppercase tracking-wide text-text-muted"
+        >
+          Tiers
+        </h2>
+        <p className="mt-2 text-xs text-text-muted">
+          A client on a tier is bounded by it instead of by the platform
+          defaults above. Assign one from a client&rsquo;s row on Users.
+        </p>
+        <div className="mt-3">
+          <RateLimitTiers />
         </div>
 
         <h2 className="mt-10 text-sm font-medium uppercase tracking-wide text-text-muted">
