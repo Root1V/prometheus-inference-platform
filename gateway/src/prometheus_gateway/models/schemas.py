@@ -66,26 +66,29 @@ class ChatMessage(BaseModel):
     tool_calls: list[ToolCall] | None = None
     # RM-35: set on a "tool" role message — which tool_calls entry this is answering.
     tool_call_id: str | None = None
-    # PRM-257: the model's own reasoning, handed back on the next turn.
+
+    # PRM-258: a message carries what the caller put on it.
     #
-    # Undeclared, this was silently dropped: Pydantic ignores what a model does
-    # not name, and `to_llama_payload` dumps each message wholesale, so a caller
-    # that round-tripped `reasoning_content` had it removed here and never knew.
+    # The four fields above were an allowlist, and PRM-257 found what that
+    # costs: `reasoning_content` — the model's own analysis, handed back on the
+    # next turn — was undeclared, so Pydantic dropped it and `to_llama_payload`
+    # forwarded a message that had silently lost it. llama.cpp's issue #27720
+    # measured the consequence at 7 failed turns in 120, and the platform did it
+    # to every client for as long as the model has existed.
     #
-    # It is not cosmetic. llama.cpp's own issue #27720 — gpt-oss emitting a
-    # malformed Harmony channel header and failing the final PEG parse, which is
-    # the 500 Veritium reported as `VRT-PRM-005` — was closed as not fixable in
-    # the parser, with the cause identified as exactly this: the reporter
-    # measured 7 failures in 120 turns with reasoning stripped and 0 in 120 with
-    # it sent back. A reasoning model asked to continue from its own tool call,
-    # with its reasoning removed, produces erratic output.
+    # PRM-257 declared that one field. This stops the class: the next field the
+    # ecosystem adds — `name`, `refusal`, `annotations`, whatever comes after —
+    # arrives instead of vanishing, and nobody has to notice a 500 to find out.
     #
-    # Declared rather than `extra="allow"`, which the request body above uses:
-    # there, extras are kept only so the gateway can *name* what it ignores, and
-    # `to_llama_payload` still forwards nothing it has not listed. Messages are
-    # dumped whole, so opening them would make a message the one place any
-    # caller field reaches the engine. One known field, for a measured reason.
-    reasoning_content: str | None = None
+    # Safe because a message is the caller's own text either way: they already
+    # author the whole conversation, so there is no privileged key here to hand
+    # them. The gateway's own readers take `.get("content")` and typed
+    # attributes, never a closed key set. This is *not* what the request body
+    # above does — there `extra="allow"` exists so the gateway can name what it
+    # ignores, and `to_llama_payload` still forwards only what it lists. A
+    # parameter the engine may not honour is a different thing from a message
+    # field the caller wrote.
+    model_config = ConfigDict(extra="allow")
 
     @field_validator("role")
     @classmethod
