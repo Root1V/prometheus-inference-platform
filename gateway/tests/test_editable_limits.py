@@ -233,3 +233,34 @@ async def test_an_unknown_field_cannot_reach_the_row(app, write_headers):
     await db.create_tables(db.get_engine())
     with pytest.raises(ValueError, match="not columns on rate_limit_config"):
         await db.upsert_rate_limit_config({"rate_limit_rpm": 1, "rate_limit_rpmm": 2})
+
+
+# ── PRM-256: the tier catalogue says who it governs ─────────────────────────
+
+
+async def test_the_tier_list_says_how_many_clients_each_one_governs():
+    """A tier is shared, and editing one edits it for everyone on it.
+
+    Measured the hard way: raising `scale` for the client who asked raised it
+    for another who had not, and nothing on the page would have shown that
+    before pressing save. The count is what makes a shared edit visible.
+    """
+    from prometheus_gateway import db
+
+    await db.upsert_rate_limit_tier("prm256-a", tpm=1000)
+    await db.upsert_rate_limit_tier("prm256-empty", tpm=2000)
+    for client in ("prm256-c1", "prm256-c2"):
+        await db.upsert_client_billing_settings(
+            client,
+            monthly_spend_cap_usd=None,
+            alert_thresholds_percent=None,
+            tax_rate_percent=0.0,
+            preferred_currency="USD",
+            tier="prm256-a",
+        )
+
+    counts = await db.count_clients_per_tier()
+    assert counts.get("prm256-a") == 2
+    assert counts.get("prm256-empty") is None, (
+        "a tier nobody is on must not be reported as governing anyone"
+    )

@@ -1339,6 +1339,24 @@ async def list_rate_limit_tiers() -> list[RateLimitTier]:
         return list(result.scalars().all())
 
 
+async def count_clients_per_tier() -> dict[str, int]:
+    """How many clients sit on each tier — PRM-256.
+
+    Editing a tier edits it for everyone on it, and until this existed the
+    dashboard could not say who that was. Measured the hard way: raising
+    `scale` for one client who asked raised it for another who had not, and
+    nothing on the page would have shown that before pressing save.
+    """
+    session_factory = get_session_factory()
+    async with session_factory() as session:
+        result = await session.execute(
+            select(ClientBillingSettings.tier, func.count())
+            .where(ClientBillingSettings.tier.is_not(None))
+            .group_by(ClientBillingSettings.tier)
+        )
+        return {name: count for name, count in result.all() if name}
+
+
 async def get_rate_limit_tier(name: str) -> RateLimitTier | None:
     session_factory = get_session_factory()
     async with session_factory() as session:

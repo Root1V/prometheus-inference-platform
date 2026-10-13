@@ -131,6 +131,40 @@ export function useRateLimitTiers() {
   });
 }
 
+/** PRM-256: create or change one tier.
+ *
+ *  The endpoint has existed since PRM-228 and only a `curl` could reach it, so
+ *  "we will configure a tier for that client" meant an operator asking someone
+ *  with a terminal. A dimension sent as null clears it to the platform default;
+ *  one left out is untouched.
+ */
+export function useUpsertRateLimitTier() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async ({
+      name,
+      values,
+    }: {
+      name: string;
+      values: Partial<Omit<RateLimitTier, "name" | "client_count">>;
+    }) => (await apiClient.put(`/limits/tiers/${encodeURIComponent(name)}`, values)).data,
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["rate-limit-tiers"] });
+    },
+  });
+}
+
+export function useDeleteRateLimitTier() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async (name: string) =>
+      (await apiClient.delete(`/limits/tiers/${encodeURIComponent(name)}`)).data,
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["rate-limit-tiers"] });
+    },
+  });
+}
+
 export function useBillingOverview(period: string) {
   return useQuery({
     queryKey: ["billing-overview", period] as const,
