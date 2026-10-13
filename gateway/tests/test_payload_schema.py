@@ -198,7 +198,7 @@ def test_every_modality_tei_may_serve_has_a_schema_or_needs_no_engine_key():
             assert schema == payload_schema_for(modality, "llama_cpp")
 
 
-# ── PRM-257: the model's own reasoning survives the round trip ───────────────
+# ── PRM-257/258: a message reaches the engine with what the caller put on it ──
 
 
 def test_reasoning_content_reaches_the_engine():
@@ -250,3 +250,33 @@ def test_a_message_without_reasoning_does_not_grow_the_field():
         {"model": "m", "messages": [{"role": "user", "content": "hola"}]}
     ).to_llama_payload()
     assert "reasoning_content" not in payload["messages"][0]
+
+
+def test_a_message_field_the_gateway_has_never_heard_of_still_arrives():
+    """PRM-258: the fix for `reasoning_content` must not need repeating.
+
+    Declaring one field fixed one field. The allowlist underneath it was the
+    actual defect — it had already eaten `reasoning_content` silently for as
+    long as the model existed, and would eat the next addition the same way. A
+    message is the caller's own text; there is no privileged key here to hand
+    them by passing it through.
+    """
+    from prometheus_gateway.models.schemas import ChatCompletionRequest
+
+    payload = ChatCompletionRequest.model_validate(
+        {
+            "model": "m",
+            "messages": [
+                {
+                    "role": "assistant",
+                    "content": "hi",
+                    "name": "agent-a",
+                    "a_field_added_after_this_test_was_written": {"nested": 1},
+                }
+            ],
+        }
+    ).to_llama_payload()
+
+    message = payload["messages"][0]
+    assert message.get("name") == "agent-a"
+    assert message.get("a_field_added_after_this_test_was_written") == {"nested": 1}

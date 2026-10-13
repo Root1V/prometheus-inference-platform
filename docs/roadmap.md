@@ -9637,3 +9637,31 @@ message the one place any caller field reaches the engine.
 **Scope**: in — the field and its round trip. Out — a general audit of what else `ChatMessage`
 drops (`name`, `refusal`, `annotations`), which is the same shape of bug and wants its own
 measurement rather than a speculative list.
+
+## PRM-258 — A message arrives with what the caller put on it
+
+**Why**: PRM-257 declared `reasoning_content` and fixed one field. The allowlist underneath it
+was the actual defect.
+
+`ChatMessage` named four fields; Pydantic drops what a model does not name; `to_llama_payload`
+dumps each message whole. That had already eaten `reasoning_content` silently for as long as the
+model has existed, and it took a client's 500s, an upstream issue closed as unfixable, and a
+measurement to find. The next field the ecosystem adds — `name`, `refusal`, `annotations` — would
+go the same way, and the only way to notice would be the same way.
+
+PRM-257's reasoning for the narrow fix was that opening messages would make them the one place a
+caller's field reaches the engine. That argument does not survive looking at it: the caller
+already authors the entire conversation, so there is no privileged key here to hand them, and
+both of the gateway's own readers take `.get("content")` or typed attributes rather than a closed
+key set. The measured cost of the allowlist is months of silent breakage for every client; the
+cost of passing a message through is nothing anyone could name.
+
+This is deliberately **not** what the request body does. There `extra="allow"` exists so the
+gateway can name what it ignores in `X-Prometheus-Ignored-Parameters`, and `to_llama_payload`
+forwards only what it lists — a parameter the engine may not honour is a different thing from a
+message field the caller wrote.
+
+**Scope**: in — `extra="allow"` on `ChatMessage`, the explicit `reasoning_content` declaration
+removed as redundant, and a test that a field invented after the test was written still arrives.
+Out — the same question for `tools` and `response_format`, which are the gateway's contract
+rather than the caller's text.
