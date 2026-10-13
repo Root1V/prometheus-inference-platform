@@ -9586,3 +9586,24 @@ is the normal case.
 **Scope**: in — the enforcement, the tier exemption, the single tier resolution, the 429's scope
 and log line, and rewriting the test that could not fail. Out — recalibrating the 40,000 default,
 which is a decision about what the platform sells, not about whether a ceiling works.
+
+## PRM-256 — A `custom` tier in the catalogue, with its price
+
+**Why**: Veritium asked for 200,000 TPM. The catalogue held `trial` (10k), `standard` (40k) and
+`scale` (150k), and the design is deliberately named tiers rather than per-client numbers — so
+there was nowhere to put the request. It was resolved by raising `scale` to 200,000, which also
+raised it for a client who had not asked.
+
+That works once. The second client with a number of their own forces the same choice again:
+move a shared tier under clients who did not ask, or start inventing a tier per customer, which
+is the per-client-values design that tiers exist to avoid.
+
+A `custom` tier closes it: a slot the operator configures on request, carrying the price agreed
+with that client, leaving the three standard tiers alone. The thing to get right is that
+`custom` is not one shared row — several clients can be on it with different numbers — so this
+is where the schema stops being "a tier has dimensions" and becomes "a client may have its own",
+and the per-client values need to live somewhere that `resolve_client_limits` already reads.
+
+**Scope**: in — the `custom` tier, per-client dimension overrides under it, the agreed cost
+alongside them, and the Users modal able to set both. Out — a self-service path for a client to
+request or change their own tier; a human operator agrees the number and the price.
