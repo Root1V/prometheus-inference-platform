@@ -196,3 +196,57 @@ def test_every_modality_tei_may_serve_has_a_schema_or_needs_no_engine_key():
             # Not engine-shaped: the gateway defines the body, so the id must be
             # the platform's own and identical across engines.
             assert schema == payload_schema_for(modality, "llama_cpp")
+
+
+# ── PRM-257: the model's own reasoning survives the round trip ───────────────
+
+
+def test_reasoning_content_reaches_the_engine():
+    """Dropped silently until now, and it is not cosmetic.
+
+    llama.cpp issue #27720 — gpt-oss emitting a malformed Harmony channel header
+    and failing the final PEG parse, which is the 500 reported as VRT-PRM-005 —
+    was closed as not fixable in the parser, with the cause identified as a
+    client that does not hand the reasoning back: 7 failures in 120 turns with
+    it stripped, 0 in 120 with it sent. This gateway was doing the stripping for
+    every caller, because `ChatMessage` never named the field and Pydantic drops
+    what a model does not declare.
+    """
+    from prometheus_gateway.models.schemas import ChatCompletionRequest
+
+    payload = ChatCompletionRequest.model_validate(
+        {
+            "model": "m",
+            "messages": [
+                {"role": "user", "content": "hola"},
+                {
+                    "role": "assistant",
+                    "content": None,
+                    "reasoning_content": "the model's analysis channel",
+                    "tool_calls": [
+                        {
+                            "id": "c1",
+                            "type": "function",
+                            "function": {"name": "f", "arguments": "{}"},
+                        }
+                    ],
+                },
+                {"role": "tool", "tool_call_id": "c1", "content": "r"},
+            ],
+        }
+    ).to_llama_payload()
+
+    assistant = payload["messages"][1]
+    assert assistant.get("reasoning_content") == "the model's analysis channel", (
+        "the gateway is still stripping the reasoning it asks the model to continue from"
+    )
+
+
+def test_a_message_without_reasoning_does_not_grow_the_field():
+    """`exclude_none` keeps the forwarded body the shape the caller sent."""
+    from prometheus_gateway.models.schemas import ChatCompletionRequest
+
+    payload = ChatCompletionRequest.model_validate(
+        {"model": "m", "messages": [{"role": "user", "content": "hola"}]}
+    ).to_llama_payload()
+    assert "reasoning_content" not in payload["messages"][0]
