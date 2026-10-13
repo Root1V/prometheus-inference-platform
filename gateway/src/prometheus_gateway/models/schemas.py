@@ -66,6 +66,26 @@ class ChatMessage(BaseModel):
     tool_calls: list[ToolCall] | None = None
     # RM-35: set on a "tool" role message — which tool_calls entry this is answering.
     tool_call_id: str | None = None
+    # PRM-257: the model's own reasoning, handed back on the next turn.
+    #
+    # Undeclared, this was silently dropped: Pydantic ignores what a model does
+    # not name, and `to_llama_payload` dumps each message wholesale, so a caller
+    # that round-tripped `reasoning_content` had it removed here and never knew.
+    #
+    # It is not cosmetic. llama.cpp's own issue #27720 — gpt-oss emitting a
+    # malformed Harmony channel header and failing the final PEG parse, which is
+    # the 500 Veritium reported as `VRT-PRM-005` — was closed as not fixable in
+    # the parser, with the cause identified as exactly this: the reporter
+    # measured 7 failures in 120 turns with reasoning stripped and 0 in 120 with
+    # it sent back. A reasoning model asked to continue from its own tool call,
+    # with its reasoning removed, produces erratic output.
+    #
+    # Declared rather than `extra="allow"`, which the request body above uses:
+    # there, extras are kept only so the gateway can *name* what it ignores, and
+    # `to_llama_payload` still forwards nothing it has not listed. Messages are
+    # dumped whole, so opening them would make a message the one place any
+    # caller field reaches the engine. One known field, for a measured reason.
+    reasoning_content: str | None = None
 
     @field_validator("role")
     @classmethod

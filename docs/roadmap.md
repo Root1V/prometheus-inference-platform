@@ -9607,3 +9607,33 @@ and the per-client values need to live somewhere that `resolve_client_limits` al
 **Scope**: in — the `custom` tier, per-client dimension overrides under it, the agreed cost
 alongside them, and the Users modal able to set both. Out — a self-service path for a client to
 request or change their own tier; a human operator agrees the number and the price.
+
+## PRM-257 — The model's reasoning goes back to the model
+
+**Why**: we promised Veritium (`VRT-PRM-005`) to upgrade llama.cpp and measure whether a newer
+PEG parser accepted the 73 malformed outputs we had captured. Measuring before building changed
+the answer.
+
+llama.cpp issue #27720 is this exact failure — gpt-oss emitting a malformed Harmony channel
+header (`<|channel|>` followed by free text, `comment?commentary?`, `commentery?`) and failing
+the final parse. It is **closed as not fixable**: "handling garbage output is not feasible from a
+parsing perspective". So the upgrade we promised would not have fixed it, and that is worth
+knowing before spending a build.
+
+The thread identifies the cause and measures it: **7 failures in 120 turns with
+`reasoning_content` stripped, 0 in 120 with it handed back**. A reasoning model asked to continue
+from its own tool call, with its own analysis channel removed, produces erratic output.
+
+**And the stripping was ours.** `ChatMessage` declared `role`, `content`, `tool_calls` and
+`tool_call_id`. Pydantic drops what a model does not name, and `to_llama_payload` dumps each
+message wholesale — so a caller that correctly round-tripped `reasoning_content` had it removed
+here, silently, and had no way to tell. Every client of this platform had the round trip broken.
+
+Declared rather than opened with `extra="allow"`, which the request body above uses: there,
+extras are kept only so the gateway can name what it ignores, and `to_llama_payload` still
+forwards nothing it has not listed. Messages are dumped whole, so opening them would make a
+message the one place any caller field reaches the engine.
+
+**Scope**: in — the field and its round trip. Out — a general audit of what else `ChatMessage`
+drops (`name`, `refusal`, `annotations`), which is the same shape of bug and wants its own
+measurement rather than a speculative list.
