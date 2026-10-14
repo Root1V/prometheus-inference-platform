@@ -27,6 +27,10 @@ export interface RateLimitTier {
   rpd: number | null;
   tpd: number | null;
   ipm: number | null;
+  /** PRM-259: what a client on this tier may spend in a month. The money a
+   *  tier carries is a ceiling, not a price — the per-token rate is the same
+   *  on every tier, as it is at OpenAI and Anthropic. A client's own cap wins. */
+  monthly_spend_cap_usd: number | null;
   /** PRM-256: how many clients this tier governs. Editing it edits theirs. */
   client_count: number;
 }

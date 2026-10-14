@@ -21,6 +21,14 @@ const DIMENSIONS = [
   { key: "ipm", label: "IPM", hint: "Images per minute" },
 ] as const;
 
+/** PRM-259: the money, which is not one of the seven ceilings above — it is a
+ *  month and a float, where they are a minute or a day and whole numbers. */
+const CAP = {
+  key: "monthly_spend_cap_usd",
+  label: "Cap / month",
+  hint: "What a client on this tier may spend in a month. Their own cap wins where they have one. Blank means this tier sets none.",
+} as const;
+
 const inputClass =
   "w-full rounded-lg border border-border bg-background px-2 py-1.5 text-sm tabular-nums text-text focus:border-primary focus:outline-none";
 
@@ -53,7 +61,10 @@ export function RateLimitTiers() {
     setDraftDescription(tier?.description ?? "");
     setDraft(
       Object.fromEntries(
-        DIMENSIONS.map(({ key }) => [key, tier?.[key] == null ? "" : String(tier[key])]),
+        [...DIMENSIONS, CAP].map(({ key }) => [
+          key,
+          tier?.[key] == null ? "" : String(tier[key]),
+        ]),
       ),
     );
   };
@@ -81,6 +92,18 @@ export function RateLimitTiers() {
         return;
       }
       values[key] = Math.round(parsed);
+    }
+    // The cap keeps its decimals — it is dollars, not a token count.
+    const rawCap = (draft[CAP.key] ?? "").trim();
+    if (rawCap === "") {
+      values[CAP.key] = null;
+    } else {
+      const parsedCap = Number(rawCap);
+      if (!Number.isFinite(parsedCap) || parsedCap <= 0) {
+        showToast(`${CAP.label} must be a positive amount, or empty for none.`, "error");
+        return;
+      }
+      values[CAP.key] = parsedCap;
     }
     upsert.mutate(
       { name, values },
@@ -136,7 +159,7 @@ export function RateLimitTiers() {
           <tr className="border-b border-border text-xs uppercase tracking-wide text-text-muted">
             <th className="px-4 py-3 font-medium">Tier</th>
             <th className="px-4 py-3 font-medium">On it</th>
-            {DIMENSIONS.map((d) => (
+            {[...DIMENSIONS, CAP].map((d) => (
               <th key={d.key} className="cursor-help px-3 py-3 text-right font-medium" title={d.hint}>
                 {d.label}
               </th>
@@ -209,6 +232,13 @@ export function RateLimitTiers() {
                     )}
                   </td>
                 ))}
+                <td className="px-3 py-3 text-right tabular-nums text-text-muted">
+                  {tier.monthly_spend_cap_usd == null ? (
+                    <span title="This tier sets no cap">—</span>
+                  ) : (
+                    `USD ${tier.monthly_spend_cap_usd.toLocaleString()}`
+                  )}
+                </td>
                 <td className="whitespace-nowrap px-4 py-3 text-right">
                   <button
                     type="button"
@@ -287,7 +317,7 @@ function TierForm({
           </p>
         )}
       </td>
-      {DIMENSIONS.map(({ key, label }) => (
+      {[...DIMENSIONS, CAP].map(({ key, label }) => (
         <td key={key} className="px-2 py-3">
           <input
             value={draft[key] ?? ""}

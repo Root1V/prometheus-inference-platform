@@ -95,6 +95,29 @@ async def resolve_client_limits(client_id: str) -> "db.RateLimitTier | None":
     return await get_rate_limit_tier_cached(settings.tier)
 
 
+async def resolve_spend_cap(settings: "db.ClientBillingSettings | None") -> float | None:
+    """What this client may spend this month — PRM-259.
+
+    Their own cap where they have one, otherwise their tier's. That order is
+    the industry's: OpenAI and Anthropic both attach a monthly ceiling to the
+    tier and let an account carry its own, and neither varies the per-token
+    price between tiers. A tier with no cap says nothing, like every ceiling it
+    carries — it does not mean unlimited.
+
+    Takes the settings row rather than a client id because all four callers
+    already hold it for the alert thresholds; the tier read behind it is the
+    same cached one `resolve_client_limits` uses.
+    """
+    if settings is None:
+        return None
+    if settings.monthly_spend_cap_usd is not None:
+        return settings.monthly_spend_cap_usd
+    if settings.tier is None:
+        return None
+    tier = await get_rate_limit_tier_cached(settings.tier)
+    return tier.monthly_spend_cap_usd if tier is not None else None
+
+
 async def get_client_billing_settings_cached(client_id: str) -> "db.ClientBillingSettings | None":
     """A cap change via the admin UI takes up to _SETTINGS_CACHE_TTL_S to apply
     on the hot path — a deliberate latency/freshness tradeoff, not real-time.

@@ -168,10 +168,16 @@ def create_billing_router(manager_client: "ManagerApiClient | None" = None) -> A
         return {r.currency_code: r.units_per_usd for r in rows}
 
     _TIER_DIMENSIONS = ("rpm", "tpm", "tpm_input", "tpm_output", "rpd", "tpd", "ipm")
+    # PRM-259: kept out of `_TIER_DIMENSIONS` on purpose. The seven above are
+    # per-minute and per-day ceilings the rate limiter enforces; this is money
+    # over a month, enforced by the budget tracker, and it is a float. Folding
+    # it into the same tuple would have the validation below round it to an int.
+    _TIER_CAP = "monthly_spend_cap_usd"
 
     def _tier_json(row: Any) -> dict[str, Any]:
         out: dict[str, Any] = {"name": row.name, "description": row.description}
         out.update({d: getattr(row, d) for d in _TIER_DIMENSIONS})
+        out[_TIER_CAP] = getattr(row, _TIER_CAP, None)
         return out
 
     @router.get("/admin/api/limits/tiers")
@@ -235,6 +241,35 @@ def create_billing_router(manager_client: "ManagerApiClient | None" = None) -> A
                     f"the platform default, since zero would mean a ceiling nobody can pass.",
                 )
             values[dimension] = parsed
+        # PRM-259: and the money, which is a float and a month, not an int and
+        # a minute. Zero is refused for the same reason the ceilings above are:
+        # a cap of nothing is not a default, it is a client who can spend
+        # nothing, and `null` already says "no opinion".
+        if _TIER_CAP in body:
+            raw = body[_TIER_CAP]
+            if raw is None:
+                values[_TIER_CAP] = None
+            else:
+                try:
+                    cap = float(raw)
+                except (TypeError, ValueError):
+                    return _problem(
+                        request,
+                        400,
+                        "invalid-tier",
+                        "Invalid Tier",
+                        f"{_TIER_CAP} must be a number or null.",
+                    )
+                if cap <= 0:
+                    return _problem(
+                        request,
+                        400,
+                        "invalid-tier",
+                        "Invalid Tier",
+                        f"{_TIER_CAP} must be greater than zero \u2014 use null for no "
+                        "cap from this tier.",
+                    )
+                values[_TIER_CAP] = cap
         row = await db.upsert_rate_limit_tier(name, **values)
         budget.invalidate_rate_limit_tier_cache(name)
         return _tier_json(row)
