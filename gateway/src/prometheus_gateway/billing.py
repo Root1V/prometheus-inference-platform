@@ -136,7 +136,8 @@ async def build_period_summary(client_id: str, period: str) -> dict[str, Any]:
     settings_row = await db.get_client_billing_settings(client_id)
     tax_rate_percent = settings_row.tax_rate_percent if settings_row else 0.0
     preferred_currency = settings_row.preferred_currency if settings_row else "USD"
-    cap_usd = settings_row.monthly_spend_cap_usd if settings_row else None
+    # PRM-259: the tier's cap where the client has none of their own.
+    cap_usd = await budget.resolve_spend_cap(settings_row)
 
     daily_rows = await db.query_daily_cost_range(start_day, end_day, client_id)
     model_rows = await db.query_model_cost_range(start_day, end_day, client_id)

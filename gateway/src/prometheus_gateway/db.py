@@ -317,6 +317,17 @@ class RateLimitTier(Base):
     rpd: Mapped[int | None] = mapped_column(Integer, nullable=True)
     tpd: Mapped[int | None] = mapped_column(Integer, nullable=True)
     ipm: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # PRM-259: what a client on this tier may spend in a month.
+    #
+    # The money a tier carries in this industry is a ceiling, not a price:
+    # OpenAI's three tiers cap at $500/$5,000/$200,000 and Anthropic's at
+    # $500/$1,000/$200,000, and neither charges a different rate per token
+    # between them. So a tier says how much a consumer may spend, and what they
+    # are charged stays where it already is — the per-model price, per request.
+    #
+    # Null means the tier has no opinion, like every dimension above. A client's
+    # own `monthly_spend_cap_usd` still wins; this is the default for the rest.
+    monthly_spend_cap_usd: Mapped[float | None] = mapped_column(Float, nullable=True)
     updated_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True, onupdate=lambda: datetime.now(timezone.utc)
     )

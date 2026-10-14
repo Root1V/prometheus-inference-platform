@@ -9619,3 +9619,31 @@ That is a commercial decision, not a schema one, and inventing a column for it w
 Out — the price, and per-client dimension overrides, which the `rate_limit_tiers` docstring argues
 against for reasons that still hold: tiers are what the industry does, and a hundred hand-tuned
 clients are fourteen decisions and eighty-six defaults nobody chose.
+
+## PRM-259 — A tier carries its spend cap, not a price
+
+**Why**: PRM-256 left the "associated cost" undecided because this platform prices per request and
+a tier has no obvious place for a price. Researching what the industry does dissolved the
+question rather than answering it.
+
+**Nobody sells a rate-limit tier.** OpenAI's tiers are unlocked by cumulative purchases and
+Anthropic's are assigned automatically from usage history; what each carries is a **monthly spend
+ceiling** — $500/$5,000/$200,000 and $500/$1,000/$200,000 — and neither charges a different rate
+per token between them. The money attached to a tier is a limit on the customer, not a charge to
+them.
+
+And this platform already had that field one level down: `monthly_spend_cap_usd` on
+`client_billing_settings`. So the tier now supplies it as the default and a client's own still
+wins, which is the same precedence both references use. Null on a tier means no opinion, like
+every ceiling it carries — never "spend freely".
+
+**What was rejected, and why it is specific to us.** Charging for a ceiling *is* a product —
+Azure's PTUs and Bedrock's model units, billed per hour whether traffic arrives or not, cheaper
+with a longer commitment. But what they sell is guaranteed throughput on dedicated hardware.
+Prometheus runs every model on one shared 128 GB host, so a client's throughput cannot be
+guaranteed against its neighbours; selling reserved capacity would be selling something the
+platform cannot honour. That product starts making sense when there are dedicated nodes.
+
+**Scope**: in — the column, the migration, `resolve_spend_cap` and the five read sites that now
+use it, the field in the tier form and table. Out — per-hour capacity pricing, and any change to
+how a request is charged, which stays the per-model price it has always been.

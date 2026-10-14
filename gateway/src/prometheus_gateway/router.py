@@ -35,6 +35,7 @@ from .budget import (
     get_client_billing_settings_cached,
     parse_thresholds,
     resolve_client_limits,
+    resolve_spend_cap,
 )
 from .models.backends import TRANSIENT_STATUS_CODES
 from .models import rerank_dialects
@@ -1845,7 +1846,7 @@ def create_router(registry: ModelRegistry, pool: "BackendPool") -> APIRouter:
             alert_thresholds_percent: list[int] = []
             if claims is not None and budget_redis is not None:
                 billing_settings = await get_client_billing_settings_cached(claims.client_id)
-                cap_usd = billing_settings.monthly_spend_cap_usd if billing_settings else None
+                cap_usd = await resolve_spend_cap(billing_settings)
                 if cap_usd is not None:
                     app_settings = getattr(getattr(request.app, "state", None), "settings", None)
                     default_thresholds = getattr(
@@ -2404,7 +2405,7 @@ def create_router(registry: ModelRegistry, pool: "BackendPool") -> APIRouter:
         alert_thresholds_percent: list[int] = []
         if claims is not None and budget_redis is not None:
             billing_settings = await get_client_billing_settings_cached(claims.client_id)
-            cap_usd = billing_settings.monthly_spend_cap_usd if billing_settings else None
+            cap_usd = await resolve_spend_cap(billing_settings)
             if cap_usd is not None:
                 settings = getattr(getattr(request.app, "state", None), "settings", None)
                 default_thresholds = getattr(
@@ -2782,7 +2783,7 @@ def create_router(registry: ModelRegistry, pool: "BackendPool") -> APIRouter:
         alert_thresholds_percent: list[int] = []
         if claims is not None and budget_redis is not None:
             billing_settings = await get_client_billing_settings_cached(claims.client_id)
-            cap_usd = billing_settings.monthly_spend_cap_usd if billing_settings else None
+            cap_usd = await resolve_spend_cap(billing_settings)
             if cap_usd is not None:
                 settings = getattr(getattr(request.app, "state", None), "settings", None)
                 default_thresholds = getattr(
@@ -3362,7 +3363,7 @@ def create_router(registry: ModelRegistry, pool: "BackendPool") -> APIRouter:
         alert_thresholds_percent: list[int] = []
         if claims is not None and budget_redis is not None:
             billing_settings = await get_client_billing_settings_cached(claims.client_id)
-            cap_usd = billing_settings.monthly_spend_cap_usd if billing_settings else None
+            cap_usd = await resolve_spend_cap(billing_settings)
             if cap_usd is not None:
                 settings = getattr(getattr(request.app, "state", None), "settings", None)
                 default_thresholds = getattr(

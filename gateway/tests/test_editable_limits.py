@@ -238,14 +238,15 @@ async def test_an_unknown_field_cannot_reach_the_row(app, write_headers):
 # ── PRM-256: the tier catalogue says who it governs ─────────────────────────
 
 
-async def test_the_tier_list_says_how_many_clients_each_one_governs():
+async def test_the_tier_list_says_how_many_clients_each_one_governs(app):
     """A tier is shared, and editing one edits it for everyone on it.
 
     Measured the hard way: raising `scale` for the client who asked raised it
     for another who had not, and nothing on the page would have shown that
     before pressing save. The count is what makes a shared edit visible.
     """
-    from prometheus_gateway import db
+
+    await db.create_tables(db.get_engine())
 
     await db.upsert_rate_limit_tier("prm256-a", tpm=1000)
     await db.upsert_rate_limit_tier("prm256-empty", tpm=2000)
@@ -264,3 +265,69 @@ async def test_the_tier_list_says_how_many_clients_each_one_governs():
     assert counts.get("prm256-empty") is None, (
         "a tier nobody is on must not be reported as governing anyone"
     )
+
+
+# ── PRM-259: the money a tier carries is a ceiling, not a price ─────────────
+
+
+async def test_a_tier_supplies_the_spend_cap_for_clients_without_one(app):
+    """The industry's shape: OpenAI and Anthropic both hang a monthly ceiling
+    on the tier, and neither charges a different rate per token between tiers.
+    """
+
+    from prometheus_gateway import budget
+
+    await db.create_tables(db.get_engine())
+
+    await db.upsert_rate_limit_tier("prm259-capped", monthly_spend_cap_usd=500.0)
+    await db.upsert_client_billing_settings(
+        "prm259-inherits",
+        monthly_spend_cap_usd=None,
+        alert_thresholds_percent=None,
+        tax_rate_percent=0.0,
+        preferred_currency="USD",
+        tier="prm259-capped",
+    )
+    settings = await db.get_client_billing_settings("prm259-inherits")
+    assert await budget.resolve_spend_cap(settings) == 500.0
+
+
+async def test_a_client_with_their_own_cap_keeps_it(app):
+    """A negotiated number must not be overwritten by the tier it sits on."""
+
+    from prometheus_gateway import budget
+
+    await db.create_tables(db.get_engine())
+
+    await db.upsert_rate_limit_tier("prm259-capped2", monthly_spend_cap_usd=500.0)
+    await db.upsert_client_billing_settings(
+        "prm259-own",
+        monthly_spend_cap_usd=1234.0,
+        alert_thresholds_percent=None,
+        tax_rate_percent=0.0,
+        preferred_currency="USD",
+        tier="prm259-capped2",
+    )
+    settings = await db.get_client_billing_settings("prm259-own")
+    assert await budget.resolve_spend_cap(settings) == 1234.0
+
+
+async def test_a_tier_without_a_cap_grants_none(app):
+    """Null is "this tier has no opinion", never "spend freely" — the same rule
+    every ceiling on a tier already follows."""
+
+    from prometheus_gateway import budget
+
+    await db.create_tables(db.get_engine())
+
+    await db.upsert_rate_limit_tier("prm259-uncapped", tpm=999)
+    await db.upsert_client_billing_settings(
+        "prm259-nocap",
+        monthly_spend_cap_usd=None,
+        alert_thresholds_percent=None,
+        tax_rate_percent=0.0,
+        preferred_currency="USD",
+        tier="prm259-uncapped",
+    )
+    settings = await db.get_client_billing_settings("prm259-nocap")
+    assert await budget.resolve_spend_cap(settings) is None
