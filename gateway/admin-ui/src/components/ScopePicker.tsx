@@ -1,7 +1,13 @@
-import { useInstances } from "../api/instances";
+import { useInstances, useNodes } from "../api/instances";
 
-// Mirrors auth-service's schemas.py VALID_SCOPES (fixed enum) — the only other
-// valid scope shape is `model:<id>`, covered by the model picker below.
+// Mirrors auth-service's schemas.py VALID_SCOPES (fixed enum). The other two
+// valid shapes are patterns rather than members of that set, and each has its
+// own picker below: `model:<id>` and `node:<id>`.
+//
+// PRM-267: the mirror is checked by gateway/tests/test_ui_scopes.py. It used to
+// be only claimed here, and `fleet:heartbeat` was missing — so the one scope a
+// node credential needs could not be granted from the panel that is the only
+// place credentials are created.
 const FIXED_SCOPES = [
   "inference:read",
   "inference:stream",
@@ -11,15 +17,23 @@ const FIXED_SCOPES = [
   "admin:usage",
   "backend-registry:read",
   "backend-registry:write",
+  "fleet:heartbeat",
   "ui:chat",
 ];
 
 const MODEL_SCOPE_PREFIX = "model:";
+const NODE_SCOPE_PREFIX = "node:";
 
 // Only these scopes mean the principal actually calls a model (API inference or
 // the chat UI) — admin/internal-tooling users (admin:*, backend-registry:*)
 // never need per-model access, so the picker stays hidden for them.
 const MODEL_CONSUMER_SCOPES = ["inference:read", "inference:stream", "ui:chat"];
+
+// `fleet:heartbeat` says a credential may report liveness; `node:<id>` says
+// which node it may report it *for*. The pair is the whole point (schemas.py:
+// "a compromised node can forge liveness for itself and for nothing else"), so
+// checking one has to offer the other.
+const FLEET_SCOPE = "fleet:heartbeat";
 
 type ModelOption = {
   slug: string;
@@ -38,6 +52,8 @@ export function ScopePicker({
 }) {
   const { data } = useInstances();
   const instances = data?.instances ?? [];
+  const { data: nodes } = useNodes();
+  const nodeOptions = [...(nodes ?? [])].sort((a, b) => a.name.localeCompare(b.name));
 
   // RM-70: access is granted to a *model*, never to an instance. Replicas used
   // to appear one row each, suffixes and all, so granting access meant picking
@@ -74,11 +90,21 @@ export function ScopePicker({
       return { scope, name, legacyInstance: instanceIds.has(name) };
     });
 
+  // Same reason, for nodes: a grant for a node this coordinator no longer lists
+  // (deregistered, or registered elsewhere) must stay visible and keepable.
+  const knownNodeScopes = new Set(nodeOptions.map((n) => `${NODE_SCOPE_PREFIX}${n.id}`));
+  const otherNodeScopes = value
+    .filter((s) => s.startsWith(NODE_SCOPE_PREFIX) && !knownNodeScopes.has(s))
+    .map((scope) => ({ scope, id: scope.slice(NODE_SCOPE_PREFIX.length) }));
+
   // Show the picker once the user is (or already was) a model consumer — either
   // a consumer scope is checked now, or they already hold model:<id> grants from
   // before (so editing never hides — and risks silently dropping — existing access).
   const hasModelGrants = value.some((s) => s.startsWith(MODEL_SCOPE_PREFIX));
   const isModelConsumer = MODEL_CONSUMER_SCOPES.some((s) => value.includes(s)) || hasModelGrants;
+
+  const hasNodeGrants = value.some((s) => s.startsWith(NODE_SCOPE_PREFIX));
+  const isFleetMember = value.includes(FLEET_SCOPE) || hasNodeGrants;
 
   const toggle = (scope: string) => {
     onChange(value.includes(scope) ? value.filter((s) => s !== scope) : [...value, scope]);
@@ -94,6 +120,49 @@ export function ScopePicker({
           </label>
         ))}
       </div>
+
+      {isFleetMember && (
+        <div>
+          <p className="mb-1 text-xs font-medium text-text-muted">Nodes</p>
+          <div className="max-h-40 space-y-1 overflow-y-auto rounded-lg border border-border p-2">
+            {nodeOptions.map((node) => {
+              const scope = `${NODE_SCOPE_PREFIX}${node.id}`;
+              return (
+                <label key={node.id} className="flex items-center gap-2 text-sm text-text">
+                  <input
+                    type="checkbox"
+                    checked={value.includes(scope)}
+                    onChange={() => toggle(scope)}
+                  />
+                  <span className="truncate">{node.name}</span>
+                  <span className="shrink-0 text-xs text-text-muted">
+                    {node.node_type}
+                    {node.tag ? ` · ${node.tag}` : ""}
+                  </span>
+                  <span
+                    title="The node id this credential speaks for — also PMGR_FLEET_NODE_ID on the device"
+                    className="ml-auto shrink-0 font-mono text-xs text-text-muted"
+                  >
+                    {node.id}
+                  </span>
+                </label>
+              );
+            })}
+            {otherNodeScopes.map(({ scope, id }) => (
+              <label key={scope} className="flex items-center gap-2 text-sm text-text-muted">
+                <input type="checkbox" checked onChange={() => toggle(scope)} />
+                <span className="truncate font-mono text-xs">{id}</span>
+                <span className="shrink-0 text-xs italic">not in this fleet</span>
+              </label>
+            ))}
+            {nodeOptions.length === 0 && otherNodeScopes.length === 0 && (
+              <p className="text-xs italic text-text-muted">
+                No nodes registered — register the node first, then grant it here.
+              </p>
+            )}
+          </div>
+        </div>
+      )}
 
       {isModelConsumer && (modelOptions.length > 0 || otherModelScopes.length > 0) && (
         <div>

@@ -9836,3 +9836,28 @@ platform, and a join script that minted its own would be the hole that rule exis
 
 **Scope**: in — the script, its checks, the config and env files it writes. Out — registering the
 node, which is an operator decision taken on the coordinator, and installing any engine.
+
+## PRM-267 — The panel can grant the scopes a node needs
+
+**Why**: PRM-266 ends with "the credential is created by a human admin in the panel". It cannot
+be. `ScopePicker.tsx` renders a fixed list of nine scopes and `fleet:heartbeat` — added to
+auth-service by PRM-152 — was never one of them, and there was no field for `node:<id>` at all.
+So the two scopes a node credential is *made of* were the two the only credential-issuing surface
+could not express, and the iMac could not join the fleet.
+
+**The list claimed to be a mirror and was checked by nothing.** Its comment said it mirrored
+`VALID_SCOPES` and that `model:<id>` was "the only other valid scope shape" — both false since
+PRM-152 landed on 2026-09-26, nineteen days, in a file nobody rereads. `gateway/tests/test_ui_scopes.py` now parses both sides and
+fails on disagreement, the same shape as PRM-133's engine-list guard, plus one test naming
+`fleet:heartbeat` directly: a set comparison passes just as happily if *both* sides lose it, and
+the fleet would be equally unjoinable.
+
+**The node picker is the model picker's twin, for the same reason it exists.** Node ids are
+open-ended and live in the coordinator's registry, so they are offered from `useNodes()` rather
+than enumerated, and a grant for a node this coordinator no longer lists still renders — editing
+a user must not silently drop access the way RM-70's instance pins would have. It shows the node
+id beside the name because that id is also `PMGR_FLEET_NODE_ID` on the device, which is the next
+thing the operator types.
+
+**Scope**: in — the fixed-scope list, the node picker, the mirror guard. Out — any API that
+creates credentials, and `node:<id>` authorization itself, which PRM-152 already enforces.
