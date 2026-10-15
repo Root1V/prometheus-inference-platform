@@ -9807,3 +9807,32 @@ implications, not a port of the manager, and it needs its own decision before it
 
 **Scope**: in — the matcher and its per-node answer in the dashboard. Out — iOS, which is a
 product decision first.
+
+## PRM-266 — Joining a device to the fleet is a script
+
+**Why**: adding a node was a page of instructions — write a TOML, set three environment
+variables, open a tunnel, start the manager, hope. Every one of those can be wrong in a way that
+surfaces as the same symptom, a node that never appears, and the operator finds out by reading
+logs on two machines.
+
+The existing installers (`install-rhel.sh`, `install-ubuntu-dgx.sh`) bootstrap a host and do not
+touch the fleet at all: joining was the step nobody had automated.
+
+**It verifies before it writes**, and each check fails with the thing to do about it. The order
+is deliberate — the machine reads its own hardware first, before anything networked, because a
+device that cannot describe itself will join with an empty profile and that is better known
+early. The last check is a real heartbeat, so "this node is in the fleet" is a measurement.
+
+**Two failures it separates that the first version did not.** An identity service that does not
+answer and one that answers refusing are different problems with different fixes — the first is
+usually the tunnel (it is loopback-only by design), the second is the credential or its scopes.
+Collapsing them is how an operator spends an afternoon on a tunnel that was never broken. The
+scope case is also where an unregistered node id surfaces, because the token request asks for
+`node:<id>` and the identity service refuses a scope the client does not hold — earlier, and more
+precisely, than the heartbeat would have.
+
+**What it will not do**: create the credential. Only a human admin issues credentials on this
+platform, and a join script that minted its own would be the hole that rule exists to close.
+
+**Scope**: in — the script, its checks, the config and env files it writes. Out — registering the
+node, which is an operator decision taken on the coordinator, and installing any engine.
