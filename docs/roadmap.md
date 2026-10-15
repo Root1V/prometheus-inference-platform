@@ -9720,3 +9720,57 @@ fingerprint's whole job and what a compatibility shim is most likely to quietly 
 
 **Scope**: in — the parameter, its one call site, the docstring, the tests. Out — the fingerprint
 itself, which PRM-242 settled.
+
+## PRM-263 — The node says what it is, not just where it is
+
+**Why**: a node today is `name`, `manager_url`, a free-text `node_type` (`"mac"`), a tag, an
+enabled flag and three cost numbers. Nothing records the architecture, the core count, whether
+there is a usable accelerator, how much RAM the machine has or how much disk is free.
+
+The information half-exists: `capacity.py` calls `psutil.virtual_memory().total` on every launch
+to warn at 85% and refuse at 95%. It is RAM only, it is computed at launch, and it is discarded
+afterwards — so the coordinator can be told "this would OOM" at the moment of starting a model
+and still cannot answer "what does this machine have" at any other time.
+
+**Scope**: in — a profile the agent reports on registration and refreshes on a schedule: arch,
+OS and version, physical cores, accelerator (Metal/CUDA/ROCm/none) and its memory, total and
+available RAM, total and free disk on the model path. Out — anything that interprets the
+profile, which is PRM-265.
+
+## PRM-264 — Engines are detected, not declared
+
+**Why**: `engines` on the fleet row is a list the operator writes (`PRM-133`), and the schema
+says so: "NULL means this node never declared its engines; '[]' means it declared none". A node
+that claims `llama_cpp` without the binary installed is indistinguishable from one that has it,
+until a start fails.
+
+The knowledge to do better is already in the codebase and pointed the other way: `scanner.py`
+holds a signature per engine — the process name and the flags that identify it — for the eight
+backends, so it can recognise a *running* `text-embeddings-router` or `laya-serve`. Finding out
+whether the binary exists at all is the same table read differently.
+
+**Scope**: in — an inventory of installed engines, reported with the profile, and the declared
+list kept as the operator's override where they disagree. Out — installing anything.
+
+## PRM-265 — Which models fit this device
+
+**Why**: this is the question the other two exist to answer, and the one being sold. Nothing in
+the platform answers "which of our models can this node actually run" — the model side is
+already there (`rss_estimate_mb`, the file size on disk, `backend`, `modality`, `context_length`)
+and the device side is what PRM-263 and PRM-264 add.
+
+**Kept separate deliberately**: a matcher written before the profile exists would be a matcher
+against assumptions. The two requirements are small and boring; this one is where the judgement
+is (what headroom counts as "fits", whether a model that fits RAM but has no engine is listed as
+unavailable or not listed at all).
+
+**The device question this does not answer.** Of the four devices this is being sold on, two —
+an Intel iMac and a Linux laptop — take the agent that already exists, with PRM-263/264 on top.
+The other two do not: on iOS an inference runtime must live inside an app rather than a separate
+daemon, and background GPU access is reported as iPad-only, with one measurement putting an
+iPhone backgrounded without GPU at 4–5× slower. That is a different artefact with App Store
+implications, not a port of the manager, and it needs its own decision before it is sold as
+"an agent on every device".
+
+**Scope**: in — the matcher and its per-node answer in the dashboard. Out — iOS, which is a
+product decision first.
