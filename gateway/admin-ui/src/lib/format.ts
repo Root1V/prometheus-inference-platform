@@ -15,6 +15,21 @@ export function formatAgo(seconds: number): string {
   return `${hours}h ago`;
 }
 
+/** Formats an ISO timestamp as how long ago it was, e.g. "3s ago", "2h ago".
+ *
+ * Distinct from `formatAgo`, which rounds anything under a minute to "just
+ * now". Fleet readings beat every 10s against a 60s window, so the seconds are
+ * the signal: "just now" and "55s ago" are one missed beat and five.
+ */
+export function timeAgo(iso: string | null): string {
+  if (!iso) return "never";
+  const s = Math.max(0, Math.round((Date.now() - new Date(iso).getTime()) / 1000));
+  if (s < 60) return `${s}s ago`;
+  if (s < 3600) return `${Math.floor(s / 60)}m ago`;
+  if (s < 86_400) return `${Math.floor(s / 3600)}h ago`;
+  return `${Math.floor(s / 86_400)}d ago`;
+}
+
 /** Formats a byte count as e.g. "1.2 GB", or "—" for null/unknown. */
 export function formatBytes(n: number | null): string {
   if (n === null || n <= 0) return n === null ? "—" : "0 B";

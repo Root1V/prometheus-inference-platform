@@ -1,4 +1,4 @@
-import { Pencil, Power, RefreshCw, Trash2 } from "lucide-react";
+import { Cpu, Pencil, Power, RefreshCw, Trash2 } from "lucide-react";
 import { ENGINE_LABELS } from "../lib/engines";
 import type { Backend } from "../types/instance";
 import { useState } from "react";
@@ -9,6 +9,7 @@ import { getErrorMessage } from "../lib/errors";
 import type { Node } from "../types/node";
 import { ConfirmDialog } from "./ConfirmDialog";
 import { NodeLivenessBadge } from "./NodeLiveness";
+import { NodeProfileModal } from "./NodeProfile";
 
 const actionButtonClass =
   "rounded-md p-1.5 transition-colors disabled:cursor-not-allowed disabled:opacity-30";
@@ -17,6 +18,7 @@ export function NodeRow({ node, onEdit }: { node: Node; onEdit: (node: Node) => 
   const { showToast } = useToast();
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [confirmDeactivate, setConfirmDeactivate] = useState(false);
+  const [showProfile, setShowProfile] = useState(false);
   const remove = useDeleteNode();
   const check = useCheckNode();
   const activate = useActivateNode();
@@ -67,6 +69,26 @@ export function NodeRow({ node, onEdit }: { node: Node; onEdit: (node: Node) => 
         </td>
         <td className="px-4 py-3">
           <div className="flex items-center gap-1.5">
+            <button
+              type="button"
+              title={
+                node.profile
+                  ? "Hardware profile"
+                  : "Hardware profile — none reported yet"
+              }
+              aria-label={`Hardware profile for ${node.name}`}
+              onClick={() => setShowProfile(true)}
+              className={cn(
+                actionButtonClass,
+                "hover:bg-background",
+                // A node that has never reported is not an error, so this is
+                // dimmed rather than coloured — but it still opens, because
+                // "nothing reported" is itself the answer to the question.
+                node.profile ? "text-text-muted" : "text-text-muted/40",
+              )}
+            >
+              <Cpu size={16} />
+            </button>
             <button
               type="button"
               title="Re-check connectivity"
@@ -135,6 +157,7 @@ export function NodeRow({ node, onEdit }: { node: Node; onEdit: (node: Node) => 
           </div>
         </td>
       </tr>
+      {showProfile && <NodeProfileModal node={node} onClose={() => setShowProfile(false)} />}
       <ConfirmDialog
         open={confirmDelete}
         title={`Delete ${node.name}?`}

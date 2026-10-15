@@ -9906,3 +9906,35 @@ speaking for other nodes; this one is about a node that may no longer speak at a
 Redis is unreachable (a revocation list that fails open is worth less than it appears, and the
 JWKS path next to it already models the honest answer: 503, "your credentials are not
 implicated"). Out — the gateway, which already does this.
+
+## PRM-270 — The panel shows what a node is
+
+**Why**: PRM-263 made a node read its own machine and send it with the heartbeat, and the
+coordinator stored it. `/admin/api/nodes` has returned it ever since — `list_nodes` is a
+pass-through, so the profile was arriving in the browser already. The panel rendered none of it
+and the UI's `Node` type did not even declare the field, so the data reached the page and was
+dropped. Seeing a node's hardware meant opening `fleet.db` by hand, which is the state PRM-206
+already fixed once for the heartbeat itself.
+
+**Three deliberate refusals**, each one a way this view could have been worse than no view:
+
+- It never shows a profile without its age. The agent caches the reading for five minutes, and a
+  node that stopped reporting leaves its last one behind looking perfectly current.
+- It never hides `probe_errors`. profile.py says an empty profile with no explanation is the shape
+  that gets read as "this machine has nothing" — a view that swallows them reintroduces exactly
+  that, and reads as a confident answer.
+- It says nothing about which models fit. That is PRM-265; deriving it here would collapse a
+  reading into a verdict, which is the separation PRM-263 exists to keep.
+
+`disk_path` is shown as its own row rather than a tooltip for the same reason: the node aims at
+its models directory and falls back to the volume anchor when that does not exist yet, so `/` and
+`~/models` are different readings, and the number means different things.
+
+**The guard**: `DeviceProfile` is a dataclass in one language and an interface in another, and
+`to_dict` is `asdict`, so the wire shape is the dataclass exactly.
+`gateway/tests/test_ui_node_profile.py` reads both and fails when they disagree, and separately
+asserts every reported field is actually printed — declaring a field and never showing it is the
+same defect one step later.
+
+**Scope**: in — the type, the panel, the action that opens it, the guard. Out — any judgement
+about the hardware (PRM-265) and engine detection (PRM-264).
