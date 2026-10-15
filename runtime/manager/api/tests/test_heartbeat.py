@@ -146,6 +146,10 @@ class _Client:
     """Stands in for httpx.AsyncClient inside heartbeat.py only."""
 
     calls: list[tuple[str, dict, dict]] = []
+    # PRM-263: the beat may carry a JSON body now, so the double has to accept
+    # one — a stand-in with a narrower signature than the real client turns a
+    # new argument into a silent "the node failed to report".
+    bodies: list[dict | None] = []
     heartbeat_status = 200
 
     def __init__(self, **_kw) -> None:
@@ -157,8 +161,10 @@ class _Client:
     async def __aexit__(self, *_exc) -> None:
         return None
 
-    async def post(self, url: str, data=None, headers=None) -> _Resp:
+    async def post(self, url: str, data=None, headers=None, json=None) -> _Resp:
         _Client.calls.append((url, data or {}, headers or {}))
+        if not url.endswith("/oauth2/token"):
+            _Client.bodies.append(json)
         if url.endswith("/oauth2/token"):
             return _Resp(200, {"access_token": "tok", "expires_in": 600})
         return _Resp(_Client.heartbeat_status, text="refused")
@@ -167,6 +173,7 @@ class _Client:
 @pytest.fixture
 def stub_http(monkeypatch):
     _Client.calls = []
+    _Client.bodies = []
     _Client.heartbeat_status = 200
 
     class _Httpx:
@@ -294,3 +301,69 @@ def test_a_node_without_credentials_still_starts(coordinator_app, monkeypatch):
     with TestClient(app) as client:
         assert not hasattr(app.state, "fleet_heartbeat")
         assert client.get("/health").status_code == 200
+
+
+# ── PRM-263: the beat carries what the machine is ───────────────────────────
+
+
+def test_the_beat_carries_the_device_profile(stub_http, monkeypatch):
+    """The node already reports that it is up on a schedule; the profile rides
+    the same beat rather than adding a second thing to keep alive."""
+    cfg = FleetConfig(
+        coordinator=False,
+        coordinator_url="http://coordinator:8090",
+        auth_token_url="http://auth:9000/oauth2/token",
+    )
+    assert await_sync(NodeHeartbeat(cfg).beat_once()) is True
+
+    assert _Client.bodies, "the heartbeat sent no body"
+    body = _Client.bodies[-1]
+    assert body is not None and "profile" in body
+    profile = body["profile"]
+    assert profile["os"] and profile["arch"]
+    assert profile["ram_total_mb"] > 0
+
+
+def test_a_machine_that_cannot_describe_itself_still_reports_that_it_is_up(stub_http, monkeypatch):
+    """The profile is the extra, liveness is the job. A probe that throws must
+    not turn a healthy node into a silent one."""
+    import prometheus_manager_core.profile as profile_mod
+
+    def boom(*_a, **_k):
+        raise OSError("cannot read this machine")
+
+    monkeypatch.setattr(profile_mod, "device_profile", boom)
+
+    cfg = FleetConfig(
+        coordinator=False,
+        coordinator_url="http://coordinator:8090",
+        auth_token_url="http://auth:9000/oauth2/token",
+    )
+    assert await_sync(NodeHeartbeat(cfg).beat_once()) is True
+    assert _Client.bodies[-1] is None, "a failed probe should send no profile, not a broken one"
+
+
+def test_the_profile_is_not_re_read_on_every_beat(stub_http, monkeypatch):
+    """`nvidia-smi` on every beat would make the liveness signal cost more than
+    it reports. Cached on a TTL — and not forever, because free disk moves."""
+    import prometheus_manager_core.profile as profile_mod
+
+    reads = {"n": 0}
+    real = profile_mod.device_profile
+
+    def counted(*a, **k):
+        reads["n"] += 1
+        return real(*a, **k)
+
+    monkeypatch.setattr(profile_mod, "device_profile", counted)
+
+    cfg = FleetConfig(
+        coordinator=False,
+        coordinator_url="http://coordinator:8090",
+        auth_token_url="http://auth:9000/oauth2/token",
+    )
+    beat = NodeHeartbeat(cfg)
+    for _ in range(4):
+        await_sync(beat.beat_once())
+
+    assert reads["n"] == 1, f"the machine was re-read {reads['n']} times for four beats"

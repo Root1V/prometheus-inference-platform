@@ -9723,19 +9723,37 @@ itself, which PRM-242 settled.
 
 ## PRM-263 — The node says what it is, not just where it is
 
-**Why**: a node today is `name`, `manager_url`, a free-text `node_type` (`"mac"`), a tag, an
-enabled flag and three cost numbers. Nothing records the architecture, the core count, whether
-there is a usable accelerator, how much RAM the machine has or how much disk is free.
+**Why**: a node recorded `name`, `manager_url`, a free-text `node_type`, a tag, an enabled flag
+and three cost numbers. Nothing recorded the architecture, the cores, the accelerator, the RAM or
+the free disk. The one place the hardware was ever read is `capacity.py`, which takes total RAM
+on every launch to warn at 85% and refuse at 95% — and discards it, so the coordinator could be
+told "this would OOM" at the instant a model starts and could not answer "what does this machine
+have" at any other moment.
 
-The information half-exists: `capacity.py` calls `psutil.virtual_memory().total` on every launch
-to warn at 85% and refuse at 95%. It is RAM only, it is computed at launch, and it is discarded
-afterwards — so the coordinator can be told "this would OOM" at the moment of starting a model
-and still cannot answer "what does this machine have" at any other time.
+**Carried by the heartbeat that already beat.** The node reports its own liveness on a schedule
+(PRM-151/152) with an empty body; the profile rides it rather than adding a second thing to keep
+alive. Cached for five minutes: re-running `nvidia-smi` every few seconds to learn the same
+answer would make the liveness signal cost more than it reports, and not cached forever because
+free disk and available RAM move.
 
-**Scope**: in — a profile the agent reports on registration and refreshes on a schedule: arch,
-OS and version, physical cores, accelerator (Metal/CUDA/ROCm/none) and its memory, total and
-available RAM, total and free disk on the model path. Out — anything that interprets the
-profile, which is PRM-265.
+**It reports and judges nothing.** Whether a profile is good enough for a given model is
+PRM-265. Keeping them apart is what stops a reading ("no accelerator") being stored as a verdict
+("cannot serve"), which ages differently and worse.
+
+Two distinctions the shape carries deliberately: `accelerator.kind = "none"` means we looked and
+there is nothing, while no accelerator at all means the probe failed and someone should go and
+look — `probe_errors` names which. And a unified-memory machine reports `memory_mb: None` rather
+than copying system RAM, because the same number under two names is free to drift.
+
+**Found while deploying it**, and not by this code: `local` — the coordinator — had its
+heartbeat disabled for want of `PMGR_FLEET_NODE_ID`, so it had no profile and its `last_seen_at`
+was 78 seconds stale, past the 60-second TTL. The cause was mine: restarting it, I reconstructed
+its command from `ps` instead of capturing it, and dropped `--env-file runtime/manager/local.env`.
+Restored, and both nodes now report.
+
+**Scope**: in — the profile, its two new columns with a migration, the heartbeat on both ends,
+tests covering the Linux branches by substitution. Out — the engine inventory (PRM-264) and any
+interpretation (PRM-265).
 
 ## PRM-264 — Engines are detected, not declared
 
