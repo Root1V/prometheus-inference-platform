@@ -1,12 +1,13 @@
 import { X } from "lucide-react";
+import { useEffect } from "react";
 import { createPortal } from "react-dom";
 import { cn } from "../lib/cn";
 import { engineDisagreement, engineLabel } from "../lib/engines";
 import { timeAgo } from "../lib/format";
-import type { DeviceProfile, Node } from "../types/node";
+import type { DeviceProfile, EngineStatus, Node } from "../types/node";
 
 /**
- * What a node is, not just that it is up — PRM-270.
+ * What a node is, not just that it is up — PRM-270, PRM-264.
  *
  * PRM-263 made the agent read its own machine and send it with the heartbeat,
  * and the coordinator stored it. `/admin/api/nodes` has been returning it ever
@@ -16,15 +17,24 @@ import type { DeviceProfile, Node } from "../types/node";
  *
  * Three things this deliberately does NOT do:
  *
- * - It never shows the profile without its age. The agent caches the reading
- *   for 5 minutes and a node that stopped reporting leaves its last one behind
+ * - It never shows a reading without its age. The agent caches both for 5
+ *   minutes and a node that stopped reporting leaves its last ones behind
  *   looking perfectly current.
- * - It never hides `probe_errors`. profile.py: *"an empty profile with no
- *   explanation is the shape that gets read as 'this machine has nothing'"* —
- *   a view that swallows them reintroduces exactly that.
+ * - It never hides `probe_errors`, or the reason an engine is absent.
+ *   profile.py: *"an empty profile with no explanation is the shape that gets
+ *   read as 'this machine has nothing'"* — a view that swallows them
+ *   reintroduces exactly that, and reads as a confident answer.
  * - It says nothing about which models fit. That is PRM-265, and deriving it
  *   here would collapse a reading into a verdict, which is the separation
  *   PRM-263 was built to keep.
+ *
+ * The layout earns its space the same way: the two numbers that decide
+ * anything — free memory and free disk — get a bar, and the eight identity
+ * fields that are read once get a single line. Absolute paths are shown as the
+ * directory they live in, with the whole thing on hover: `/Users/<name>/.local/bin`
+ * and `/Users/<name>/.cargo/bin` differ in the part that fits, and the first
+ * version of this panel let a 60-character path wrap over two lines above the
+ * engine it belonged to.
  */
 
 function gb(mb: number | null): string {
@@ -32,34 +42,117 @@ function gb(mb: number | null): string {
   return mb >= 1024 ? `${(mb / 1024).toFixed(mb >= 10_240 ? 0 : 1)} GB` : `${mb} MB`;
 }
 
-function cores(profile: DeviceProfile): string {
+function cores(profile: DeviceProfile): string | null {
   const { cpu_cores_physical: physical, cpu_cores_logical: logical } = profile;
-  if (physical === null && logical === null) return "unknown";
+  if (physical === null && logical === null) return null;
   if (physical !== null && logical !== null && physical !== logical) {
     return `${physical} cores · ${logical} threads`;
   }
   return `${physical ?? logical} cores`;
 }
 
-/** `kind` is the node's own answer, and "none" means it looked. */
+/** `kind` is the node's own answer, and "none" means it looked — which is a
+ * different sentence from "we did not look", so they read differently here.
+ *
+ * On a unified-memory Mac the accelerator's name *is* the CPU's, and printing
+ * "Apple M4 Max" twice in four lines reads as a rendering bug. The kind is
+ * what is left to say in that case, and on an Intel iMac the name is a real
+ * second fact ("Intel Iris Pro Graphics 6200" beside an i5-5675R). */
 function accelerator(profile: DeviceProfile): string {
   const accel = profile.accelerator;
-  if (!accel) return "not probed";
-  if (accel.kind === "none") return "none found";
-  const parts = [accel.name ?? accel.kind];
+  if (!accel) return "Accelerator not probed";
+  if (accel.kind === "none") return "No accelerator found";
+  const sameAsCpu = accel.name !== null && accel.name === profile.cpu_model;
+  const parts = [sameAsCpu || accel.name === null ? accel.kind : accel.name];
   if (accel.memory_mb !== null) parts.push(gb(accel.memory_mb));
   if (accel.unified_memory) parts.push("unified memory");
   return parts.join(" · ");
 }
 
-function Row({ label, value, hint }: { label: string; value: string; hint?: string }) {
+/** A path with the user's home collapsed to `~`. The informative part of
+ * `/Users/<name>/.local/bin/llama-server` is the tail — a system install, a
+ * virtualenv and a cargo bin differ exactly there, and the first 25 characters
+ * are the same on every row. The whole path stays on hover. */
+function homeRelative(path: string): string {
+  const home = path.match(/^\/(?:Users|home)\/[^/]+(\/.*)?$/);
+  return home ? `~${home[1] ?? ""}` : path;
+}
+
+/** The directory an engine was found in, which is the part worth comparing
+ * between rows — the file name is the engine's own name repeated. */
+function homeRelativeDir(path: string): string {
+  const cut = path.lastIndexOf("/");
+  return homeRelative(cut > 0 ? path.slice(0, cut) : path);
+}
+
+function Meter({
+  label,
+  freeMb,
+  totalMb,
+  caption,
+}: {
+  label: string;
+  freeMb: number | null;
+  totalMb: number | null;
+  caption?: string | null;
+}) {
+  const usedFraction =
+    freeMb !== null && totalMb !== null && totalMb > 0 ? 1 - freeMb / totalMb : null;
+
   return (
-    <div className="flex items-baseline justify-between gap-4 py-1.5">
-      <dt className="shrink-0 text-xs font-medium text-text-muted">{label}</dt>
-      <dd className="text-right text-sm text-text" title={hint}>
-        {value}
-      </dd>
+    <div>
+      <div className="flex items-baseline justify-between gap-3">
+        <span className="text-xs font-medium text-text-muted">{label}</span>
+        <span className="text-sm text-text">
+          <span className="font-medium">{gb(freeMb)}</span>
+          <span className="text-text-muted"> free of {gb(totalMb)}</span>
+        </span>
+      </div>
+      {/* Neutral on purpose. capacity.py's 85/95 thresholds are about RAM
+          *projected after adding a model*, so colouring current usage with
+          them would answer a question nobody asked — and PRM-265's, wrongly. */}
+      <div className="mt-1.5 h-1.5 overflow-hidden rounded-full bg-border">
+        {usedFraction !== null && (
+          <div
+            className="h-full rounded-full bg-primary/70"
+            style={{ width: `${Math.min(100, Math.max(0, usedFraction * 100))}%` }}
+          />
+        )}
+      </div>
+      {caption && (
+        <p className="mt-1 truncate text-xs text-text-muted" title={caption}>
+          measured at {homeRelative(caption)}
+        </p>
+      )}
     </div>
+  );
+}
+
+function EngineRow({ engine }: { engine: EngineStatus }) {
+  return (
+    <li className="flex items-center gap-2.5 py-1">
+      <span
+        aria-hidden
+        className={cn(
+          "size-1.5 shrink-0 rounded-full",
+          engine.installed ? "bg-green-500" : "bg-border",
+        )}
+      />
+      <span
+        className={cn("shrink-0 text-sm", engine.installed ? "text-text" : "text-text-muted")}
+      >
+        {engineLabel(engine.backend)}
+      </span>
+      {/* Where it would come from when it is here, why it is not when it is
+          not. Both answer the question after "is it installed", and `min-w-0`
+          is what lets the truncation actually happen inside a flex row. */}
+      <span
+        className="ml-auto min-w-0 truncate text-right font-mono text-xs text-text-muted"
+        title={engine.installed ? engine.path! : (engine.reason ?? undefined)}
+      >
+        {engine.installed ? homeRelativeDir(engine.path!) : engine.reason}
+      </span>
+    </li>
   );
 }
 
@@ -67,71 +160,122 @@ export function NodeProfileModal({ node, onClose }: { node: Node; onClose: () =>
   const profile = node.profile;
   const disagreement = engineDisagreement(node);
 
+  // Installed first. The five a node has are the answer and the three it does
+  // not are the footnote, and `BACKENDS` order interleaves them.
+  const engines = node.engines_detected
+    ? [...node.engines_detected].sort((a, b) => Number(b.installed) - Number(a.installed))
+    : null;
+
+  // Escape closes, and so does the backdrop. Neither is true of the other
+  // modals on this page — deliberately not changed here, because they are
+  // forms and dismissing one on a stray click outside discards typing. This
+  // panel only reads, so the cheap dismissal is the right one for it.
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === "Escape") onClose();
+    };
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, [onClose]);
+
+  // The CPU is the card's heading, so it is not repeated here.
+  const identity = profile
+    ? [cores(profile), profile.arch, `${profile.os} ${profile.os_release}`]
+        .filter(Boolean)
+        .join(" · ")
+    : null;
+
   return createPortal(
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 px-4 py-8">
-      <div className="max-h-full w-full max-w-md overflow-y-auto rounded-xl bg-surface p-6 shadow-lg">
-        <div className="mb-1 flex items-center justify-between">
-          <h2 className="text-lg font-semibold text-text">{node.name}</h2>
-          <button type="button" onClick={onClose} aria-label="Close">
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 px-4 py-8"
+      onClick={onClose}
+      role="presentation"
+    >
+      <div
+        className="max-h-full w-full max-w-lg overflow-y-auto rounded-xl bg-surface p-6 shadow-lg"
+        onClick={(event) => event.stopPropagation()}
+        role="dialog"
+        aria-modal="true"
+        aria-label={`Hardware profile for ${node.name}`}
+      >
+        <div className="flex items-start justify-between gap-4">
+          <div className="min-w-0">
+            <h2 className="truncate text-lg font-semibold text-text">{node.name}</h2>
+            {/* The age sits under the title because it qualifies everything
+                below it, not one field. */}
+            <p className="text-xs text-text-muted">
+              {profile ? (
+                <span title={node.profile_seen_at ?? undefined}>
+                  Reported {timeAgo(node.profile_seen_at)}
+                </span>
+              ) : (
+                "No profile reported"
+              )}
+            </p>
+          </div>
+          <button type="button" onClick={onClose} aria-label="Close" className="shrink-0">
             <X size={18} className="text-text-muted" />
           </button>
         </div>
 
-        {/* The age sits under the title, not next to a field, because it
-            qualifies everything below it. */}
-        <p className="mb-4 text-xs text-text-muted">
-          {profile ? (
-            <span title={node.profile_seen_at ?? undefined}>
-              Reported {timeAgo(node.profile_seen_at)}
-            </span>
-          ) : (
-            "No profile reported"
-          )}
-        </p>
-
         {profile ? (
-          <dl className="divide-y divide-border">
-            <Row label="OS" value={`${profile.os} ${profile.os_release}`} />
-            <Row label="Architecture" value={profile.arch} />
-            <Row label="CPU" value={profile.cpu_model ?? "unknown"} />
-            <Row label="Cores" value={cores(profile)} />
-            <Row
-              label="Memory"
-              value={`${gb(profile.ram_available_mb)} free of ${gb(profile.ram_total_mb)}`}
-            />
-            <Row
-              label="Disk"
-              value={`${gb(profile.disk_free_mb)} free of ${gb(profile.disk_total_mb)}`}
-            />
-            {/* Named, not implied: the node aims at its models directory and
-                falls back to the volume anchor when that does not exist yet,
-                so "/" and "~/models" are different readings worth telling
-                apart before PRM-265 reasons about the number. */}
-            <Row label="Measured at" value={profile.disk_path ?? "unknown"} />
-            <Row label="Accelerator" value={accelerator(profile)} />
-          </dl>
+          <>
+            <div className="mt-4 rounded-lg bg-background p-3">
+              <p className="text-sm font-medium text-text">{profile.cpu_model ?? profile.arch}</p>
+              <p className="mt-0.5 text-xs text-text-muted">{identity}</p>
+              <p className="mt-0.5 text-xs text-text-muted">{accelerator(profile)}</p>
+            </div>
+
+            <div className="mt-4 space-y-3.5">
+              <Meter label="Memory" freeMb={profile.ram_available_mb} totalMb={profile.ram_total_mb} />
+              <Meter
+                label="Disk"
+                freeMb={profile.disk_free_mb}
+                totalMb={profile.disk_total_mb}
+                // Named rather than implied: the node aims at its models
+                // directory and falls back to the volume anchor when that does
+                // not exist yet, so "/" and "~/models" are different readings.
+                caption={profile.disk_path}
+              />
+            </div>
+          </>
         ) : (
-          <p className="rounded-lg border border-border p-3 text-sm text-text-muted">
+          <p className="mt-4 rounded-lg border border-border p-3 text-sm text-text-muted">
             This node has never sent a profile. It reports one on its first beat, so either it has
             not heartbeat yet or it is running a build from before PRM-263.
           </p>
         )}
 
-        {/* PRM-264. Deliberately below the hardware and above the probe
-            errors, because it is the second half of the same question: what
-            this machine is, and what it can actually start. */}
+        {profile && profile.probe_errors.length > 0 && (
+          <div className="mt-4 rounded-lg border border-amber-300 bg-amber-50 p-3 dark:border-amber-500/30 dark:bg-amber-500/10">
+            <p className="text-xs font-medium text-amber-800 dark:text-amber-400">
+              {profile.probe_errors.length === 1 ? "One probe failed" : "Some probes failed"} — the
+              fields they would have filled read as unknown, not as absent.
+            </p>
+            <ul className="mt-1 space-y-0.5">
+              {profile.probe_errors.map((error) => (
+                <li key={error} className="font-mono text-xs text-amber-900 dark:text-amber-300">
+                  {error}
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
+
+        {/* PRM-264. Below the hardware because it is the second half of the
+            same question: what this machine is, and what it can actually start. */}
         <div className="mt-5">
-          <div className="mb-1 flex items-baseline justify-between gap-4">
+          <div className="flex items-baseline justify-between gap-4">
             <h3 className="text-xs font-medium text-text-muted">Engines</h3>
-            {node.engines_detected !== null && (
+            {engines !== null && (
               <span className="text-xs text-text-muted" title={node.engines_seen_at ?? undefined}>
                 Scanned {timeAgo(node.engines_seen_at)}
               </span>
             )}
           </div>
 
-          {node.engines_detected === null ? (
-            <p className="rounded-lg border border-border p-3 text-sm text-text-muted">
+          {engines === null ? (
+            <p className="mt-1 rounded-lg border border-border p-3 text-sm text-text-muted">
               This node has never scanned itself for engines.
               {node.engines !== null && node.engines.length > 0 && (
                 <>
@@ -142,29 +286,9 @@ export function NodeProfileModal({ node, onClose }: { node: Node; onClose: () =>
               )}
             </p>
           ) : (
-            <ul className="space-y-1 rounded-lg border border-border p-2">
-              {node.engines_detected.map((engine) => (
-                <li key={engine.backend} className="flex items-baseline gap-2 text-sm">
-                  <span
-                    aria-hidden
-                    className={cn(
-                      "mt-1.5 size-1.5 shrink-0 rounded-full",
-                      engine.installed ? "bg-green-500" : "bg-border",
-                    )}
-                  />
-                  <span className={engine.installed ? "text-text" : "text-text-muted"}>
-                    {engineLabel(engine.backend)}
-                  </span>
-                  {/* The resolved path for one that is present, the reason for
-                      one that is not. Both answer "where would this come
-                      from", which is the question after "is it here". */}
-                  <span
-                    className="ml-auto truncate text-right font-mono text-xs text-text-muted"
-                    title={engine.installed ? engine.binary : (engine.reason ?? undefined)}
-                  >
-                    {engine.installed ? engine.path : engine.reason}
-                  </span>
-                </li>
+            <ul className="mt-1 divide-y divide-border">
+              {engines.map((engine) => (
+                <EngineRow key={engine.backend} engine={engine} />
               ))}
             </ul>
           )}
@@ -180,26 +304,6 @@ export function NodeProfileModal({ node, onClose }: { node: Node; onClose: () =>
             </p>
           )}
         </div>
-
-        {/* Shown whenever there are any, including alongside a profile that
-            otherwise looks complete — a probe that failed is why a field says
-            "unknown", and without this the operator cannot tell "unknown"
-            from "nothing there". */}
-        {profile && profile.probe_errors.length > 0 && (
-          <div className="mt-4 rounded-lg border border-amber-300 bg-amber-50 p-3 dark:border-amber-500/30 dark:bg-amber-500/10">
-            <p className="mb-1 text-xs font-medium text-amber-800 dark:text-amber-400">
-              {profile.probe_errors.length === 1 ? "One probe failed" : "Some probes failed"} — the
-              fields they would have filled read as unknown, not as absent.
-            </p>
-            <ul className="space-y-0.5">
-              {profile.probe_errors.map((error) => (
-                <li key={error} className="font-mono text-xs text-amber-900 dark:text-amber-300">
-                  {error}
-                </li>
-              ))}
-            </ul>
-          </div>
-        )}
       </div>
     </div>,
     document.body,
