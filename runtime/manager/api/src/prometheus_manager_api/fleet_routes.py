@@ -387,18 +387,24 @@ async def heartbeat(
     fleet = _fleet(request)
     if fleet is None:
         return _not_coordinator()
-    # PRM-263: the beat may carry the node's reading of its own hardware. Read
-    # defensively — a malformed body must not cost a node its liveness, which
-    # is the one thing this endpoint exists to record.
+    # PRM-263/PRM-264: the beat may carry the node's reading of its own
+    # hardware and of the engines it found installed. Read defensively — a
+    # malformed body must not cost a node its liveness, which is the one thing
+    # this endpoint exists to record. Each part is taken on its own, so an
+    # agent that reports one and not the other still has the one stored.
     profile: dict[str, Any] | None = None
+    engines: list[dict[str, Any]] | None = None
     try:
         body = await request.json()
-        candidate = body.get("profile") if isinstance(body, dict) else None
-        if isinstance(candidate, dict):
-            profile = candidate
+        if isinstance(body, dict):
+            if isinstance(candidate := body.get("profile"), dict):
+                profile = candidate
+            reported = body.get("engines")
+            if isinstance(reported, list) and all(isinstance(e, dict) for e in reported):
+                engines = reported
     except Exception:
-        profile = None
-    if not fleet.mark_seen(node_id, profile=profile):
+        profile, engines = None, None
+    if not fleet.mark_seen(node_id, profile=profile, engines=engines):
         logger.warning(
             "fleet.heartbeat_from_unknown_node",
             node_id=node_id,

@@ -71,7 +71,9 @@ async def _lifespan(application: FastAPI) -> AsyncIterator[None]:
         # point at — the profile falls back to the working directory, which is
         # what it did everywhere before this.
         models_path = str(config.resolved_downloads_dir) if config is not None else None
-        candidate = NodeHeartbeat(fleet_cfg, fleet=fleet, models_path=models_path)
+        candidate = NodeHeartbeat(
+            fleet_cfg, fleet=fleet, models_path=models_path, manager_config=config
+        )
         if absent := candidate.missing():
             logger.warning(
                 "fleet.heartbeat_disabled",

@@ -1,5 +1,5 @@
 import { Cpu, Pencil, Power, RefreshCw, Trash2 } from "lucide-react";
-import { ENGINE_LABELS } from "../lib/engines";
+import { ENGINE_LABELS, engineDisagreement } from "../lib/engines";
 import type { Backend } from "../types/instance";
 import { useState } from "react";
 import { useActivateNode, useCheckNode, useDeactivateNode, useDeleteNode } from "../api/nodes";
@@ -19,6 +19,7 @@ export function NodeRow({ node, onEdit }: { node: Node; onEdit: (node: Node) => 
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [confirmDeactivate, setConfirmDeactivate] = useState(false);
   const [showProfile, setShowProfile] = useState(false);
+  const disagreement = engineDisagreement(node);
   const remove = useDeleteNode();
   const check = useCheckNode();
   const activate = useActivateNode();
@@ -72,9 +73,11 @@ export function NodeRow({ node, onEdit }: { node: Node; onEdit: (node: Node) => 
             <button
               type="button"
               title={
-                node.profile
-                  ? "Hardware profile"
-                  : "Hardware profile — none reported yet"
+                disagreement.length > 0
+                  ? `Registered as having ${disagreement.join(", ")}, which this node did not find`
+                  : node.profile
+                    ? "Hardware profile"
+                    : "Hardware profile — none reported yet"
               }
               aria-label={`Hardware profile for ${node.name}`}
               onClick={() => setShowProfile(true)}
@@ -85,6 +88,12 @@ export function NodeRow({ node, onEdit }: { node: Node; onEdit: (node: Node) => 
                 // dimmed rather than coloured — but it still opens, because
                 // "nothing reported" is itself the answer to the question.
                 node.profile ? "text-text-muted" : "text-text-muted/40",
+                // PRM-264: a declared engine the node did not find *is* an
+                // error, and one nobody sees until a start fails. It gets the
+                // only colour on this button, pointing at the panel that
+                // explains it — rather than a new element on a row that
+                // already carries four.
+                disagreement.length > 0 && "text-amber-600 dark:text-amber-400",
               )}
             >
               <Cpu size={16} />

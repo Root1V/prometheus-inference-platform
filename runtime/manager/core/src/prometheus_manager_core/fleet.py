@@ -115,6 +115,12 @@ CREATE TABLE IF NOT EXISTS nodes (
     -- arrives with `probe_errors` saying which.
     profile                             TEXT,
     profile_seen_at                     TEXT,
+    -- PRM-264: what the node found installed, as opposed to `engines` above,
+    -- which is what an operator said. Both are kept: one is intent, the other
+    -- an observation, and they are worth most where they disagree. Each entry
+    -- carries why a backend is absent, so "no" is never a bare absence.
+    engines_detected                    TEXT,
+    engines_seen_at                     TEXT,
     created_at                          TEXT NOT NULL,
     updated_at                          TEXT
 );
@@ -162,6 +168,17 @@ _MIGRATIONS: tuple[schema.Migration, ...] = (
             "ALTER TABLE nodes ADD COLUMN profile_seen_at TEXT",
         ),
     ),
+    # PRM-264: beside `engines`, never over it. PRM-151 is the precedent —
+    # `is_active` collapsed an operator's intent and an observation into one
+    # value, and the next observation erased the intent.
+    schema.Migration(
+        version=4,
+        name="PRM-264: the engines the node found, beside the ones declared",
+        statements=(
+            "ALTER TABLE nodes ADD COLUMN engines_detected TEXT",
+            "ALTER TABLE nodes ADD COLUMN engines_seen_at TEXT",
+        ),
+    ),
 )
 
 
@@ -192,6 +209,11 @@ class Node:
     # PRM-263: the node's own reading of its hardware, and when it read it.
     profile: dict[str, Any] | None = None
     profile_seen_at: str | None = None
+    # PRM-264: what the node found installed, one entry per known backend,
+    # each saying why when it is absent. `None` means never reported — which
+    # is not the same as a node that looked and found nothing.
+    engines_detected: list[dict[str, Any]] | None = None
+    engines_seen_at: str | None = None
     created_at: str = ""
     updated_at: str | None = None
 
@@ -247,6 +269,8 @@ class Node:
             "engines": self.engines,
             "profile": self.profile,
             "profile_seen_at": self.profile_seen_at,
+            "engines_detected": self.engines_detected,
+            "engines_seen_at": self.engines_seen_at,
             "created_at": self.created_at,
             "updated_at": self.updated_at,
         }
@@ -311,6 +335,8 @@ def _row_to_node(row: sqlite3.Row) -> Node:
         engines=_engines_from_column(row["engines"]),
         profile=_json_or_none(_column(row, "profile")),
         profile_seen_at=_column(row, "profile_seen_at"),
+        engines_detected=_json_or_none(_column(row, "engines_detected")),
+        engines_seen_at=_column(row, "engines_seen_at"),
         created_at=row["created_at"],
         updated_at=row["updated_at"],
     )
@@ -381,6 +407,7 @@ class FleetRegistry:
         *,
         when: str | None = None,
         profile: dict[str, Any] | None = None,
+        engines: list[dict[str, Any]] | None = None,
     ) -> bool:
         """Stamp `last_seen_at`, and the profile when one came with it — PRM-151,
         PRM-263.
@@ -393,21 +420,23 @@ class FleetRegistry:
         A beat without a profile leaves the stored one alone rather than
         clearing it: an older agent that cannot describe itself should not erase
         what a newer one said, and `profile_seen_at` is what says how old the
-        answer is.
+        answer is. PRM-264's engine reading rides the same write under the same
+        rule, and independently: an agent may report either, both or neither.
         """
         stamp = when or now_iso()
+        sets = ["last_seen_at = ?"]
+        values: list[Any] = [stamp]
+        if profile is not None:
+            sets += ["profile = ?", "profile_seen_at = ?"]
+            values += [json.dumps(profile), stamp]
+        if engines is not None:
+            sets += ["engines_detected = ?", "engines_seen_at = ?"]
+            values += [json.dumps(engines), stamp]
         with self._lock:
-            if profile is None:
-                cursor = self._conn.execute(
-                    "UPDATE nodes SET last_seen_at = ? WHERE id = ?",
-                    (stamp, node_id),
-                )
-            else:
-                cursor = self._conn.execute(
-                    "UPDATE nodes SET last_seen_at = ?, profile = ?, profile_seen_at = ? "
-                    "WHERE id = ?",
-                    (stamp, json.dumps(profile), stamp, node_id),
-                )
+            cursor = self._conn.execute(
+                f"UPDATE nodes SET {', '.join(sets)} WHERE id = ?",  # noqa: S608 — fixed set
+                (*values, node_id),
+            )
             self._conn.commit()
             return cursor.rowcount > 0
 

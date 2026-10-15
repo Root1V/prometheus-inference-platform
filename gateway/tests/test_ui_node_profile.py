@@ -22,14 +22,15 @@ from pathlib import Path
 
 _ROOT = Path(__file__).resolve().parents[2]
 _PROFILE_PY = _ROOT / "runtime/manager/core/src/prometheus_manager_core/profile.py"
+_ENGINES_PY = _ROOT / "runtime/manager/core/src/prometheus_manager_core/engines.py"
 _NODE_TS = _ROOT / "gateway/admin-ui/src/types/node.ts"
 _PANEL_TSX = _ROOT / "gateway/admin-ui/src/components/NodeProfile.tsx"
 
 
-def _dataclass_fields(name: str) -> set[str]:
+def _dataclass_fields(name: str, source: Path = _PROFILE_PY) -> set[str]:
     """The annotated attributes of a `@dataclass`, which `asdict` puts on the wire."""
-    src = _PROFILE_PY.read_text()
-    block = re.search(rf"^class {name}:\n(.*?)(?=^\S|\Z)", src, re.MULTILINE | re.DOTALL)
+    src = source.read_text()
+    block = re.search(rf"^class {name}[(:].*?\n(.*?)(?=^\S|\Z)", src, re.MULTILINE | re.DOTALL)
     assert block, f"profile.py's {name} moved or changed shape"
     body = re.sub(r'"""(.*?)"""', "", block.group(1), flags=re.DOTALL)  # docstrings
     body = re.sub(r"#[^\n]*", "", body)
@@ -89,3 +90,37 @@ def test_failed_probes_are_surfaced_not_swallowed() -> None:
     panel = _PANEL_TSX.read_text()
     assert "probe_errors.length > 0" in panel
     assert "probe_errors.map" in panel
+
+
+# ── PRM-264: the engines the node found ──────────────────────────────────────
+
+
+def test_the_ui_declares_every_field_an_engine_reading_carries() -> None:
+    """Same mirror, one table over. `EngineStatus.to_dict` is `asdict` too."""
+    python = _dataclass_fields("EngineStatus", _ENGINES_PY)
+    typescript = _interface_fields("EngineStatus")
+    assert python - typescript == set(), "the node reports engine fields the panel does not declare"
+    assert typescript - python == set(), "the panel declares engine fields no node sends"
+
+
+def test_the_node_type_carries_the_engine_reading_and_its_age() -> None:
+    fields = _interface_fields("Node")
+    assert {"engines_detected", "engines_seen_at"} <= fields
+    # And the declared list is still its own field. PRM-151: an observation
+    # that overwrites an operator's intent is the defect, not the feature.
+    assert "engines" in fields
+
+
+def test_the_reason_an_engine_is_absent_is_rendered() -> None:
+    """`reason` is the engines' `probe_errors`: it is what keeps "no" from
+    being read as a bare absence, and the panel that drops it says "missing"
+    where the node said "configured at a path that does not exist"."""
+    assert "engine.reason" in _PANEL_TSX.read_text()
+
+
+def test_the_panel_names_what_was_declared_and_not_found() -> None:
+    """The case PRM-264 exists for. Both lists are kept precisely so this is
+    visible; a view that merges them cannot show it."""
+    from_lib = (_ROOT / "gateway/admin-ui/src/lib/engines.ts").read_text()
+    assert "export function engineDisagreement" in from_lib
+    assert "engineDisagreement" in _PANEL_TSX.read_text()

@@ -162,9 +162,10 @@ def test_a_pre_existing_fleet_db_gains_the_columns(tmp_path: Path):
         # PRM-154: and the stored `is_active` this row arrived with is gone. The
         # row survived the drop, which is the only part that matters — the
         # mechanism that added the two columns above could never have removed it.
-        # PRM-263 added migration 3, the node's hardware profile. The pin moves
-        # with a deliberate migration and catches one nobody meant to add.
-        assert reg.schema_version == 3
+        # PRM-263 added migration 3 (the hardware profile) and PRM-264 migration
+        # 4 (the engines the node found). The pin moves with a deliberate
+        # migration and catches one nobody meant to add.
+        assert reg.schema_version == 4
         columns = {r[1] for r in reg._conn.execute("PRAGMA table_info(nodes)")}
         assert "is_active" not in columns
         assert {"enabled", "last_seen_at"} <= columns
@@ -180,9 +181,10 @@ def test_a_new_fleet_db_never_has_the_stored_column(tmp_path: Path):
     try:
         columns = {r[1] for r in reg._conn.execute("PRAGMA table_info(nodes)")}
         assert "is_active" not in columns
-        # PRM-263 added migration 3, the node's hardware profile. The pin moves
-        # with a deliberate migration and catches one nobody meant to add.
-        assert reg.schema_version == 3, "a new database should be stamped at head"
+        # PRM-263 added migration 3 (the hardware profile) and PRM-264 migration
+        # 4 (the engines the node found). The pin moves with a deliberate
+        # migration and catches one nobody meant to add.
+        assert reg.schema_version == 4, "a new database should be stamped at head"
         # And the derived verdict still works, which is the whole point of having
         # removed the stored one.
         node = reg.add(Node(name="fresh", manager_url="http://fresh:8090", node_type="mac"))
@@ -191,3 +193,72 @@ def test_a_new_fleet_db_never_has_the_stored_column(tmp_path: Path):
         assert reg.get(node.id).is_active() is True
     finally:
         reg.close()
+
+
+# ── PRM-264: the engines observed, beside the ones declared ──────────────────
+
+
+def test_a_detected_engine_list_does_not_overwrite_the_declared_one(fleet):
+    """PRM-151's rule applied to a second pair of facts. `is_active` collapsed
+    an operator's intent and an observation into one value and the next
+    observation erased the intent; declared engines are intent and detected
+    engines are an observation, so they are stored apart."""
+    node = fleet.add(_node(engines=["llama_cpp", "vllm"]))
+    fleet.mark_seen(node.id, engines=[{"backend": "llama_cpp", "installed": True}])
+
+    after = fleet.get(node.id)
+    assert after.engines == ["llama_cpp", "vllm"], "a probe overwrote what the operator declared"
+    assert after.engines_detected == [{"backend": "llama_cpp", "installed": True}]
+    assert after.engines_seen_at is not None
+
+
+def test_they_are_worth_most_where_they_disagree(fleet):
+    """The case this item exists for, asserted directly: a node declaring an
+    engine it does not have is only discovered today by a failed start."""
+    node = fleet.add(_node(engines=["vllm"]))
+    fleet.mark_seen(
+        node.id,
+        engines=[{"backend": "vllm", "installed": False, "reason": "vllm is not on PATH"}],
+    )
+
+    after = fleet.get(node.id)
+    declared = set(after.engines or [])
+    detected = {e["backend"] for e in (after.engines_detected or []) if e["installed"]}
+    assert declared - detected == {"vllm"}
+
+
+def test_an_empty_detection_is_stored_and_a_missing_one_is_not(fleet):
+    """`[]` is a node that looked and found nothing; `None` is a node that
+    never said. An older agent must not erase what a newer one reported."""
+    node = fleet.add(_node())
+
+    fleet.mark_seen(node.id, engines=[{"backend": "tei", "installed": True}])
+    fleet.mark_seen(node.id)  # a beat from an agent that does not report engines
+    assert fleet.get(node.id).engines_detected == [{"backend": "tei", "installed": True}]
+
+    fleet.mark_seen(node.id, engines=[])
+    assert fleet.get(node.id).engines_detected == []
+
+
+def test_the_profile_and_the_engines_are_recorded_independently(fleet):
+    """An agent may report either, both or neither, and one arriving must not
+    clear the other."""
+    node = fleet.add(_node())
+
+    fleet.mark_seen(node.id, profile={"os": "Darwin"})
+    fleet.mark_seen(node.id, engines=[{"backend": "laya", "installed": True}])
+
+    after = fleet.get(node.id)
+    assert after.profile == {"os": "Darwin"}
+    assert after.engines_detected == [{"backend": "laya", "installed": True}]
+
+
+def test_the_wire_shape_carries_both_readings(fleet):
+    node = fleet.add(_node())
+    fleet.mark_seen(node.id, engines=[{"backend": "tei", "installed": True}])
+
+    d = fleet.get(node.id).to_dict()
+    assert d["engines_detected"] == [{"backend": "tei", "installed": True}]
+    assert d["engines_seen_at"]
+    # And the declared list is still its own key, never merged into the above.
+    assert "engines" in d

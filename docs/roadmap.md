@@ -9938,3 +9938,40 @@ same defect one step later.
 
 **Scope**: in — the type, the panel, the action that opens it, the guard. Out — any judgement
 about the hardware (PRM-265) and engine detection (PRM-264).
+
+## PRM-264 — Engines are detected, not declared
+
+**Why**: `engines` on a node was a list an operator ticked at registration, and `fleet.py` says a
+NULL means "never declared", not "none". A node that claims `llama_cpp` without the binary is
+discovered the usual way — a start fails, at the moment somebody wanted the model.
+
+Live proof before this shipped: `lab` and `local` are two managers on one machine and declared
+disjoint sets, `{hf_serve, laya, tei}` and `{llama_cpp, sd_cpp}`, while the machine had five of
+the eight. Two declarations about one machine, disagreeing with each other and both understating
+it.
+
+**No new table.** `config.resolved_backend_binary` already names, per backend, the exact
+executable `lifecycle.start_instance` will run, so detection asks whether *that* resolves — the
+same question the launch will ask, against the same path. An operator who points a backend at a
+binary inside a virtualenv gets that binary checked, for free. `scanner.py` knows the same eight
+engines but reads *running processes*, which is a different question about the same things; they
+are kept apart and `registry.BACKENDS` is what both agree on.
+
+**The one engine whose binary is not the engine.** sglang launches as `python3 -m
+sglang.launch_server`, so its configured binary is the interpreter, and `which python3` succeeds
+on every machine in the fleet — detecting it that way would report sglang present everywhere. For
+a `-m` launch the real question is whether the module imports, asked in a subprocess so a heavy
+dependency never loads into the process whose job is to stay up.
+
+**Beside the declared list, never over it.** PRM-151 is the precedent: `is_active` collapsed an
+operator's intent and an observation into one value, and the next observation erased the intent.
+Declared engines are intent, detected engines are an observation, and the pair is worth most
+exactly where they disagree — which is the case this item exists to make visible, and which is
+invisible if they are merged.
+
+Every absent engine says *why*. A binary missing from PATH and a configured path that does not
+exist have different fixes, and "no" without a reason sends an operator to the wrong one — the
+same role `probe_errors` plays for the hardware profile.
+
+**Scope**: in — the detector, the heartbeat carrying it, the two columns, the panel section. Out
+— acting on it (PRM-265), and removing the declared list, which stays as the operator's intent.

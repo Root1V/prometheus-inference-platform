@@ -37,6 +37,21 @@ export interface DeviceProfile {
   probe_errors: string[];
 }
 
+/** One engine on a node, as the node itself found it — PRM-264. Mirrors
+ * `EngineStatus` in manager-core's engines.py. `reason` is always set when
+ * `installed` is false: a binary missing from PATH and a configured path that
+ * does not exist have different fixes. */
+export interface EngineStatus {
+  backend: string;
+  installed: boolean;
+  /** The command that was checked — what the manager would execute. */
+  binary: string;
+  /** Where it resolved to, when it did. An absolute path tells a system
+   * install from one inside a virtualenv, which is the usual surprise. */
+  path: string | null;
+  reason: string | null;
+}
+
 export interface Node {
   id: string;
   name: string;
@@ -78,6 +93,13 @@ export interface Node {
    * `null` means never declared — NOT "none". Read it through
    * `enginesAvailableOn()` in lib/engines.ts rather than testing it here. */
   engines: string[] | null;
+  /** PRM-264: what the node found installed, one entry per known backend.
+   * `null` means it has never reported — not "it has none", which is `[]`.
+   * Kept beside `engines` rather than replacing it: that one is the operator's
+   * intent and this is an observation, and PRM-151 is what happens when the
+   * two share a field. */
+  engines_detected: EngineStatus[] | null;
+  engines_seen_at: string | null;
   created_at: string;
   updated_at: string | null;
 }
