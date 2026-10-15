@@ -628,7 +628,6 @@ async def _begin_idempotent(
         # Transitional, removable after 2026-10-10 — see `idempotency.begin`.
         # Without it this fix would deal the reported error one more time, to
         # every key stored by the build that caused it.
-        also_accept=body.model_dump(),
     )
     if isinstance(outcome, idempotency.Replay):
         # Deliberately no budget reserve, no usage row, no metrics: replaying

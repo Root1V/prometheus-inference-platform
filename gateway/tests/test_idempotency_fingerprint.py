@@ -107,61 +107,37 @@ def test_the_handlers_hand_over_the_model_not_a_dump():
     )
 
 
-# ── The transitional acceptance ──────────────────────────────────────────────
+# ── PRM-262: the transitional acceptance is gone ─────────────────────────────
 
 
-async def test_a_key_stored_by_the_previous_build_still_replays(store):
-    """Otherwise this fix deals the reported error one more time.
+async def test_the_transitional_acceptance_is_no_longer_a_parameter(store):
+    """It was written as deletable after 2026-10-10 and this asserts the date
+    was honoured rather than the comment left to rot.
 
-    A key stored before the fix carries a fingerprint over the full dump. On
-    the new build the same request fingerprints differently, so without this
-    it would answer `idempotency-key-reuse` for the rest of its window — to
-    the team that reported exactly that. The old payload is the new one plus
-    the model's defaults, so a match on it means the same request.
+    `also_accept` let a key stored before PRM-242 still replay, because that
+    change moved what the fingerprint covers. Nothing it protected can still
+    exist: the window is 24 hours and the newest pre-fix key on this deployment
+    was seven days old when it went.
     """
-    from prometheus_gateway.models.schemas import ChatCompletionRequest
+    import inspect
 
-    body = ChatCompletionRequest(**_SENT)
-    legacy = body.model_dump()
-
-    # The previous build's record.
-    claim = await idempotency.begin("c", "legacy-key", _PATH, legacy)
-    assert isinstance(claim, idempotency.Claim)
-    await idempotency.complete(claim, 200, {"ok": True}, "req-1")
-
-    # The new build, same request.
-    outcome = await idempotency.begin(
-        "c",
-        "legacy-key",
-        _PATH,
-        body.model_dump(exclude_unset=True),
-        also_accept=legacy,
-    )
-    assert isinstance(outcome, idempotency.Replay), (
-        "a key stored by the previous build was refused as a reuse"
-    )
+    assert "also_accept" not in inspect.signature(idempotency.begin).parameters
 
 
-async def test_the_transitional_acceptance_does_not_widen_what_counts_as_the_same(store):
-    """It accepts one extra fingerprint, not any fingerprint. A genuinely
-    different request still collides — which is the whole job of the
-    fingerprint and the half a compatibility shim is most likely to lose."""
+async def test_a_genuinely_different_request_still_collides(store):
+    """The half of the removed pair worth keeping. Two requests under one key
+    must not replay each other, which is the fingerprint's whole job and the
+    thing a compatibility shim is most likely to quietly widen."""
     from prometheus_gateway.models.schemas import ChatCompletionRequest
 
     first = ChatCompletionRequest(**_SENT)
-    claim = await idempotency.begin("c2", "k", _PATH, first.model_dump())
+    claim = await idempotency.begin("c2", "k", _PATH, first.model_dump(exclude_unset=True))
     assert isinstance(claim, idempotency.Claim)
     await idempotency.complete(claim, 200, {"ok": True}, "req-1")
 
     other = ChatCompletionRequest(
         model="small-model", messages=[{"role": "user", "content": "something else"}]
     )
-    outcome = await idempotency.begin(
-        "c2",
-        "k",
-        _PATH,
-        other.model_dump(exclude_unset=True),
-        also_accept=other.model_dump(),
-    )
+    outcome = await idempotency.begin("c2", "k", _PATH, other.model_dump(exclude_unset=True))
     assert isinstance(outcome, idempotency.Refusal)
     assert outcome.kind == idempotency.KEY_REUSE

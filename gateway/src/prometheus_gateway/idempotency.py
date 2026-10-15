@@ -149,32 +149,28 @@ async def begin(
     path: str,
     payload: Any,
     model_key: str | None = None,
-    also_accept: Any = None,
 ) -> Replay | Refusal | Claim:
     """Claim *key* for this request, or report what already holds it.
 
     `model_key` is the resolved model, used only to estimate how much longer an
     in-flight request has left. Optional, because the answer is a hint.
 
-    `also_accept` is a second payload whose fingerprint counts as a match —
-    PRM-242, and transitional. PRM-242 changed what the fingerprint is taken
-    over, so keys stored by the previous build do not match the new one and
-    would spend the rest of their 24-hour window answering
-    `idempotency-key-reuse`: the same error the change exists to stop, dealt
-    to the team that reported it. The old payload is the new one plus the
-    model's defaults, so a match on it means the same request — safe to
-    replay, never ambiguous.
+    PRM-262: `also_accept` is gone. It let a key stored by the build before
+    PRM-242 still replay, because that change moved what the fingerprint is
+    taken over and those keys would otherwise have spent the rest of their
+    window answering `idempotency-key-reuse` — the error the fix existed to
+    stop, dealt to the team that reported it. It was written as deletable after
+    2026-10-10, one window past the deploy, and this is that.
 
-    **Deletable after 2026-10-10**, one window past the deploy. Nothing
-    depends on it; the parameter and its two call sites go together.
+    Checked rather than assumed before removing it: the newest key predating
+    the fix is from 2026-10-07, seven days outside a 24-hour window, so nothing
+    it protected still exists.
     """
     if len(key) > MAX_KEY_LENGTH:
         return Refusal(INVALID_KEY, f"{HEADER} must be at most {MAX_KEY_LENGTH} characters.")
 
     want = fingerprint(path, payload)
     accepted = {want}
-    if also_accept is not None:
-        accepted.add(fingerprint(path, also_accept))
     cutoff = datetime.now(timezone.utc) - _WINDOW
 
     async with db.get_session_factory()() as session:
