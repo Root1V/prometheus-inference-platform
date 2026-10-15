@@ -266,7 +266,10 @@ def coordinator_app(tmp_path, monkeypatch):
     app.state.fleet = fleet
 
     def _with(cfg: FleetConfig):
-        app.state.config = SimpleNamespace(fleet=cfg)
+        # PRM-263 follow-up: the double has to carry what production reads off
+        # the config, or a field added there turns into an AttributeError in
+        # a test about something else entirely.
+        app.state.config = SimpleNamespace(fleet=cfg, resolved_downloads_dir=tmp_path / "downloads")
         return app
 
     try:
@@ -367,3 +370,25 @@ def test_the_profile_is_not_re_read_on_every_beat(stub_http, monkeypatch):
         await_sync(beat.beat_once())
 
     assert reads["n"] == 1, f"the machine was re-read {reads['n']} times for four beats"
+
+
+def test_the_disk_reported_is_where_weights_land_not_the_working_directory(
+    stub_http, monkeypatch, tmp_path
+):
+    """The parameter existed from the start and its only caller did not pass
+    it, so the profile measured wherever the manager happened to be started.
+    The iMac made it visible by reporting a path three clones deep."""
+    models = tmp_path / "downloads"
+    models.mkdir()
+
+    cfg = FleetConfig(
+        coordinator=False,
+        coordinator_url="http://coordinator:8090",
+        auth_token_url="http://auth:9000/oauth2/token",
+    )
+    assert await_sync(NodeHeartbeat(cfg, models_path=str(models)).beat_once()) is True
+
+    profile = _Client.bodies[-1]["profile"]
+    assert profile["disk_path"] == str(models), (
+        "the profile measured the working directory instead of the model store"
+    )

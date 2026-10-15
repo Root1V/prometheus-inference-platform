@@ -110,3 +110,39 @@ def test_the_disk_measured_is_the_one_weights_land_on(tmp_path):
     p = mod.device_profile(models_path=tmp_path)
     assert p.disk_path == str(tmp_path)
     assert p.disk_total_mb and p.disk_total_mb > 0
+
+
+# ── What the Intel iMac found that this machine could not ───────────────────
+
+
+def test_an_intel_mac_does_not_report_its_cpu_as_the_gpu(monkeypatch):
+    """The first build did, on real hardware: an iMac whose GPU is an Iris Pro
+    6200 reported `Intel(R) Core(TM) i5-5675R CPU` as its accelerator.
+
+    On an SoC the CPU brand string *is* the GPU, so Apple Silicon was right and
+    the suite was green. A wrong name is worse than none here, because the
+    matcher downstream would reason about the wrong silicon.
+    """
+    monkeypatch.setattr(mod.platform, "system", lambda: "Darwin")
+    monkeypatch.setattr(mod.platform, "machine", lambda: "x86_64")
+    monkeypatch.setattr(mod, "_cpu_model", lambda: "Intel(R) Core(TM) i5-5675R CPU @ 3.10GHz")
+    monkeypatch.setattr(mod, "_mac_gpu_name", lambda: "Intel Iris Pro Graphics 6200")
+
+    accelerator, _ = mod._accelerator()
+    assert accelerator is not None
+    assert accelerator.name == "Intel Iris Pro Graphics 6200"
+    assert "CPU" not in (accelerator.name or "")
+
+
+def test_an_unnamed_gpu_is_still_metal(monkeypatch):
+    """`system_profiler` is slow and may not answer. Whether Metal exists and
+    what the chip is called are different questions, and failing the second
+    must not change the answer to the first."""
+    monkeypatch.setattr(mod.platform, "system", lambda: "Darwin")
+    monkeypatch.setattr(mod.platform, "machine", lambda: "x86_64")
+    monkeypatch.setattr(mod, "_mac_gpu_name", lambda: None)
+
+    accelerator, failure = mod._accelerator()
+    assert accelerator is not None and accelerator.kind == "metal"
+    assert accelerator.name is None
+    assert failure is None

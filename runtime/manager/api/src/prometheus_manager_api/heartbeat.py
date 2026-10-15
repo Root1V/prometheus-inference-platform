@@ -65,8 +65,19 @@ _REQUEST_TIMEOUT_S = 5.0
 class NodeHeartbeat:
     """Reports this node's liveness on an interval, by HTTP or in process."""
 
-    def __init__(self, cfg: FleetConfig, fleet: FleetRegistry | None = None) -> None:
+    def __init__(
+        self,
+        cfg: FleetConfig,
+        fleet: FleetRegistry | None = None,
+        models_path: str | None = None,
+    ) -> None:
         self._cfg = cfg
+        # PRM-263 follow-up: where weights land, so the free disk reported is
+        # the one that decides whether a model fits. Without it the profile
+        # measured the manager's working directory — the parameter existed and
+        # its only caller did not pass it, which the iMac made visible by
+        # reporting a path three clones deep.
+        self._models_path = models_path
         # Present only on the coordinator, which stamps its own row directly.
         self._fleet = fleet
         self._task: asyncio.Task[None] | None = None
@@ -145,7 +156,7 @@ class NodeHeartbeat:
         try:
             from prometheus_manager_core.profile import device_profile
 
-            self._profile_cache = device_profile().to_dict()
+            self._profile_cache = device_profile(self._models_path).to_dict()
             self._profile_at = now
         except Exception as exc:  # pragma: no cover — advisory, never fatal
             logger.warning("fleet.profile_failed", error=str(exc))
