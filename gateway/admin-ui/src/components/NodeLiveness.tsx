@@ -1,5 +1,6 @@
 import { CircleCheck, CircleSlash, Clock, TriangleAlert } from "lucide-react";
 import { cn } from "../lib/cn";
+import { timeAgo } from "../lib/format";
 import type { Node } from "../types/node";
 
 /**
@@ -26,15 +27,6 @@ function livenessOf(node: Node): Liveness {
   if (!node.last_seen_at) return "never-seen";
   const ageS = (Date.now() - new Date(node.last_seen_at).getTime()) / 1000;
   return ageS < LIVENESS_TTL_S ? "active" : "unreachable";
-}
-
-function heartbeatAge(lastSeenAt: string | null): string {
-  if (!lastSeenAt) return "never";
-  const s = Math.max(0, Math.round((Date.now() - new Date(lastSeenAt).getTime()) / 1000));
-  if (s < 60) return `${s}s ago`;
-  if (s < 3600) return `${Math.floor(s / 60)}m ago`;
-  if (s < 86_400) return `${Math.floor(s / 3600)}h ago`;
-  return `${Math.floor(s / 86_400)}d ago`;
 }
 
 const STATES: Record<
@@ -86,7 +78,7 @@ export function NodeLivenessBadge({ node }: { node: Node }) {
           question this page exists to answer and it was readable only by
           opening fleet.db by hand. */}
       <span className="text-xs text-text-muted" title={node.last_seen_at ?? "No heartbeat recorded"}>
-        {heartbeatAge(node.last_seen_at)}
+        {timeAgo(node.last_seen_at)}
       </span>
     </div>
   );

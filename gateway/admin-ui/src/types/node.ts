@@ -1,5 +1,42 @@
 export type NodeType = "mac" | "nvidia" | "other";
 
+/** What can do matrix maths on a node, if anything — mirrors `Accelerator` in
+ * manager-core's profile.py. `kind` is `"none"` when the node looked and found
+ * nothing, which is a different answer from not having looked. */
+export interface Accelerator {
+  kind: string;
+  name: string | null;
+  /** Null on unified-memory machines rather than a copy of system RAM: the
+   * same number under two names is the kind of thing that later disagrees
+   * with itself. */
+  memory_mb: number | null;
+  unified_memory: boolean;
+}
+
+/** Mirrors `DeviceProfile` in manager-core's profile.py. Every field is
+ * optional because the probe never raises — a half-answer beats an exception
+ * when the caller is a heartbeat. */
+export interface DeviceProfile {
+  os: string;
+  os_release: string;
+  arch: string;
+  cpu_model: string | null;
+  cpu_cores_physical: number | null;
+  cpu_cores_logical: number | null;
+  ram_total_mb: number | null;
+  ram_available_mb: number | null;
+  disk_total_mb: number | null;
+  disk_free_mb: number | null;
+  /** What was actually measured. The node aims at its models directory and
+   * falls back to the volume anchor when that does not exist yet, so this
+   * names the reading rather than implying one. */
+  disk_path: string | null;
+  accelerator: Accelerator | null;
+  /** Which probes failed, named. An empty profile with no explanation is the
+   * shape that gets read as "this machine has nothing". */
+  probe_errors: string[];
+}
+
 export interface Node {
   id: string;
   name: string;
@@ -29,6 +66,14 @@ export interface Node {
   price_margin_multiplier: number;
   /** Computed = hardware_amortization_usd_per_hour + electricity_usd_per_hour. */
   hourly_cost_usd: number;
+  /** PRM-263: what the node read about its own machine, sent with the
+   * heartbeat. `null` means it has never reported one — NOT "this machine has
+   * nothing", which is the reading `probe_errors` exists to keep separable. */
+  profile: DeviceProfile | null;
+  /** When that reading was taken. The agent caches it for 5 minutes and a node
+   * that stopped reporting leaves its last profile behind looking current, so
+   * the profile is never shown without this. */
+  profile_seen_at: string | null;
   /** PRM-133: the inference engines installed on this node.
    * `null` means never declared — NOT "none". Read it through
    * `enginesAvailableOn()` in lib/engines.ts rather than testing it here. */
