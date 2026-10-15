@@ -59,6 +59,7 @@ import uuid
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
 
 from . import schema
 
@@ -108,6 +109,12 @@ CREATE TABLE IF NOT EXISTS nodes (
     -- NULL means this node never declared its engines; '[]' means it declared
     -- it has none. A caller that collapses the two is the bug (PRM-133).
     engines                             TEXT,
+    -- PRM-263: what the machine is, as JSON, reported by its own heartbeat.
+    -- NULL means it has never reported one — an older agent, or one that has
+    -- not beaten yet. Distinct from a profile whose probes failed, which
+    -- arrives with `probe_errors` saying which.
+    profile                             TEXT,
+    profile_seen_at                     TEXT,
     created_at                          TEXT NOT NULL,
     updated_at                          TEXT
 );
@@ -143,6 +150,18 @@ _MIGRATIONS: tuple[schema.Migration, ...] = (
         name="PRM-154: drop the superseded is_active column",
         statements=("ALTER TABLE nodes DROP COLUMN is_active",),
     ),
+    # PRM-263: a node could say where it was and what it cost, never what it
+    # had. Two columns rather than one because "never reported" and "reported
+    # at some point, possibly long ago" are different states, and a profile
+    # without a timestamp cannot tell them apart once a machine is upgraded.
+    schema.Migration(
+        version=3,
+        name="PRM-263: the node's own description of its hardware",
+        statements=(
+            "ALTER TABLE nodes ADD COLUMN profile TEXT",
+            "ALTER TABLE nodes ADD COLUMN profile_seen_at TEXT",
+        ),
+    ),
 )
 
 
@@ -170,6 +189,9 @@ class Node:
     price_margin_multiplier: float = DEFAULT_PRICE_MARGIN_MULTIPLIER
     # Kept as the parsed list; `None` and `[]` are different states.
     engines: list[str] | None = None
+    # PRM-263: the node's own reading of its hardware, and when it read it.
+    profile: dict[str, Any] | None = None
+    profile_seen_at: str | None = None
     created_at: str = ""
     updated_at: str | None = None
 
@@ -223,6 +245,8 @@ class Node:
             "price_margin_multiplier": self.price_margin_multiplier,
             "hourly_cost_usd": self.hourly_cost_usd,
             "engines": self.engines,
+            "profile": self.profile,
+            "profile_seen_at": self.profile_seen_at,
             "created_at": self.created_at,
             "updated_at": self.updated_at,
         }
@@ -233,6 +257,27 @@ def now_iso() -> str:
     stamps sightings the same way the registry does, rather than each inventing
     its own and drifting."""
     return datetime.now(UTC).isoformat()
+
+
+def _column(row: Any, name: str) -> Any:
+    """A column a database written by an older build may not have yet.
+
+    The migration adds it, but a row read between the two — or by a tool
+    pointed at a copy — should be missing data rather than an exception.
+    """
+    try:
+        return row[name]
+    except (IndexError, KeyError):
+        return None
+
+
+def _json_or_none(raw: Any) -> Any:
+    if not raw:
+        return None
+    try:
+        return json.loads(raw)
+    except (TypeError, ValueError):
+        return None
 
 
 def _engines_from_column(raw: str | None) -> list[str] | None:
@@ -264,6 +309,8 @@ def _row_to_node(row: sqlite3.Row) -> Node:
         electricity_usd_per_hour=row["electricity_usd_per_hour"],
         price_margin_multiplier=row["price_margin_multiplier"],
         engines=_engines_from_column(row["engines"]),
+        profile=_json_or_none(_column(row, "profile")),
+        profile_seen_at=_column(row, "profile_seen_at"),
         created_at=row["created_at"],
         updated_at=row["updated_at"],
     )
@@ -328,19 +375,39 @@ class FleetRegistry:
             if name not in existing:
                 self._conn.execute(f"ALTER TABLE nodes ADD COLUMN {name} {col_def}")
 
-    def mark_seen(self, node_id: str, *, when: str | None = None) -> bool:
-        """Stamp `last_seen_at`. True if a row was stamped — PRM-151.
+    def mark_seen(
+        self,
+        node_id: str,
+        *,
+        when: str | None = None,
+        profile: dict[str, Any] | None = None,
+    ) -> bool:
+        """Stamp `last_seen_at`, and the profile when one came with it — PRM-151,
+        PRM-263.
 
         The only write that liveness makes, and it deliberately cannot touch
         `enabled`: whatever observes a node must never overturn what the operator
-        decided about it.
+        decided about it. The profile is the same kind of fact — the node's own
+        reading of its hardware — so it rides the same write.
+
+        A beat without a profile leaves the stored one alone rather than
+        clearing it: an older agent that cannot describe itself should not erase
+        what a newer one said, and `profile_seen_at` is what says how old the
+        answer is.
         """
         stamp = when or now_iso()
         with self._lock:
-            cursor = self._conn.execute(
-                "UPDATE nodes SET last_seen_at = ? WHERE id = ?",
-                (stamp, node_id),
-            )
+            if profile is None:
+                cursor = self._conn.execute(
+                    "UPDATE nodes SET last_seen_at = ? WHERE id = ?",
+                    (stamp, node_id),
+                )
+            else:
+                cursor = self._conn.execute(
+                    "UPDATE nodes SET last_seen_at = ?, profile = ?, profile_seen_at = ? "
+                    "WHERE id = ?",
+                    (stamp, json.dumps(profile), stamp, node_id),
+                )
             self._conn.commit()
             return cursor.rowcount > 0
 

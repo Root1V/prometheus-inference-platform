@@ -162,7 +162,9 @@ def test_a_pre_existing_fleet_db_gains_the_columns(tmp_path: Path):
         # PRM-154: and the stored `is_active` this row arrived with is gone. The
         # row survived the drop, which is the only part that matters — the
         # mechanism that added the two columns above could never have removed it.
-        assert reg.schema_version == 2
+        # PRM-263 added migration 3, the node's hardware profile. The pin moves
+        # with a deliberate migration and catches one nobody meant to add.
+        assert reg.schema_version == 3
         columns = {r[1] for r in reg._conn.execute("PRAGMA table_info(nodes)")}
         assert "is_active" not in columns
         assert {"enabled", "last_seen_at"} <= columns
@@ -178,7 +180,9 @@ def test_a_new_fleet_db_never_has_the_stored_column(tmp_path: Path):
     try:
         columns = {r[1] for r in reg._conn.execute("PRAGMA table_info(nodes)")}
         assert "is_active" not in columns
-        assert reg.schema_version == 2, "a new database should be stamped at head"
+        # PRM-263 added migration 3, the node's hardware profile. The pin moves
+        # with a deliberate migration and catches one nobody meant to add.
+        assert reg.schema_version == 3, "a new database should be stamped at head"
         # And the derived verdict still works, which is the whole point of having
         # removed the stored one.
         node = reg.add(Node(name="fresh", manager_url="http://fresh:8090", node_type="mac"))

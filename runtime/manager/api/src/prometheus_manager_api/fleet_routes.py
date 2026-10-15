@@ -387,7 +387,18 @@ async def heartbeat(
     fleet = _fleet(request)
     if fleet is None:
         return _not_coordinator()
-    if not fleet.mark_seen(node_id):
+    # PRM-263: the beat may carry the node's reading of its own hardware. Read
+    # defensively — a malformed body must not cost a node its liveness, which
+    # is the one thing this endpoint exists to record.
+    profile: dict[str, Any] | None = None
+    try:
+        body = await request.json()
+        candidate = body.get("profile") if isinstance(body, dict) else None
+        if isinstance(candidate, dict):
+            profile = candidate
+    except Exception:
+        profile = None
+    if not fleet.mark_seen(node_id, profile=profile):
         logger.warning(
             "fleet.heartbeat_from_unknown_node",
             node_id=node_id,
