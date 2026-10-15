@@ -67,7 +67,11 @@ async def _lifespan(application: FastAPI) -> AsyncIterator[None]:
     if fleet_cfg is not None:
         # `fleet` is passed only when this node is the coordinator, which stamps
         # its own row in process — no HTTP to itself and no credential to hold.
-        candidate = NodeHeartbeat(fleet_cfg, fleet=fleet)
+        # `config` is optional here, and without one there is no model store to
+        # point at — the profile falls back to the working directory, which is
+        # what it did everywhere before this.
+        models_path = str(config.resolved_downloads_dir) if config is not None else None
+        candidate = NodeHeartbeat(fleet_cfg, fleet=fleet, models_path=models_path)
         if absent := candidate.missing():
             logger.warning(
                 "fleet.heartbeat_disabled",

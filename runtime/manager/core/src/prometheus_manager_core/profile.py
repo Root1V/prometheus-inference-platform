@@ -95,6 +95,30 @@ def _cpu_model() -> str | None:
     return platform.processor() or None
 
 
+def _mac_gpu_name() -> str | None:
+    """The GPU on an Intel Mac, or None rather than a guess.
+
+    `system_profiler` is slow enough to matter, which the five-minute cache on
+    the caller is what makes acceptable. None when it does not answer in time:
+    the accelerator is still reported as `metal`, just unnamed, because whether
+    Metal exists and what the chip is called are different questions.
+    """
+    out = _run(["system_profiler", "-json", "SPDisplaysDataType"])
+    if not out:
+        return None
+    try:
+        import json as _json
+
+        displays = _json.loads(out).get("SPDisplaysDataType") or []
+        for card in displays:
+            name = card.get("sppci_model") or card.get("_name")
+            if name:
+                return str(name)
+    except Exception:
+        return None
+    return None
+
+
 def _accelerator() -> tuple[Accelerator | None, str | None]:
     """(what we found, what went wrong) — never both."""
     system = platform.system()
@@ -105,7 +129,14 @@ def _accelerator() -> tuple[Accelerator | None, str | None]:
         # figure. An Intel Mac has Metal too, but a discrete or integrated GPU
         # behind it — reported as what it is, not judged here.
         unified = platform.machine() == "arm64"
-        return Accelerator(kind="metal", name=_cpu_model(), unified_memory=unified), None
+        if unified:
+            # On an SoC the CPU brand string *is* the GPU: "Apple M4 Max".
+            return Accelerator(kind="metal", name=_cpu_model(), unified_memory=True), None
+        # PRM-263 follow-up: on Intel it is not. The first build reported
+        # "Intel(R) Core(TM) i5-5675R CPU" as the accelerator on a machine whose
+        # GPU is an Iris Pro 6200 — a wrong name is worse than no name, because
+        # the matcher downstream would be reasoning about the wrong silicon.
+        return Accelerator(kind="metal", name=_mac_gpu_name(), unified_memory=False), None
 
     if shutil.which("nvidia-smi"):
         out = _run(["nvidia-smi", "--query-gpu=name,memory.total", "--format=csv,noheader,nounits"])

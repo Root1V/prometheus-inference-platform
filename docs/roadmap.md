@@ -9751,9 +9751,24 @@ was 78 seconds stale, past the 60-second TTL. The cause was mine: restarting it,
 its command from `ps` instead of capturing it, and dropped `--env-file runtime/manager/local.env`.
 Restored, and both nodes now report.
 
+**Two defects the Intel iMac found that this machine could not.** The first real foreign node was
+an iMac 2015 running the profile standalone, and it returned both in one output.
+
+1. `models_path` existed with a comment saying "the disk that matters is the one weights land on,
+   not `/`" — and the only caller, the heartbeat, did not pass it. Every profile measured the
+   manager's working directory. A parameter documenting an intention nothing exercised.
+2. The accelerator was named from the CPU brand string. On an SoC that is correct — "Apple M4
+   Max" is both — so the suite was green and the Apple Silicon fleet agreed. On the iMac it
+   reported `Intel(R) Core(TM) i5-5675R CPU` as the accelerator of a machine whose GPU is an Iris
+   Pro 6200. A wrong name is worse than none, because PRM-265 would reason about the wrong
+   silicon. Now read from `system_profiler`, and `None` when it does not answer — whether Metal
+   exists and what the chip is called are different questions.
+
+Both are pinned by tests that fail on the old behaviour, and the iMac's real figures are in them.
+
 **Scope**: in — the profile, its two new columns with a migration, the heartbeat on both ends,
-tests covering the Linux branches by substitution. Out — the engine inventory (PRM-264) and any
-interpretation (PRM-265).
+tests covering the Linux branches by substitution and the Intel-Mac branch against a real
+reading. Out — the engine inventory (PRM-264) and any interpretation (PRM-265).
 
 ## PRM-264 — Engines are detected, not declared
 
