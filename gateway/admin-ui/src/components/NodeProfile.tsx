@@ -1,5 +1,7 @@
 import { X } from "lucide-react";
 import { createPortal } from "react-dom";
+import { cn } from "../lib/cn";
+import { engineDisagreement, engineLabel } from "../lib/engines";
 import { timeAgo } from "../lib/format";
 import type { DeviceProfile, Node } from "../types/node";
 
@@ -63,6 +65,7 @@ function Row({ label, value, hint }: { label: string; value: string; hint?: stri
 
 export function NodeProfileModal({ node, onClose }: { node: Node; onClose: () => void }) {
   const profile = node.profile;
+  const disagreement = engineDisagreement(node);
 
   return createPortal(
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 px-4 py-8">
@@ -113,6 +116,70 @@ export function NodeProfileModal({ node, onClose }: { node: Node; onClose: () =>
             not heartbeat yet or it is running a build from before PRM-263.
           </p>
         )}
+
+        {/* PRM-264. Deliberately below the hardware and above the probe
+            errors, because it is the second half of the same question: what
+            this machine is, and what it can actually start. */}
+        <div className="mt-5">
+          <div className="mb-1 flex items-baseline justify-between gap-4">
+            <h3 className="text-xs font-medium text-text-muted">Engines</h3>
+            {node.engines_detected !== null && (
+              <span className="text-xs text-text-muted" title={node.engines_seen_at ?? undefined}>
+                Scanned {timeAgo(node.engines_seen_at)}
+              </span>
+            )}
+          </div>
+
+          {node.engines_detected === null ? (
+            <p className="rounded-lg border border-border p-3 text-sm text-text-muted">
+              This node has never scanned itself for engines.
+              {node.engines !== null && node.engines.length > 0 && (
+                <>
+                  {" "}
+                  It was registered as having {node.engines.map(engineLabel).join(", ")}, which is
+                  what an operator said rather than what was found.
+                </>
+              )}
+            </p>
+          ) : (
+            <ul className="space-y-1 rounded-lg border border-border p-2">
+              {node.engines_detected.map((engine) => (
+                <li key={engine.backend} className="flex items-baseline gap-2 text-sm">
+                  <span
+                    aria-hidden
+                    className={cn(
+                      "mt-1.5 size-1.5 shrink-0 rounded-full",
+                      engine.installed ? "bg-green-500" : "bg-border",
+                    )}
+                  />
+                  <span className={engine.installed ? "text-text" : "text-text-muted"}>
+                    {engineLabel(engine.backend)}
+                  </span>
+                  {/* The resolved path for one that is present, the reason for
+                      one that is not. Both answer "where would this come
+                      from", which is the question after "is it here". */}
+                  <span
+                    className="ml-auto truncate text-right font-mono text-xs text-text-muted"
+                    title={engine.installed ? engine.binary : (engine.reason ?? undefined)}
+                  >
+                    {engine.installed ? engine.path : engine.reason}
+                  </span>
+                </li>
+              ))}
+            </ul>
+          )}
+
+          {/* The disagreement, named. This is the case PRM-264 exists for and
+              the reason both lists are kept rather than one replacing the
+              other — it is invisible if they are merged. */}
+          {disagreement.length > 0 && (
+            <p className="mt-2 rounded-lg border border-amber-300 bg-amber-50 p-3 text-xs text-amber-900 dark:border-amber-500/30 dark:bg-amber-500/10 dark:text-amber-300">
+              Registered as having {disagreement.map(engineLabel).join(", ")}, which this node did
+              not find. Starting a model on {disagreement.length === 1 ? "it" : "them"} here would
+              fail.
+            </p>
+          )}
+        </div>
 
         {/* Shown whenever there are any, including alongside a profile that
             otherwise looks complete — a probe that failed is why a field says

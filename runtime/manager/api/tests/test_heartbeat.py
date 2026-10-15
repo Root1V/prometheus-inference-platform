@@ -14,6 +14,7 @@ import pytest
 from fastapi import HTTPException
 from prometheus_manager_core.config import FleetConfig
 from prometheus_manager_core.fleet import FleetRegistry, Node
+from prometheus_manager_core.registry import BACKENDS
 
 from prometheus_manager_api import heartbeat as hb_module
 from prometheus_manager_api.auth import assert_may_heartbeat
@@ -392,3 +393,54 @@ def test_the_disk_reported_is_where_weights_land_not_the_working_directory(
     assert profile["disk_path"] == str(models), (
         "the profile measured the working directory instead of the model store"
     )
+
+
+# ── PRM-264: the beat also carries what the node can launch ──────────────────
+
+
+def test_a_beat_reports_the_engines_it_found(tmp_path):
+    """The agent side. `manager_config` is what makes it possible at all —
+    `resolved_backend_binary` is the only thing that knows which executable
+    each engine launches."""
+    from prometheus_manager_core.config import ManagerConfig
+
+    cfg = FleetConfig()
+    manager_config = ManagerConfig()
+    manager_config.server.binary = str(tmp_path / "nowhere" / "llama-server")
+
+    beat = NodeHeartbeat(cfg, manager_config=manager_config)
+    engines = beat._engines()
+
+    assert engines is not None
+    assert {e["backend"] for e in engines} == set(BACKENDS)
+    assert all("installed" in e for e in engines)
+
+
+def test_without_a_config_the_beat_reports_no_engines(tmp_path):
+    """None, not `[]`. An agent that was never given a config did not look,
+    and must not be recorded as having looked and found nothing."""
+    assert NodeHeartbeat(FleetConfig())._engines() is None
+
+
+def test_the_engine_reading_is_cached_like_the_profile(tmp_path):
+    """Installed software changes on the same timescale as hardware — rarely,
+    and never between two beats ten seconds apart. Re-running eight probes
+    (one of them a subprocess) every beat would make liveness cost more than
+    it reports."""
+    from prometheus_manager_core.config import ManagerConfig
+
+    beat = NodeHeartbeat(FleetConfig(), manager_config=ManagerConfig())
+    first = beat._engines()
+    assert first is not None
+    assert beat._engines() is first, "the second read did not come from the cache"
+
+
+def test_the_body_omits_what_the_node_could_not_report():
+    """An agent that can read its hardware but not its engines still reports
+    the half it has, and the coordinator leaves the other half alone."""
+    from prometheus_manager_api.heartbeat import _beat_body
+
+    assert _beat_body(None, None) is None
+    assert _beat_body({"os": "Darwin"}, None) == {"profile": {"os": "Darwin"}}
+    assert _beat_body(None, []) == {"engines": []}, "looked and found none is a real answer"
+    assert set(_beat_body({"os": "Darwin"}, [{"backend": "tei"}])) == {"profile", "engines"}

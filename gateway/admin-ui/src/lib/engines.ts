@@ -1,4 +1,5 @@
 import type { Backend } from "../types/instance";
+import type { Node } from "../types/node";
 
 /**
  * PRM-133: the engines this platform knows how to launch — the UI's mirror of
@@ -49,4 +50,26 @@ export const ENGINE_LABELS: Record<Backend, string> = {
 export function enginesAvailableOn(declared: string[] | null | undefined): Backend[] {
   if (declared === null || declared === undefined) return ENGINES;
   return ENGINES.filter((e) => declared.includes(e));
+}
+
+/** PRM-264. Declared engines are the operator's intent and detected ones are
+ * the node's own observation; they are stored apart (PRM-151 is what happens
+ * when two such facts share a field) and are worth most where they disagree.
+ * Returns what was declared and not found — a node claiming an engine it does
+ * not have is otherwise discovered by a failed start, at the moment somebody
+ * wanted the model.
+ *
+ * Empty when either side is unknown: a node that never scanned itself is not
+ * evidence against anything the operator said.
+ */
+export function engineDisagreement(node: Node): string[] {
+  if (node.engines === null || node.engines_detected === null) return [];
+  const present = new Set(node.engines_detected.filter((e) => e.installed).map((e) => e.backend));
+  return node.engines.filter((declared) => !present.has(declared));
+}
+
+/** The display name for a backend, falling back to its raw id rather than
+ * rendering `undefined` for one this UI has not learned yet. */
+export function engineLabel(backend: string): string {
+  return ENGINE_LABELS[backend as Backend] ?? backend;
 }

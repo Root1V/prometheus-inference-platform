@@ -62,6 +62,23 @@ _PROFILE_TTL_S = 300.0
 _REQUEST_TIMEOUT_S = 5.0
 
 
+def _beat_body(
+    profile: dict[str, Any] | None, engines: list[dict[str, Any]] | None
+) -> dict[str, Any] | None:
+    """The beat's body, or None when there is nothing to add to it.
+
+    Each part is included only when present, so an agent that can read its
+    hardware but not its engines still reports the half it has — and the
+    coordinator leaves the other half as it was rather than clearing it.
+    """
+    body: dict[str, Any] = {}
+    if profile:
+        body["profile"] = profile
+    if engines is not None:
+        body["engines"] = engines
+    return body or None
+
+
 class NodeHeartbeat:
     """Reports this node's liveness on an interval, by HTTP or in process."""
 
@@ -70,6 +87,7 @@ class NodeHeartbeat:
         cfg: FleetConfig,
         fleet: FleetRegistry | None = None,
         models_path: str | None = None,
+        manager_config: Any | None = None,
     ) -> None:
         self._cfg = cfg
         # PRM-263 follow-up: where weights land, so the free disk reported is
@@ -83,9 +101,19 @@ class NodeHeartbeat:
         self._task: asyncio.Task[None] | None = None
         self._token: str | None = None
         self._token_expires_at = 0.0
+        # PRM-264: the whole config, because `resolved_backend_binary` is what
+        # says which executable each engine launches — asking whether *that*
+        # resolves is the same question `start_instance` will ask. Typed `Any`
+        # for the same reason `fleet` is reached through duck typing here:
+        # manager-core is a separate project to mypy in this package.
+        self._manager_config = manager_config
         # PRM-263: re-read on a TTL, not every beat.
         self._profile_cache: dict[str, Any] | None = None
         self._profile_at = 0.0
+        # PRM-264: same TTL. Installed software changes on the same timescale
+        # as hardware — rarely, and never between two beats ten seconds apart.
+        self._engines_cache: list[dict[str, Any]] | None = None
+        self._engines_at = 0.0
 
     @property
     def local(self) -> bool:
@@ -163,6 +191,32 @@ class NodeHeartbeat:
             return None
         return self._profile_cache
 
+    def _engines(self) -> list[dict[str, Any]] | None:
+        """What this machine can launch, re-read at most every `_PROFILE_TTL_S`.
+
+        Returns None when there is nothing to report rather than an empty list:
+        `[]` is a node that looked and found no engine at all, which is a real
+        and different answer, and `mark_seen` stores one and leaves the other
+        alone.
+
+        Never raises. A beat that cannot inventory the machine still has to say
+        the machine is up.
+        """
+        if self._manager_config is None:
+            return None
+        now = time.monotonic()
+        if self._engines_cache is not None and now - self._engines_at < _PROFILE_TTL_S:
+            return self._engines_cache
+        try:
+            from prometheus_manager_core.engines import detect_engines
+
+            self._engines_cache = [s.to_dict() for s in detect_engines(self._manager_config)]
+            self._engines_at = now
+        except Exception as exc:  # pragma: no cover — advisory, never fatal
+            logger.warning("fleet.engines_failed", error=str(exc))
+            return None
+        return self._engines_cache
+
     async def beat_once(self) -> bool:
         """Report once. True when the sighting was recorded.
 
@@ -171,17 +225,18 @@ class NodeHeartbeat:
         """
         node_id = self._cfg.node_id
         profile = self._profile()
+        engines = self._engines()
         if self._fleet is not None:
             # bool() because manager-core is a separate project to mypy here, so
             # its return type arrives as Any.
-            return bool(self._fleet.mark_seen(node_id, profile=profile))
+            return bool(self._fleet.mark_seen(node_id, profile=profile, engines=engines))
         try:
             headers = await self._headers()
             async with httpx.AsyncClient(timeout=_REQUEST_TIMEOUT_S) as client:
                 resp = await client.post(
                     f"{self._cfg.coordinator_url.rstrip('/')}/v1/fleet/nodes/{node_id}/heartbeat",
                     headers=headers,
-                    json={"profile": profile} if profile else None,
+                    json=_beat_body(profile, engines),
                 )
         except Exception as exc:
             logger.warning("fleet.heartbeat_failed", node_id=node_id, error=str(exc))
