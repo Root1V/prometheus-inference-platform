@@ -87,13 +87,34 @@ async def test_only_mutating_admin_requests_are_audited():
     assert audit.should_audit("POST", "/admin/api/auth/login") is False
 
 
-async def test_a_refusal_is_an_error_outcome_not_a_success():
-    """A 403 is the thing an auditor is looking for. Calling it `ok` because the
-    system behaved correctly would hide the attempt."""
+async def test_a_refusal_is_denied_and_says_who_refused():
+    """PRM-260: this test used to assert `403 -> error`, and that was right until
+    it was not.
+
+    A refusal is still the thing an auditor is looking for, so it is never `ok`.
+    But `denied` has been in Argus's vocabulary since `1.0.0a17` and is the more
+    precise word; they accepted the move in A-46 and we agreed it in P-37 §3 —
+    then shipped nothing, and they measured zero `denied` emissions for four
+    weeks. The old assertion is what made that silence look intentional.
+    """
     assert audit.outcome_for(200) == "ok"
     assert audit.outcome_for(204) == "ok"
-    assert audit.outcome_for(403) == "error"
+    assert audit.outcome_for(403) == "denied"
+    assert audit.outcome_for(402) == "denied"
+    assert audit.denied_by_for(403) == "policy"
+    assert audit.denied_by_for(402) == "budget"
+
+
+async def test_unidentified_and_broken_are_not_denied():
+    """P-37 §3 drew this line and it is the half that is easy to lose: a 401 is
+    not a denied action but an unidentified caller, and a 5xx is the platform
+    failing rather than refusing. Both stay `error`, and neither names a denier.
+    """
+    assert audit.outcome_for(401) == "error"
     assert audit.outcome_for(500) == "error"
+    assert audit.denied_by_for(401) is None
+    assert audit.denied_by_for(500) is None
+    assert audit.denied_by_for(200) is None
 
 
 async def test_the_outcome_words_come_from_argus_not_from_us():
@@ -449,7 +470,9 @@ async def test_a_denied_change_is_recorded_too(gw, rsa_keys):
 
     events = await db.list_audit_events()
     assert len(events) == 1
-    assert events[0].outcome == "error"
+    # PRM-260: `denied` since P-37 §3, not `error`. The row still exists, which
+    # is what this test is actually about — the word on it got more precise.
+    assert events[0].outcome == "denied"
     assert events[0].status_code == 403
 
 

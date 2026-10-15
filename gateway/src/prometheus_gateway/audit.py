@@ -76,7 +76,11 @@ logger = get_logger(__name__)
 # Their word, from their tuple. Taken rather than retyped so a change on their
 # side is an import error here instead of two systems quietly disagreeing about
 # what "ok" means.
-_OK, _ERROR = argus.ARGUS_OUTCOME_VALUES[0], argus.ARGUS_OUTCOME_VALUES[1]
+# PRM-260: named, not indexed. These used to be `ARGUS_OUTCOME_VALUES[0]` and
+# `[1]`, so a reordering upstream would have changed what this platform calls a
+# success without a line of ours changing or a test failing.
+_OK, _ERROR, _DENIED = "ok", "error", "denied"
+assert {_OK, _ERROR, _DENIED} <= set(argus.ARGUS_OUTCOME_VALUES)
 
 # PRM-162: the vocabulary is theirs now. P-31 proposed four `prometheus.audit.*`
 # names and A-32 answered that three already exist in the standard and one of them
@@ -230,12 +234,32 @@ def outcome_for(status_code: int) -> str:
     an auditor is looking for, and calling a 403 "ok" because the system behaved
     correctly would hide the attempt.
 
-    `1.0.0a17` added `denied` and `a18` added `argus.denied_by` to attribute it, so
-    `error` is no longer the most precise word available for a 403 — but moving to
-    it changes how every refused admin action groups in Argus's store, which is
-    their dashboards and not ours. Proposed in P-36 rather than taken here.
+    `1.0.0a17` added `denied` and `a18` added `argus.denied_by` to attribute it.
+    PRM-260: Argus accepted the move in A-46 and we agreed it in P-37 §3 — and
+    then did not do it. They measured zero `denied` emissions and were right to.
+    This is that, four weeks late.
+
+    A refusal is `denied` and nothing else moves: `401` is not a denied action
+    but an unidentified caller, and a `5xx` is the platform failing rather than
+    refusing. Both stay `error`, which is what P-37 §3 wrote down.
     """
+    if status_code in (402, 403):
+        return _DENIED
     return _OK if 200 <= status_code < 400 else _ERROR
+
+
+def denied_by_for(status_code: int) -> str | None:
+    """Who refused, for the outcomes that are refusals — PRM-260.
+
+    `None` for everything else, because the attribute is only meaningful
+    alongside `denied`; attaching "nobody" to an `ok` would be an answer to a
+    question that was not asked.
+    """
+    if status_code == 403:
+        return "policy"
+    if status_code == 402:
+        return "budget"
+    return None
 
 
 def actor_kind(actor_user_id: str | None, actor_client_id: str | None) -> str:
@@ -433,6 +457,11 @@ async def record(
         argus.ARGUS_FEATURE: "admin",
         ATTR_ACTOR_KIND: actor_kind(actor_user_id, actor_client_id),
     }
+    # PRM-260: and who refused, when something did. Derived from the status
+    # rather than threaded through every caller — `record` already has it, and a
+    # second parameter saying the same thing is a second place to get it wrong.
+    if (denied_by := denied_by_for(status_code)) is not None:
+        attributes[argus.ARGUS_DENIED_BY] = denied_by
     # `argus.tenant` is theirs and fits: the client a change was made under is the
     # tenant boundary everything else in this platform is scoped by. It is also why
     # there is no separate attribute for the client id — that would be the same

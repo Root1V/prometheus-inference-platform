@@ -68,14 +68,14 @@ wheels = [
 
 [[package]]
 name = "argus-obs-semconv"
-version = "1.0.0a17"
+version = "1.0.0a22"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "opentelemetry-api" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/77/78/b2e0fd44fee51a9903bfe1d9161ef5e5e4d588085b13efd78dce77a0518b/argus_obs_semconv-1.0.0a17.tar.gz", hash = "sha256:808c08c7f9925079a45066a4edcd95182446cbc74cf8326272e6992163ab3960", size = 49149, upload-time = "2026-10-02T06:44:20.816Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/a5/39/2b3fec5ee629c307db507b009ad9af46b6335a8ccbc975c7ec25f934a8ad/argus_obs_semconv-1.0.0a22.tar.gz", hash = "sha256:e7983cb64c534cc9414ad0823c1f0fb2d80ec9944899a9044df2ff251c4aa0b4", size = 53129, upload-time = "2026-10-14T11:11:29.885Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/9d/68/6652a3909ec8ff68632c6c8582b0f9893aa17fda243188d00b3b1c016a0b/argus_obs_semconv-1.0.0a17-py3-none-any.whl", hash = "sha256:bf33cd6321c231a468e18e088950105303cbd880f48156cee9a3277027c6dc28", size = 28330, upload-time = "2026-10-02T06:44:19.677Z" },
+    { url = "https://files.pythonhosted.org/packages/13/56/cee430fb467085290818200c299e6f20397273e68a9597abcfc71e7c8b76/argus_obs_semconv-1.0.0a22-py3-none-any.whl", hash = "sha256:7721091393762e5c26d406481321c13fbed50fc2eead36862b4cf48ca2b148c5", size = 30614, upload-time = "2026-10-14T11:11:28.647Z" },
 ]
 
 [[package]]
@@ -1390,7 +1390,7 @@ dev = [
 requires-dist = [
     { name = "aiosqlite", specifier = ">=0.20" },
     { name = "alembic", specifier = ">=1.13" },
-    { name = "argus-obs-semconv", specifier = "==1.0.0a17" },
+    { name = "argus-obs-semconv", specifier = "==1.0.0a22" },
     { name = "fastapi", specifier = ">=0.111" },
     { name = "greenlet", specifier = ">=3.0" },
     { name = "httpx", specifier = ">=0.27" },
