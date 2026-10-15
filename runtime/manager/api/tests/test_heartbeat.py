@@ -409,7 +409,7 @@ def test_a_beat_reports_the_engines_it_found(tmp_path):
     manager_config.server.binary = str(tmp_path / "nowhere" / "llama-server")
 
     beat = NodeHeartbeat(cfg, manager_config=manager_config)
-    engines = beat._engines()
+    engines = beat._engines(None)
 
     assert engines is not None
     assert {e["backend"] for e in engines} == set(BACKENDS)
@@ -419,7 +419,7 @@ def test_a_beat_reports_the_engines_it_found(tmp_path):
 def test_without_a_config_the_beat_reports_no_engines(tmp_path):
     """None, not `[]`. An agent that was never given a config did not look,
     and must not be recorded as having looked and found nothing."""
-    assert NodeHeartbeat(FleetConfig())._engines() is None
+    assert NodeHeartbeat(FleetConfig())._engines(None) is None
 
 
 def test_the_engine_reading_is_cached_like_the_profile(tmp_path):
@@ -430,9 +430,9 @@ def test_the_engine_reading_is_cached_like_the_profile(tmp_path):
     from prometheus_manager_core.config import ManagerConfig
 
     beat = NodeHeartbeat(FleetConfig(), manager_config=ManagerConfig())
-    first = beat._engines()
+    first = beat._engines(None)
     assert first is not None
-    assert beat._engines() is first, "the second read did not come from the cache"
+    assert beat._engines(None) is first, "the second read did not come from the cache"
 
 
 def test_the_body_omits_what_the_node_could_not_report():
@@ -444,3 +444,32 @@ def test_the_body_omits_what_the_node_could_not_report():
     assert _beat_body({"os": "Darwin"}, None) == {"profile": {"os": "Darwin"}}
     assert _beat_body(None, []) == {"engines": []}, "looked and found none is a real answer"
     assert set(_beat_body({"os": "Darwin"}, [{"backend": "tei"}])) == {"profile", "engines"}
+
+
+# ── PRM-271: the hardware rules are checked against this node's own profile ──
+
+
+def test_the_profile_reaches_the_engine_detector():
+    """Applicability is judged against the node's own reading of itself, and
+    the beat is where the two meet. Passing `None` by accident would report
+    every hardware-constrained engine as unknown forever."""
+    from prometheus_manager_core.config import ManagerConfig
+
+    beat = NodeHeartbeat(FleetConfig(), manager_config=ManagerConfig())
+    intel_imac = {"os": "Darwin", "arch": "x86_64", "accelerator": {"kind": "metal"}}
+
+    engines = beat._engines(intel_imac)
+    assert engines is not None
+    by_backend = {e["backend"]: e for e in engines}
+    assert by_backend["mlx"]["applicable"] is False
+    assert by_backend["mlx"]["requires"] == "Apple Silicon"
+
+
+def test_without_a_profile_applicability_is_unknown_not_yes():
+    """`None` is the honest answer and `True` is the convenient one. The
+    convenient one puts MLX back on an x86 node's recommendation list."""
+    from prometheus_manager_core.config import ManagerConfig
+
+    engines = NodeHeartbeat(FleetConfig(), manager_config=ManagerConfig())._engines(None)
+    assert engines is not None
+    assert {e["backend"]: e["applicable"] for e in engines}["mlx"] is None

@@ -191,8 +191,11 @@ class NodeHeartbeat:
             return None
         return self._profile_cache
 
-    def _engines(self) -> list[dict[str, Any]] | None:
+    def _engines(self, profile: dict[str, Any] | None) -> list[dict[str, Any]] | None:
         """What this machine can launch, re-read at most every `_PROFILE_TTL_S`.
+
+        `profile` is what PRM-271's hardware rules are checked against; without
+        one, applicability is reported as unknown rather than assumed.
 
         Returns None when there is nothing to report rather than an empty list:
         `[]` is a node that looked and found no engine at all, which is a real
@@ -210,7 +213,9 @@ class NodeHeartbeat:
         try:
             from prometheus_manager_core.engines import detect_engines
 
-            self._engines_cache = [s.to_dict() for s in detect_engines(self._manager_config)]
+            self._engines_cache = [
+                s.to_dict() for s in detect_engines(self._manager_config, profile)
+            ]
             self._engines_at = now
         except Exception as exc:  # pragma: no cover — advisory, never fatal
             logger.warning("fleet.engines_failed", error=str(exc))
@@ -225,7 +230,10 @@ class NodeHeartbeat:
         """
         node_id = self._cfg.node_id
         profile = self._profile()
-        engines = self._engines()
+        # After the profile, and given it: PRM-271 judges what this hardware can
+        # run against the node's own reading of itself, and the two share a TTL
+        # so an applicability verdict never outlives the profile it came from.
+        engines = self._engines(profile)
         if self._fleet is not None:
             # bool() because manager-core is a separate project to mypy here, so
             # its return type arrives as Any.

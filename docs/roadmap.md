@@ -9975,3 +9975,42 @@ same role `probe_errors` plays for the hardware profile.
 
 **Scope**: in — the detector, the heartbeat carrying it, the two columns, the panel section. Out
 — acting on it (PRM-265), and removing the declared list, which stays as the operator's intent.
+
+## PRM-271 — An engine this node cannot run is not a missing install
+
+**Why**: PRM-264 made a node report what it has installed, and that turned out to be only half
+the answer. On the Intel iMac the panel said *"MLX — mlx_lm.server is not on PATH"*: true, and it
+reads as *install it and you will have MLX*. There is no MLX to install on x86_64. The same row
+offered vLLM and SGLang, which need CUDA. Three impossible installs, each presented as a missing
+one.
+
+PRM-133 wrote the rule years before there was anything to apply it to — *"an option that cannot
+work must not look like one that can"* — and named why it could not be applied then: *"the fact
+exists in a Python docstring and nowhere the operator can see it."* This is that fact moving
+somewhere it can be seen.
+
+**Two independent questions per engine**, which is the whole of it: is it installed, and could
+this hardware run it. Four states fall out, and the fourth is the one that proves they are
+independent — an engine *installed* on hardware that cannot run it. The probe therefore runs even
+when the requirement is unmet, because skipping it would report a present engine as merely absent.
+
+**Impossibility, never advisability.** `arch != arm64` means there is no MLX binary in existence
+for this machine; no CUDA device means vLLM does not come up. Both are checkable against a
+profile. "llama.cpp runs here" and "llama.cpp runs *well* here" are different claims and only the
+first follows from a reading — the iMac reports `metal` for an Iris Pro 6200, and what that is
+worth belongs to PRM-265 at best.
+
+**Sourced, not invented.** `lifecycle.py`'s `_build_vllm_cmd` and `_build_sglang_cmd` both carry
+*"NOT verified against a real install (needs CUDA)"*, and PRM-133's engine survey lists them as
+CUDA-only and `llama_cpp, mlx, sd_cpp` as "the three that run here today" on an Apple Silicon
+node. An engine absent from the table has no constraint: a requirement nobody can demonstrate
+must not be asserted.
+
+**Unknown is not yes.** Without a profile, applicability is `None`. Reporting `True` there would
+put MLX back on the recommendation list for every node that has not described itself — the same
+distinction `NULL` vs `[]` carries for the declared engines, and never-seen vs cordoned for
+liveness.
+
+**Scope**: in — the requirement table, the two fields, the four-state row and the tally that
+answers the question in one line. Out — installing anything from the UI, performance, and which
+models fit (PRM-265).

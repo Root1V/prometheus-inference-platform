@@ -50,6 +50,16 @@ export interface EngineStatus {
    * install from one inside a virtualenv, which is the usual surprise. */
   path: string | null;
   reason: string | null;
+  /** PRM-271: whether this machine could run it at all, judged against the
+   * node's own profile. `null` means nobody could tell — not "yes". Separate
+   * from `installed` because they are independent: an engine can be absent
+   * and installable, absent and impossible here, or even present on hardware
+   * that cannot run it. */
+  applicable: boolean | null;
+  /** What the hardware would have to be, for the engines that need one — set
+   * whether or not the requirement is met, because it is the sentence an
+   * operator is owed either way. Reads as the object of "needs ...". */
+  requires: string | null;
 }
 
 export interface Node {
