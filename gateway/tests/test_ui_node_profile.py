@@ -52,9 +52,7 @@ def test_the_ui_declares_every_field_a_node_reports() -> None:
         assert python - typescript == set(), (
             f"{name}: the node reports fields the panel does not declare"
         )
-        assert typescript - python == set(), (
-            f"{name}: the panel declares fields no node sends"
-        )
+        assert typescript - python == set(), f"{name}: the panel declares fields no node sends"
 
 
 def test_the_node_type_carries_the_profile_and_its_age() -> None:
