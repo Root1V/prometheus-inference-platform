@@ -9696,3 +9696,27 @@ operator's call, not ours to take unasked.
 **Scope**: in — the env builder, the tests fixing the agreed identity, a configurable collector
 endpoint. Out — the SLO number, and flipping their registry entry to `active`, which is theirs to
 do once they see the spans.
+
+## PRM-262 — The transitional fingerprint acceptance expires
+
+**Why**: PRM-242 moved what the idempotency fingerprint is taken over, which would have made
+every key stored by the previous build answer `idempotency-key-reuse` for the rest of its
+window — the exact error the fix existed to stop, dealt to the team that reported it. The shim
+(`also_accept`) bought one window, and was written down as deletable after 2026-10-10, with the
+parameter and its call site named as going together.
+
+It was still there on 2026-10-14, and it surfaced from reading the channels for anything
+outstanding rather than from anything failing. A dated comment is a promise with nobody watching
+the date.
+
+**Checked before removing, not assumed**: the window is 24 hours and the newest key predating the
+fix on this deployment is from 2026-10-07 — seven days outside it. Nothing the shim protected
+still exists.
+
+The two tests that covered it went with it, replaced by one asserting the parameter is **gone**
+(so the date is honoured rather than the comment left to rot) and one keeping the half that still
+matters: two genuinely different requests under one key must still collide, which is the
+fingerprint's whole job and what a compatibility shim is most likely to quietly widen.
+
+**Scope**: in — the parameter, its one call site, the docstring, the tests. Out — the fingerprint
+itself, which PRM-242 settled.
