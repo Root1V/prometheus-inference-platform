@@ -9836,3 +9836,73 @@ platform, and a join script that minted its own would be the hole that rule exis
 
 **Scope**: in — the script, its checks, the config and env files it writes. Out — registering the
 node, which is an operator decision taken on the coordinator, and installing any engine.
+
+## PRM-267 — The panel can grant the scopes a node needs
+
+**Why**: PRM-266 ends with "the credential is created by a human admin in the panel". It cannot
+be. `ScopePicker.tsx` renders a fixed list of nine scopes and `fleet:heartbeat` — added to
+auth-service by PRM-152 — was never one of them, and there was no field for `node:<id>` at all.
+So the two scopes a node credential is *made of* were the two the only credential-issuing surface
+could not express, and the iMac could not join the fleet.
+
+**The list claimed to be a mirror and was checked by nothing.** Its comment said it mirrored
+`VALID_SCOPES` and that `model:<id>` was "the only other valid scope shape" — both false since
+PRM-152 landed on 2026-09-26, nineteen days, in a file nobody rereads. `gateway/tests/test_ui_scopes.py` now parses both sides and
+fails on disagreement, the same shape as PRM-133's engine-list guard, plus one test naming
+`fleet:heartbeat` directly: a set comparison passes just as happily if *both* sides lose it, and
+the fleet would be equally unjoinable.
+
+**The node picker is the model picker's twin, for the same reason it exists.** Node ids are
+open-ended and live in the coordinator's registry, so they are offered from `useNodes()` rather
+than enumerated, and a grant for a node this coordinator no longer lists still renders — editing
+a user must not silently drop access the way RM-70's instance pins would have. It shows the node
+id beside the name because that id is also `PMGR_FLEET_NODE_ID` on the device, which is the next
+thing the operator types.
+
+**Scope**: in — the fixed-scope list, the node picker, the mirror guard. Out — any API that
+creates credentials, and `node:<id>` authorization itself, which PRM-152 already enforces.
+
+## PRM-268 — A node credential says it is a node
+
+**Why**: `role` does exactly one thing today — it sets the default token TTL. Nothing reads it to
+authorize: not the gateway's middleware, not `manager-api`'s `assert_may_heartbeat`. The spec says
+the gateway "can enforce additional authorization logic based on role"; it does not.
+
+So the two node credentials on this platform are registered as `app`, whose documented meaning is
+"interactive applications — token rotated frequently", at 300 s. A daemon on an iMac is not that,
+and with the four devices being onboarded there will be six rows in the users table labelled as
+something they are not.
+
+**The role is the only TTL lever the panel has.** `CreatePrincipalRequest` carries no
+`token_ttl_seconds`, and although the PATCH accepts one, no screen sends it. That is what makes
+this worth a role rather than a note: a node's token lifetime cannot be set any other way from the
+only surface that issues credentials.
+
+**And the TTL is the fleet's revocation window**, which is the reason to make the number
+deliberate rather than inherited. See PRM-269: on the heartbeat path nothing checks the revocation
+list, so a revoked node keeps reporting until its token expires. Pinning `node` at its own TTL
+means that window stops moving whenever someone revisits what an autonomous agent should get.
+
+**Scope**: in — the role, its TTL, the enum/migration/spec/UI that enumerate roles. Out — any
+role-based authorization, which nothing does today and which scopes already cover; and the
+revocation gap, which is PRM-269 and which a new role does not fix.
+
+## PRM-269 — Revoking a node's credential does not stop the node
+
+**Why**: revocation is immediate by design — the auth service writes `revoked:client:<id>` to
+Redis and the gateway's middleware checks it on every request, which is what makes soft-deleting a
+principal more than a promise about future tokens.
+
+`manager-api` checks nothing. `auth.py` verifies the signature against JWKS, the expiry and the
+scopes, and that is all. The heartbeat is served by `manager-api`, so revoking a compromised
+node's credential only stops it renewing: the token it already holds keeps working until `exp`,
+and at today's 300 s that is up to five minutes of a node the operator believes they ejected still
+reporting itself alive — and therefore still being routed to.
+
+It is the same shape as PRM-152's own finding one layer out. That item stopped a node from
+speaking for other nodes; this one is about a node that may no longer speak at all.
+
+**Scope**: in — the revocation check on `manager-api`'s authenticated paths, and what it does when
+Redis is unreachable (a revocation list that fails open is worth less than it appears, and the
+JWKS path next to it already models the honest answer: 503, "your credentials are not
+implicated"). Out — the gateway, which already does this.
