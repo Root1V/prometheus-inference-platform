@@ -526,12 +526,48 @@ def _laya_env(entry: RegistryEntry, port: int, bind_host: str) -> dict[str, str]
     }
 
 
+def _tei_env(entry: RegistryEntry, port: int, bind_host: str) -> dict[str, str]:
+    """What makes TEI visible to Argus — PRM-261, from their `A-48 §6`.
+
+    No code in the engine and none in ours: `text-embeddings-inference` reads
+    the OTLP contract from the environment, so a model server neither team
+    wrote becomes instrumented by four variables at startup. That is the point
+    of the contract and it is worth saying out loud, because the alternative
+    everyone reaches for first is a wrapper.
+
+    **One `service.name` for every instance, not one per model.** Argus asked
+    for this explicitly and the reason is theirs: the model served is a
+    dimension (`gen_ai.request.model`), not a service. Four services would
+    split the panels on an alias and make "how is TEI doing" a question the
+    store cannot answer. The instances separate on `service.instance.id`.
+    """
+    endpoint = os.environ.get("ARGUS_OTLP_GRPC_ENDPOINT", "http://localhost:4317")
+    # PRM-176: the environment is named `development`, not the hardware it runs
+    # on — the same value this platform reports everywhere else.
+    environment = os.environ.get("DEPLOYMENT_ENVIRONMENT", "development")
+    attributes = ",".join(
+        (
+            "service.namespace=prometheus-inference-platform",
+            "argus.component.role=model-server",
+            f"deployment.environment.name={environment}",
+            f"service.instance.id=tei-{entry.id}-{port}",
+        )
+    )
+    return {
+        "OTEL_EXPORTER_OTLP_ENDPOINT": endpoint,
+        "OTEL_SERVICE_NAME": "tei",
+        "OTEL_RESOURCE_ATTRIBUTES": attributes,
+    }
+
+
 # PRM-140: extra environment for the backends that are configured that way.
 # Deliberately a second map rather than making every builder return a pair:
 # five of the six engines here take flags, and one does not. An asymmetry in
 # the data is honest; an asymmetry hidden behind a uniform signature is not.
 _ENV_BUILDERS = {
     "laya": _laya_env,
+    # PRM-261: not because TEI needs configuring, but because it needs naming.
+    "tei": _tei_env,
 }
 
 

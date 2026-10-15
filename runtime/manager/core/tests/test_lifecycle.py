@@ -1060,3 +1060,59 @@ class TestTeiCommandBuilder:
             "text-embeddings-router", self._entry(modality="zero_shot"), 9090, "127.0.0.1"
         )
         assert "--model-id" in cmd
+
+
+# ── PRM-261: TEI reports to Argus, and the identity is theirs ────────────────
+
+
+class TestTeiArgusIdentity:
+    """The identity Argus specified in `A-48 §6`, fixed so it cannot drift.
+
+    None of this is code TEI needed — it reads the OTLP contract from the
+    environment. What it needed was a name, and a name agreed with another team
+    is the kind of thing that decays silently: nobody notices a renamed service
+    until the panels have been empty for a week.
+    """
+
+    def _entry(self, **overrides):
+        from prometheus_manager_core.registry import RegistryEntry
+
+        defaults = dict(id="bge-rr-tei", path="/models/bge-rr-tei", context_length=512, port=9300)
+        defaults.update(overrides)
+        return RegistryEntry(**defaults)
+
+    def test_every_tei_instance_reports_as_one_service(self):
+        """Argus asked for this and gave the reason: the model served is a
+        dimension, not a service. Four service names would split the panels on
+        an alias and make "how is TEI doing" unanswerable."""
+        from prometheus_manager_core.lifecycle import _tei_env
+
+        rerank = _tei_env(self._entry(), 9300, "127.0.0.1")
+        nli = _tei_env(self._entry(id="nli-tei", port=9301), 9301, "127.0.0.1")
+
+        assert rerank["OTEL_SERVICE_NAME"] == "tei" == nli["OTEL_SERVICE_NAME"]
+        # And they are still told apart, which is the other half of the ask.
+        assert "service.instance.id=tei-bge-rr-tei-9300" in rerank["OTEL_RESOURCE_ATTRIBUTES"]
+        assert "service.instance.id=tei-nli-tei-9301" in nli["OTEL_RESOURCE_ATTRIBUTES"]
+
+    def test_the_resource_attributes_are_the_ones_argus_registered(self):
+        from prometheus_manager_core.lifecycle import _tei_env
+
+        attributes = _tei_env(self._entry(), 9300, "127.0.0.1")["OTEL_RESOURCE_ATTRIBUTES"]
+        assert "service.namespace=prometheus-inference-platform" in attributes
+        assert "argus.component.role=model-server" in attributes
+        # PRM-176: the environment is named, not the hardware it happens to run on.
+        assert "deployment.environment.name=development" in attributes
+
+    def test_the_collector_endpoint_can_be_moved_without_an_edit(self, monkeypatch):
+        """Theirs is gRPC on 4317 and ours elsewhere is HTTP on 4318, so the
+        one that is wrong by default should be changeable without a release."""
+        from prometheus_manager_core.lifecycle import _tei_env
+
+        assert _tei_env(self._entry(), 9300, "127.0.0.1")["OTEL_EXPORTER_OTLP_ENDPOINT"] == (
+            "http://localhost:4317"
+        )
+        monkeypatch.setenv("ARGUS_OTLP_GRPC_ENDPOINT", "http://otel.lab:4317")
+        assert _tei_env(self._entry(), 9300, "127.0.0.1")["OTEL_EXPORTER_OTLP_ENDPOINT"] == (
+            "http://otel.lab:4317"
+        )

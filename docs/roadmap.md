@@ -9647,3 +9647,52 @@ platform cannot honour. That product starts making sense when there are dedicate
 **Scope**: in — the column, the migration, `resolve_spend_cap` and the five read sites that now
 use it, the field in the tier form and table. Out — per-hour capacity pricing, and any change to
 how a request is charged, which stays the per-model price it has always been.
+
+## PRM-260 — A refusal is `denied`, and says who refused
+
+**Why**: agreed with Argus in `P-37 §3` — `403 → denied/policy`, `402 → denied/budget`, `401` and
+`5xx` stay `error` — with a promise to tell them when it shipped. It never shipped. They measured
+four weeks of zero `denied` emissions and were right to.
+
+Two things made the silence look deliberate rather than forgotten. `outcome_for`'s own docstring
+said the move was "proposed in P-36 rather than taken here", written before the agreement and
+never revisited after it. And a test asserted `403 == "error"` — the decision encoded as a
+guarantee, so nothing could have failed on the day it stopped being true.
+
+Both values ship together on purpose: Argus's `A-48 §5` warns that since `a20`, a `denied`
+arriving without `denied_by` would not warn *us*, because this platform builds the event by hand
+on a span event and their SDK's validation is on spans. Half of this would have been a silence
+with a different shape.
+
+Also named `_OK`, `_ERROR` and `_DENIED` explicitly. They were `ARGUS_OUTCOME_VALUES[0]` and
+`[1]`, so a reordering upstream would have changed what this platform calls a success with no
+line of ours changing and no test failing.
+
+**Scope**: in — the two outcomes, `denied_by`, the semconv bump to `a22` that carries the
+attribute, the two tests that asserted the old decision rewritten to say the new one. Out —
+anything about 401, which is an unidentified caller and not a refused action.
+
+## PRM-261 — TEI reports to Argus, with the identity they fixed
+
+**Why**: four TEI instances have been running on the `lab` node and none of them exists in
+Argus's store. We told them in `P-37 §4` and asked rather than wiring it blind; `A-48 §6` came
+back with the exact identity and pre-registered the component as `planned` rather than `active`,
+so the silence probe would not alarm on something both sides knew about.
+
+No code in the engine and almost none here: `text-embeddings-inference` reads the OTLP contract
+from its environment, and the manager already had `_ENV_BUILDERS` for exactly this — `laya` was
+the first backend configured by environment instead of flags. TEI is the second.
+
+**One `service.name` for every instance**, which is their requirement and their reason: the model
+served is a dimension (`gen_ai.request.model`), not a service. Four service names would split the
+dashboards on an alias and make "how is TEI doing" a question the store cannot answer. The
+instances separate on `service.instance.id`.
+
+**Still owed**: the real SLO. Theirs is a stated guess (`p95 2000 ms`) and they said so, noting a
+reranker should be in the tens of milliseconds. Every TEI instance is currently stopped and the
+usage rows predate `duration_ms` (PRM-245), so measuring it means starting the reranker — an
+operator's call, not ours to take unasked.
+
+**Scope**: in — the env builder, the tests fixing the agreed identity, a configurable collector
+endpoint. Out — the SLO number, and flipping their registry entry to `active`, which is theirs to
+do once they see the spans.
