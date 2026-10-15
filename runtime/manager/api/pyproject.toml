@@ -8,7 +8,7 @@ dependencies = [
     "uvicorn[standard]>=0.29",
     "httpx>=0.27",
     "python-jose[cryptography]>=3.3",
-    "click>=8.1",
+    "click>=8.5.0",
     "structlog>=25.5.0",
     "prometheus-telemetry",
     "prometheus-manager-core",
