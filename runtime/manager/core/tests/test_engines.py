@@ -146,3 +146,98 @@ def test_nothing_installed_is_an_empty_list_not_an_error(config: ManagerConfig) 
     """`[]` means it looked and found none — a real answer, and the one that
     distinguishes a scanned node from an unreported one."""
     assert installed_backends(config) == []
+
+
+# ── PRM-271: an engine this node cannot run ──────────────────────────────────
+#
+# "Installed" and "could run here" are independent questions, and reporting
+# only the first made the panel suggest three impossible installs on an Intel
+# iMac: MLX has no binary to put on x86_64, so "mlx_lm.server is not on PATH"
+# was true and useless. PRM-133 wrote the rule — "an option that cannot work
+# must not look like one that can" — and left the fact in a docstring.
+
+_INTEL_IMAC = {
+    "os": "Darwin",
+    "arch": "x86_64",
+    "accelerator": {"kind": "metal", "name": "Intel Iris Pro Graphics 6200"},
+}
+_APPLE_SILICON = {"os": "Darwin", "arch": "arm64", "accelerator": {"kind": "metal"}}
+_NVIDIA_LINUX = {"os": "Linux", "arch": "x86_64", "accelerator": {"kind": "cuda"}}
+
+
+def _applicable(config: ManagerConfig, profile: dict | None) -> dict[str, bool | None]:
+    return {s.backend: s.applicable for s in detect_engines(config, profile)}
+
+
+def test_mlx_is_ruled_out_on_an_intel_mac(config: ManagerConfig) -> None:
+    """The report that started this item, asserted against the iMac's own
+    profile as the fleet stored it."""
+    assert _applicable(config, _INTEL_IMAC)["mlx"] is False
+
+
+def test_mlx_is_available_on_apple_silicon(config: ManagerConfig) -> None:
+    """The negative control. A rule that refuses everything is not a rule."""
+    assert _applicable(config, _APPLE_SILICON)["mlx"] is True
+
+
+def test_the_cuda_engines_are_ruled_out_without_an_nvidia_card(config: ManagerConfig) -> None:
+    """`lifecycle.py` says of both: "NOT verified against a real install
+    (needs CUDA)". That is where this comes from — not from a guess here."""
+    on_mac = _applicable(config, _APPLE_SILICON)
+    assert on_mac["vllm"] is False
+    assert on_mac["sglang"] is False
+
+    on_nvidia = _applicable(config, _NVIDIA_LINUX)
+    assert on_nvidia["vllm"] is True
+    assert on_nvidia["sglang"] is True
+
+
+def test_an_engine_with_no_hardware_requirement_runs_anywhere(config: ManagerConfig) -> None:
+    """Absence from the table is the default on purpose: a constraint nobody
+    can demonstrate must not be asserted."""
+    for profile in (_INTEL_IMAC, _APPLE_SILICON, _NVIDIA_LINUX):
+        applicable = _applicable(config, profile)
+        for backend in ("llama_cpp", "sd_cpp", "hf_serve", "tei", "laya"):
+            assert applicable[backend] is True, f"{backend} was ruled out somewhere"
+
+
+def test_no_profile_means_unknown_and_not_yes(config: ManagerConfig) -> None:
+    """The distinction this codebase keeps making. An impossibility nobody
+    checked is not the same as one that does not apply, and `True` here would
+    put MLX back on the x86 recommendation list for any node that has not
+    reported its hardware yet."""
+    applicable = _applicable(config, None)
+    assert applicable["mlx"] is None
+    assert applicable["vllm"] is None
+    # ...but an engine with no requirement is knowable without a profile.
+    assert applicable["llama_cpp"] is True
+
+
+def test_what_the_hardware_would_need_is_reported_either_way(config: ManagerConfig) -> None:
+    """Set whether or not it is met: "needs Apple Silicon" is the sentence an
+    operator is owed when the option is missing *and* when it is offered."""
+    for profile in (_INTEL_IMAC, _APPLE_SILICON):
+        by_backend = {s.backend: s for s in detect_engines(config, profile)}
+        assert by_backend["mlx"].requires == "Apple Silicon"
+        assert by_backend["llama_cpp"].requires is None, "a constraint was invented"
+
+
+def test_an_installed_engine_the_hardware_cannot_run_is_still_reported_installed(
+    config: ManagerConfig, tmp_path: Path
+) -> None:
+    """Rare and deliberately not hidden. The probe runs even when the hardware
+    rules an engine out, because skipping it would report a present engine as
+    merely absent — and "installed where it cannot run" is worth saying."""
+    config._backend_config("mlx").binary = _fake_binary(tmp_path / "bin" / "mlx_lm.server")
+
+    mlx = next(s for s in detect_engines(config, _INTEL_IMAC) if s.backend == "mlx")
+    assert mlx.installed is True
+    assert mlx.applicable is False
+
+
+def test_every_requirement_names_a_backend_this_platform_has(config: ManagerConfig) -> None:
+    """A requirement for an engine that no longer exists is silently dead, and
+    a typo in a key is a constraint that never applies to anything."""
+    from prometheus_manager_core.engines import _REQUIREMENTS
+
+    assert set(_REQUIREMENTS) <= set(BACKENDS)

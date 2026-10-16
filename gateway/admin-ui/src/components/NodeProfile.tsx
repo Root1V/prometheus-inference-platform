@@ -128,29 +128,83 @@ function Meter({
   );
 }
 
+/** PRM-271: four states, because "installed" and "could run here" are
+ * independent questions and this row used to answer only the first.
+ *
+ * `ruled-out` is the one that earns it. On an Intel iMac the old row said
+ * "mlx_lm.server is not on PATH" — true, and it reads as *install it and you
+ * will have MLX*. There is no MLX to install on x86_64. PRM-133 wrote the rule
+ * this implements — *"an option that cannot work must not look like one that
+ * can"* — and left the fact in a Python docstring where no operator saw it.
+ *
+ * `stranded` is rare and deliberately not hidden: an engine present on
+ * hardware that cannot run it is a real thing to be told about, and a probe
+ * that skipped it would report it as merely absent.
+ */
+type EngineState = "installed" | "stranded" | "installable" | "ruled-out" | "unknown";
+
+function engineState(engine: EngineStatus): EngineState {
+  if (engine.installed) return engine.applicable === false ? "stranded" : "installed";
+  if (engine.applicable === false) return "ruled-out";
+  if (engine.applicable === null) return "unknown";
+  return "installable";
+}
+
+const DOT: Record<EngineState, string> = {
+  installed: "bg-green-500",
+  stranded: "bg-amber-500",
+  // Hollow: something could go here. A filled dot would read as a state the
+  // node is in rather than one it could reach.
+  installable: "border border-text-muted/60",
+  "ruled-out": "bg-border",
+  unknown: "bg-border",
+};
+
 function EngineRow({ engine }: { engine: EngineStatus }) {
+  const state = engineState(engine);
+  const present = state === "installed" || state === "stranded";
+
+  // The right column answers what follows "is it installed": where it came
+  // from, what to do about it, or why there is nothing to do. `min-w-0` is
+  // what lets the truncation actually happen in a flex row.
+  const detail =
+    state === "installed"
+      ? homeRelativeDir(engine.path!)
+      : state === "stranded"
+        ? `installed, needs ${engine.requires}`
+        : state === "ruled-out"
+          ? `needs ${engine.requires}`
+          : state === "unknown"
+            ? `needs ${engine.requires} — unverified`
+            : "not installed";
+
   return (
     <li className="flex items-center gap-2.5 py-1">
+      <span aria-hidden className={cn("size-1.5 shrink-0 rounded-full", DOT[state])} />
       <span
-        aria-hidden
         className={cn(
-          "size-1.5 shrink-0 rounded-full",
-          engine.installed ? "bg-green-500" : "bg-border",
+          "shrink-0 text-sm",
+          present ? "text-text" : "text-text-muted",
+          state === "ruled-out" && "opacity-60",
         )}
-      />
-      <span
-        className={cn("shrink-0 text-sm", engine.installed ? "text-text" : "text-text-muted")}
       >
         {engineLabel(engine.backend)}
       </span>
-      {/* Where it would come from when it is here, why it is not when it is
-          not. Both answer the question after "is it installed", and `min-w-0`
-          is what lets the truncation actually happen inside a flex row. */}
       <span
-        className="ml-auto min-w-0 truncate text-right font-mono text-xs text-text-muted"
-        title={engine.installed ? engine.path! : (engine.reason ?? undefined)}
+        className={cn(
+          "ml-auto min-w-0 truncate text-right font-mono text-xs",
+          state === "stranded" ? "text-amber-700 dark:text-amber-400" : "text-text-muted",
+          state === "ruled-out" && "opacity-60",
+        )}
+        title={
+          state === "stranded"
+            ? `Installed at ${engine.path}, but this node cannot run it — needs ${engine.requires}`
+            : state === "installed"
+              ? engine.path!
+              : (engine.reason ?? undefined)
+        }
       >
-        {engine.installed ? homeRelativeDir(engine.path!) : engine.reason}
+        {detail}
       </span>
     </li>
   );
@@ -162,9 +216,28 @@ export function NodeProfileModal({ node, onClose }: { node: Node; onClose: () =>
 
   // Installed first. The five a node has are the answer and the three it does
   // not are the footnote, and `BACKENDS` order interleaves them.
+  // Installed, then what could be added, then what the hardware rules out.
+  // `BACKENDS` order interleaves all three, and the middle group is the only
+  // one an operator can act on — it should not be hunted for.
+  const ORDER: Record<EngineState, number> = {
+    installed: 0,
+    stranded: 1,
+    installable: 2,
+    unknown: 3,
+    "ruled-out": 4,
+  };
   const engines = node.engines_detected
-    ? [...node.engines_detected].sort((a, b) => Number(b.installed) - Number(a.installed))
+    ? [...node.engines_detected].sort((a, b) => ORDER[engineState(a)] - ORDER[engineState(b)])
     : null;
+
+  // PRM-271's answer in one line. "3 could be added" is the recommendation
+  // this panel existed without: the list said what is here, and left what
+  // could be here to be worked out by elimination.
+  const tally = engines && {
+    installed: engines.filter((e) => engineState(e) === "installed").length,
+    installable: engines.filter((e) => engineState(e) === "installable").length,
+    ruledOut: engines.filter((e) => engineState(e) === "ruled-out").length,
+  };
 
   // Escape closes, and so does the backdrop. Neither is true of the other
   // modals on this page — deliberately not changed here, because they are
@@ -273,6 +346,19 @@ export function NodeProfileModal({ node, onClose }: { node: Node; onClose: () =>
               </span>
             )}
           </div>
+
+          {tally && (
+            <p className="mb-1 text-xs text-text-muted">
+              <span className="text-text">{tally.installed} installed</span>
+              {tally.installable > 0 && (
+                <>
+                  {" · "}
+                  <span className="text-text">{tally.installable} could be added</span>
+                </>
+              )}
+              {tally.ruledOut > 0 && ` · ${tally.ruledOut} ruled out by this hardware`}
+            </p>
+          )}
 
           {engines === null ? (
             <p className="mt-1 rounded-lg border border-border p-3 text-sm text-text-muted">

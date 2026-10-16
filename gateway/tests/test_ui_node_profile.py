@@ -124,3 +124,48 @@ def test_the_panel_names_what_was_declared_and_not_found() -> None:
     from_lib = (_ROOT / "gateway/admin-ui/src/lib/engines.ts").read_text()
     assert "export function engineDisagreement" in from_lib
     assert "engineDisagreement" in _PANEL_TSX.read_text()
+
+
+# ── PRM-271: an option that cannot work must not look like one that can ──────
+
+
+def _engine_state_body() -> str:
+    """Just `engineState`'s body.
+
+    Narrowed on purpose. The first version of these two tests searched the
+    whole file and passed with the `ruled-out` branch deleted — both strings
+    it looked for also appear in the lookup tables below the function, so the
+    guard was matching text that survives the defect. A guard that cannot fail
+    is worse than none: it reports the thing it does not check.
+    """
+    panel = _PANEL_TSX.read_text()
+    block = re.search(
+        r"function engineState\(engine: EngineStatus\): EngineState \{(.*?)^\}",
+        panel,
+        re.MULTILINE | re.DOTALL,
+    )
+    assert block, "engineState moved or changed shape"
+    return block.group(1)
+
+
+def test_the_panel_distinguishes_absent_from_impossible() -> None:
+    """The defect, named. "mlx_lm.server is not on PATH" on an Intel iMac is
+    true and reads as *install it and you will have MLX*; there is no MLX to
+    install on x86_64. A panel that branches on `installed` alone cannot tell
+    the two apart."""
+    body = _engine_state_body()
+    assert '"ruled-out"' in body, "nothing in engineState reports an impossible engine"
+    assert '"installable"' in body, "nothing in engineState reports one worth adding"
+
+
+def test_unknown_applicability_is_not_rendered_as_yes() -> None:
+    """A node that never reported its hardware cannot have its hardware ruled
+    on. `null` is its own branch, or MLX goes back on the recommendation list
+    for every node that has not profiled itself."""
+    assert '"unknown"' in _engine_state_body()
+
+
+def test_what_the_hardware_would_need_is_rendered() -> None:
+    """A bare 'not available' without the requirement sends an operator looking for
+    an install that does not exist."""
+    assert "engine.requires" in _PANEL_TSX.read_text()
