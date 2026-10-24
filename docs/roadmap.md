@@ -10014,3 +10014,47 @@ liveness.
 **Scope**: in — the requirement table, the two fields, the four-state row and the tally that
 answers the question in one line. Out — installing anything from the UI, performance, and which
 models fit (PRM-265).
+
+## PRM-272 — An assistant inside the dashboard
+
+**Why**: what this platform knows is spread across eleven pages and forty-six admin endpoints, and
+answering an ordinary operational question means knowing which one holds it. This week is the
+evidence: finding out why the login page was blank took reading `fleet.db` by hand, standing up a
+second gateway to compare against, and a port-by-port liveness sweep. Every fact in that
+diagnosis was already in the platform.
+
+**Three capabilities, and they are worth separating because only the third is hard:**
+
+1. **Answer** — read-only questions over data the admin API already serves. "Which nodes are not
+   answering", "what did Veritium spend this month", "why is gpt-oss returning 503".
+2. **Navigate** — land the operator on the page, and on the row. This is nearly built:
+   PRM-247's `focusLink()` already takes `?focus=<key>`, scrolls the element into view and rings
+   it, precisely so that "it is somewhere above" stops costing time.
+3. **Act** — restart an instance, cordon a node, stop a model. This is the one that needs a
+   decision before any code.
+
+**What already exists underneath**: the gateway proxies `tools`/`tool_calls` end to end, and
+PRM-257/PRM-258 fixed exactly that round-trip for `gpt-oss-20b` after Veritium's report — so the
+assistant can run on this platform's own model rather than calling out. Dogfooding, with an
+honest caveat: measured throughput is ~59 tok/s output at concurrency 1, so a multi-turn tool
+loop will feel slow, and that is a reason to keep the tool surface small rather than a reason not
+to build it.
+
+**The decision this item is blocked on, and it is not a small one.** An assistant that acts is a
+principal that acts. Two questions, neither answered here:
+
+- *Whose authority?* Does it act as the signed-in admin, inheriting exactly their scopes — so it
+  can never do what they could not — or as its own principal with its own grant? The first is the
+  conservative reading of this platform's standing rule that only a human admin issues
+  credentials; the second is easier to audit in `argus` because the actor is named.
+- *What needs confirming?* Every side-effecting call, or only the destructive ones? PRM-157's
+  audit trail records what happened; it does not ask first. A restart an operator did not intend
+  is cheap to undo and expensive to not notice.
+
+Nothing is built until those are settled — options and a recommendation first, as with every
+design decision on this platform.
+
+**Scope**: in — the assistant surface in the admin panel, the read and navigate tools, and the
+authorization model for acting. Out — anything in the separate Web Chat UI (`ui:chat`, spec 013),
+which is a product surface for end users and not this; creating credentials, which stays a human
+admin's action under any design; and acting on another operator's behalf.
