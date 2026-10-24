@@ -10115,3 +10115,35 @@ embedding models under sustained load**, which is exactly what both upstream iss
    `ggml_metal_op` in the *compute* path. That is new information and might reopen the thread.
 
 **Scope**: nothing is being built. If this is picked up, item 1 is the work.
+
+## PRM-274 — The admin read surface is split by resource family
+
+**Why**: one scope, `admin:read`, guarded all 33 admin read endpoints, so any credential that
+needed one of them got every one: the fleet, every principal's scopes and emails, and every
+client's billing settings, summaries and history. PRM-272's assistant made it concrete — it needs
+four endpoints and would have been issued a token that reaches thirty-three. The anchor is
+OWASP's Non-Human Identity Top 10: the operator's two PRM-272 decisions already answer NHI9 (no
+shared identity) and NHI10 (no human using a machine identity), and `role: agent`'s 10-minute TTL
+answers NHI7; NHI5, overprivileged NHI, was the one left open.
+
+A narrow scope for the assistant alone was considered and rejected — it scales worse, not better.
+Accepting a bespoke scope on four endpoints works for one consumer; the second arrives with a
+different subset, and endpoints accumulate unrelated accept-lists nobody can read back. Naming by
+resource rather than by consumer is also what this repo already chose twice: `model:<id>` (RM-07)
+and `fleet:heartbeat` + `node:<id>` (PRM-152) are both capability-per-object.
+
+**Scope**: five scopes — `admin:fleet:read` (nodes, instances, models, activity, instance logs,
+`/v1/backends`), `admin:billing:read` (billing, usage, pricing, tiers), `admin:principals:read`
+(users, sessions), `admin:policy:read` (limits, circuit breaker, traffic splits, config) and
+`admin:audit:read` (the audit trail, `/metrics`). `admin:read` is kept as the parent that implies
+all five, which is what makes the split free to adopt: no credential is reissued, the dashboard
+still logs in with `admin:read admin:write`, and auth-service needs no migration. The implication
+is three lines in `Claims.has_scope` — the one place all 33 checks already went through.
+
+Out: `admin:write`, left whole. A write surface split by family is a separate decision with a
+separate blast radius, and nothing yet needs it.
+
+The parent scope is also this item's one failure mode, and it is the reason for a test rather
+than a comment: an endpoint written against `admin:read` still works, raises nothing and returns
+no wrong answer — it just quietly grants all five families again. `test_admin_scopes.py` fails the
+push when any guard under the admin routers asks for the parent.

@@ -16,6 +16,20 @@ VALID_SCOPES: frozenset[str] = frozenset(
         "inference:read",
         "inference:stream",
         "admin:read",  # gateway admin endpoints (/v1/backends, /v1/usage)
+        # PRM-274: the admin read surface, split by resource family. `admin:read`
+        # above is the parent and implies all five (gateway auth/claims.py), so
+        # it keeps working everywhere and no existing credential was reissued.
+        #
+        # One scope used to guard all 33 admin read endpoints, which meant a
+        # credential needing the node list also read every principal's scopes
+        # and emails and every client's billing. Named for the resource, never
+        # for the consumer: a scope called after its first holder makes the
+        # second one ask for "the assistant's scope".
+        "admin:fleet:read",  # nodes, instances, models, activity, instance logs
+        "admin:billing:read",  # billing, usage, pricing, tiers
+        "admin:principals:read",  # users, sessions
+        "admin:policy:read",  # limits, circuit breaker, traffic splits, config
+        "admin:audit:read",  # the audit trail, /metrics
         "admin:write",  # RM-10 — gateway admin dashboard: register/start/stop/restart via /admin/api
         "admin:models",
         "admin:usage",

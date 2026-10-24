@@ -6,14 +6,14 @@ manager-api/auth-service), this data lives in the gateway's own DB — kept in
 a separate module rather than bolting non-proxy logic onto the proxy-only
 file.
 
-GET  /admin/api/billing/clients/{client_id}/settings         admin:read
+GET  /admin/api/billing/clients/{client_id}/settings         admin:billing:read
 PUT  /admin/api/billing/clients/{client_id}/settings         admin:write
-GET  /admin/api/billing/currency-rates                       admin:read
+GET  /admin/api/billing/currency-rates                       admin:billing:read
 PUT  /admin/api/billing/currency-rates                       admin:write
-GET  /admin/api/billing/clients/{client_id}/summary          admin:read
-GET  /admin/api/billing/clients/{client_id}/history          admin:read
-GET  /admin/api/billing/alerts                               admin:read
-GET  /admin/api/billing/pricing                               admin:read
+GET  /admin/api/billing/clients/{client_id}/summary          admin:billing:read
+GET  /admin/api/billing/clients/{client_id}/history          admin:billing:read
+GET  /admin/api/billing/alerts                               admin:billing:read
+GET  /admin/api/billing/pricing                               admin:billing:read
 PUT  /admin/api/billing/pricing/{model_id}                    admin:write
 DELETE /admin/api/billing/pricing/{model_id}                  admin:write
 
@@ -78,7 +78,7 @@ def create_billing_router(manager_client: "ManagerApiClient | None" = None) -> A
 
     @router.get("/admin/api/billing/clients/{client_id}/settings")
     async def get_billing_settings(client_id: str, request: Request) -> Any:
-        if (err := _require_scope(request, "admin:read")) is not None:
+        if (err := _require_scope(request, "admin:billing:read")) is not None:
             return err
         row = await db.get_client_billing_settings(client_id)
         return _settings_to_dict(row, client_id)
@@ -136,7 +136,7 @@ def create_billing_router(manager_client: "ManagerApiClient | None" = None) -> A
 
     @router.get("/admin/api/billing/currency-rates")
     async def get_currency_rates(request: Request) -> Any:
-        if (err := _require_scope(request, "admin:read")) is not None:
+        if (err := _require_scope(request, "admin:billing:read")) is not None:
             return err
         rows = await db.list_currency_rates()
         return {r.currency_code: r.units_per_usd for r in rows}
@@ -183,7 +183,7 @@ def create_billing_router(manager_client: "ManagerApiClient | None" = None) -> A
     @router.get("/admin/api/limits/tiers")
     async def list_tiers(request: Request) -> Any:
         """The tier catalogue — PRM-228."""
-        if (err := _require_scope(request, "admin:read")) is not None:
+        if (err := _require_scope(request, "admin:billing:read")) is not None:
             return err
         # PRM-256: and how many clients each one governs. A tier is shared, so
         # editing one edits it for everyone on it — and the page could not say
@@ -308,7 +308,7 @@ def create_billing_router(manager_client: "ManagerApiClient | None" = None) -> A
         the reader had to already know which client they meant. Asking "how is
         the month going" meant one request per client, in a loop, by hand.
         """
-        if (err := _require_scope(request, "admin:read")) is not None:
+        if (err := _require_scope(request, "admin:billing:read")) is not None:
             return err
         target_period = period or datetime.now(tz=timezone.utc).strftime(_ISO_MONTH_FORMAT)
         try:
@@ -323,7 +323,7 @@ def create_billing_router(manager_client: "ManagerApiClient | None" = None) -> A
     async def get_billing_summary(
         client_id: str, request: Request, period: str | None = None
     ) -> Any:
-        if (err := _require_scope(request, "admin:read")) is not None:
+        if (err := _require_scope(request, "admin:billing:read")) is not None:
             return err
         target_period = period or datetime.now(tz=timezone.utc).strftime(_ISO_MONTH_FORMAT)
         try:
@@ -336,7 +336,7 @@ def create_billing_router(manager_client: "ManagerApiClient | None" = None) -> A
 
     @router.get("/admin/api/billing/clients/{client_id}/history")
     async def get_billing_history(client_id: str, request: Request, periods: int = 6) -> Any:
-        if (err := _require_scope(request, "admin:read")) is not None:
+        if (err := _require_scope(request, "admin:billing:read")) is not None:
             return err
         periods = max(1, min(periods, 24))
         now = datetime.now(tz=timezone.utc)
@@ -353,7 +353,7 @@ def create_billing_router(manager_client: "ManagerApiClient | None" = None) -> A
 
     @router.get("/admin/api/billing/alerts")
     async def get_billing_alerts(request: Request) -> Any:
-        if (err := _require_scope(request, "admin:read")) is not None:
+        if (err := _require_scope(request, "admin:billing:read")) is not None:
             return err
         redis_client = getattr(request.app.state, "shared_redis", None)
         if redis_client is None:
@@ -369,7 +369,7 @@ def create_billing_router(manager_client: "ManagerApiClient | None" = None) -> A
         pricing.yaml-sourced price (source="db" vs "file") so the UI can show
         what's actually in effect, not just what was explicitly set here.
         """
-        if (err := _require_scope(request, "admin:read")) is not None:
+        if (err := _require_scope(request, "admin:billing:read")) is not None:
             return err
         db_rows = {row.model_id: row for row in await db.list_model_price_configs()}
         table = pricing.get_pricing_table()

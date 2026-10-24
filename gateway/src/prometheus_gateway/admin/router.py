@@ -2,8 +2,11 @@
 
 Mounted at /admin/api by main.py when admin_dashboard_enabled=True. Every
 route except /admin/api/auth/login requires a Bearer JWT (validated by the
-gateway's global JWTAuthMiddleware, same as /v1/backends) plus admin:read
-(GET) or admin:write (mutations). The SPA itself is served separately as
+gateway's global JWTAuthMiddleware, same as /v1/backends) plus a scope:
+admin:write for mutations, and for reads one of the five `admin:*:read` scopes
+PRM-274 split the read surface into — fleet, billing, principals, policy,
+audit. `admin:read` is the parent that implies all five, so it still works
+everywhere and the dashboard holds it. The SPA itself is served separately as
 static files — see main.py and auth/middleware.py's _is_exempt().
 
 POST   /admin/api/auth/login                                — exchange client_id/secret for a JWT
@@ -314,8 +317,8 @@ def create_admin_router(manager_client: ManagerApiClient) -> APIRouter:
 
     @router.get("/admin/api/traffic-splits")
     async def list_splits(request: Request) -> Any:
-        """The live splits — PRM-160. `admin:read`."""
-        if (forbidden := _require_scope(request, "admin:read")) is not None:
+        """The live splits — PRM-160. `admin:policy:read`."""
+        if (forbidden := _require_scope(request, "admin:policy:read")) is not None:
             return forbidden
         table = traffic_split.get_split_table()
         return {
@@ -409,10 +412,10 @@ def create_admin_router(manager_client: ManagerApiClient) -> APIRouter:
 
     @router.get("/admin/api/audit")
     async def list_audit(request: Request) -> Any:
-        """The audit trail — PRM-157. `admin:read`, newest first.
+        """The audit trail — PRM-157. `admin:audit:read`, newest first.
 
         A log nobody can read is not a control, which is why this exists rather
-        than leaving the rows to whoever has database access. `admin:read` and not
+        than leaving the rows to whoever has database access. A read scope and not
         `admin:write`: reading the trail is not an administrative change, and
         requiring write to see who wrote would mean only the people who can alter
         the system can check it.
@@ -421,7 +424,7 @@ def create_admin_router(manager_client: ManagerApiClient) -> APIRouter:
         because that table is the record. Argus has a copy for search and
         alerting, and a copy is not a source.
         """
-        if (forbidden := _require_scope(request, "admin:read")) is not None:
+        if (forbidden := _require_scope(request, "admin:audit:read")) is not None:
             return forbidden
         try:
             limit = int(request.query_params.get("limit", "100"))
@@ -456,7 +459,7 @@ def create_admin_router(manager_client: ManagerApiClient) -> APIRouter:
 
     @router.get("/admin/api/instances")
     async def list_instances(request: Request) -> Any:
-        if (forbidden := _require_scope(request, "admin:read")) is not None:
+        if (forbidden := _require_scope(request, "admin:fleet:read")) is not None:
             return forbidden
 
         settings: Settings = request.app.state.settings
@@ -490,7 +493,7 @@ def create_admin_router(manager_client: ManagerApiClient) -> APIRouter:
         known models) instead of GET /v1/backends (running instances). A
         catalog entry with zero instances (freshly downloaded, not yet
         deployed) only ever shows up here, not in list_instances."""
-        if (forbidden := _require_scope(request, "admin:read")) is not None:
+        if (forbidden := _require_scope(request, "admin:fleet:read")) is not None:
             return forbidden
 
         settings: Settings = request.app.state.settings
@@ -549,7 +552,7 @@ def create_admin_router(manager_client: ManagerApiClient) -> APIRouter:
     # this was moved here).
     @router.get("/admin/api/nodes/{node}/models/config")
     async def get_models_config_proxy(node: str, request: Request) -> Response:
-        if (forbidden := _require_scope(request, "admin:read")) is not None:
+        if (forbidden := _require_scope(request, "admin:fleet:read")) is not None:
             return forbidden
         node_url = await _resolve_node(request, node)
         if node_url is None:
@@ -793,7 +796,7 @@ def create_admin_router(manager_client: ManagerApiClient) -> APIRouter:
     async def search_models_proxy(
         node: str, request: Request, q: str, sort: str | None = None
     ) -> Response:
-        if (forbidden := _require_scope(request, "admin:read")) is not None:
+        if (forbidden := _require_scope(request, "admin:fleet:read")) is not None:
             return forbidden
         node_url = await _resolve_node(request, node)
         if node_url is None:
@@ -811,7 +814,7 @@ def create_admin_router(manager_client: ManagerApiClient) -> APIRouter:
 
     @router.get("/admin/api/nodes/{node}/models/search/files")
     async def search_model_files_proxy(node: str, request: Request, repo_id: str) -> Response:
-        if (forbidden := _require_scope(request, "admin:read")) is not None:
+        if (forbidden := _require_scope(request, "admin:fleet:read")) is not None:
             return forbidden
         node_url = await _resolve_node(request, node)
         if node_url is None:
@@ -828,7 +831,7 @@ def create_admin_router(manager_client: ManagerApiClient) -> APIRouter:
 
     @router.get("/admin/api/nodes/{node}/models/search/card")
     async def search_model_card_proxy(node: str, request: Request, repo_id: str) -> Response:
-        if (forbidden := _require_scope(request, "admin:read")) is not None:
+        if (forbidden := _require_scope(request, "admin:fleet:read")) is not None:
             return forbidden
         node_url = await _resolve_node(request, node)
         if node_url is None:
@@ -860,7 +863,7 @@ def create_admin_router(manager_client: ManagerApiClient) -> APIRouter:
 
     @router.get("/admin/api/nodes/{node}/models/downloads")
     async def list_downloads_proxy(node: str, request: Request) -> Response:
-        if (forbidden := _require_scope(request, "admin:read")) is not None:
+        if (forbidden := _require_scope(request, "admin:fleet:read")) is not None:
             return forbidden
         node_url = await _resolve_node(request, node)
         if node_url is None:
@@ -974,7 +977,7 @@ def create_admin_router(manager_client: ManagerApiClient) -> APIRouter:
         node: str, model_id: str, request: Request, tail: int = 200
     ) -> Response:
         """Tail a running instance's log file (RM-13)."""
-        if (forbidden := _require_scope(request, "admin:read")) is not None:
+        if (forbidden := _require_scope(request, "admin:fleet:read")) is not None:
             return forbidden
         node_url = await _resolve_node(request, node)
         if node_url is None:
@@ -1028,7 +1031,7 @@ def create_admin_router(manager_client: ManagerApiClient) -> APIRouter:
 
     @router.get("/admin/api/users")
     async def list_users(request: Request) -> Response:
-        if (forbidden := _require_scope(request, "admin:read")) is not None:
+        if (forbidden := _require_scope(request, "admin:principals:read")) is not None:
             return forbidden
         return await _auth_admin_request(request, "GET", "/clients")
 
@@ -1131,7 +1134,7 @@ def create_admin_router(manager_client: ManagerApiClient) -> APIRouter:
 
     @router.get("/admin/api/nodes")
     async def list_nodes(request: Request) -> Response:
-        if (forbidden := _require_scope(request, "admin:read")) is not None:
+        if (forbidden := _require_scope(request, "admin:fleet:read")) is not None:
             return forbidden
         return await _fleet_request(request, "GET", "/v1/fleet/nodes")
 
@@ -1184,7 +1187,7 @@ def create_admin_router(manager_client: ManagerApiClient) -> APIRouter:
         now, including an admin override applied via PUT /admin/api/limits (RM-56);
         circuit-breaker settings remain .env-only.
         """
-        if (forbidden := _require_scope(request, "admin:read")) is not None:
+        if (forbidden := _require_scope(request, "admin:policy:read")) is not None:
             return forbidden
         settings: Settings = request.app.state.settings
         return {
@@ -1249,7 +1252,7 @@ def create_admin_router(manager_client: ManagerApiClient) -> APIRouter:
     @router.get("/admin/api/limits")
     async def get_rate_limits(request: Request) -> Any:
         """Current effective limits plus what .env asked for — RM-56."""
-        if (forbidden := _require_scope(request, "admin:read")) is not None:
+        if (forbidden := _require_scope(request, "admin:policy:read")) is not None:
             return forbidden
         row = await db.get_rate_limit_config()
         return _limits_payload(request, is_overridden=row is not None)
@@ -1269,7 +1272,7 @@ def create_admin_router(manager_client: ManagerApiClient) -> APIRouter:
         Nothing here is a ceiling *forecast*. A row at 96% is a row that was
         at 96% when Redis was read, in a bucket that resets within the minute.
         """
-        if (forbidden := _require_scope(request, "admin:read")) is not None:
+        if (forbidden := _require_scope(request, "admin:policy:read")) is not None:
             return forbidden
         redis_client = getattr(request.app.state, "shared_redis", None)
         if redis_client is None:
@@ -1445,7 +1448,7 @@ def create_admin_router(manager_client: ManagerApiClient) -> APIRouter:
     @router.get("/admin/api/circuit-breaker")
     async def get_circuit_breaker_settings(request: Request) -> Any:
         """Current thresholds plus what .env asked for — RM-67."""
-        if (forbidden := _require_scope(request, "admin:read")) is not None:
+        if (forbidden := _require_scope(request, "admin:policy:read")) is not None:
             return forbidden
         row = await db.get_circuit_breaker_config()
         return _cb_payload(request, is_overridden=row is not None)
@@ -1527,7 +1530,7 @@ def create_admin_router(manager_client: ManagerApiClient) -> APIRouter:
         published endpoint: the dashboard no longer calls it, and removing it
         is a separate decision from replacing the page.
         """
-        if (forbidden := _require_scope(request, "admin:read")) is not None:
+        if (forbidden := _require_scope(request, "admin:principals:read")) is not None:
             return forbidden
         return {"sessions": await activity_tracker.snapshot()}
 
@@ -1659,7 +1662,7 @@ def create_admin_router(manager_client: ManagerApiClient) -> APIRouter:
         then the signals with something to compare against, then the trend,
         then who and on what.
         """
-        if (forbidden := _require_scope(request, "admin:read")) is not None:
+        if (forbidden := _require_scope(request, "admin:fleet:read")) is not None:
             return forbidden
 
         try:
@@ -1950,7 +1953,7 @@ def create_admin_router(manager_client: ManagerApiClient) -> APIRouter:
         practice is explicit that per-consumer series are high-cardinality, and
         LiteLLM does not even export end users to Prometheus by default.
         """
-        if (forbidden := _require_scope(request, "admin:read")) is not None:
+        if (forbidden := _require_scope(request, "admin:fleet:read")) is not None:
             return forbidden
         settings: Settings = request.app.state.settings
         endpoint_count = len(INFERENCE_ENDPOINT_SLUGS)
