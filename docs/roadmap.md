@@ -10014,3 +10014,54 @@ liveness.
 **Scope**: in — the requirement table, the two fields, the four-state row and the tally that
 answers the question in one line. Out — installing anything from the UI, performance, and which
 models fit (PRM-265).
+
+## PRM-272 — An assistant inside the dashboard
+
+**Why**: what this platform knows is spread across eleven pages and forty-six admin endpoints, and
+answering an ordinary operational question means knowing which one holds it. This week is the
+evidence: finding out why the login page was blank took reading `fleet.db` by hand, standing up a
+second gateway to compare against, and a port-by-port liveness sweep. Every fact in that
+diagnosis was already in the platform.
+
+**Three capabilities, and they are worth separating because only the third is hard:**
+
+1. **Answer** — read-only questions over data the admin API already serves. "Which nodes are not
+   answering", "what did Veritium spend this month", "why is gpt-oss returning 503".
+2. **Navigate** — land the operator on the page, and on the row. This is nearly built:
+   PRM-247's `focusLink()` already takes `?focus=<key>`, scrolls the element into view and rings
+   it, precisely so that "it is somewhere above" stops costing time.
+3. **Act** — restart an instance, cordon a node, stop a model. This is the one that needs a
+   decision before any code.
+
+**What already exists underneath**: the gateway proxies `tools`/`tool_calls` end to end, and
+PRM-257/PRM-258 fixed exactly that round-trip for `gpt-oss-20b` after Veritium's report — so the
+assistant can run on this platform's own model rather than calling out. Dogfooding, with an
+honest caveat: measured throughput is ~59 tok/s output at concurrency 1, so a multi-turn tool
+loop will feel slow, and that is a reason to keep the tool surface small rather than a reason not
+to build it.
+
+**The authorization model, decided 2026-10-24.** An assistant that acts is a principal that
+acts, and both halves were settled before any code:
+
+- *Its own principal, its own scopes* — it does **not** inherit the signed-in admin's. The reason
+  is traceability: when the audit trail says who restarted an instance, the answer has to
+  distinguish the human from the assistant, and an assistant borrowing the operator's identity
+  makes every one of its actions look like theirs. That is the opposite of what PRM-157's trail
+  exists for. It also means the assistant's reach is set deliberately rather than inherited from
+  whoever happens to be logged in — a grant an admin issues by hand, like every other credential
+  on this platform.
+- *Confirmation for deletions and critical actions only.* Everything else acts and is audited.
+  The line is drawn at what cannot be undone by doing it again: stopping and restarting an
+  instance is recoverable and asking each time would make the assistant slower than the button it
+  replaces; deleting a node, a model or a principal is not.
+
+Two consequences worth stating now, because they are the parts that will bite. The assistant's
+principal needs a role — and `role` today sets only a token TTL (PRM-268), so this is the second
+caller asking that question. And "critical" has to be a list in code, not a judgement the model
+makes per request: an assistant deciding for itself what counts as destructive is the same defect
+as a tier whose ceiling nothing enforces.
+
+**Scope**: in — the assistant surface in the admin panel, the read and navigate tools, and the
+authorization model for acting. Out — anything in the separate Web Chat UI (`ui:chat`, spec 013),
+which is a product surface for end users and not this; creating credentials, which stays a human
+admin's action under any design; and acting on another operator's behalf.
