@@ -616,6 +616,35 @@ def create_app(
         # through every caller.
         app.state.manager_client = manager_client
         app.include_router(create_admin_router(manager_client))
+
+        # PRM-272: the assistant's tool loop lives here because its principal
+        # has a secret, and a secret cannot be shipped to a page. It reaches
+        # the admin API over loopback with its own bearer token, so scopes,
+        # rate limits and PRM-157's audit trail all apply to it unchanged —
+        # and the trail names the assistant rather than the operator asking.
+        if settings.assistant_enabled:
+            from .assistant.loop import Assistant
+
+            assistant = Assistant(
+                client_id=settings.assistant_client_id,
+                client_secret=settings.assistant_client_secret,
+                auth_token_url=settings.auth_service_token_url,
+                base_url=settings.assistant_base_url,
+                model=settings.assistant_model,
+                auth_tls_verify=settings.auth_service_tls_verify,
+            )
+            app.state.assistant = assistant
+            if absent := assistant.missing():
+                logger.warning(
+                    "assistant.unconfigured",
+                    extra={
+                        "missing": absent,
+                        "detail": (
+                            "the assistant is enabled and has no credential of its own. "
+                            "A human admin issues it; this gateway cannot mint one."
+                        ),
+                    },
+                )
         # RM-60: billing config CRUD — the enforcement hooks in router.py are
         # always active regardless of this flag; only the admin UI to
         # configure them is gated (matching the rest of this dashboard).

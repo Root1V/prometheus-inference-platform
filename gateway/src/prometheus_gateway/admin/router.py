@@ -1132,6 +1132,68 @@ def create_admin_router(manager_client: ManagerApiClient) -> APIRouter:
             return _proxy_error_response(request, exc)
         return _passthrough(resp)
 
+    # ── Dashboard assistant — PRM-272 ────────────────────────────────────────
+    @router.post("/admin/api/assistant/chat")
+    async def assistant_chat(body: dict[str, Any], request: Request) -> Response:
+        """Ask the assistant. The tool loop runs here, never in the browser.
+
+        The assistant holds its own principal, so it has a `client_secret`, and
+        a secret cannot be shipped to a page. The operator's own `admin:fleet:read`
+        is still required to *reach* this endpoint — the assistant's grant says
+        what it may read, and this says who may ask it.
+        """
+        if (forbidden := _require_scope(request, "admin:fleet:read")) is not None:
+            return forbidden
+
+        settings: Settings = request.app.state.settings
+        if not settings.assistant_enabled:
+            return _problem(
+                request,
+                404,
+                "not-found",
+                "Not Found",
+                "The assistant is not enabled on this deployment.",
+            )
+
+        assistant = getattr(request.app.state, "assistant", None)
+        if assistant is None or not assistant.configured():
+            absent = assistant.missing() if assistant is not None else ["ASSISTANT_CLIENT_ID"]
+            return _problem(
+                request,
+                503,
+                "assistant-unconfigured",
+                "Assistant Unconfigured",
+                "The assistant is enabled but has no credential of its own: "
+                f"{', '.join(absent)} not set. A human admin issues it; this "
+                "gateway cannot mint one.",
+            )
+
+        messages = body.get("messages")
+        if not isinstance(messages, list) or not messages:
+            return _problem(
+                request,
+                400,
+                "invalid-request",
+                "Invalid Request",
+                "messages must be a non-empty list.",
+            )
+
+        try:
+            reply = await assistant.ask(messages)
+        except Exception as exc:
+            return _proxy_error_response(request, exc)
+
+        return JSONResponse(
+            {
+                "content": reply.content,
+                "tool_calls": reply.tool_calls_made,
+                # Returned, not only logged: on this hardware the first question
+                # about the assistant is whether it answers fast enough to use.
+                "rounds": reply.rounds,
+                "elapsed_s": reply.elapsed_s,
+            }
+        )
+
     @router.get("/admin/api/nodes")
     async def list_nodes(request: Request) -> Response:
         if (forbidden := _require_scope(request, "admin:fleet:read")) is not None:
