@@ -10065,3 +10065,53 @@ as a tier whose ceiling nothing enforces.
 authorization model for acting. Out — anything in the separate Web Chat UI (`ui:chat`, spec 013),
 which is a product surface for end users and not this; creating credentials, which stays a human
 admin's action under any design; and acting on another operator's behalf.
+
+## PRM-273 — Embedding models on llama.cpp die under sustained load
+
+**Not work to do. A diagnosis to have on hand if it recurs**, written while it was reproducible
+rather than reconstructed later from a gap in the logs.
+
+**What happens**: `qwen3-embedding` (Qwen3-Embedding-0.6B Q8_0, llama.cpp, Metal) dies without
+warning under Veritium's load. The crash reports name it exactly:
+
+```
+BUG IN CLIENT OF LIBMALLOC: memory corruption of free block
+EXC_BREAKPOINT / SIGTRAP
+  libsystem_malloc   _xzm_xzone_malloc_freelist_outlined
+  libc++abi          operator new(unsigned long)
+  libggml-metal      ggml_metal_op::ggml_metal_op(...)
+  libggml-metal      ggml_metal_graph_compute
+  libllama           llama_decode
+```
+
+Heap corruption in ggml's Metal path, caught by macOS's malloc guard, which aborts immediately —
+so the instance log ends mid-task with no final line. That is how to tell it apart from a stop:
+a clean shutdown writes `cleaning up before exit...` and this does not.
+
+**Upstream has it and will not fix it.** `ggml-org/llama.cpp#28357` is the same model, the same
+macOS 26, the same backend; `#18568` is the same class with `nomic-embed` after ~400 embeddings.
+Both are closed without a fix — one by a stale bot on 2026-10-19, one by a maintainer a day after
+it opened. #28357 makes the point that matters: the crashing frame is not where the bug is, only
+where libmalloc first notices, which is why our trace (allocation during compute) and theirs
+(free during teardown) differ while the defect is one.
+
+**What this platform's own data adds, and it narrows it.** Three `llama-server` processes have
+been up 18 days here without incident — idle ones. `gpt-oss` and the llama.cpp reranker show
+`cleaning up before exit` at every restart, so they were stopped, not killed. Only the embedding
+model dies hard, and only while serving. **This is not "llama.cpp with Metal is unstable"; it is
+embedding models under sustained load**, which is exactly what both upstream issues are about.
+
+**If it happens again, in the order worth trying:**
+
+1. **Move the model to TEI.** `text-embeddings-router` is already running here for the reranker —
+   a different binary in a different language that does not share `ggml-metal` at all. 9.5 days up,
+   no crash reports. PRM-179 added it for precisely this class of model.
+2. **`--device none`** on that instance. Note that `-ngl 0` is *not* enough: #18568 reports Metal
+   initialising regardless, and only a build without Metal support helped them. `--device none` is
+   a stronger lever than what they tried, but it is untested here.
+3. **A scheduled restart** — a mitigation and not a fix; the manager can already restart an
+   instance.
+4. **Report upstream.** We hold something the two closed issues do not: a clean trace naming
+   `ggml_metal_op` in the *compute* path. That is new information and might reopen the thread.
+
+**Scope**: nothing is being built. If this is picked up, item 1 is the work.
