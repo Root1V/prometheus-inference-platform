@@ -48,6 +48,10 @@ _ROUTING_PROBLEMS: dict[int, tuple[str, str]] = {
     405: ("method-not-allowed", "Method Not Allowed"),
 }
 
+# PRM-275: module-level so a test can point the mount at a fixture build — the
+# real directory is gitignored build output and does not exist in CI.
+_ADMIN_STATIC_DIR = Path(__file__).parent / "admin" / "static"
+
 
 def create_app(
     settings: Settings | None = None,
@@ -655,20 +659,33 @@ def create_app(
                 f"No admin endpoint at {request.method} /admin/api/{rest}.",
             )
 
-        _admin_static_dir = Path(__file__).parent / "admin" / "static"
-        if _admin_static_dir.is_dir():
+        if _ADMIN_STATIC_DIR.is_dir():
+            # PRM-275: index.html went out with no Cache-Control, so browsers
+            # cached it heuristically and kept loading the previous build's
+            # hashed bundle after `npm run build` until a hard reload. The HTML
+            # revalidates on every load; assets/ is content-hashed by Vite, so a
+            # changed file is a new URL and the old one can be cached forever.
+            class _AdminStaticFiles(StaticFiles):
+                async def get_response(self, path: str, scope: Any) -> Response:
+                    response = await super().get_response(path, scope)
+                    if path.startswith("assets/"):
+                        response.headers["Cache-Control"] = "public, max-age=31536000, immutable"
+                    else:
+                        response.headers["Cache-Control"] = "no-cache"
+                    return response
+
             # html=True serves index.html for /admin and /admin/ — the SPA uses
             # hash-based routing (/admin/#/instances) so no server-side
             # catch-all is needed for client-side routes.
             app.mount(
                 "/admin",
-                StaticFiles(directory=str(_admin_static_dir), html=True),
+                _AdminStaticFiles(directory=str(_ADMIN_STATIC_DIR), html=True),
                 name="admin-static",
             )
         else:
             logger.warning(
                 "admin.static_missing",
-                detail=f"ADMIN_DASHBOARD_ENABLED=true but {_admin_static_dir} does not exist — "
+                detail=f"ADMIN_DASHBOARD_ENABLED=true but {_ADMIN_STATIC_DIR} does not exist — "
                 "build the SPA first (see gateway/admin-ui/README.md).",
             )
     # When admin_dashboard_enabled=False, all /admin/* paths fall through to

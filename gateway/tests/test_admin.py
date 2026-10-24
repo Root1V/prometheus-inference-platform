@@ -1337,3 +1337,40 @@ async def test_login_does_not_let_the_caller_choose_its_own_address(gw):
     assert "203.0.113.77" not in forwarded, (
         f"the caller's own X-Forwarded-For reached the auth-service: {forwarded!r}"
     )
+
+
+# ── PRM-275: the SPA shell revalidates, the hashed bundle does not ────────────
+
+
+@pytest.fixture
+async def gw_with_spa(admin_settings, tmp_path, monkeypatch):
+    """A gateway serving a stand-in build — the real one is gitignored output."""
+    from prometheus_gateway import main
+    from prometheus_gateway.models.registry import ModelRegistry
+
+    static = tmp_path / "static"
+    (static / "assets").mkdir(parents=True)
+    (static / "index.html").write_text('<script src="/admin/assets/index-abc123.js"></script>')
+    (static / "assets" / "index-abc123.js").write_text("console.log(1)")
+    monkeypatch.setattr(main, "_ADMIN_STATIC_DIR", static)
+
+    registry = ModelRegistry.__new__(ModelRegistry)
+    registry._models = {}
+    app = main.create_app(settings=admin_settings, registry=registry)
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
+        yield c
+
+
+async def test_spa_shell_revalidates_on_every_load(gw_with_spa):
+    """Heuristically cached, index.html kept pointing at the previous build's
+    bundle after `npm run build` until a hard reload."""
+    r = await gw_with_spa.get("/admin/")
+    assert r.status_code == 200
+    assert "index-abc123.js" in r.text
+    assert r.headers.get("cache-control") == "no-cache"
+
+
+async def test_hashed_asset_is_cached_for_good(gw_with_spa):
+    r = await gw_with_spa.get("/admin/assets/index-abc123.js")
+    assert r.status_code == 200
+    assert r.headers.get("cache-control") == "public, max-age=31536000, immutable"

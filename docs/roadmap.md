@@ -10065,3 +10065,15 @@ as a tier whose ceiling nothing enforces.
 authorization model for acting. Out — anything in the separate Web Chat UI (`ui:chat`, spec 013),
 which is a product surface for end users and not this; creating credentials, which stays a human
 admin's action under any design; and acting on another operator's behalf.
+
+## PRM-275 — The dashboard reloads into the build that is there
+
+**Why**: the gateway served the admin SPA's `index.html` with no `Cache-Control`, so browsers
+cached it heuristically. After `npm run build`, a browser that had the dashboard open kept loading
+the old `index.html` and with it the previous hashed bundle until a hard reload — on 2026-10-24
+curl showed the new hash while the browser executed an older one.
+
+**Scope**: in — the `/admin` static mount: HTML responses (`index.html` and the `html=True`
+fallbacks) send `no-cache` so they revalidate on every load; `/admin/assets/*`, content-hashed by
+Vite, sends `public, max-age=31536000, immutable`. Out — `/ui/static` (the Web Chat UI), whose
+assets are not content-hashed.
