@@ -1,7 +1,6 @@
 import { ArrowUp, PanelRightClose, Sparkles, SquarePen } from "lucide-react";
 import { useEffect, useRef, useState, type FormEvent } from "react";
 import Markdown from "react-markdown";
-import { useLocation } from "react-router-dom";
 import remarkGfm from "remark-gfm";
 import {
   askAssistant,
@@ -66,6 +65,22 @@ const PROSE = [
   "[&_td]:border-b [&_td]:border-border/60 [&_td]:px-2 [&_td]:py-1.5 [&_td]:align-top",
 ].join(" ");
 
+/**
+ * The route the operator is on at the moment they press Enter, so "here"
+ * follows them between pages.
+ *
+ * Read from the URL, not from `useLocation()`. React Router applies a
+ * navigation as a transition, and React holds a transition back while urgent
+ * updates keep arriving — every keystroke is one. Typing straight after
+ * changing page therefore rendered, and sent, the page before: measured, the
+ * question asked on Billing went out as /nodes and the one asked on Nodes as
+ * /billing, and the model answered faithfully about the wrong page. The hash
+ * changes the instant the link is followed.
+ */
+function currentPage(): string {
+  return window.location.hash.replace(/^#/, "").split("?")[0] || "/";
+}
+
 /** Rendered only for a signed-in operator, so signing out unmounts it and the
  *  conversation goes with the session rather than outliving it in memory. */
 export function AssistantPanel() {
@@ -80,7 +95,6 @@ function Panel() {
   const [pendingSince, setPendingSince] = useState<number | null>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
-  const { pathname } = useLocation();
   const pending = pendingSince !== null;
 
   useEffect(() => {
@@ -117,8 +131,7 @@ function Panel() {
     setDraft("");
     setPendingSince(Date.now());
     try {
-      // Where the operator is *now*, so "here" follows them between pages.
-      const reply = await askAssistant(history, pathname);
+      const reply = await askAssistant(history, currentPage());
       setTurns((t) => [...t, { role: "assistant", content: reply.content, reply }]);
     } catch (error) {
       setTurns((t) => [...t, { role: "error", content: getErrorMessage(error) }]);
