@@ -10066,6 +10066,15 @@ authorization model for acting. Out — anything in the separate Web Chat UI (`u
 which is a product surface for end users and not this; creating credentials, which stays a human
 admin's action under any design; and acting on another operator's behalf.
 
+**Where it lives, decided 2026-10-24**: a side panel available on every page (⌘K), not a page of
+its own — the pattern of Copilot, Datadog's Bits AI and Grafana's assistant. The reason is the
+second capability: navigating means following a link to the row being discussed, and on a
+dedicated page that link would close the conversation that produced it. The panel is mounted
+outside the routes and is non-modal, so the page underneath changes while it stays open.
+
+**Its grant**: `admin:fleet:read`, `inference:read` and `model:<slug>` — the fleet family of
+PRM-274, which is exactly what its four tools read, rather than `admin:read`.
+
 ## PRM-273 — Embedding models on llama.cpp die under sustained load
 
 **Not work to do. A diagnosis to have on hand if it recurs**, written while it was reproducible
