@@ -1179,7 +1179,10 @@ def create_admin_router(manager_client: ManagerApiClient) -> APIRouter:
             )
 
         try:
-            reply = await assistant.ask(messages)
+            # Which page the operator is on. Anything but a string is ignored,
+            # and the loop drops a string it does not recognise.
+            page = body.get("page")
+            reply = await assistant.ask(messages, page=page if isinstance(page, str) else None)
         except Exception as exc:
             return _proxy_error_response(request, exc)
 

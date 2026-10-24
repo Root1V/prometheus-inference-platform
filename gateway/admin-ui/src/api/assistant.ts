@@ -16,11 +16,16 @@ export interface AssistantReply {
   elapsed_s: number;
 }
 
+/** `page` is the route the operator is on. The gateway maps it to a fixed
+ *  description and drops one it does not know, so it is a key, never text that
+ *  reaches the model as written. */
 export async function askAssistant(
   messages: AssistantMessage[],
+  page: string,
 ): Promise<AssistantReply> {
   const { data } = await apiClient.post<AssistantReply>("/assistant/chat", {
     messages,
+    page,
   });
   return data;
 }

@@ -51,7 +51,74 @@ can do instead: "I can read that instance's log" rather than a function name.
 
 You can only read. If the operator asks you to change, restart, stop or delete \
 anything, tell them you cannot do that yet and point them at the page where \
-they can."""
+they can.
+
+Always answer in Spanish, whatever language the question or the tool results \
+are in. Keep identifiers — node names, model ids, scopes — exactly as written."""
+
+# The dashboard's pages, so the assistant knows where the operator is standing
+# and where to send them. Keyed by route: the panel sends only the route, and
+# only text from this table ever reaches the system prompt. A route it does not
+# know is dropped, never quoted — otherwise the browser could write
+# instructions into the prompt through a field meant to say which page is open.
+#
+# `readable` is whether the four tools can see that page's data. Without it the
+# assistant, asked "why is the cost up?" on Billing, would answer from nothing.
+PAGES: dict[str, tuple[str, str, bool]] = {
+    "/": (
+        "Overview",
+        "today's requests, tokens and cost against yesterday, what needs attention, a 14-day trend",
+        False,
+    ),
+    "/instances": (
+        "Instances",
+        "every model instance on every node, its state, and start/stop/restart",
+        True,
+    ),
+    "/models": (
+        "Models",
+        "the model catalog per node and downloading models from Hugging Face",
+        False,
+    ),
+    "/nodes": (
+        "Nodes",
+        "registered nodes, whether they answer, their hardware and inference engines",
+        True,
+    ),
+    "/playground": ("Playground", "trying a model out by chatting with it", False),
+    "/usage": ("Usage", "token usage per client", False),
+    "/billing": ("Billing", "prices, currency rates, spend caps and the usage export", False),
+    "/limits": (
+        "Limits",
+        "rate-limit tiers, which ceiling is refusing right now, the circuit breaker",
+        False,
+    ),
+    "/activity": (
+        "Activity",
+        "who is calling the gateway now and recently, and their end users",
+        True,
+    ),
+    "/users": ("Users", "clients and their credentials and scopes", False),
+}
+
+
+def system_prompt(page: str | None = None) -> str:
+    """The fixed prompt, the page map, and where the operator is right now."""
+    lines = [SYSTEM_PROMPT, "", "The dashboard's pages:"]
+    lines += [f"- {name} ({path}): {what}" for path, (name, what, _) in PAGES.items()]
+    if page in PAGES:
+        name, what, readable = PAGES[page]
+        lines += [
+            "",
+            f"The operator is on the {name} page ({page}) right now: {what}. "
+            'When they say "here" or "this page", that is what they mean.',
+        ]
+        if not readable:
+            lines.append(
+                "Your tools cannot read this page's data. Say so plainly instead "
+                "of guessing, and say what you can read."
+            )
+    return "\n".join(lines)
 
 
 @dataclass
@@ -167,9 +234,12 @@ class Assistant:
             return json.dumps({"error": f"{name} failed: {exc}"})
         return json.dumps(result, default=str)
 
-    async def ask(self, messages: list[dict[str, Any]]) -> AssistantReply:
+    async def ask(self, messages: list[dict[str, Any]], page: str | None = None) -> AssistantReply:
         started = time.monotonic()
-        convo: list[dict[str, Any]] = [{"role": "system", "content": SYSTEM_PROMPT}, *messages]
+        convo: list[dict[str, Any]] = [
+            {"role": "system", "content": system_prompt(page)},
+            *messages,
+        ]
         called: list[str] = []
 
         async with httpx.AsyncClient(

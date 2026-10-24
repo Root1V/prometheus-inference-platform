@@ -1,6 +1,7 @@
-import { ArrowUp, Sparkles, SquarePen, X } from "lucide-react";
+import { ArrowUp, PanelRightClose, Sparkles, SquarePen } from "lucide-react";
 import { useEffect, useRef, useState, type FormEvent } from "react";
 import Markdown from "react-markdown";
+import { useLocation } from "react-router-dom";
 import remarkGfm from "remark-gfm";
 import {
   askAssistant,
@@ -28,12 +29,13 @@ type Turn =
 type Spoken = Exclude<Turn, { role: "error" }>;
 
 // Questions its four tools can actually answer. An example it cannot answer
-// would be the first thing an operator clicks.
+// would be the first thing an operator clicks. In Spanish, because that is
+// the language it answers in.
 const EXAMPLES = [
-  "Which nodes are not answering?",
-  "What is running right now, and on which node?",
-  "Who has been calling the gateway recently?",
-  "Has any instance logged an error recently?",
+  "¿Qué nodos no están respondiendo?",
+  "¿Qué está corriendo ahora y en qué nodo?",
+  "¿Quién ha estado llamando al gateway últimamente?",
+  "¿Alguna instancia registró un error reciente?",
 ];
 
 // What each tool read, in the operator's words rather than the function name.
@@ -78,6 +80,7 @@ function Panel() {
   const [pendingSince, setPendingSince] = useState<number | null>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
+  const { pathname } = useLocation();
   const pending = pendingSince !== null;
 
   useEffect(() => {
@@ -114,7 +117,8 @@ function Panel() {
     setDraft("");
     setPendingSince(Date.now());
     try {
-      const reply = await askAssistant(history);
+      // Where the operator is *now*, so "here" follows them between pages.
+      const reply = await askAssistant(history, pathname);
       setTurns((t) => [...t, { role: "assistant", content: reply.content, reply }]);
     } catch (error) {
       setTurns((t) => [...t, { role: "error", content: getErrorMessage(error) }]);
@@ -180,11 +184,13 @@ function Panel() {
           <button
             type="button"
             onClick={() => setOpen(false)}
-            aria-label="Close the assistant"
-            title="Close (Esc)"
+            aria-label="Collapse to the button"
+            title="Collapse to the button (Esc) — the conversation is kept"
             className="rounded-md p-1.5 text-text-muted hover:bg-background hover:text-text"
           >
-            <X size={16} />
+            {/* Not an X: collapsing keeps the conversation, and an X reads as
+                throwing it away. "New conversation" is the one that does. */}
+            <PanelRightClose size={16} />
           </button>
         </div>
       </header>
@@ -245,7 +251,7 @@ function Panel() {
           </button>
         </div>
         <p className="mt-1.5 px-1 text-[11px] text-text-muted">
-          Enter to send · Shift+Enter for a new line · Esc to close
+          Enter to send · Shift+Enter for a new line · Esc to collapse
         </p>
       </form>
     </aside>
