@@ -10040,19 +10040,26 @@ honest caveat: measured throughput is ~59 tok/s output at concurrency 1, so a mu
 loop will feel slow, and that is a reason to keep the tool surface small rather than a reason not
 to build it.
 
-**The decision this item is blocked on, and it is not a small one.** An assistant that acts is a
-principal that acts. Two questions, neither answered here:
+**The authorization model, decided 2026-10-24.** An assistant that acts is a principal that
+acts, and both halves were settled before any code:
 
-- *Whose authority?* Does it act as the signed-in admin, inheriting exactly their scopes — so it
-  can never do what they could not — or as its own principal with its own grant? The first is the
-  conservative reading of this platform's standing rule that only a human admin issues
-  credentials; the second is easier to audit in `argus` because the actor is named.
-- *What needs confirming?* Every side-effecting call, or only the destructive ones? PRM-157's
-  audit trail records what happened; it does not ask first. A restart an operator did not intend
-  is cheap to undo and expensive to not notice.
+- *Its own principal, its own scopes* — it does **not** inherit the signed-in admin's. The reason
+  is traceability: when the audit trail says who restarted an instance, the answer has to
+  distinguish the human from the assistant, and an assistant borrowing the operator's identity
+  makes every one of its actions look like theirs. That is the opposite of what PRM-157's trail
+  exists for. It also means the assistant's reach is set deliberately rather than inherited from
+  whoever happens to be logged in — a grant an admin issues by hand, like every other credential
+  on this platform.
+- *Confirmation for deletions and critical actions only.* Everything else acts and is audited.
+  The line is drawn at what cannot be undone by doing it again: stopping and restarting an
+  instance is recoverable and asking each time would make the assistant slower than the button it
+  replaces; deleting a node, a model or a principal is not.
 
-Nothing is built until those are settled — options and a recommendation first, as with every
-design decision on this platform.
+Two consequences worth stating now, because they are the parts that will bite. The assistant's
+principal needs a role — and `role` today sets only a token TTL (PRM-268), so this is the second
+caller asking that question. And "critical" has to be a list in code, not a judgement the model
+makes per request: an assistant deciding for itself what counts as destructive is the same defect
+as a tier whose ceiling nothing enforces.
 
 **Scope**: in — the assistant surface in the admin panel, the read and navigate tools, and the
 authorization model for acting. Out — anything in the separate Web Chat UI (`ui:chat`, spec 013),
