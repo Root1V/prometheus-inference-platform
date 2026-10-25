@@ -10072,8 +10072,12 @@ second capability: navigating means following a link to the row being discussed,
 dedicated page that link would close the conversation that produced it. The panel is mounted
 outside the routes and is non-modal, so the page underneath changes while it stays open.
 
-**Its grant**: `admin:fleet:read`, `inference:read` and `model:<slug>` — the fleet family of
-PRM-274, which is exactly what its four tools read, rather than `admin:read`.
+**Its grant, widened 2026-10-25**: `admin:fleet:read`, `admin:policy:read`,
+`admin:billing:read`, `admin:audit:read`, `inference:read` and `model:<slug>` — four of PRM-274's
+five read families, one per kind of question its ten tools answer (the fleet, limits, spend,
+who changed what). Never `admin:read`, their parent, and never `admin:principals:read`: client
+*names* were the reason to want it, and the gateway resolves those itself and hands out only the
+name (`admin/names.py`), so every principal's email and scopes stay out of a leaked secret's reach.
 
 ## PRM-273 — Embedding models on llama.cpp die under sustained load
 
@@ -10156,3 +10160,8 @@ The parent scope is also this item's one failure mode, and it is the reason for 
 than a comment: an endpoint written against `admin:read` still works, raises nothing and returns
 no wrong answer — it just quietly grants all five families again. `test_admin_scopes.py` fails the
 push when any guard under the admin routers asks for the parent.
+
+**Known overlap, found 2026-10-25**: `fleet` is not as clean as the names say. Activity and
+Overview carry each client's cost for the day — the Activity page needs it to show pressure against
+spend caps — and Overview's recent changes carry the acting admin's email. Left as is on purpose;
+a reader of `admin:fleet:read` should be assumed to see today's spend and who changed something.

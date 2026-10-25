@@ -31,10 +31,11 @@ type Spoken = Exclude<Turn, { role: "error" }>;
 // would be the first thing an operator clicks. In Spanish, because that is
 // the language it answers in.
 const EXAMPLES = [
-  "¿Qué nodos no están respondiendo?",
-  "¿Qué está corriendo ahora y en qué nodo?",
-  "¿Quién ha estado llamando al gateway últimamente?",
-  "¿Alguna instancia registró un error reciente?",
+  "¿Algo necesita atención ahora mismo?",
+  "¿Quién ha estado llamando al gateway hoy?",
+  "¿Cuánto llevamos gastado este mes y quién gasta más?",
+  "¿Algún cliente está cerca de un límite?",
+  "¿Quién cambió algo hoy?",
 ];
 
 // What each tool read, in the operator's words rather than the function name.
@@ -43,6 +44,12 @@ const READ: Record<string, string> = {
   list_instances: "instances",
   list_activity: "activity",
   tail_instance_log: "an instance log",
+  get_overview: "the overview",
+  list_models: "the model catalog",
+  check_limits: "rate limits",
+  get_spend: "the bill",
+  list_prices: "prices",
+  list_audit: "the audit trail",
 };
 
 const MOD =
@@ -179,8 +186,8 @@ function Panel() {
             Assistant
           </h2>
           <p className="mt-0.5 text-xs text-text-muted">
-            Reads nodes, instances, activity and instance logs. It cannot
-            change anything yet.
+            Reads the fleet, traffic, limits, spend and the audit trail. It
+            cannot change anything yet.
           </p>
         </div>
         <div className="flex shrink-0 items-center gap-1">

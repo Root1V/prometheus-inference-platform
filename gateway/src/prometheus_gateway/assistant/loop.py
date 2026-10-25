@@ -36,6 +36,10 @@ _REQUEST_TIMEOUT_S = 180.0
 #: answer — with one spare.
 MAX_TOOL_ROUNDS = 4
 
+#: The read families its tools touch: fleet (nodes, instances, models, activity,
+#: overview, logs), policy (limits), billing (spend, prices, tiers) and audit.
+_READ_SCOPES = "admin:fleet:read admin:policy:read admin:billing:read admin:audit:read"
+
 SYSTEM_PROMPT = """You are the operations assistant for Prometheus, a self-hosted LLM \
 inference platform. You help an administrator understand and operate it.
 
@@ -68,7 +72,7 @@ PAGES: dict[str, tuple[str, str, bool]] = {
     "/": (
         "Overview",
         "today's requests, tokens and cost against yesterday, what needs attention, a 14-day trend",
-        False,
+        True,
     ),
     "/instances": (
         "Instances",
@@ -78,7 +82,7 @@ PAGES: dict[str, tuple[str, str, bool]] = {
     "/models": (
         "Models",
         "the model catalog per node and downloading models from Hugging Face",
-        False,
+        True,
     ),
     "/nodes": (
         "Nodes",
@@ -86,18 +90,19 @@ PAGES: dict[str, tuple[str, str, bool]] = {
         True,
     ),
     "/playground": ("Playground", "trying a model out by chatting with it", False),
-    "/usage": ("Usage", "token usage per client", False),
-    "/billing": ("Billing", "prices, currency rates, spend caps and the usage export", False),
+    "/usage": ("Usage", "token usage per client", True),
+    "/billing": ("Billing", "prices, currency rates, spend caps and the usage export", True),
     "/limits": (
         "Limits",
         "rate-limit tiers, which ceiling is refusing right now, the circuit breaker",
-        False,
+        True,
     ),
     "/activity": (
         "Activity",
         "who is calling the gateway now and recently, and their end users",
         True,
     ),
+    # Names only, by design: emails and scopes stay out of its reach.
     "/users": ("Users", "clients and their credentials and scopes", False),
 }
 
@@ -119,6 +124,17 @@ def system_prompt(page: str | None = None) -> str:
                 "of guessing, and say what you can read."
             )
     return "\n".join(lines)
+
+
+class AssistantCredentialError(Exception):
+    """auth-service refused the assistant's own credential.
+
+    Not an outage, and not a node: a grant a human admin fixes on the Users
+    page. It surfaced as "502 — the manager node returned an error … 400" the
+    first time the assistant asked for a scope its credential did not hold,
+    which named the wrong component and gave no way forward. Every change to
+    what the assistant reads goes through this, so it says which scopes.
+    """
 
 
 @dataclass
@@ -182,12 +198,13 @@ class Assistant:
                 "grant_type": "client_credentials",
                 "client_id": self._client_id,
                 "client_secret": self._client_secret,
-                # Exactly what it needs and no more — `admin:fleet:read` and
-                # not `admin:read`, which is the parent of all five read scopes
-                # and would hand a leaked secret every principal's scopes and
-                # emails and every client's billing alongside the fleet. The
-                # four tools read nodes, instances, activity and instance logs;
-                # all four live in the fleet family (PRM-274).
+                # Exactly what its tools read and no more: four of the five read
+                # families (PRM-274), and never `admin:read`, their parent.
+                # What is left out is `admin:principals:read` — every
+                # principal's email and scopes. It was granted to give the
+                # assistant client *names*, and names come from the gateway
+                # instead (admin/names.py), so the credential inventory stays
+                # out of reach of a secret that could leak.
                 #
                 # `model:<slug>` is not optional: this gateway authorises
                 # inference per model, so a token with `inference:read` alone is
@@ -195,9 +212,21 @@ class Assistant:
                 # the running stack rather than assumed. It is built from
                 # `assistant_model` so pointing the assistant at a different
                 # model cannot leave the scope naming the old one.
-                "scope": f"admin:fleet:read inference:read model:{self._model}",
+                "scope": f"{_READ_SCOPES} inference:read model:{self._model}",
             },
         )
+        # 400 is a scope the credential does not hold, 401 a wrong or revoked
+        # secret. auth-service names which in `error_description`.
+        if resp.status_code in (400, 401):
+            try:
+                problem = resp.json()
+            except ValueError:
+                problem = {}
+            raise AssistantCredentialError(
+                problem.get("error_description")
+                or problem.get("error")
+                or f"{resp.status_code} from the token endpoint"
+            )
         resp.raise_for_status()
         body = resp.json()
         self._token = str(body["access_token"])

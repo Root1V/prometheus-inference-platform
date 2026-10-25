@@ -77,6 +77,7 @@ from fastapi import APIRouter, Request, Response
 from fastapi.responses import JSONResponse
 
 from .. import audit, billing, db, pricing, rate_limits, traffic_split
+from ..assistant.loop import AssistantCredentialError
 from ..budget import resolve_client_limits
 from ..rate_limit_middleware import INFERENCE_ENDPOINT_SLUGS
 from ..rate_limiter import PLATFORM_IDENTITY, RateLimiter
@@ -84,6 +85,7 @@ from ..config import Settings
 from ..router import _problem
 from ..telemetry import ACTION_LABELS as telemetry_actions
 from ..telemetry import activity_tracker, get_logger, metrics_store
+from .names import client_names
 from .client import _CONTROL_TIMEOUT_S, ManagerApiClient
 from .nodes_client import fetch_nodes
 
@@ -434,6 +436,7 @@ def create_admin_router(manager_client: ManagerApiClient) -> APIRouter:
             )
         actor = request.query_params.get("actor_client_id")
         events = await db.list_audit_events(limit=limit, actor_client_id=actor)
+        names = await client_names(request)
         return {
             "events": [
                 {
@@ -441,6 +444,7 @@ def create_admin_router(manager_client: ManagerApiClient) -> APIRouter:
                     "at": e.at.isoformat() if e.at else None,
                     "actor": {
                         "client_id": e.actor_client_id,
+                        "name": names.get(e.actor_client_id or ""),
                         "user_id": e.actor_user_id,
                         "email": e.actor_email,
                     },
@@ -1183,6 +1187,15 @@ def create_admin_router(manager_client: ManagerApiClient) -> APIRouter:
             # and the loop drops a string it does not recognise.
             page = body.get("page")
             reply = await assistant.ask(messages, page=page if isinstance(page, str) else None)
+        except AssistantCredentialError as exc:
+            return _problem(
+                request,
+                503,
+                "assistant-credential",
+                "Assistant Credential Refused",
+                f"auth-service refused the assistant's own credential: {exc}. "
+                "A human admin grants it on the Users page; this gateway cannot.",
+            )
         except Exception as exc:
             return _proxy_error_response(request, exc)
 
@@ -1377,6 +1390,7 @@ def create_admin_router(manager_client: ManagerApiClient) -> APIRouter:
                 except Exception:  # pragma: no cover — tier read is advisory
                     tiers[identity] = None
 
+        names = await client_names(request)
         rows = []
         for counter in counters:
             layer = rate_limits.counter_layer(counter["identity"], counter["endpoint"])
@@ -1391,6 +1405,9 @@ def create_admin_router(manager_client: ManagerApiClient) -> APIRouter:
             rows.append(
                 {
                     **counter,
+                    # None for the platform and endpoint layers, whose identity
+                    # is not a client.
+                    "name": names.get(counter["identity"]),
                     "layer": layer,
                     # PRM-234: and which of the three it is, from the server's
                     # own ordering — the page should not be counting layers.
@@ -1730,6 +1747,8 @@ def create_admin_router(manager_client: ManagerApiClient) -> APIRouter:
         if (forbidden := _require_scope(request, "admin:fleet:read")) is not None:
             return forbidden
 
+        names = await client_names(request)
+
         try:
             days = int(request.query_params.get("days", _OVERVIEW_DAYS))
         except ValueError:
@@ -1809,15 +1828,16 @@ def create_admin_router(manager_client: ManagerApiClient) -> APIRouter:
             for alert in await billing.build_alerts_listing(redis_client):
                 cap = alert.get("monthly_spend_cap_usd")
                 spend = alert.get("spend_usd") or 0.0
+                who = names.get(alert["client_id"], alert["client_id"])
                 percent = round(spend / cap * 100, 1) if cap else None
                 attention.append(
                     {
                         "kind": "budget",
                         "severity": "critical" if percent and percent >= 100 else "warning",
                         "what": (
-                            f"{alert['client_id']} at {percent}% of its monthly cap"
+                            f"{who} at {percent}% of its monthly cap"
                             if percent is not None
-                            else f"{alert['client_id']} crossed a spend threshold"
+                            else f"{who} crossed a spend threshold"
                         ),
                         "where": "/#/billing",
                     }
@@ -1862,6 +1882,7 @@ def create_admin_router(manager_client: ManagerApiClient) -> APIRouter:
             movers.append(
                 {
                     **row,
+                    "name": names.get(row["client_id"]),
                     "request_count_yesterday": was,
                     "percent": round((now - was) / was * 100, 1) if was else None,
                 }
@@ -1899,6 +1920,7 @@ def create_admin_router(manager_client: ManagerApiClient) -> APIRouter:
                     if held is None or percent > held["percent"]:
                         worst[identity] = {
                             "identity": identity,
+                            "name": names.get(identity),
                             "percent": percent,
                             "dimension": counter["dimension"],
                             "endpoint": counter["endpoint"],
@@ -1929,7 +1951,9 @@ def create_admin_router(manager_client: ManagerApiClient) -> APIRouter:
                 changes.append(
                     {
                         "at": event.at.isoformat() if event.at else None,
-                        "actor": event.actor_email or event.actor_client_id,
+                        "actor": event.actor_email
+                        or names.get(event.actor_client_id or "")
+                        or event.actor_client_id,
                         # Trimmed of the prefix every row shares; what
                         # distinguishes them is the verb and the resource.
                         "action": event.action.replace("/admin/api/", " "),
@@ -2020,6 +2044,8 @@ def create_admin_router(manager_client: ManagerApiClient) -> APIRouter:
         """
         if (forbidden := _require_scope(request, "admin:fleet:read")) is not None:
             return forbidden
+
+        names = await client_names(request)
         settings: Settings = request.app.state.settings
         endpoint_count = len(INFERENCE_ENDPOINT_SLUGS)
 
@@ -2078,6 +2104,7 @@ def create_admin_router(manager_client: ManagerApiClient) -> APIRouter:
                 tracked = seen.get(identity)
                 consumers[identity] = {
                     "identity": identity,
+                    "name": names.get(identity),
                     # PRM-237: whether this row is the credential reading the
                     # page. The dashboard polls several endpoints every few
                     # seconds, so an operator who has only opened Activity

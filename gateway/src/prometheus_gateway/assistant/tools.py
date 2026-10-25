@@ -21,6 +21,7 @@ everything else acts and is audited) — and it lands separately.
 
 from __future__ import annotations
 
+import json
 from collections.abc import Awaitable, Callable
 from typing import Any
 
@@ -110,9 +111,54 @@ async def list_instances(
     return summaries
 
 
+def _usd(value: Any) -> float | None:
+    return round(value, 4) if isinstance(value, (int, float)) else None
+
+
+def _who(name: Any, identity: Any) -> Any:
+    """A client as the operator knows it. The gateway resolves the name (see
+    admin/names.py) because this token cannot read the principal list; the id
+    stays beside it so two clients sharing a name remain distinguishable."""
+    return f"{name} ({identity})" if name else identity
+
+
+def _consumer_summary(c: dict[str, Any]) -> dict[str, Any]:
+    today = c.get("today") or {}
+    worst = c.get("worst") or {}
+    out: dict[str, Any] = {
+        "client": _who(c.get("name"), c.get("identity")),
+        "connection": c.get("connection_type"),
+        "last_seen_ago_s": c.get("last_seen_ago_s"),
+        "today": {
+            "requests": today.get("request_count"),
+            "tokens": today.get("total_tokens"),
+            "cost_usd": _usd(today.get("cost_usd")),
+        },
+        "requests_in_window": (c.get("window") or {}).get("request_count"),
+        "models_today": {m["model"]: m["request_count"] for m in c.get("models") or []},
+        "doing": {a["label"]: a["count"] for a in c.get("actions") or []},
+        "refusals": c.get("refusals") or [],
+    }
+    if worst.get("percent") is not None:
+        out["closest_limit"] = f"{worst['dimension']} at {worst['percent']}%"
+    # `is_you` is computed against the caller's token — which is the
+    # assistant's. Without saying so, the model reads its own traffic as some
+    # anonymous client hammering the dashboard.
+    if c.get("is_you"):
+        out["note"] = "this is you, the assistant, reading the platform"
+    return out
+
+
 async def list_activity(client: httpx.AsyncClient, base_url: str, token: str) -> Any:
-    """Who is consuming and how much, right now — PRM-235."""
-    return await _get(client, base_url, "/admin/api/activity", token)
+    """Who is consuming and how much, right now — PRM-235.
+
+    It returned the raw 8 KB payload; it is a projection now like the others.
+    """
+    body = await _get(client, base_url, "/admin/api/activity", token)
+    return {
+        "window_minutes": body.get("tracker_window_minutes"),
+        "consumers": [_consumer_summary(c) for c in body.get("consumers") or []],
+    }
 
 
 async def tail_instance_log(
@@ -133,6 +179,201 @@ async def tail_instance_log(
         lines=_LOG_LINES,
     )
     return body.get("lines", body) if isinstance(body, dict) else body
+
+
+async def get_overview(client: httpx.AsyncClient, base_url: str, token: str) -> Any:
+    """The dashboard's first page: what needs attention and how today compares."""
+    body = await _get(client, base_url, "/admin/api/overview", token)
+    signals = {
+        k: {f: (_usd(v) if isinstance(v, float) else v) for f, v in (d or {}).items()}
+        for k, d in (body.get("signals") or {}).items()
+    }
+    return {
+        "needs_attention": [
+            {"severity": a.get("severity"), "what": a.get("what"), "page": a.get("where")}
+            for a in body.get("attention") or []
+        ],
+        "today_vs_yesterday": signals,
+        "busiest_clients_today": [
+            {
+                "client": _who(r.get("name"), r.get("client_id")),
+                "requests": r.get("request_count"),
+                "requests_yesterday": r.get("request_count_yesterday"),
+                "tokens": r.get("total_tokens"),
+                "cost_usd": _usd(r.get("cost_usd")),
+            }
+            for r in body.get("clients") or []
+        ],
+        f"busiest_models_last_{body.get('days')}_days": [
+            {
+                "model": m.get("model_id"),
+                "requests": m.get("request_count"),
+                "cost_usd": _usd(m.get("cost_usd")),
+                "p95_ms": (m.get("latency") or {}).get("p95_ms"),
+            }
+            for m in body.get("models") or []
+        ],
+        "closest_to_a_limit": [
+            {
+                "client": _who(r.get("name"), r.get("identity")),
+                "dimension": r.get("dimension"),
+                "used": r.get("used"),
+                "limit": r.get("limit"),
+                "percent": r.get("percent"),
+            }
+            for r in body.get("pressure") or []
+        ],
+        "gateway": body.get("fleet"),
+    }
+
+
+async def list_models(
+    client: httpx.AsyncClient,
+    base_url: str,
+    token: str,
+    node: str | None = None,
+    downloaded: bool | None = None,
+) -> Any:
+    """The model catalog — 25 KB raw, most of it file paths and hashes."""
+    body = await _get(client, base_url, "/admin/api/models", token)
+    out = []
+    for m in body.get("models") or []:
+        if node and m.get("node") != node:
+            continue
+        if downloaded is not None and bool(m.get("downloaded")) != downloaded:
+            continue
+        size = m.get("file_size_bytes")
+        out.append(
+            {
+                "model": m.get("slug") or m.get("id"),
+                "node": m.get("node"),
+                "modality": m.get("modality"),
+                "family": m.get("family") or None,
+                "quantization": m.get("quantization") or None,
+                "downloaded": m.get("downloaded"),
+                "size_gb": round(size / 1e9, 1) if size else None,
+                "instances": len(m.get("instance_ids") or []),
+                "hf_repo": m.get("hf_repo"),
+            }
+        )
+    return {"models": out, "unreachable_nodes": body.get("unreachable_nodes") or []}
+
+
+async def check_limits(client: httpx.AsyncClient, base_url: str, token: str) -> Any:
+    """Which ceiling is closest to refusing, and what each tier allows."""
+    live = await _get(client, base_url, "/admin/api/limits/live", token)
+    out: dict[str, Any] = {
+        "live": live.get("available"),
+        "why_not_live": live.get("reason"),
+        # Already sorted closest-to-refusing first; unmetered counters last.
+        "counters": [
+            {
+                "who": _who(r.get("name"), r.get("identity")),
+                "layer": r.get("layer"),
+                "dimension": r.get("dimension"),
+                "endpoint": r.get("endpoint"),
+                "used": r.get("used"),
+                "limit": r.get("limit"),
+                "percent": r.get("percent"),
+                "limit_from": r.get("limit_source"),
+            }
+            for r in (live.get("rows") or [])[:15]
+        ],
+        "minute_resets_in_s": live.get("minute_resets_in"),
+    }
+    tiers = await _get(client, base_url, "/admin/api/limits/tiers", token)
+    out["tiers"] = [
+        {k: v for k, v in t.items() if v is not None and k != "description"}
+        for t in tiers.get("tiers") or []
+    ]
+    return out
+
+
+async def get_spend(
+    client: httpx.AsyncClient, base_url: str, token: str, period: str | None = None
+) -> Any:
+    """What the platform billed in a month, by client and by model."""
+    body = await _get(client, base_url, "/admin/api/billing/overview", token, period=period)
+    return {
+        "period": body.get("period"),
+        "total_usd": _usd(body.get("total_usd")),
+        "subtotal_usd": _usd(body.get("subtotal_usd")),
+        "tax_usd": _usd(body.get("tax_amount_usd")),
+        "requests": body.get("request_count"),
+        "tokens": body.get("total_tokens"),
+        # Requests with no price configured bill as zero; a total that hides
+        # them reads as cheaper than it was.
+        "unpriced_requests": body.get("unpriced_requests"),
+        "by_client": [
+            {
+                "client": _who(r.get("name"), r.get("client_id")),
+                "total_usd": _usd(r.get("total_usd")),
+                "requests": r.get("request_count"),
+                "tokens": r.get("total_tokens"),
+                "unpriced_requests": r.get("unpriced_requests"),
+            }
+            for r in body.get("by_client") or []
+        ],
+        "by_model": [
+            {
+                "model": r.get("model_id"),
+                "cost_usd": _usd(r.get("cost_usd")),
+                "requests": r.get("request_count"),
+                "tokens": r.get("tokens"),
+            }
+            for r in body.get("by_model") or []
+        ],
+    }
+
+
+async def list_prices(
+    client: httpx.AsyncClient, base_url: str, token: str, model: str | None = None
+) -> Any:
+    """Configured price per model, and the default each modality falls back to."""
+    body = await _get(client, base_url, "/admin/api/billing/pricing", token)
+    prices = body.get("data") or {}
+    if model:
+        prices = {k: v for k, v in prices.items() if model.lower() in k.lower()}
+    return {"prices": prices, "defaults_by_modality": body.get("defaults_by_modality")}
+
+
+#: Enough to answer "who did that" without reading the whole trail into the
+#: context; the filter is what narrows it, not a bigger number.
+_AUDIT_MAX = 50
+
+
+async def list_audit(
+    client: httpx.AsyncClient,
+    base_url: str,
+    token: str,
+    contains: str | None = None,
+    limit: int = 20,
+) -> Any:
+    """Who changed what, newest first — PRM-157.
+
+    Fetches a wider slice than it returns so a filter still finds an older
+    event. Request and trace ids, IPs and user agents are dropped: they answer
+    forensic questions, not "who restarted it".
+    """
+    limit = max(1, min(int(limit), _AUDIT_MAX))
+    body = await _get(client, base_url, "/admin/api/audit", token, limit=200)
+    out = []
+    for e in body.get("events") or []:
+        actor = e.get("actor") or {}
+        row = {
+            "at": e.get("at"),
+            "who": actor.get("email") or _who(actor.get("name"), actor.get("client_id")),
+            "action": e.get("action"),
+            "target": e.get("target"),
+            "outcome": e.get("outcome"),
+            "status": e.get("status_code"),
+        }
+        if contains and contains.lower() not in json.dumps(row, default=str).lower():
+            continue
+        out.append(row)
+        if len(out) >= limit:
+            break
+    return out
 
 
 #: The wire definitions handed to the model. Descriptions are written for the
@@ -177,9 +418,10 @@ DEFINITIONS: list[dict[str, Any]] = [
         "function": {
             "name": "list_activity",
             "description": (
-                "Who is consuming the platform right now and how much — clients, models, "
-                "request counts and refusals. Use for questions about traffic, spend, or "
-                "which client is causing something."
+                "Who is calling the platform right now and today, by client name: requests, "
+                "tokens, today's cost, which models, what they are doing and any refusals. "
+                "Use for questions about current traffic or which client is causing "
+                "something. For a month's bill use get_spend instead."
             ),
             "parameters": {"type": "object", "properties": {}},
         },
@@ -203,6 +445,117 @@ DEFINITIONS: list[dict[str, Any]] = [
             },
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_overview",
+            "description": (
+                "The dashboard's summary: what needs attention right now, today against "
+                "yesterday (requests, tokens, cost, errors), the busiest clients and models, "
+                "and who is closest to a rate limit. Use first for open questions like "
+                "'is anything wrong?' or 'how is the platform doing?'."
+            ),
+            "parameters": {"type": "object", "properties": {}},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "list_models",
+            "description": (
+                "The model catalog: every model each node knows, its modality, "
+                "quantization, size, whether it is downloaded and how many instances it "
+                "has. Use for 'which models do I have' or 'where is model X'. For what "
+                "is running now use list_instances."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "node": {"type": "string", "description": "Optional node name filter."},
+                    "downloaded": {
+                        "type": "boolean",
+                        "description": "Optional: true for downloaded only, false for not.",
+                    },
+                },
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "check_limits",
+            "description": (
+                "Live rate-limit counters, closest to refusing first, by client, plus what "
+                "each tier allows. Use when asked why a client gets 429s, who is near a "
+                "ceiling, or what a tier's limits are."
+            ),
+            "parameters": {"type": "object", "properties": {}},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_spend",
+            "description": (
+                "What the platform billed for one month: total, tax, and the breakdown by "
+                "client and by model, including requests with no price configured. Use for "
+                "questions about cost, spend or invoices over a month."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "period": {
+                        "type": "string",
+                        "description": "Month as YYYY-MM. Omit for the current month.",
+                    }
+                },
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "list_prices",
+            "description": (
+                "The configured price per model (per million prompt and completion "
+                "tokens, per image) and the default each modality falls back to. Use for "
+                "'how much does model X cost'."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "model": {
+                        "type": "string",
+                        "description": "Optional: part of a model name to filter by.",
+                    }
+                },
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "list_audit",
+            "description": (
+                "The audit trail, newest first: who did what, when, to what, and whether "
+                "it worked. Use for 'who restarted X', 'what changed today', 'who created "
+                "this client'."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "contains": {
+                        "type": "string",
+                        "description": (
+                            "Optional text to match in the actor, action or target, e.g. "
+                            "a model id, 'stop', 'limits'."
+                        ),
+                    },
+                    "limit": {"type": "integer", "description": "How many, at most 50."},
+                },
+            },
+        },
+    },
 ]
 
 #: Annotated loosely on purpose — the handlers take different keyword
@@ -213,4 +566,10 @@ HANDLERS: dict[str, Callable[..., Awaitable[Any]]] = {
     "list_instances": list_instances,
     "list_activity": list_activity,
     "tail_instance_log": tail_instance_log,
+    "get_overview": get_overview,
+    "list_models": list_models,
+    "check_limits": check_limits,
+    "get_spend": get_spend,
+    "list_prices": list_prices,
+    "list_audit": list_audit,
 }

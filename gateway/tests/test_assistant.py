@@ -29,6 +29,7 @@ from prometheus_gateway.assistant.loop import (
     MAX_TOOL_ROUNDS,
     PAGES,
     Assistant,
+    AssistantCredentialError,
     system_prompt,
 )
 
@@ -89,6 +90,9 @@ async def test_the_assistant_asks_for_read_scopes_only(respx_mock):
     form = urllib.parse.parse_qs(token.calls[0].request.content.decode())
     assert set(form["scope"][0].split()) == {
         "admin:fleet:read",
+        "admin:policy:read",
+        "admin:billing:read",
+        "admin:audit:read",
         "inference:read",
         "model:m",
     }
@@ -133,7 +137,22 @@ def test_every_tool_is_read_only():
         "list_instances",
         "list_activity",
         "tail_instance_log",
+        "get_overview",
+        "list_models",
+        "check_limits",
+        "get_spend",
+        "list_prices",
+        "list_audit",
     }
+
+
+def test_no_tool_can_send_anything_but_a_read():
+    """A list of names says what exists, not what each one does. Every tool
+    goes through `_get`; a write verb anywhere in the module is a tool that
+    could act, whatever it is called."""
+    source = Path(tools.__file__).read_text()
+    for verb in (".post(", ".put(", ".patch(", ".delete(", ".request("):
+        assert verb not in source, f"tools.py calls {verb}"
 
 
 def test_every_offered_tool_has_a_handler():
@@ -416,9 +435,11 @@ async def test_an_unknown_page_is_dropped_not_quoted(respx_mock):
 
 
 def test_a_page_it_cannot_read_says_so():
-    """On Billing its tools see nothing, and a question about cost must not be
-    answered from memory. On Nodes they see everything the page does."""
-    assert "cannot read this page's data" in system_prompt("/billing")
+    """On Users its tools see names and nothing else — the emails and scopes
+    that page shows are out of reach by design — so a question about them must
+    not be answered from memory. Billing it can read since get_spend."""
+    assert "cannot read this page's data" in system_prompt("/users")
+    assert "cannot read this page's data" not in system_prompt("/billing")
     assert "cannot read this page's data" not in system_prompt("/nodes")
 
 
@@ -435,3 +456,175 @@ def test_every_dashboard_route_is_in_the_page_map():
     routes -= {"/login", "/sessions"}
     assert routes, "the App.tsx route parse found nothing"
     assert routes == set(PAGES), f"out of step: {sorted(routes ^ set(PAGES))}"
+
+
+# ── PRM-272: names, and the tools added with them ────────────────────────────
+
+
+def test_it_never_asks_for_the_principal_list():
+    """Client names were the reason to want `admin:principals:read`, and they
+    come from the gateway instead — so the credential inventory (every
+    principal's email and scopes) stays out of a leaked secret's reach. Nor
+    the parent `admin:read`, which implies it."""
+    from prometheus_gateway.assistant.loop import _READ_SCOPES
+
+    asked = set(_READ_SCOPES.split())
+    assert "admin:principals:read" not in asked
+    assert "admin:read" not in asked
+
+
+async def test_activity_names_the_client_and_drops_the_bulk(respx_mock):
+    respx_mock.get(f"{_GW}/admin/api/activity").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "tracker_window_minutes": 15,
+                "consumers": [
+                    {
+                        "identity": "657cdef9",
+                        "name": "Veritium",
+                        "today": {"request_count": 3, "total_tokens": 10, "cost_usd": 0.123456789},
+                        "models": [{"model": "qwen3-embedding", "request_count": 3}],
+                        "actions": [{"label": "Embeddings", "count": 3}],
+                        "end_users": [{"end_user": None, "request_count": 3}],
+                        "other_paths": [{"path": "/v1/models/mine", "count": 1}],
+                        "worst": {"dimension": "tpd", "percent": 3.6},
+                    },
+                    {"identity": "45d4f61a", "name": "Dashboard Assistant", "is_you": True},
+                ],
+            },
+        )
+    )
+    async with httpx.AsyncClient() as client:
+        out = await tools.list_activity(client, _GW, "t")
+
+    first, me = out["consumers"]
+    assert first["client"] == "Veritium (657cdef9)"
+    assert first["today"]["cost_usd"] == 0.1235
+    assert first["closest_limit"] == "tpd at 3.6%"
+    assert "end_users" not in first and "other_paths" not in first
+    # Its own traffic, said out loud — not some client hammering the dashboard.
+    assert "you, the assistant" in me["note"]
+
+
+async def test_a_client_without_a_name_keeps_its_id(respx_mock):
+    """auth-service down means no names; the answer still has to say who."""
+    respx_mock.get(f"{_GW}/admin/api/activity").mock(
+        return_value=httpx.Response(200, json={"consumers": [{"identity": "657cdef9"}]})
+    )
+    async with httpx.AsyncClient() as client:
+        out = await tools.list_activity(client, _GW, "t")
+    assert out["consumers"][0]["client"] == "657cdef9"
+
+
+async def test_the_audit_tool_drops_forensics_and_filters(respx_mock):
+    events = [
+        {
+            "at": f"2026-10-25T0{i}:00:00",
+            "actor": {"client_id": None, "name": None, "email": "ops@example.com"},
+            "action": "POST /admin/api/nodes/{node}/instances/{model_id}/stop",
+            "target": {"model_id": f"model-{i}"},
+            "outcome": "ok",
+            "status_code": 200,
+            "request_id": "r",
+            "trace_id": "t",
+            "source_ip": "10.0.0.1",
+            "user_agent": "curl",
+        }
+        for i in range(5)
+    ]
+    route = respx_mock.get(f"{_GW}/admin/api/audit").mock(
+        return_value=httpx.Response(200, json={"events": events})
+    )
+    async with httpx.AsyncClient() as client:
+        found = await tools.list_audit(client, _GW, "t", contains="model-3")
+        capped = await tools.list_audit(client, _GW, "t", limit=999)
+
+    assert [e["target"] for e in found] == [{"model_id": "model-3"}]
+    assert found[0]["who"] == "ops@example.com"
+    for dropped in ("source_ip", "user_agent", "trace_id", "request_id"):
+        assert dropped not in found[0]
+    assert len(capped) == 5  # clamped to 50, and only five exist
+    # A wider slice than it returns, so a filter still reaches older events.
+    assert route.calls[0].request.url.params["limit"] == "200"
+
+
+async def test_the_model_catalog_drops_paths_and_hashes(respx_mock):
+    respx_mock.get(f"{_GW}/admin/api/models").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "models": [
+                    {
+                        "slug": "gpt-oss-20b-mxfp4",
+                        "node": "local",
+                        "modality": "text",
+                        "downloaded": True,
+                        "file_size_bytes": 12_100_000_000,
+                        "path": "/Users/x/models/gpt-oss.gguf",
+                        "hf_sha256": "abc",
+                        "rename_blockers": ["held by: Veritium"],
+                        "instance_ids": ["a", "b"],
+                    },
+                    {"slug": "other", "node": "lab", "downloaded": False},
+                ],
+                "unreachable_nodes": [],
+            },
+        )
+    )
+    async with httpx.AsyncClient() as client:
+        out = await tools.list_models(client, _GW, "t", node="local")
+    (model,) = out["models"]
+    assert model == {
+        "model": "gpt-oss-20b-mxfp4",
+        "node": "local",
+        "modality": "text",
+        "family": None,
+        "quantization": None,
+        "downloaded": True,
+        "size_gb": 12.1,
+        "instances": 2,
+        "hf_repo": None,
+    }
+
+
+async def test_spend_is_by_client_name(respx_mock):
+    respx_mock.get(f"{_GW}/admin/api/billing/overview").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "period": "2026-10",
+                "total_usd": 19.6612345,
+                "unpriced_requests": 4,
+                "by_client": [{"client_id": "657cdef9", "name": "Veritium", "total_usd": 12.5}],
+                "by_model": [],
+            },
+        )
+    )
+    async with httpx.AsyncClient() as client:
+        out = await tools.get_spend(client, _GW, "t", period="2026-10")
+    assert out["by_client"][0]["client"] == "Veritium (657cdef9)"
+    assert out["total_usd"] == 19.6612
+    # A total that hid unpriced requests would read as cheaper than it was.
+    assert out["unpriced_requests"] == 4
+
+
+async def test_a_refused_credential_says_which_scopes(respx_mock):
+    """The first time it asked for a scope its credential lacked, this surfaced
+    as "502 — the manager node returned an error … 400": the wrong component,
+    and no way forward. It names what auth-service refused."""
+    respx_mock.post("http://auth/token").mock(
+        return_value=httpx.Response(
+            400,
+            json={
+                "error": "invalid_scope",
+                "error_description": "Scope(s) not permitted for this client: admin:audit:read",
+            },
+        )
+    )
+    try:
+        await _assistant().ask([{"role": "user", "content": "hi"}])
+    except AssistantCredentialError as exc:
+        assert "admin:audit:read" in str(exc)
+    else:
+        raise AssertionError("a refused credential did not raise")

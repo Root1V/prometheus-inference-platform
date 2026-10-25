@@ -32,6 +32,7 @@ from .. import billing, budget, db, pricing
 from ..config import Settings
 from ..router import _problem
 from .client import ManagerApiClient
+from .names import client_names
 from .nodes_client import fetch_nodes
 from ..telemetry import get_logger
 
@@ -317,7 +318,13 @@ def create_billing_router(manager_client: "ManagerApiClient | None" = None) -> A
             return _problem(
                 request, 400, "invalid-period", "Invalid Period", "period must be YYYY-MM."
             )
-        return await billing.build_platform_overview(target_period)
+        overview = await billing.build_platform_overview(target_period)
+        # PRM-272: the name beside the id, so a reader without the principal
+        # list still knows whose bill this is. See admin/names.py.
+        names = await client_names(request)
+        for row in overview.get("by_client", []):
+            row["name"] = names.get(row.get("client_id") or "")
+        return overview
 
     @router.get("/admin/api/billing/clients/{client_id}/summary")
     async def get_billing_summary(
