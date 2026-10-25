@@ -10128,17 +10128,16 @@ its 336 rows in `usage_events` says `complete`, and none of the rejections appea
 throwaway instance returns them as **HTTP 500**. With `--ubatch-size 2048 --batch-size 2048` the
 same ~1,000-token pairs score 10/10. So today's 16384/32768 buys nothing a request can use.
 
-**Proposal** (not applied — needs the operator's go-ahead and a restart of each instance):
+**Decided 2026-10-25.** Every embedding and rerank model now starts with `--cache-ram 0
+--batch-size 2048 --ubatch-size 2048` (the `modality` branch of `_build_llama_cpp_cmd`, since both
+follow from what the model *is*; on CUDA they replace the 8192/1024 batch). `context_length` is set
+per instance in `registry.db`. Live once this branch is merged and the instances start; until then
+nothing running uses it.
 
-- embedding: `--ctx-size 4096 --cache-ram 0` → ~1 GB instead of 11 (4 slots × 512-token ceiling
-  = 2,048 concurrent tokens, half of 4096).
-- reranker: `--ctx-size 8192 --cache-ram 0 --ubatch-size 2048 --batch-size 2048` → ~2 GB instead
-  of 11, and pairs up to 2,048 tokens served instead of 500'd. 8192 rather than 4096 so four
-  ~1,000-token pairs fit at once.
-- Only `context_length` is per-instance today (PATCH, `_UPDATABLE_FIELDS`). `--cache-ram` and
-  `--ubatch-size` need code: the `modality` branch of `_build_llama_cpp_cmd` in
-  `runtime/manager/core/.../lifecycle.py` is the place, since both follow from what an embedding or
-  rerank model *is* rather than from one instance.
+- embedding: `--ctx-size 4096` → **1.05 GB** measured as shipped, instead of 11. Its inputs top out
+  near 500 tokens, so 4096 holds several concurrent ones.
+- reranker: `--ctx-size 8192` → **2.1 GB** measured, instead of 11, and pairs up to 2,048 tokens
+  served instead of 500'd. 8192 rather than 4096 so four ~1,000-token pairs fit at once.
 
 **Against PRM-273** (the Metal heap-corruption crash, on its own branch): the two 2026-10-24 crash
 reports are one instance at `ctx-size 4096` with the cache full and evicting (up since 2026-10-06)
