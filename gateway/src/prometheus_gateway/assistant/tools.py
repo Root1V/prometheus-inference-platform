@@ -115,18 +115,25 @@ def _usd(value: Any) -> float | None:
     return round(value, 4) if isinstance(value, (int, float)) else None
 
 
-def _who(name: Any, identity: Any) -> Any:
-    """A client as the operator knows it. The gateway resolves the name (see
-    admin/names.py) because this token cannot read the principal list; the id
-    stays beside it so two clients sharing a name remain distinguishable."""
-    return f"{name} ({identity})" if name else identity
+def _named(name: Any, identity: Any, key: str = "client") -> dict[str, Any]:
+    """A client as the operator knows it: the name, with the id beside it.
+
+    Two fields, not "Name (id)" in one string — given that, the model read
+    "Plataforma Inteligente Documental (657cdef9-…)" and reported the client as
+    known "only by its id". The gateway resolves the name (admin/names.py)
+    because this token cannot read the principal list. Without a name the id is
+    all there is, and it goes in the one field rather than twice.
+    """
+    if not name:
+        return {key: identity}
+    return {key: name, f"{key}_id": identity}
 
 
 def _consumer_summary(c: dict[str, Any]) -> dict[str, Any]:
     today = c.get("today") or {}
     worst = c.get("worst") or {}
     out: dict[str, Any] = {
-        "client": _who(c.get("name"), c.get("identity")),
+        **_named(c.get("name"), c.get("identity")),
         "connection": c.get("connection_type"),
         "last_seen_ago_s": c.get("last_seen_ago_s"),
         "today": {
@@ -181,6 +188,16 @@ async def tail_instance_log(
     return body.get("lines", body) if isinstance(body, dict) else body
 
 
+async def list_clients(client: httpx.AsyncClient, base_url: str, token: str) -> Any:
+    """Who the clients are, by name, including those that have not called yet.
+
+    Asked "what are the users' names", it looked for a tool about users, found
+    none, and answered that it could not — two times in three, measured.
+    """
+    body = await _get(client, base_url, "/admin/api/clients/names", token)
+    return body.get("clients", [])
+
+
 async def get_overview(client: httpx.AsyncClient, base_url: str, token: str) -> Any:
     """The dashboard's first page: what needs attention and how today compares."""
     body = await _get(client, base_url, "/admin/api/overview", token)
@@ -196,7 +213,7 @@ async def get_overview(client: httpx.AsyncClient, base_url: str, token: str) -> 
         "today_vs_yesterday": signals,
         "busiest_clients_today": [
             {
-                "client": _who(r.get("name"), r.get("client_id")),
+                **_named(r.get("name"), r.get("client_id")),
                 "requests": r.get("request_count"),
                 "requests_yesterday": r.get("request_count_yesterday"),
                 "tokens": r.get("total_tokens"),
@@ -215,7 +232,7 @@ async def get_overview(client: httpx.AsyncClient, base_url: str, token: str) -> 
         ],
         "closest_to_a_limit": [
             {
-                "client": _who(r.get("name"), r.get("identity")),
+                **_named(r.get("name"), r.get("identity")),
                 "dimension": r.get("dimension"),
                 "used": r.get("used"),
                 "limit": r.get("limit"),
@@ -268,7 +285,7 @@ async def check_limits(client: httpx.AsyncClient, base_url: str, token: str) -> 
         # Already sorted closest-to-refusing first; unmetered counters last.
         "counters": [
             {
-                "who": _who(r.get("name"), r.get("identity")),
+                **_named(r.get("name"), r.get("identity"), key="who"),
                 "layer": r.get("layer"),
                 "dimension": r.get("dimension"),
                 "endpoint": r.get("endpoint"),
@@ -306,7 +323,7 @@ async def get_spend(
         "unpriced_requests": body.get("unpriced_requests"),
         "by_client": [
             {
-                "client": _who(r.get("name"), r.get("client_id")),
+                **_named(r.get("name"), r.get("client_id")),
                 "total_usd": _usd(r.get("total_usd")),
                 "requests": r.get("request_count"),
                 "tokens": r.get("total_tokens"),
@@ -362,7 +379,12 @@ async def list_audit(
         actor = e.get("actor") or {}
         row = {
             "at": e.get("at"),
-            "who": actor.get("email") or _who(actor.get("name"), actor.get("client_id")),
+            # A person signs in with an email; a credential has a name.
+            **(
+                {"who": actor["email"]}
+                if actor.get("email")
+                else _named(actor.get("name"), actor.get("client_id"), key="who")
+            ),
             "action": e.get("action"),
             "target": e.get("target"),
             "outcome": e.get("outcome"),
@@ -443,6 +465,19 @@ DEFINITIONS: list[dict[str, Any]] = [
                 },
                 "required": ["node", "model_id"],
             },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "list_clients",
+            "description": (
+                "Every client the platform knows — API credentials and dashboard users — "
+                "by name, with its id and whether it is active. Use for 'who are the "
+                "users', 'what are the clients called', 'is client X active', or to turn "
+                "an id into a name. It has no emails, scopes or roles."
+            ),
+            "parameters": {"type": "object", "properties": {}},
         },
     },
     {
@@ -566,6 +601,7 @@ HANDLERS: dict[str, Callable[..., Awaitable[Any]]] = {
     "list_instances": list_instances,
     "list_activity": list_activity,
     "tail_instance_log": tail_instance_log,
+    "list_clients": list_clients,
     "get_overview": get_overview,
     "list_models": list_models,
     "check_limits": check_limits,

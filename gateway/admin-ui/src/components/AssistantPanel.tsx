@@ -44,6 +44,7 @@ const READ: Record<string, string> = {
   list_instances: "instances",
   list_activity: "activity",
   tail_instance_log: "an instance log",
+  list_clients: "the client list",
   get_overview: "the overview",
   list_models: "the model catalog",
   check_limits: "rate limits",

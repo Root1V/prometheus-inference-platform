@@ -14,7 +14,7 @@ from types import SimpleNamespace
 
 import httpx
 
-from prometheus_gateway.admin.names import client_names
+from prometheus_gateway.admin.names import client_directory, client_names
 
 _AUTH = "http://auth-admin"
 
@@ -89,3 +89,27 @@ async def test_a_failure_is_not_cached(respx_mock):
     assert await client_names(request) == {}
     assert await client_names(request) == {"a": "A"}
     assert route.call_count == 2
+
+
+async def test_the_directory_carries_whether_active_and_nothing_else(respx_mock):
+    """The roster an operator asks for — "who are the clients" — with whether
+    each is enabled. Not its role: a role says which credentials are admins,
+    which is the inventory this exists to keep back."""
+    respx_mock.get(f"{_AUTH}/clients").mock(
+        return_value=httpx.Response(
+            200,
+            json=[
+                {
+                    "client_id": "a",
+                    "client_name": "Veritium",
+                    "is_active": False,
+                    "role": "admin",
+                    "email": "ops@example.com",
+                    "allowed_scopes": ["admin:read"],
+                }
+            ],
+        )
+    )
+    assert await client_directory(_request()) == [
+        {"client_id": "a", "name": "Veritium", "active": False}
+    ]

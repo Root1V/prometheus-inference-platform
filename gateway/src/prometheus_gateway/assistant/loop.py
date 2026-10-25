@@ -66,44 +66,64 @@ are in. Keep identifiers — node names, model ids, scopes — exactly as writte
 # know is dropped, never quoted — otherwise the browser could write
 # instructions into the prompt through a field meant to say which page is open.
 #
-# `readable` is whether the four tools can see that page's data. Without it the
-# assistant, asked "why is the cost up?" on Billing, would answer from nothing.
-PAGES: dict[str, tuple[str, str, bool]] = {
+# The third field is what its tools *cannot* see on that page, or None when
+# they see all of it. Without it the assistant would answer from nothing about
+# data it cannot read. A sentence and not a yes/no flag, because Users was
+# neither: marked unreadable, the assistant told an operator it could not see
+# client names — which it can, through every tool that names a client — when
+# what it cannot see is their emails and scopes.
+_ALL_OF_IT: None = None
+PAGES: dict[str, tuple[str, str, str | None]] = {
     "/": (
         "Overview",
         "today's requests, tokens and cost against yesterday, what needs attention, a 14-day trend",
-        True,
+        _ALL_OF_IT,
     ),
     "/instances": (
         "Instances",
         "every model instance on every node, its state, and start/stop/restart",
-        True,
+        _ALL_OF_IT,
     ),
     "/models": (
         "Models",
         "the model catalog per node and downloading models from Hugging Face",
-        True,
+        _ALL_OF_IT,
     ),
     "/nodes": (
         "Nodes",
         "registered nodes, whether they answer, their hardware and inference engines",
-        True,
+        _ALL_OF_IT,
     ),
-    "/playground": ("Playground", "trying a model out by chatting with it", False),
-    "/usage": ("Usage", "token usage per client", True),
-    "/billing": ("Billing", "prices, currency rates, spend caps and the usage export", True),
+    "/playground": (
+        "Playground",
+        "trying a model out by chatting with it",
+        "the conversation the operator is having there",
+    ),
+    "/usage": ("Usage", "token usage per client", _ALL_OF_IT),
+    "/billing": (
+        "Billing",
+        "prices, currency rates, spend caps and the usage export",
+        _ALL_OF_IT,
+    ),
     "/limits": (
         "Limits",
         "rate-limit tiers, which ceiling is refusing right now, the circuit breaker",
-        True,
+        _ALL_OF_IT,
     ),
     "/activity": (
         "Activity",
         "who is calling the gateway now and recently, and their end users",
-        True,
+        _ALL_OF_IT,
     ),
-    # Names only, by design: emails and scopes stay out of its reach.
-    "/users": ("Users", "clients and their credentials and scopes", False),
+    # Names it has, through every tool that names a client. The rest is the
+    # credential inventory, kept out of reach on purpose (PRM-274).
+    "/users": (
+        "Users",
+        "clients and their credentials and scopes",
+        "clients' emails, scopes, roles or secrets — you do see every client's name, "
+        "id and whether it is active, so answer questions about who the clients are "
+        "by listing them",
+    ),
 }
 
 
@@ -111,17 +131,22 @@ def system_prompt(page: str | None = None) -> str:
     """The fixed prompt, the page map, and where the operator is right now."""
     lines = [SYSTEM_PROMPT, "", "The dashboard's pages:"]
     lines += [f"- {name} ({path}): {what}" for path, (name, what, _) in PAGES.items()]
+    lines += [
+        "",
+        'Clients appear in tool results as "Name (id)". Call them by name; give the '
+        "id only when two share a name or the operator asks for it.",
+    ]
     if page in PAGES:
-        name, what, readable = PAGES[page]
+        name, what, blind_to = PAGES[page]
         lines += [
             "",
             f"The operator is on the {name} page ({page}) right now: {what}. "
             'When they say "here" or "this page", that is what they mean.',
         ]
-        if not readable:
+        if blind_to:
             lines.append(
-                "Your tools cannot read this page's data. Say so plainly instead "
-                "of guessing, and say what you can read."
+                f"On this page your tools cannot see {blind_to}. If asked about that, "
+                "say so plainly instead of guessing, and say what you can read."
             )
     return "\n".join(lines)
 

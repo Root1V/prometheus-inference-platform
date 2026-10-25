@@ -20,6 +20,7 @@ because auth-service is slow.
 from __future__ import annotations
 
 import time
+from typing import Any
 
 import httpx
 from fastapi import Request
@@ -31,15 +32,23 @@ logger = get_logger(__name__)
 _TTL_S = 60.0
 
 
-async def client_names(request: Request) -> dict[str, str]:
-    """`client_id → display name` for every principal auth-service knows."""
+async def client_directory(request: Request) -> list[dict[str, Any]]:
+    """Every principal auth-service knows, as `{client_id, name, active}`.
+
+    The roster behind `client_names`, and the answer to "who are the clients"
+    for a reader that cannot have the principal list. Whether a client is
+    active travels with the name because "is X still enabled" is the next
+    question; its role does not, because a role says which credentials are
+    admins — that is the inventory this module exists to keep back.
+    """
     state = request.app.state
-    cached = getattr(state, "client_names", None)
+    cached = getattr(state, "client_directory", None)
     if cached is not None and cached[0] > time.monotonic():
-        return cached[1]
+        hit: list[dict[str, Any]] = cached[1]
+        return hit
     settings = state.settings
     if not settings.auth_service_admin_url or not settings.auth_service_admin_api_key:
-        return {}
+        return []
     try:
         async with httpx.AsyncClient(
             timeout=3.0, verify=settings.auth_service_tls_verify
@@ -49,15 +58,26 @@ async def client_names(request: Request) -> dict[str, str]:
                 headers={"X-Admin-Key": settings.auth_service_admin_api_key},
             )
         resp.raise_for_status()
-        names = {}
+        directory: list[dict[str, Any]] = []
         for row in resp.json():
             # Stripped: labels are typed by hand, and one measured here ended
             # in a space that every answer then carried.
             name = (row.get("label") or "").strip() or (row.get("client_name") or "").strip()
             if row.get("client_id") and name:
-                names[row["client_id"]] = name
+                directory.append(
+                    {
+                        "client_id": row["client_id"],
+                        "name": name,
+                        "active": bool(row.get("is_active", True)),
+                    }
+                )
     except Exception as exc:
         logger.warning("admin.client_names_unavailable", error=str(exc))
-        return {}
-    state.client_names = (time.monotonic() + _TTL_S, names)
-    return names
+        return []
+    state.client_directory = (time.monotonic() + _TTL_S, directory)
+    return directory
+
+
+async def client_names(request: Request) -> dict[str, str]:
+    """`client_id → display name` for every principal auth-service knows."""
+    return {row["client_id"]: row["name"] for row in await client_directory(request)}

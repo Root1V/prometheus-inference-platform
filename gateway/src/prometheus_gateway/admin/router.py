@@ -85,7 +85,7 @@ from ..config import Settings
 from ..router import _problem
 from ..telemetry import ACTION_LABELS as telemetry_actions
 from ..telemetry import activity_tracker, get_logger, metrics_store
-from .names import client_names
+from .names import client_directory, client_names
 from .client import _CONTROL_TIMEOUT_S, ManagerApiClient
 from .nodes_client import fetch_nodes
 
@@ -1032,6 +1032,21 @@ def create_admin_router(manager_client: ManagerApiClient) -> APIRouter:
         except Exception as exc:
             return _proxy_error_response(request, exc)
         return _passthrough(resp)
+
+    @router.get("/admin/api/clients/names")
+    async def list_client_names(request: Request) -> Any:
+        """Who the clients are, by name — PRM-272. `admin:fleet:read`.
+
+        The principal list without the principal list: name, id and whether it
+        is active, never emails, scopes or roles. Fleet because that family
+        already shows the name of every client that calls (Activity), and this
+        adds the ones that have not called yet. Asked "what are the users'
+        names", the assistant found no tool about users and gave up; this is
+        the one it reaches for.
+        """
+        if (forbidden := _require_scope(request, "admin:fleet:read")) is not None:
+            return forbidden
+        return {"clients": await client_directory(request)}
 
     @router.get("/admin/api/users")
     async def list_users(request: Request) -> Response:

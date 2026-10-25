@@ -137,6 +137,7 @@ def test_every_tool_is_read_only():
         "list_instances",
         "list_activity",
         "tail_instance_log",
+        "list_clients",
         "get_overview",
         "list_models",
         "check_limits",
@@ -435,12 +436,21 @@ async def test_an_unknown_page_is_dropped_not_quoted(respx_mock):
 
 
 def test_a_page_it_cannot_read_says_so():
-    """On Users its tools see names and nothing else — the emails and scopes
-    that page shows are out of reach by design — so a question about them must
-    not be answered from memory. Billing it can read since get_spend."""
-    assert "cannot read this page's data" in system_prompt("/users")
-    assert "cannot read this page's data" not in system_prompt("/billing")
-    assert "cannot read this page's data" not in system_prompt("/nodes")
+    """On Playground its tools see nothing of the page, and a question about it
+    must not be answered from memory. Billing it can read since get_spend."""
+    assert "your tools cannot see" in system_prompt("/playground")
+    assert "your tools cannot see" not in system_prompt("/billing")
+    assert "your tools cannot see" not in system_prompt("/nodes")
+
+
+def test_on_users_it_still_knows_the_clients_names():
+    """The defect, as the operator met it: asked for the users' names on the
+    Users page, it said it could not read them — the page was marked
+    unreadable, when names are exactly what every client-naming tool returns.
+    What it cannot see there is emails and scopes, and it must say *that*."""
+    prompt = system_prompt("/users")
+    assert "emails, scopes" in prompt
+    assert "do see every client's name" in prompt
 
 
 def test_it_is_told_to_answer_in_spanish():
@@ -499,7 +509,9 @@ async def test_activity_names_the_client_and_drops_the_bulk(respx_mock):
         out = await tools.list_activity(client, _GW, "t")
 
     first, me = out["consumers"]
-    assert first["client"] == "Veritium (657cdef9)"
+    # Two fields: in one "Name (id)" string the model reported the client as
+    # known only by its id.
+    assert (first["client"], first["client_id"]) == ("Veritium", "657cdef9")
     assert first["today"]["cost_usd"] == 0.1235
     assert first["closest_limit"] == "tpd at 3.6%"
     assert "end_users" not in first and "other_paths" not in first
@@ -515,6 +527,7 @@ async def test_a_client_without_a_name_keeps_its_id(respx_mock):
     async with httpx.AsyncClient() as client:
         out = await tools.list_activity(client, _GW, "t")
     assert out["consumers"][0]["client"] == "657cdef9"
+    assert "client_id" not in out["consumers"][0]  # not the same id twice
 
 
 async def test_the_audit_tool_drops_forensics_and_filters(respx_mock):
@@ -603,7 +616,8 @@ async def test_spend_is_by_client_name(respx_mock):
     )
     async with httpx.AsyncClient() as client:
         out = await tools.get_spend(client, _GW, "t", period="2026-10")
-    assert out["by_client"][0]["client"] == "Veritium (657cdef9)"
+    assert out["by_client"][0]["client"] == "Veritium"
+    assert out["by_client"][0]["client_id"] == "657cdef9"
     assert out["total_usd"] == 19.6612
     # A total that hid unpriced requests would read as cheaper than it was.
     assert out["unpriced_requests"] == 4
@@ -628,3 +642,17 @@ async def test_a_refused_credential_says_which_scopes(respx_mock):
         assert "admin:audit:read" in str(exc)
     else:
         raise AssertionError("a refused credential did not raise")
+
+
+async def test_who_the_clients_are_has_a_tool(respx_mock):
+    """Asked for the users' names, it found no tool about users and said it
+    could not answer — two times in three, measured on the running platform."""
+    respx_mock.get(f"{_GW}/admin/api/clients/names").mock(
+        return_value=httpx.Response(
+            200,
+            json={"clients": [{"client_id": "657cdef9", "name": "Veritium", "active": True}]},
+        )
+    )
+    async with httpx.AsyncClient() as client:
+        out = await tools.list_clients(client, _GW, "t")
+    assert out == [{"client_id": "657cdef9", "name": "Veritium", "active": True}]
