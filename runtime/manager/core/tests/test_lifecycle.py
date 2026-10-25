@@ -93,6 +93,32 @@ class TestBackendCommandBuilders:
         cmd = _build_llama_cpp_cmd("llama-server", self._entry(), 9090, "127.0.0.1")
         assert "--embedding" not in cmd
 
+    @pytest.mark.parametrize("modality", ["embedding", "rerank"])
+    def test_llama_cpp_cmd_pooled_modality_disables_prompt_cache_and_widens_ubatch(self, modality):
+        """PRM-276: no 8 GiB prompt cache, and inputs up to 2048 tokens are served."""
+        cmd = _build_llama_cpp_cmd(
+            "llama-server", self._entry(modality=modality), 9090, "127.0.0.1"
+        )
+        assert cmd[cmd.index("--cache-ram") + 1] == "0"
+        assert cmd[cmd.index("--ubatch-size") + 1] == "2048"
+        assert cmd[cmd.index("--batch-size") + 1] == "2048"
+
+    def test_llama_cpp_cmd_text_modality_keeps_prompt_cache(self):
+        """A chat model reuses prefixes across turns; PRM-276 leaves it alone."""
+        cmd = _build_llama_cpp_cmd("llama-server", self._entry(), 9090, "127.0.0.1")
+        assert "--cache-ram" not in cmd
+        assert "--ubatch-size" not in cmd
+
+    def test_llama_cpp_cmd_pooled_modality_on_cuda_passes_batch_flags_once(self):
+        nvidia = "/usr/bin/nvidia-smi"
+        with patch("prometheus_manager_core.lifecycle.shutil.which", return_value=nvidia):
+            cmd = _build_llama_cpp_cmd(
+                "llama-server", self._entry(modality="embedding"), 9090, "127.0.0.1"
+            )
+        assert cmd.count("--ubatch-size") == 1 and cmd.count("--batch-size") == 1
+        assert cmd[cmd.index("--ubatch-size") + 1] == "2048"
+        assert "--flash-attn" in cmd
+
     def test_llama_cpp_cmd_vision_modality_adds_mmproj_flag(self, tmp_path):
         """RM-09: modality="vision" + mmproj_path passes --mmproj to llama-server."""
         mmproj = tmp_path / "mmproj.gguf"
