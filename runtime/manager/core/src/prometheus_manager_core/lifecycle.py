@@ -102,18 +102,15 @@ def _build_llama_cpp_cmd(binary: str, entry: RegistryEntry, port: int, bind_host
         str(os.cpu_count() or 4),
     ]
 
+    # PRM-276: an embedding or rerank model scores each input in one ubatch, so
+    # it sets its own batch below rather than taking the CUDA one.
+    pooled = entry.modality in ("embedding", "rerank")
+
     # CUDA-only tuning.
     if has_nvidia:
-        cmd.extend(
-            [
-                "--flash-attn",
-                "on",
-                "--batch-size",
-                "8192",
-                "--ubatch-size",
-                "1024",
-            ]
-        )
+        cmd.extend(["--flash-attn", "on"])
+        if not pooled:
+            cmd.extend(["--batch-size", "8192", "--ubatch-size", "1024"])
 
     # RM-09: modality-specific flags. Only llama_cpp dispatches on modality
     # today — mlx/vllm/sglang accept the field but don't act on it yet.
@@ -127,6 +124,15 @@ def _build_llama_cpp_cmd(binary: str, entry: RegistryEntry, port: int, bind_host
         cmd.append("--reranking")
     elif entry.modality == "vision":
         cmd.extend(["--mmproj", _vision_projector(entry)])
+
+    if pooled:
+        # PRM-276: llama-server refuses any single input longer than n_ubatch for
+        # these modalities (it forces n_batch = n_ubatch = 512), so a 600-token
+        # rerank pair came back as a 500 while --ctx-size sat at 16384 unused.
+        # And its host-RAM prompt cache (8 GiB by default) saves every slot's KV
+        # to reuse prefixes that one-off chunks and pairs never repeat: it was
+        # 8 of the 11 GB each of these 0.6B models held.
+        cmd.extend(["--batch-size", "2048", "--ubatch-size", "2048", "--cache-ram", "0"])
 
     return cmd
 

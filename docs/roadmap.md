@@ -10065,3 +10065,94 @@ as a tier whose ceiling nothing enforces.
 authorization model for acting. Out — anything in the separate Web Chat UI (`ui:chat`, spec 013),
 which is a product surface for end users and not this; creating credentials, which stays a human
 admin's action under any design; and acting on another operator's behalf.
+
+## PRM-276 — Two 0.6B models do not need 11 GB each
+
+**Why**: `qwen3-embedding` (Q8_0, `--ctx-size 32768`) and `qwen3-reranker` (Q4_K_M,
+`--ctx-size 16384`) each sat at 11 GB of `phys_footprint` on 2026-10-25 — gpt-oss-20b is 12 GB.
+The suspicion was KV sized by `ctx-size × slots`. Measured, it is mostly something else.
+
+**Where the 11 GB is.** `footprint -p` splits it, and the bulk is not Metal:
+
+| | `MALLOC_LARGE` (host heap) | `VM_ALLOCATE` (Metal: KV + compute) |
+|---|---|---|
+| qwen3-embedding, live | 7,730 MB | 3,889 MB |
+| qwen3-reranker, live | 9,264 MB | 2,098 MB |
+| gpt-oss-20b, live (for comparison) | 9,018 MB | 3,200 MB |
+
+- The heap is llama-server's **host-RAM prompt cache** (`--cache-ram`, default 8192 MiB, upstream
+  PR 16391): on every new task it saves each idle slot's KV state so a later prompt sharing the
+  prefix can restore it. A chat model benefits; one-off document chunks and rerank pairs share no
+  prefix worth keeping. It fills and evicts — 2,287 `making room for prompt cache entry` lines in
+  one embedding run, 107 in the current reranker run — at ~10 MiB per ~110-token entry.
+- The Metal side is KV, and it is not multiplied by slots: `-np` is auto (4) with
+  `kv_unified = true`, so the KV holds `ctx-size` tokens in total, ~112 KiB/token f16 for Qwen3-0.6B
+  (28 layers × 8 KV heads × 128 × 2 × 2 B). 32768 → 3.5 GiB, 16384 → 1.75 GiB.
+
+**Measured on a throwaway instance** (same binary b10101 and GGUF, port 18190; the live ones
+untouched). Embedding, 1,000 requests of ~150 tokens, 8 concurrent, all 200:
+
+| embedding config | idle | after load |
+|---|---|---|
+| `--ctx-size 32768` (today) | 3.8 GB | **12 GB** — reproduces the live figure |
+| `--ctx-size 32768 --cache-ram 0` | 3.8 GB | 4.1 GB |
+| `--ctx-size 4096` | 0.7 GB | 9.5 GB |
+| `--ctx-size 4096 --cache-ram 0` | 0.7 GB | **1.0 GB** |
+| `--ctx-size 2048 --cache-ram 0` | 0.5 GB | 0.8 GB |
+
+Shrinking `ctx-size` alone saves the KV and leaves the cache to refill; the cache is the lever, and
+the instance that crashed on 2026-10-24 at `ctx-size 4096` was evicting too.
+
+Reranker, 400 requests × 4 pairs of ~385 tokens, 8 concurrent: `--ctx-size 16384` 2.3 GB,
+`4096 --cache-ram 0` 1.0 GB, `4096 --cache-ram 0 --ubatch-size 2048` 1.6 GB, the same at 8192
+2.1 GB. That load never filled the cache; Veritium's shape does — one query × 15 documents,
+**one request at a time**, 300 requests: `--ctx-size 16384` goes 2.0 → **10 GB** with 702
+evictions (the live 11 GB); the proposed config below stays at **1.6 GB**, 300/300. The same shape
+4-concurrent did not fill it and lost one request to the starvation noted below — so the cache
+fills under sequential traffic, which is what a document pipeline sends.
+
+**What these models actually receive** — per input, from the slot logs (`stop processing:
+n_tokens`), since `usage_events` counts per request and a request is an array or a query × N
+documents (Veritium: up to 2,190 tokens per embedding request, 16,640 per rerank request):
+
+| | inputs | p50 | p99 | max served |
+|---|---|---|---|---|
+| embedding, all runs | 9,070 | 107 | 273 | 493 (plus one 4,095 truncated at the old 4096) |
+| reranker, all runs | 11,222 | 207 | 441 | 492 |
+
+**The ceiling is not `ctx-size`, and it is rejecting traffic.** For embedding and rerank
+llama-server forces `n_batch = n_ubatch = 512` and refuses any single input above it. The
+reranker's 492 max is that wall: its current run **rejected 227 pairs of 524–1,050 tokens**
+(`input … is too large to process`). Veritium was the only rerank client that day, every one of
+its 336 rows in `usage_events` says `complete`, and none of the rejections appears there; the
+throwaway instance returns them as **HTTP 500**. With `--ubatch-size 2048 --batch-size 2048` the
+same ~1,000-token pairs score 10/10. So today's 16384/32768 buys nothing a request can use.
+
+**Decided 2026-10-25.** Every embedding and rerank model now starts with `--cache-ram 0
+--batch-size 2048 --ubatch-size 2048` (the `modality` branch of `_build_llama_cpp_cmd`, since both
+follow from what the model *is*; on CUDA they replace the 8192/1024 batch). `context_length` is set
+per instance in `registry.db`. Live once this branch is merged and the instances start; until then
+nothing running uses it.
+
+- embedding: `--ctx-size 4096` → **1.05 GB** measured as shipped, instead of 11. Its inputs top out
+  near 500 tokens, so 4096 holds several concurrent ones.
+- reranker: `--ctx-size 8192` → **2.1 GB** measured, instead of 11, and pairs up to 2,048 tokens
+  served instead of 500'd. 8192 rather than 4096 so four ~1,000-token pairs fit at once.
+
+**Against PRM-273** (the Metal heap-corruption crash, on its own branch): the two 2026-10-24 crash
+reports are one instance at `ctx-size 4096` with the cache full and evicting (up since 2026-10-06)
+and one at `32768` two minutes old with no evictions. `ctx-size` does not decide it, so shrinking
+it should neither cause nor cure it. `--cache-ram 0` removes the per-task KV save/restore and its
+~10 MiB malloc/free churn — the heap libmalloc finds corrupt — which plausibly lowers exposure and
+proves nothing; it does not replace PRM-273's TEI option.
+
+**Seen and not chased**: in both ubatch-512 reranker runs the first request's tasks sat in their
+slots for the whole run (211 s) and finished only when load stopped — starvation under sustained
+multi-pair load; none at `--ubatch-size 2048`. And PRM-265 should know that a llama.cpp text
+model can carry up to 8 GiB of this cache on top of anything a weights-based estimate predicts —
+gpt-oss's 12 GB is 9 GB of it.
+
+**Scope**: in — the two flags in the modality branch, the two `context_length` edits, a check of
+`footprint` and of oversize pairs after restart. Out — gpt-oss and the other chat models, where the
+cache does earn something and the trade is a different decision; `-np` (auto is fine at these
+sizes); the starvation, unless it survives `--ubatch-size 2048` in production.
