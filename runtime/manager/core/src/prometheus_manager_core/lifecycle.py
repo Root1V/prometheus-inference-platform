@@ -790,12 +790,11 @@ def stop_instance(
 
     logger.info("lifecycle.stop", model_id=model_id, pid=pid)
     proc.send_signal(signal.SIGTERM)
-    try:
-        proc.wait(timeout=config.server.stop_timeout_s)
-    except psutil.TimeoutExpired:
+    if not _wait_for_exit(proc, config.server.stop_timeout_s):
         logger.warning("lifecycle.sigkill", model_id=model_id, pid=pid)
         proc.kill()
-        proc.wait(timeout=5)
+        if not _wait_for_exit(proc, 5):
+            raise LifecycleError(f"{model_id} (PID {pid}) did not exit after SIGKILL")
 
     pid_path.unlink(missing_ok=True)
     _clear_error_marker(config.resolved_pid_dir, model_id)
@@ -804,6 +803,25 @@ def stop_instance(
 
     with contextlib.suppress(Exception):
         registry.update(model_id, discovery=False)
+
+
+def _wait_for_exit(proc: psutil.Process, timeout: float) -> bool:
+    """True once proc has exited, reaped or not.
+
+    PRM-276: wait() can only reap our own children. An instance another process
+    spawned — the running manager's, when a script restarts it — exits and stays
+    a zombie until that parent reaps it, and wait() counts a zombie as alive. So
+    stop raised and left the pidfile naming the zombie, and the next start
+    refused with "already running": the instance stayed down.
+    """
+    try:
+        proc.wait(timeout=timeout)
+    except psutil.TimeoutExpired:
+        try:
+            return proc.status() == psutil.STATUS_ZOMBIE
+        except psutil.NoSuchProcess:
+            return True
+    return True
 
 
 def pause_instance(model_id: str, config: ManagerConfig) -> None:
