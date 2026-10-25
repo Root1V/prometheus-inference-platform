@@ -6,6 +6,8 @@ AC-4, AC-5, AC-6, AC-6b, AC-6c, AC-6d, AC-7, AC-8, AC-9, AC-10.
 from __future__ import annotations
 
 import signal
+import subprocess
+import sys
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -651,6 +653,44 @@ class TestACStop:
             stop_instance("test-model", default_config, populated_registry, _require_running=False)
 
         assert not marker.exists()
+
+    def test_stop_treats_a_zombie_of_another_parent_as_stopped(
+        self, default_config, populated_registry
+    ):
+        """PRM-276: an instance the running manager spawned, stopped from another
+        process, exits but stays a zombie until the manager reaps it. psutil's
+        wait() counts that as alive, so stop raised and left the pidfile naming
+        the zombie — and the next start refused with "already running"."""
+        # A real zombie: a parent that spawns a child and never reaps it.
+        parent = subprocess.Popen(
+            [
+                sys.executable,
+                "-c",
+                "import subprocess, sys, time\n"
+                "c = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)'])\n"
+                "print(c.pid, flush=True)\n"
+                "time.sleep(60)\n",
+            ],
+            stdout=subprocess.PIPE,
+            text=True,
+        )
+        try:
+            child_pid = int(parent.stdout.readline())
+            default_config.server.stop_timeout_s = 1
+            default_config.resolved_pid_dir.mkdir(parents=True, exist_ok=True)
+            pid_file = default_config.resolved_pid_dir / "test-model.pid"
+            pid_file.write_text(str(child_pid))
+
+            with patch(
+                "prometheus_manager_core.lifecycle._find_running",
+                return_value=MagicMock(pid=child_pid, alias="test-model"),
+            ):
+                stop_instance("test-model", default_config, populated_registry)
+
+            assert not pid_file.exists()
+        finally:
+            parent.kill()
+            parent.wait()
 
 
 # ── AC-7: SIGKILL fallback ─────────────────────────────────────────────────────
