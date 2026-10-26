@@ -486,7 +486,12 @@ class Registry:
         base = model_id
         with self._lock:
             taken = set(self._instances)
-        position = 2  # the first instance is normally the model id itself
+        # PRM-281: the first instance *is* the model id when that is free. This
+        # returned "-2" even for a model with no instance at all, so the first
+        # one registered from the dashboard was named as if it were the second.
+        if base not in taken:
+            return base
+        position = 2
         while f"{base}-{position}" in taken:
             position += 1
         return f"{base}-{position}"

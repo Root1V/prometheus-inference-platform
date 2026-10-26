@@ -1,7 +1,7 @@
 import { X } from "lucide-react";
 import { useState, type FormEvent, type ReactNode } from "react";
 import { createPortal } from "react-dom";
-import { useRegisterModel, useUpdateModel } from "../api/instances";
+import { useInstanceDefaults, useRegisterModel, useUpdateModel } from "../api/instances";
 import { useToast } from "../context/ToastContext";
 import { cn } from "../lib/cn";
 import { getErrorMessage } from "../lib/errors";
@@ -52,25 +52,6 @@ interface FormState {
   hf_sha256: string;
 }
 
-function initialState(defaultNode: string): FormState {
-  return {
-    slug: "",
-    node: defaultNode,
-    id: "",
-    port: "",
-    path: "",
-    context_length: "",
-    family: "",
-    quantization: "",
-    backend: "llama_cpp",
-    modality: "text",
-    mmproj_path: "",
-    discovery: false,
-    hf_repo: "",
-    hf_sha256: "",
-  };
-}
-
 function stateFromInstance(instance: InstanceEntry): FormState {
   return {
     slug: instance.model_slug,
@@ -116,6 +97,19 @@ function Field({
   );
 }
 
+function SummaryRow({ label, children }: { label: string; children: ReactNode }) {
+  return (
+    <>
+      <dt className="text-text-muted">{label}</dt>
+      <dd className="min-w-0 break-all font-mono text-text">{children}</dd>
+    </>
+  );
+}
+
+/** A catalog entry is unique per node, not globally — the same id can be
+ * downloaded on two nodes — so the picker keys on both. */
+const sourceKey = (m: ModelCatalogEntry) => `${m.node}::${m.id}`;
+
 export function RegisterModelModal({
   open,
   nodes,
@@ -123,124 +117,146 @@ export function RegisterModelModal({
   editing = null,
   downloadedModels = [],
 }: RegisterModelModalProps) {
+  if (!open) return null;
+  return editing ? (
+    <EditInstanceForm instance={editing} nodes={nodes} onClose={onClose} />
+  ) : (
+    <NewInstanceForm nodes={nodes} downloadedModels={downloadedModels} onClose={onClose} />
+  );
+}
+
+function ModalShell({
+  title,
+  onClose,
+  children,
+}: {
+  title: string;
+  onClose: () => void;
+  children: ReactNode;
+}) {
+  return createPortal(
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 px-4 py-8">
+      <div className="max-h-full w-full max-w-lg overflow-y-auto rounded-xl bg-surface p-6 shadow-lg">
+        <div className="mb-4 flex items-center justify-between">
+          <h2 className="text-lg font-semibold text-text">{title}</h2>
+          <button type="button" onClick={onClose} aria-label="Close">
+            <X size={18} className="text-text-muted" />
+          </button>
+        </div>
+        {children}
+      </div>
+    </div>,
+    document.body,
+  );
+}
+
+function FormButtons({
+  onClose,
+  isPending,
+  label,
+  disabled,
+}: {
+  onClose: () => void;
+  isPending: boolean;
+  label: string;
+  disabled?: boolean;
+}) {
+  return (
+    <div className="flex justify-end gap-3 pt-2">
+      <button
+        type="button"
+        onClick={onClose}
+        className="rounded-lg border border-border px-4 py-2 text-sm font-medium text-text hover:bg-background"
+      >
+        Cancel
+      </button>
+      <button
+        type="submit"
+        disabled={isPending || disabled}
+        className="rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:opacity-90 disabled:opacity-50"
+      >
+        {isPending ? "Saving…" : label}
+      </button>
+    </div>
+  );
+}
+
+/**
+ * PRM-281: picking the model is the whole form. Everything else either
+ * describes the file (path, family, quantization, modality — from the catalog)
+ * or has an answer the node can work out (id, port, context, engine — from
+ * `instance-defaults`). The three that are genuinely a choice stay one click
+ * away under "Adjust"; left blank, the node's answer is what gets registered.
+ */
+function NewInstanceForm({
+  nodes,
+  downloadedModels,
+  onClose,
+}: {
+  nodes: Node[];
+  downloadedModels: ModelCatalogEntry[];
+  onClose: () => void;
+}) {
   const { showToast } = useToast();
   const registerModel = useRegisterModel();
-  const updateModel = useUpdateModel();
-  const isEditing = editing !== null;
-  const [form, setForm] = useState<FormState>(() =>
-    editing ? stateFromInstance(editing) : initialState(""),
-  );
-  const [selectedSourceId, setSelectedSourceId] = useState("");
+  const [selectedKey, setSelectedKey] = useState("");
+  const [adjusting, setAdjusting] = useState(false);
+  const [port, setPort] = useState("");
+  const [contextLength, setContextLength] = useState("");
+  const [backendChoice, setBackendChoice] = useState<Backend | "">("");
+  // PRM-281: on by default. An instance nobody can discover receives no
+  // traffic, which is almost never what registering one is for.
+  const [discovery, setDiscovery] = useState(true);
 
-  if (!open) return null;
+  const source = downloadedModels.find((m) => sourceKey(m) === selectedKey) ?? null;
+  const node = source?.node ?? "";
+  const defaultsQuery = useInstanceDefaults(node, source?.id ?? "");
+  const defaults = defaultsQuery.data ?? null;
 
-  // Nodes load asynchronously after this component mounts — fall back to the
-  // first available node until the operator picks one explicitly. Derived
-  // during render rather than synced via an effect (no extra render needed).
-  const selectedNode = form.node || nodes[0]?.name || "";
-  // PRM-133: same rule as AddInstanceModal — the engines this node declared,
-  // narrowed to the ones this build can launch. Both forms create an instance
-  // on a node, so both have to obey the node's list; leaving one of them
-  // unfiltered would be the "fixed at one call site" shape all over again.
-  const availableEngines = enginesAvailableOn(
-    nodes.find((n) => n.name === selectedNode)?.engines,
-  );
-  const engine = availableEngines.includes(form.backend) ? form.backend : (availableEngines[0] ?? null);
-  const isPending = registerModel.isPending || updateModel.isPending;
-  // A downloaded model's file only exists on its own node — offering one
-  // from a different node would register a path that isn't there.
-  const modelsOnNode = downloadedModels.filter((m) => m.node === selectedNode);
-
-  const update = <K extends keyof FormState>(key: K, value: FormState[K]) =>
-    setForm((current) => ({ ...current, [key]: value }));
-
-  function handleSelectModel(sourceId: string) {
-    setSelectedSourceId(sourceId);
-    const source = modelsOnNode.find((m) => m.id === sourceId);
-    if (!source) return;
-    // PRM-108: modality used to be excluded here, on the reasoning that it was
-    // a per-instance choice rather than a fact about the file. That was wrong,
-    // and it cost us: a reranker registered as "text" served chat requests
-    // with confident nonsense for weeks. Modality is a property of the weights
-    // (RM-70 put it on the catalog entry for that reason) and the catalog now
-    // derives it from the file when the file declares one. The operator can
-    // still change it below — for a vision or image model the file says
-    // nothing, so their "text" is a default, not an answer.
-    setForm((current) => ({
-      ...current,
-      path: source.path,
-      modality: source.modality || current.modality,
-      family: source.family,
-      quantization: source.quantization,
-      mmproj_path: source.mmproj_path,
-      hf_repo: source.hf_repo,
-      hf_sha256: source.hf_sha256,
-    }));
-  }
+  // PRM-133: the engines this node declared, narrowed to the ones this build
+  // can launch — the operator's pick, else the engine an existing instance of
+  // this model runs on, else the first the node offers.
+  const availableEngines = enginesAvailableOn(nodes.find((n) => n.name === node)?.engines);
+  const preferred = backendChoice || defaults?.backend;
+  const engine =
+    preferred && availableEngines.includes(preferred) ? preferred : (availableEngines[0] ?? null);
+  // Without defaults (a node not yet running PRM-281, or an error) the port
+  // has nowhere to come from, so the adjust fields open and it is required.
+  const defaultsFailed = defaultsQuery.isError;
+  const showAdjust = adjusting || defaultsFailed;
 
   const handleSubmit = (event: FormEvent) => {
     event.preventDefault();
-    if (!selectedNode) {
-      showToast("Select a node", "error");
-      return;
-    }
-    if (!isEditing && !selectedSourceId) {
+    if (!source) {
       showToast("Select a model", "error");
       return;
     }
-    // PRM-133: `engine`, not `form.backend`. The select renders `engine` — the
-    // node's list may not contain what the form is holding — so submitting
-    // `form.backend` would send an engine the operator was never shown, on a
-    // node that declared it does not have it.
     if (engine === null) {
-      showToast(`${selectedNode} has no inference engine declared.`, "error");
+      showToast(`${node} has no inference engine declared.`, "error");
       return;
     }
-
-    if (isEditing) {
-      const body: UpdateModelRequest = {
-        port: Number(form.port),
-        backend: engine,
-        // PRM-109: not modality — the server refuses it on an instance now.
-        discovery: form.discovery,
-        path: form.path,
-        context_length: Number(form.context_length) || undefined,
-        family: form.family,
-        quantization: form.quantization,
-        mmproj_path: form.modality === "vision" ? form.mmproj_path : "",
-        hf_repo: form.hf_repo,
-        hf_sha256: form.hf_sha256,
-      };
-      updateModel.mutate(
-        { node: selectedNode, modelId: form.id, data: body },
-        {
-          onSuccess: () => {
-            showToast(`${form.id} updated`, "success");
-            onClose();
-          },
-          onError: (error) => showToast(getErrorMessage(error), "error"),
-        },
-      );
+    const chosenPort = Number(port) || defaults?.port;
+    if (!chosenPort) {
+      showToast("Set a port", "error");
       return;
     }
-
+    // No `id`: the node derives it when the row is written, so two people
+    // registering at once cannot both take the one this form displayed.
     const body: RegisterModelRequest = {
-      id: form.id,
-      model_id: selectedSourceId,
-      port: Number(form.port),
+      model_id: source.id,
+      port: chosenPort,
       backend: engine,
       // PRM-110: not modality — the server takes it from the catalog entry
       // this instance references.
-      discovery: form.discovery,
+      discovery,
     };
-    if (form.context_length) body.context_length = Number(form.context_length);
+    if (contextLength) body.context_length = Number(contextLength);
 
     registerModel.mutate(
-      { node: selectedNode, data: body },
+      { node, data: body },
       {
-        onSuccess: () => {
-          showToast(`${body.id} registered`, "success");
-          setForm(initialState(""));
+        onSuccess: (created) => {
+          showToast(`${created.id} registered on ${node}`, "success");
           onClose();
         },
         onError: (error) => showToast(getErrorMessage(error), "error"),
@@ -248,120 +264,125 @@ export function RegisterModelModal({
     );
   };
 
-  return createPortal(
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 px-4 py-8">
-      <div className="max-h-full w-full max-w-lg overflow-y-auto rounded-xl bg-surface p-6 shadow-lg">
-        <div className="mb-4 flex items-center justify-between">
-          <h2 className="text-lg font-semibold text-text">
-            {isEditing ? `Edit ${form.id}` : "Register model"}
-          </h2>
-          <button type="button" onClick={onClose} aria-label="Close">
-            <X size={18} className="text-text-muted" />
-          </button>
-        </div>
-        <form onSubmit={handleSubmit} className="space-y-4">
-          <div className="grid grid-cols-2 gap-3">
-            <Field label="Node" required>
-              <select
-                value={selectedNode}
-                onChange={(e) => {
-                  update("node", e.target.value);
-                  setSelectedSourceId("");
-                }}
-                required
-                disabled={isEditing}
-                className={cn(inputClass, isEditing && "cursor-not-allowed opacity-60")}
-              >
-                <option value="" disabled>
-                  Select node
+  // A node without PRM-281 answers 404 here and still defaults a blank context
+  // to 4096 on registration, so the copy must not promise the model's.
+  const contextSummary = contextLength
+    ? Number(contextLength).toLocaleString("en-US")
+    : defaults
+      ? `${defaults.context_length.toLocaleString("en-US")} ${
+          defaults.context_from_model ? "(the model's)" : "(the model declares none)"
+        }`
+      : defaultsFailed
+        ? "the node's default"
+        : "…";
+
+  return (
+    <ModalShell title="Register model" onClose={onClose}>
+      <form onSubmit={handleSubmit} className="space-y-4">
+        <Field label="Model" required>
+          {downloadedModels.length === 0 ? (
+            <p className="rounded-lg border border-dashed border-border px-3 py-2 text-xs text-text-muted">
+              No downloaded models yet — download one from the Models page first.
+            </p>
+          ) : (
+            <select
+              value={selectedKey}
+              onChange={(e) => {
+                setSelectedKey(e.target.value);
+                // A different model on a different node: the old overrides
+                // were answers to a different question.
+                setPort("");
+                setContextLength("");
+                setBackendChoice("");
+              }}
+              required
+              className={inputClass}
+            >
+              <option value="" disabled>
+                Select a downloaded model
+              </option>
+              {downloadedModels.map((m) => (
+                <option key={sourceKey(m)} value={sourceKey(m)}>
+                  {m.id} · {m.node} — {m.family || "?"} · {m.quantization || "?"}
                 </option>
-                {nodes.map((n) => (
-                  <option key={n.name} value={n.name}>
-                    {n.name}
-                  </option>
-                ))}
-              </select>
-            </Field>
-            <Field label="ID" required>
-              <input
-                value={form.id}
-                onChange={(e) => update("id", e.target.value)}
-                required
-                disabled={isEditing}
-                pattern="^[a-z0-9][a-z0-9_-]{1,62}[a-z0-9]$"
-                title="Lowercase letters, digits, hyphens, underscores"
-                className={cn(inputClass, isEditing && "cursor-not-allowed opacity-60")}
-              />
-            </Field>
-            {/* PRM-112: the public name moved to the Models page, alongside
-                name, family and modality. It names the *model* — every instance
-                of it answers to the same string — so editing it from one
-                instance was editing the wrong thing, the same mistake PRM-109
-                found with modality. Shown here read-only because it is the one
-                thing a caller actually sends. */}
-            {isEditing && (
-              <Field
-                label="Public name"
-                hint="Belongs to the model — set it from the Models page."
+              ))}
+            </select>
+          )}
+        </Field>
+
+        {source && (
+          <div className="rounded-lg border border-border bg-background p-3">
+            {defaultsFailed && (
+              <p className="mb-2 text-xs text-amber-600">
+                {node} could not suggest a port ({getErrorMessage(defaultsQuery.error)}). Set one
+                below.
+              </p>
+            )}
+            <dl className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-1.5 text-xs">
+              <SummaryRow label="ID">{defaults?.id ?? (defaultsFailed ? "derived on save" : "…")}</SummaryRow>
+              <SummaryRow label="Node">{node}</SummaryRow>
+              <SummaryRow label="Port">
+                {port || defaults?.port || (defaultsFailed ? "set below" : "…")}
+              </SummaryRow>
+              <SummaryRow label="Context">{contextSummary}</SummaryRow>
+              <SummaryRow label="Engine">{engine ? ENGINE_LABELS[engine] : "none declared"}</SummaryRow>
+              <SummaryRow label="Modality">{source.modality}</SummaryRow>
+              <SummaryRow label="Quantization">{source.quantization || "—"}</SummaryRow>
+              <SummaryRow label="File">{source.path || "—"}</SummaryRow>
+            </dl>
+            {!defaultsFailed && (
+              <button
+                type="button"
+                onClick={() => setAdjusting((v) => !v)}
+                aria-expanded={adjusting}
+                className="mt-3 text-xs font-medium text-primary hover:underline"
               >
-                <input value={form.slug} readOnly disabled className={inputClass} />
-              </Field>
+                {adjusting ? "Hide port, context and engine" : "Adjust port, context or engine"}
+              </button>
             )}
-            {!isEditing && (
-              <Field label="Model" required>
-                {modelsOnNode.length === 0 ? (
-                  <p className="rounded-lg border border-dashed border-border px-3 py-2 text-xs text-text-muted">
-                    No downloaded models on this node yet — download one from the Models page
-                    first.
-                  </p>
-                ) : (
-                  <select
-                    value={selectedSourceId}
-                    onChange={(e) => handleSelectModel(e.target.value)}
-                    required
-                    className={inputClass}
-                  >
-                    <option value="" disabled>
-                      Select a downloaded model
-                    </option>
-                    {modelsOnNode.map((m) => (
-                      <option key={m.id} value={m.id}>
-                        {m.id} — {m.family || "?"} · {m.quantization || "?"}
-                      </option>
-                    ))}
-                  </select>
-                )}
-              </Field>
-            )}
-            <Field label="Port" required>
+          </div>
+        )}
+
+        {source && showAdjust && (
+          <div className="grid grid-cols-2 gap-3">
+            <Field label="Port" required={defaultsFailed}>
               <input
                 type="number"
                 min={1024}
                 max={65535}
-                value={form.port}
-                onChange={(e) => update("port", e.target.value)}
-                required
+                value={port}
+                placeholder={defaults ? String(defaults.port) : undefined}
+                onChange={(e) => setPort(e.target.value)}
+                required={defaultsFailed}
                 className={inputClass}
               />
             </Field>
-            <Field label="Context length">
+            <Field
+              label="Context length"
+              hint={
+                defaults
+                  ? `Blank uses ${defaults.context_from_model ? "the model's" : "the default"} ${defaults.context_length.toLocaleString("en-US")}.`
+                  : "Blank uses the node's default."
+              }
+            >
               <input
                 type="number"
-                placeholder="4096"
-                value={form.context_length}
-                onChange={(e) => update("context_length", e.target.value)}
+                min={1}
+                value={contextLength}
+                placeholder={defaults ? String(defaults.context_length) : undefined}
+                onChange={(e) => setContextLength(e.target.value)}
                 className={inputClass}
               />
             </Field>
-            <Field label="Backend">
+            <Field label="Engine">
               {engine === null ? (
                 <p className="rounded-lg border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-sm text-amber-600">
-                  {selectedNode} declared no inference engines. Add one on the Nodes page.
+                  {node} declared no inference engines. Add one on the Nodes page.
                 </p>
               ) : (
                 <select
                   value={engine}
-                  onChange={(e) => update("backend", e.target.value as Backend)}
+                  onChange={(e) => setBackendChoice(e.target.value as Backend)}
                   className={inputClass}
                 >
                   {availableEngines.map((b) => (
@@ -372,95 +393,210 @@ export function RegisterModelModal({
                 </select>
               )}
             </Field>
-            {/* PRM-110: read-only in both modes. PRM-109 left this editable
-                while "registering", on the belief that the call created the
-                model too — it does not: it sends `model_id` and creates an
-                instance of a model already in the catalog. So there was always
-                something to inherit from, and offering a dropdown here only
-                ever let someone disagree with it. The pencil on the Models page
-                is where modality changes. */}
-            <Field
-              label="Modality"
-              hint="Belongs to the model — change it from the Models page so every instance agrees."
-            >
-              <input value={form.modality} readOnly disabled className={inputClass} />
-            </Field>
-            <Field label="Family">
-              <input
-                value={form.family}
-                onChange={(e) => update("family", e.target.value)}
-                disabled={!isEditing}
-                placeholder={isEditing ? undefined : "From the selected model"}
-                className={cn(inputClass, !isEditing && "cursor-not-allowed opacity-60")}
-              />
-            </Field>
-            <Field label="Quantization">
-              <input
-                value={form.quantization}
-                onChange={(e) => update("quantization", e.target.value)}
-                disabled={!isEditing}
-                placeholder={isEditing ? undefined : "From the selected model"}
-                className={cn(inputClass, !isEditing && "cursor-not-allowed opacity-60")}
-              />
-            </Field>
-            <Field label="Path (local .gguf)">
-              <input
-                value={form.path}
-                onChange={(e) => update("path", e.target.value)}
-                disabled={!isEditing}
-                placeholder={isEditing ? undefined : "From the selected model"}
-                className={cn(inputClass, !isEditing && "cursor-not-allowed opacity-60")}
-              />
-            </Field>
-            {form.modality === "vision" && (
-              <Field label="mmproj path">
-                <input
-                  value={form.mmproj_path}
-                  onChange={(e) => update("mmproj_path", e.target.value)}
-                  disabled={!isEditing}
-                  placeholder={isEditing ? undefined : "From the selected model"}
-                  className={cn(inputClass, !isEditing && "cursor-not-allowed opacity-60")}
-                />
-              </Field>
-            )}
           </div>
-          {!isEditing && (
-            <p className="text-xs text-text-muted">
-              Don't see the model you want? Download it from the{" "}
-              <a href="#/models" className="text-primary hover:underline">
-                Models
-              </a>{" "}
-              page first — it searches Hugging Face, shows the model card, and registers the
-              finished download automatically.
-            </p>
-          )}
-          <label className="flex items-center gap-2 text-sm text-text">
+        )}
+
+        <p className="text-xs text-text-muted">
+          Don't see the model you want? Download it from the{" "}
+          <a href="#/models" className="text-primary hover:underline">
+            Models
+          </a>{" "}
+          page first — it searches Hugging Face, shows the model card, and registers the finished
+          download automatically.
+        </p>
+        <label className="flex items-center gap-2 text-sm text-text">
+          <input
+            type="checkbox"
+            checked={discovery}
+            onChange={(e) => setDiscovery(e.target.checked)}
+          />
+          Expose via gateway discovery
+        </label>
+        <FormButtons
+          onClose={onClose}
+          isPending={registerModel.isPending}
+          label="Register"
+          disabled={!source || engine === null || defaultsQuery.isLoading}
+        />
+      </form>
+    </ModalShell>
+  );
+}
+
+function EditInstanceForm({
+  instance,
+  nodes,
+  onClose,
+}: {
+  instance: InstanceEntry;
+  nodes: Node[];
+  onClose: () => void;
+}) {
+  const { showToast } = useToast();
+  const updateModel = useUpdateModel();
+  const [form, setForm] = useState<FormState>(() => stateFromInstance(instance));
+
+  // PRM-133: same rule as AddInstanceModal — the engines this node declared,
+  // narrowed to the ones this build can launch. Both forms create an instance
+  // on a node, so both have to obey the node's list; leaving one of them
+  // unfiltered would be the "fixed at one call site" shape all over again.
+  const availableEngines = enginesAvailableOn(
+    nodes.find((n) => n.name === form.node)?.engines,
+  );
+  const engine = availableEngines.includes(form.backend) ? form.backend : (availableEngines[0] ?? null);
+
+  const update = <K extends keyof FormState>(key: K, value: FormState[K]) =>
+    setForm((current) => ({ ...current, [key]: value }));
+
+  const handleSubmit = (event: FormEvent) => {
+    event.preventDefault();
+    // PRM-133: `engine`, not `form.backend`. The select renders `engine` — the
+    // node's list may not contain what the form is holding — so submitting
+    // `form.backend` would send an engine the operator was never shown, on a
+    // node that declared it does not have it.
+    if (engine === null) {
+      showToast(`${form.node} has no inference engine declared.`, "error");
+      return;
+    }
+    const body: UpdateModelRequest = {
+      port: Number(form.port),
+      backend: engine,
+      // PRM-109: not modality — the server refuses it on an instance now.
+      discovery: form.discovery,
+      path: form.path,
+      context_length: Number(form.context_length) || undefined,
+      family: form.family,
+      quantization: form.quantization,
+      mmproj_path: form.modality === "vision" ? form.mmproj_path : "",
+      hf_repo: form.hf_repo,
+      hf_sha256: form.hf_sha256,
+    };
+    updateModel.mutate(
+      { node: form.node, modelId: form.id, data: body },
+      {
+        onSuccess: () => {
+          showToast(`${form.id} updated`, "success");
+          onClose();
+        },
+        onError: (error) => showToast(getErrorMessage(error), "error"),
+      },
+    );
+  };
+
+  return (
+    <ModalShell title={`Edit ${form.id}`} onClose={onClose}>
+      <form onSubmit={handleSubmit} className="space-y-4">
+        <div className="grid grid-cols-2 gap-3">
+          <Field label="Node" required>
+            <select value={form.node} disabled className={cn(inputClass, "cursor-not-allowed opacity-60")}>
+              <option value={form.node}>{form.node}</option>
+            </select>
+          </Field>
+          <Field label="ID" required>
+            <input value={form.id} disabled className={cn(inputClass, "cursor-not-allowed opacity-60")} />
+          </Field>
+          {/* PRM-112: the public name moved to the Models page, alongside
+              name, family and modality. It names the *model* — every instance
+              of it answers to the same string — so editing it from one
+              instance was editing the wrong thing, the same mistake PRM-109
+              found with modality. Shown here read-only because it is the one
+              thing a caller actually sends. */}
+          <Field label="Public name" hint="Belongs to the model — set it from the Models page.">
+            <input value={form.slug} readOnly disabled className={inputClass} />
+          </Field>
+          <Field label="Port" required>
             <input
-              type="checkbox"
-              checked={form.discovery}
-              onChange={(e) => update("discovery", e.target.checked)}
+              type="number"
+              min={1024}
+              max={65535}
+              value={form.port}
+              onChange={(e) => update("port", e.target.value)}
+              required
+              className={inputClass}
             />
-            Expose via gateway discovery
-          </label>
-          <div className="flex justify-end gap-3 pt-2">
-            <button
-              type="button"
-              onClick={onClose}
-              className="rounded-lg border border-border px-4 py-2 text-sm font-medium text-text hover:bg-background"
-            >
-              Cancel
-            </button>
-            <button
-              type="submit"
-              disabled={isPending}
-              className="rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:opacity-90 disabled:opacity-50"
-            >
-              {isPending ? "Saving…" : isEditing ? "Save changes" : "Register"}
-            </button>
-          </div>
-        </form>
-      </div>
-    </div>,
-    document.body,
+          </Field>
+          <Field label="Context length">
+            <input
+              type="number"
+              placeholder="4096"
+              value={form.context_length}
+              onChange={(e) => update("context_length", e.target.value)}
+              className={inputClass}
+            />
+          </Field>
+          <Field label="Backend">
+            {engine === null ? (
+              <p className="rounded-lg border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-sm text-amber-600">
+                {form.node} declared no inference engines. Add one on the Nodes page.
+              </p>
+            ) : (
+              <select
+                value={engine}
+                onChange={(e) => update("backend", e.target.value as Backend)}
+                className={inputClass}
+              >
+                {availableEngines.map((b) => (
+                  <option key={b} value={b}>
+                    {ENGINE_LABELS[b]}
+                  </option>
+                ))}
+              </select>
+            )}
+          </Field>
+          {/* PRM-110: read-only. PRM-109 left this editable while
+              "registering", on the belief that the call created the model too
+              — it does not: it sends `model_id` and creates an instance of a
+              model already in the catalog. So there was always something to
+              inherit from, and offering a dropdown here only ever let someone
+              disagree with it. The pencil on the Models page is where
+              modality changes. */}
+          <Field
+            label="Modality"
+            hint="Belongs to the model — change it from the Models page so every instance agrees."
+          >
+            <input value={form.modality} readOnly disabled className={inputClass} />
+          </Field>
+          <Field label="Family">
+            <input
+              value={form.family}
+              onChange={(e) => update("family", e.target.value)}
+              className={inputClass}
+            />
+          </Field>
+          <Field label="Quantization">
+            <input
+              value={form.quantization}
+              onChange={(e) => update("quantization", e.target.value)}
+              className={inputClass}
+            />
+          </Field>
+          <Field label="Path (local .gguf)">
+            <input
+              value={form.path}
+              onChange={(e) => update("path", e.target.value)}
+              className={inputClass}
+            />
+          </Field>
+          {form.modality === "vision" && (
+            <Field label="mmproj path">
+              <input
+                value={form.mmproj_path}
+                onChange={(e) => update("mmproj_path", e.target.value)}
+                className={inputClass}
+              />
+            </Field>
+          )}
+        </div>
+        <label className="flex items-center gap-2 text-sm text-text">
+          <input
+            type="checkbox"
+            checked={form.discovery}
+            onChange={(e) => update("discovery", e.target.checked)}
+          />
+          Expose via gateway discovery
+        </label>
+        <FormButtons onClose={onClose} isPending={updateModel.isPending} label="Save changes" />
+      </form>
+    </ModalShell>
   );
 }

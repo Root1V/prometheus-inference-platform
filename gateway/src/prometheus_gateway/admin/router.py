@@ -19,6 +19,7 @@ POST   /admin/api/nodes/{node_id}/activate                   — re-probe and ac
 POST   /admin/api/nodes/{node_id}/deactivate                 — manually mark inactive (no probe, on-demand)
 GET    /admin/api/instances                                 — aggregated across all nodes
 POST   /admin/api/nodes/{node}/models                        — register
+GET    /admin/api/nodes/{node}/models/{model_id}/instance-defaults — what a new instance gets (PRM-281)
 PATCH  /admin/api/nodes/{node}/models/{model_id}               — update fields
 DELETE /admin/api/nodes/{node}/models/{model_id}              — deregister
 GET    /admin/api/nodes/{node}/models/search                 — search Hugging Face (RM-48)
@@ -544,6 +545,24 @@ def create_admin_router(manager_client: ManagerApiClient) -> APIRouter:
 
         try:
             resp = await manager_client.post(node_url, "/v1/backends", json=body)
+        except Exception as exc:
+            return _proxy_error_response(request, exc)
+        return _passthrough(resp)
+
+    @router.get("/admin/api/nodes/{node}/models/{model_id}/instance-defaults")
+    async def get_instance_defaults(node: str, model_id: str, request: Request) -> Response:
+        """PRM-281: the id, port, context and engine a new instance of this
+        model gets if the operator only picks the model. The node works them
+        out — only it knows which ports are taken on its host."""
+        if (forbidden := _require_scope(request, "admin:fleet:read")) is not None:
+            return forbidden
+        node_url = await _resolve_node(request, node)
+        if node_url is None:
+            return _problem(
+                request, 400, "unknown-node", "Unknown Node", f"Node {node!r} is not configured."
+            )
+        try:
+            resp = await manager_client.get(node_url, f"/v1/models/{model_id}/instance-defaults")
         except Exception as exc:
             return _proxy_error_response(request, exc)
         return _passthrough(resp)

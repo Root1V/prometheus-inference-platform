@@ -4,6 +4,7 @@ import type { InstancesResponse } from "../types/api";
 import type { Node } from "../types/node";
 import type {
   InstanceActionResult,
+  InstanceDefaults,
   InstanceEntry,
   RegisterModelRequest,
   UpdateModelRequest,
@@ -52,6 +53,25 @@ function useInstanceAction(action: "start" | "stop" | "restart") {
 export const useStartInstance = () => useInstanceAction("start");
 export const useStopInstance = () => useInstanceAction("stop");
 export const useRestartInstance = () => useInstanceAction("restart");
+
+/** PRM-281: the id, port, context and engine a new instance of `modelId` on
+ * `node` would get. Not cached across openings — a port free a minute ago may
+ * not be now. */
+export function useInstanceDefaults(node: string, modelId: string) {
+  return useQuery({
+    queryKey: ["instance-defaults", node, modelId],
+    queryFn: async () =>
+      (
+        await apiClient.get<InstanceDefaults>(
+          `/nodes/${node}/models/${modelId}/instance-defaults`,
+        )
+      ).data,
+    enabled: Boolean(node && modelId),
+    staleTime: 0,
+    gcTime: 0,
+    retry: false,
+  });
+}
 
 export function useRegisterModel() {
   const queryClient = useQueryClient();
