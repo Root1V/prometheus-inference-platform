@@ -220,10 +220,9 @@ function NewInstanceForm({
   const preferred = backendChoice || defaults?.backend;
   const engine =
     preferred && availableEngines.includes(preferred) ? preferred : (availableEngines[0] ?? null);
-  // Without defaults (a node not yet running PRM-281, or an error) the port
-  // has nowhere to come from, so the adjust fields open and it is required.
+  // Without a preview (a node not yet running PRM-281, or an error) nothing
+  // is asked for anyway: whatever is left blank, the node chooses on save.
   const defaultsFailed = defaultsQuery.isError;
-  const showAdjust = adjusting || defaultsFailed;
 
   const handleSubmit = (event: FormEvent) => {
     event.preventDefault();
@@ -235,16 +234,13 @@ function NewInstanceForm({
       showToast(`${node} has no inference engine declared.`, "error");
       return;
     }
-    const chosenPort = Number(port) || defaults?.port;
-    if (!chosenPort) {
-      showToast("Set a port", "error");
-      return;
-    }
     // No `id`: the node derives it when the row is written, so two people
-    // registering at once cannot both take the one this form displayed.
+    // registering at once cannot both take the one this form displayed. A
+    // blank port is left out for the same reason — the node picks one then.
+    const chosenPort = Number(port) || defaults?.port;
     const body: RegisterModelRequest = {
       model_id: source.id,
-      port: chosenPort,
+      ...(chosenPort ? { port: chosenPort } : {}),
       backend: engine,
       // PRM-110: not modality — the server takes it from the catalog entry
       // this instance references.
@@ -273,7 +269,7 @@ function NewInstanceForm({
           defaults.context_from_model ? "(the model's)" : "(the model declares none)"
         }`
       : defaultsFailed
-        ? "the node's default"
+        ? "chosen on save"
         : "…";
 
   return (
@@ -313,16 +309,15 @@ function NewInstanceForm({
         {source && (
           <div className="rounded-lg border border-border bg-background p-3">
             {defaultsFailed && (
-              <p className="mb-2 text-xs text-amber-600">
-                {node} could not suggest a port ({getErrorMessage(defaultsQuery.error)}). Set one
-                below.
+              <p className="mb-2 text-xs text-text-muted">
+                No preview from {node}: it fills these in when you register.
               </p>
             )}
             <dl className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-1.5 text-xs">
-              <SummaryRow label="ID">{defaults?.id ?? (defaultsFailed ? "derived on save" : "…")}</SummaryRow>
+              <SummaryRow label="ID">{defaults?.id ?? (defaultsFailed ? "chosen on save" : "…")}</SummaryRow>
               <SummaryRow label="Node">{node}</SummaryRow>
               <SummaryRow label="Port">
-                {port || defaults?.port || (defaultsFailed ? "set below" : "…")}
+                {port || defaults?.port || (defaultsFailed ? "chosen on save" : "…")}
               </SummaryRow>
               <SummaryRow label="Context">{contextSummary}</SummaryRow>
               <SummaryRow label="Engine">{engine ? ENGINE_LABELS[engine] : "none declared"}</SummaryRow>
@@ -330,30 +325,27 @@ function NewInstanceForm({
               <SummaryRow label="Quantization">{source.quantization || "—"}</SummaryRow>
               <SummaryRow label="File">{source.path || "—"}</SummaryRow>
             </dl>
-            {!defaultsFailed && (
-              <button
-                type="button"
-                onClick={() => setAdjusting((v) => !v)}
-                aria-expanded={adjusting}
-                className="mt-3 text-xs font-medium text-primary hover:underline"
-              >
-                {adjusting ? "Hide port, context and engine" : "Adjust port, context or engine"}
-              </button>
-            )}
+            <button
+              type="button"
+              onClick={() => setAdjusting((v) => !v)}
+              aria-expanded={adjusting}
+              className="mt-3 text-xs font-medium text-primary hover:underline"
+            >
+              {adjusting ? "Hide port, context and engine" : "Adjust port, context or engine"}
+            </button>
           </div>
         )}
 
-        {source && showAdjust && (
+        {source && adjusting && (
           <div className="grid grid-cols-2 gap-3">
-            <Field label="Port" required={defaultsFailed}>
+            <Field label="Port" hint="Blank lets the node pick a free one.">
               <input
                 type="number"
                 min={1024}
                 max={65535}
                 value={port}
-                placeholder={defaults ? String(defaults.port) : undefined}
+                placeholder={defaults ? String(defaults.port) : "auto"}
                 onChange={(e) => setPort(e.target.value)}
-                required={defaultsFailed}
                 className={inputClass}
               />
             </Field>
@@ -362,7 +354,7 @@ function NewInstanceForm({
               hint={
                 defaults
                   ? `Blank uses ${defaults.context_from_model ? "the model's" : "the default"} ${defaults.context_length.toLocaleString("en-US")}.`
-                  : "Blank uses the node's default."
+                  : "Blank lets the node choose."
               }
             >
               <input

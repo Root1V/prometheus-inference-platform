@@ -87,8 +87,9 @@ export function AddInstanceModal({
           // register_backend — inventing unique ids by hand is what produced
           // the suffixes that leaked into the scope picker.
           model_id: modelId,
-          // Blank is the node's suggestion, the one shown as the placeholder.
-          port: Number(port) || defaults?.port,
+          // Blank is the node's suggestion, the one shown as the placeholder,
+          // or — when there is no preview — whatever the node picks on save.
+          ...(Number(port) || defaults?.port ? { port: Number(port) || defaults?.port } : {}),
           backend,
           discovery: true,
           ...(contextLength ? { context_length: Number(contextLength) } : {}),
@@ -162,15 +163,14 @@ export function AddInstanceModal({
           hint={
             defaults
               ? `Blank uses ${defaults.port}, free on ${chosenNode} right now.`
-              : "Must be free on the selected node."
+              : "Blank lets the node pick a free one."
           }
         >
           <input
             type="number"
             min={1024}
             max={65535}
-            required={!defaults}
-            placeholder={defaults ? String(defaults.port) : undefined}
+            placeholder={defaults ? String(defaults.port) : "auto"}
             value={port}
             onChange={(e) => setPort(e.target.value)}
             className={inputClass}
