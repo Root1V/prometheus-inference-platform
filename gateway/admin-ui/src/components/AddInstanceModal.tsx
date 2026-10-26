@@ -1,5 +1,5 @@
 import { type ReactNode, useState } from "react";
-import { useRegisterModel } from "../api/instances";
+import { useInstanceDefaults, useRegisterModel } from "../api/instances";
 import { useToast } from "../context/ToastContext";
 import { getErrorMessage } from "../lib/errors";
 import { cn } from "../lib/cn";
@@ -51,11 +51,15 @@ export function AddInstanceModal({
   const [port, setPort] = useState("");
   const [contextLength, setContextLength] = useState("");
 
+  const modelId = source ? source.model_id || source.id : "";
+  const chosenNode = node || source?.node || "";
+  // PRM-281: port, context and engine come from the node, as in Register
+  // model. Asked per node — the free port on one says nothing about another.
+  const defaults = useInstanceDefaults(open ? chosenNode : "", modelId).data ?? null;
+
   if (!open || !source) return null;
 
-  const modelId = source.model_id || source.id;
   const modelName = source.model_slug || modelId;
-  const chosenNode = node || source.node;
 
   // PRM-133: what this node said it has, narrowed to what this build knows how
   // to launch. A node that never declared gets the whole list, which is what
@@ -64,8 +68,9 @@ export function AddInstanceModal({
   // Never a pre-selected value that isn't on offer: switching nodes can pull
   // the current choice out from under it, and a select whose value is absent
   // from its options renders blank while still submitting the old one.
-  const backend = available.includes(backendChoice as (typeof available)[number])
-    ? (backendChoice as (typeof available)[number])
+  const preferred = backendChoice || defaults?.backend;
+  const backend = available.includes(preferred as (typeof available)[number])
+    ? (preferred as (typeof available)[number])
     : (available[0] ?? null);
 
   const submit = async (event: React.FormEvent) => {
@@ -82,7 +87,8 @@ export function AddInstanceModal({
           // register_backend — inventing unique ids by hand is what produced
           // the suffixes that leaked into the scope picker.
           model_id: modelId,
-          port: Number(port),
+          // Blank is the node's suggestion, the one shown as the placeholder.
+          port: Number(port) || defaults?.port,
           backend,
           discovery: true,
           ...(contextLength ? { context_length: Number(contextLength) } : {}),
@@ -151,12 +157,20 @@ export function AddInstanceModal({
           )}
         </Field>
 
-        <Field label="Port" hint="Must be free on the selected node.">
+        <Field
+          label="Port"
+          hint={
+            defaults
+              ? `Blank uses ${defaults.port}, free on ${chosenNode} right now.`
+              : "Must be free on the selected node."
+          }
+        >
           <input
             type="number"
             min={1024}
             max={65535}
-            required
+            required={!defaults}
+            placeholder={defaults ? String(defaults.port) : undefined}
             value={port}
             onChange={(e) => setPort(e.target.value)}
             className={inputClass}
@@ -165,11 +179,15 @@ export function AddInstanceModal({
 
         <Field
           label="Context length"
-          hint={`Leave blank to match ${source.context_length}. A smaller value is fine — the gateway validates against the smallest instance in the group.`}
+          hint={`Blank uses ${
+            defaults
+              ? `${defaults.context_from_model ? "the model's" : "the default"} ${defaults.context_length.toLocaleString("en-US")}`
+              : "the model's"
+          }. The gateway validates requests against the smallest instance in the group.`}
         >
           <input
             type="number"
-            placeholder={String(source.context_length)}
+            placeholder={defaults ? String(defaults.context_length) : undefined}
             value={contextLength}
             onChange={(e) => setContextLength(e.target.value)}
             className={inputClass}

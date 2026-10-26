@@ -10315,3 +10315,19 @@ anywhere in the codebase, which is false.
 - Out: automatic retries with backoff — whether to retry on its own is a separate decision; this
   item makes a retry, manual or not, cost the remaining bytes instead of all of them.
 
+## PRM-281 — A new instance fills itself in
+
+**Why**: "Register model" asked for an id, a port and a context although manager-api already
+derived the id (RM-70) and could find a free port, and a blank context became the 4096 that
+PRM-194 found nine of ten rows stuck on. Picking the model should be the whole form.
+
+**Scope**:
+- In: `GET /v1/models/{model_id}/instance-defaults` on the manager (proxied by the gateway) — id
+  (the model id itself for a first instance, no longer `-2`), lowest port from 8081 neither held by
+  an instance nor bound on the host, the GGUF's trained context (4096 when it declares none, as
+  before), and a sibling instance's engine. Registration applies the same defaults to what it omits.
+- In: the dialog is one model picker across nodes plus a summary; "Adjust" opens port, context and
+  engine. Discovery on by default. "Add instance" prefills port and context the same way.
+- Out: capping the context — the operator chose the model's own value, so a model declaring 10M
+  tokens gets 10M unless someone types less.
+

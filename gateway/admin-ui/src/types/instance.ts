@@ -52,11 +52,26 @@ export interface InstanceEntry {
 /** Response shape from the start/stop/restart action endpoints — an InstanceEntry minus `node`. */
 export type InstanceActionResult = Omit<InstanceEntry, "node">;
 
+/** PRM-281: GET /admin/api/nodes/{node}/models/{model_id}/instance-defaults —
+ * what a new instance of a model gets when the operator only picks the model.
+ * The node works these out (only it knows which ports are taken), and applies
+ * the same ones to whatever a registration leaves out. */
+export interface InstanceDefaults {
+  id: string;
+  port: number;
+  context_length: number;
+  /** False when the file declares no trained context and this is the 4096 fallback. */
+  context_from_model: boolean;
+  /** An existing instance's engine, or null when the node's own list decides. */
+  backend: Backend | null;
+}
+
 export interface RegisterModelRequest {
   /** RM-70: optional when `model_id` is set — manager-api derives the next
    * free instance id, so adding a replica never asks for a unique name. */
   id?: string;
-  port: number;
+  /** PRM-281: optional with `model_id` — the node picks a free one. */
+  port?: number;
   path?: string;
   context_length?: number;
   family?: string;

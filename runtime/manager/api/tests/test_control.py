@@ -20,11 +20,14 @@ from prometheus_manager_core.config import (
     ServerConfig,
 )
 from prometheus_manager_core.lifecycle import LifecycleError
-from prometheus_manager_core.registry import Registry, RegistryEntry
+from prometheus_manager_core.registry import CatalogEntry, Registry, RegistryEntry
 from prometheus_manager_core.scanner import ProcessState
 
 from prometheus_manager_api.app import app
-from prometheus_manager_api.auth import require_backend_registry_write
+from prometheus_manager_api.auth import (
+    require_backend_registry_read,
+    require_backend_registry_write,
+)
 
 # ── Setup ──────────────────────────────────────────────────────────────────────
 
@@ -801,3 +804,126 @@ class TestRetireModel:
             _clear_override()
         assert resp.status_code == 200
         assert app.state.registry.get_catalog("oops") is not None
+
+
+# ── PRM-281: a new instance fills itself in ───────────────────────────────────
+
+
+def _with_fresh_model(tmp_path: Path) -> TestClient:
+    """The seeded llama3-test (port 8080) plus `fresh`, downloaded and with no
+    instance yet — the case the dashboard's "Register model" starts from."""
+    client = _authed(_make_client(tmp_path))
+    app.dependency_overrides[require_backend_registry_read] = lambda: {
+        "sub": "operator",
+        "scope": "backend-registry:read",
+    }
+    registry: Registry = app.state.registry
+    registry.add_catalog(CatalogEntry(id="fresh", path="/models/fresh.gguf", downloaded=True))
+    registry.add_instance("llama3-test-2", "llama3-test", port=8081)
+    return client
+
+
+def _clear_both() -> None:
+    _clear_override()
+    app.dependency_overrides.pop(require_backend_registry_read, None)
+
+
+# 8082 is taken by something that is not an instance; everything else binds.
+def _bound_8082(port: int) -> int:
+    return 8083 if port == 8082 else port
+
+
+class TestInstanceDefaults:
+    def test_picking_the_model_is_enough_to_know_the_rest(self, tmp_path: Path):
+        client = _with_fresh_model(tmp_path)
+        try:
+            with (
+                patch("prometheus_manager_api.control._find_free_port", side_effect=_bound_8082),
+                patch(
+                    "prometheus_manager_api.control.read_gguf_context_length", return_value=131072
+                ),
+            ):
+                resp = client.get(
+                    "/v1/models/fresh/instance-defaults", headers={"Authorization": "Bearer dummy"}
+                )
+        finally:
+            _clear_both()
+        assert resp.status_code == 200
+        assert resp.json() == {
+            # The first instance of a model is the model id, not "-2".
+            "id": "fresh",
+            # 8080 and 8081 are instances, 8082 is bound by something else.
+            "port": 8083,
+            # The trained context, not a 4096 nobody chose.
+            "context_length": 131072,
+            "context_from_model": True,
+            # No instance to copy an engine from: the node's list decides.
+            "backend": None,
+        }
+
+    def test_a_replica_takes_the_next_id_and_its_siblings_engine(self, tmp_path: Path):
+        client = _with_fresh_model(tmp_path)
+        try:
+            with patch(
+                "prometheus_manager_api.control.read_gguf_context_length", return_value=None
+            ):
+                resp = client.get(
+                    "/v1/models/llama3-test/instance-defaults",
+                    headers={"Authorization": "Bearer dummy"},
+                )
+        finally:
+            _clear_both()
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["id"] == "llama3-test-3"
+        assert body["backend"] == "llama_cpp"
+        # A file that does not declare its context keeps the old default, and
+        # says so, so the dashboard does not present it as the model's.
+        assert body["context_length"] == 4096
+        assert body["context_from_model"] is False
+
+    def test_an_unknown_model_is_404(self, tmp_path: Path):
+        client = _with_fresh_model(tmp_path)
+        try:
+            resp = client.get(
+                "/v1/models/nope/instance-defaults", headers={"Authorization": "Bearer dummy"}
+            )
+        finally:
+            _clear_both()
+        assert resp.status_code == 404
+
+    def test_registering_with_only_the_model_applies_the_same_defaults(self, tmp_path: Path):
+        client = _with_fresh_model(tmp_path)
+        try:
+            with (
+                patch("prometheus_manager_api.control._find_free_port", side_effect=_bound_8082),
+                patch(
+                    "prometheus_manager_api.control.read_gguf_context_length", return_value=131072
+                ),
+            ):
+                resp = client.post(
+                    "/v1/backends",
+                    json={"model_id": "fresh"},
+                    headers={"Authorization": "Bearer dummy"},
+                )
+        finally:
+            _clear_both()
+        assert resp.status_code == 201
+        body = resp.json()
+        assert (body["id"], body["port"], body["context_length"]) == ("fresh", 8083, 131072)
+
+    def test_what_the_operator_types_wins(self, tmp_path: Path):
+        client = _with_fresh_model(tmp_path)
+        try:
+            with patch(
+                "prometheus_manager_api.control.read_gguf_context_length", return_value=131072
+            ):
+                resp = client.post(
+                    "/v1/backends",
+                    json={"model_id": "fresh", "port": 8099, "context_length": 8192},
+                    headers={"Authorization": "Bearer dummy"},
+                )
+        finally:
+            _clear_both()
+        assert resp.status_code == 201
+        assert (resp.json()["port"], resp.json()["context_length"]) == (8099, 8192)

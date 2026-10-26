@@ -21,8 +21,10 @@ from typing import Annotated, Any
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from opentelemetry.trace import SpanKind
 from prometheus_manager_core.config import ManagerConfig
+from prometheus_manager_core.hf_discovery import read_gguf_context_length
 from prometheus_manager_core.lifecycle import (
     LifecycleError,
+    _find_free_port,
     deregister_instance,
     deregister_model,
     restart_instance,
@@ -30,6 +32,7 @@ from prometheus_manager_core.lifecycle import (
     stop_instance,
 )
 from prometheus_manager_core.registry import (
+    CatalogEntry,
     Registry,
     RegistryEntry,
     _assert_modality_matches_file,
@@ -93,6 +96,59 @@ def _problem(status: int, error_type: str, title: str, detail: str) -> HTTPExcep
     )
 
 
+# PRM-281: what a new instance of a catalogued model gets when nobody says
+# otherwise. 8081 is where `pmgr`'s own port picker starts (hf_discovery's
+# next_free_port); 4096 is the default this endpoint always had, kept for a
+# model whose file does not declare its trained context.
+_FIRST_INSTANCE_PORT = 8081
+_FALLBACK_CONTEXT_LENGTH = 4096
+
+
+def _instance_defaults(registry: Registry, catalog: CatalogEntry) -> dict[str, Any]:
+    """PRM-281: the instance the dashboard would create if the operator only
+    picks the model.
+
+    - **port**: the lowest from 8081 that no instance on this node holds and
+      nothing on this host is listening on. Both, because a stopped instance
+      keeps its port without binding it, and a process that is not an instance
+      binds one without being in the registry.
+    - **context_length**: what the weights declare they were trained for
+      (PRM-194's reader), so a blank field means "the model's", not a 4096
+      someone pressed enter on.
+    - **backend**: an existing instance's engine when there is one — the same
+      file runs on the same engine. None otherwise; the node's own list decides.
+    """
+    taken = {entry.port for entry in registry.entries}
+    port = _FIRST_INSTANCE_PORT
+    while (port := _find_free_port(port)) in taken:
+        port += 1
+    trained = read_gguf_context_length(catalog.path) if catalog.path else None
+    sibling = next((e for e in registry.entries if e.model_id == catalog.id), None)
+    return {
+        "id": registry.next_instance_id(catalog.id),
+        "port": port,
+        "context_length": trained or _FALLBACK_CONTEXT_LENGTH,
+        "context_from_model": trained is not None,
+        "backend": sibling.backend if sibling else None,
+    }
+
+
+@router.get("/v1/models/{model_id}/instance-defaults", tags=["models"])
+async def get_instance_defaults(
+    model_id: str,
+    request: Request,
+    _claims: Annotated[Claims, Depends(require_backend_registry_read)],
+) -> dict[str, Any]:
+    """PRM-281: see _instance_defaults. Read-only — the dashboard shows these
+    before anything is created, and register_backend applies the same ones to
+    whatever the request leaves out."""
+    registry: Registry = request.app.state.registry
+    catalog = registry.get_catalog(model_id)
+    if catalog is None:
+        raise _problem(404, "not-found", "Not Found", f"No catalog entry {model_id!r}.")
+    return _instance_defaults(registry, catalog)
+
+
 @router.post("/v1/backends", tags=["backends"], status_code=201)
 async def register_backend(
     body: dict[str, Any],
@@ -130,7 +186,8 @@ async def register_backend(
             if not instance_id:
                 instance_id = registry.next_instance_id(model_id)
                 span.set_attribute("model_id", instance_id)
-            if registry.get_catalog(model_id) is None:
+            catalog = registry.get_catalog(model_id)
+            if catalog is None:
                 span.set_attribute("http.status_code", 404)
                 raise _problem(
                     404,
@@ -138,15 +195,18 @@ async def register_backend(
                     "Not Found",
                     f"No catalog entry {model_id!r} — download or register it first.",
                 )
+            # PRM-281: picking the model is enough — port and context fall back
+            # to what the dashboard showed, computed the same way.
+            defaults = _instance_defaults(registry, catalog)
             try:
                 registry.add_instance(
                     instance_id,
                     model_id,
-                    port=int(body.get("port", 0)),
-                    backend=body.get("backend", "llama_cpp"),
+                    port=int(body.get("port") or defaults["port"]),
+                    backend=body.get("backend") or defaults["backend"] or "llama_cpp",
                     # PRM-110: no modality here — it comes from the catalog
                     # entry this instance references. See add_instance().
-                    context_length=int(body.get("context_length", 4096)),
+                    context_length=int(body.get("context_length") or defaults["context_length"]),
                     discovery=bool(body.get("discovery", False)),
                     rss_estimate_mb=body.get("rss_estimate_mb"),
                     cfg_scale=body.get("cfg_scale"),

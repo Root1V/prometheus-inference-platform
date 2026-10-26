@@ -672,6 +672,37 @@ async def test_delete_downloaded_model_proxies_to_node(gw, rsa_keys):
     assert resp.status_code == 204
 
 
+async def test_instance_defaults_proxies_to_node(gw, rsa_keys):
+    """PRM-281: the Register model dialog fills itself from this."""
+    defaults = {
+        "id": "fresh",
+        "port": 8083,
+        "context_length": 131072,
+        "context_from_model": True,
+        "backend": None,
+    }
+    with respx.mock:
+        _mock_nodes(("mac", NODE_URL))
+        _mock_manager_token()
+        respx.get(f"{NODE_URL}/v1/models/fresh/instance-defaults").mock(
+            return_value=Response(200, json=defaults)
+        )
+        resp = await gw.get(
+            "/admin/api/nodes/mac/models/fresh/instance-defaults",
+            headers=_headers(rsa_keys, "admin:fleet:read"),
+        )
+    assert resp.status_code == 200
+    assert resp.json() == defaults
+
+
+async def test_instance_defaults_needs_fleet_read(gw, rsa_keys):
+    resp = await gw.get(
+        "/admin/api/nodes/mac/models/fresh/instance-defaults",
+        headers=_headers(rsa_keys, "admin:billing:read"),
+    )
+    assert resp.status_code == 403
+
+
 async def test_get_models_config_proxies_to_node(gw, rsa_keys):
     with respx.mock:
         _mock_nodes(("mac", NODE_URL))
