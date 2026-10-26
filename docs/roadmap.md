@@ -10295,3 +10295,23 @@ shortened to `e65a0b4b…95cd` to fit a row. The edit dialog did not show it at 
 **Scope**: in — `ClientIdField`, the full id with its own copy button, at the top of the edit
 dialog and above the secret in the reveal dialog (after create or rotate); the reveal dialog's
 button says what it copies now that there are two values. Out — the table keeps the short form.
+
+## PRM-277 — A cut download continues where it stopped
+
+**Why**: a network failure mid-download deletes the partial file (`downloader.py`, the broad
+`except` around the stream) and "Retry" restarts from byte 0, although resuming with an HTTP
+`Range` request already exists and only manual pause uses it. Measured 2026-10-25 on
+`gpt-oss-safeguard-20b` (12.1 GB): a slow stretch of the uplink — 0.4 MB/s even to an unrelated
+host — hit the CDN's 60 s read timeout at 7.1% and threw away 0.86 GB; at that rate a large model
+over a flaky link may never finish. `retry_download`'s docstring says no byte-range resume exists
+anywhere in the codebase, which is false.
+
+**Scope**:
+- In: keep the partial file when the stream fails on the network (a failed checksum still deletes
+  it — that file is wrong, not short); "Retry" resumes from it, reusing the existing `Range` path,
+  which already falls back to a full download when the server answers 200.
+- In: a test that cuts a stream mid-way and asserts the retry asks for `bytes=<n>-` and ends with
+  the correct file; the docstring corrected.
+- Out: automatic retries with backoff — whether to retry on its own is a separate decision; this
+  item makes a retry, manual or not, cost the remaining bytes instead of all of them.
+
