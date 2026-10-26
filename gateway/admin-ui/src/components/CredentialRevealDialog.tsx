@@ -2,6 +2,7 @@ import { useState } from "react";
 import { createPortal } from "react-dom";
 import { useGenerateShareLink } from "../api/users";
 import { useToast } from "../context/ToastContext";
+import { ClientIdField } from "./ClientIdField";
 import { getErrorMessage } from "../lib/errors";
 
 interface CredentialRevealDialogProps {
@@ -64,7 +65,11 @@ export function CredentialRevealDialog({
             ? "Send this one-time link instead of the raw credential — it can only be opened once."
             : "Save this now — it can't be retrieved again. Copy it directly, or generate a one-time link to hand off instead."}
         </p>
-        <div className="mt-4 break-all rounded-lg border border-border bg-background px-3 py-2 font-mono text-sm text-text">
+        <div className="mt-4">
+          <ClientIdField clientId={clientId} />
+        </div>
+        <div className="mt-4 text-xs font-medium text-text-muted">{shareUrl ? "One-time link" : label}</div>
+        <div className="mt-1 break-all rounded-lg border border-border bg-background px-3 py-2 font-mono text-sm text-text">
           {displayed}
         </div>
         <div className="mt-6 flex justify-end gap-3">
@@ -90,7 +95,7 @@ export function CredentialRevealDialog({
             onClick={copy}
             className="rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:opacity-90"
           >
-            Copy
+            {shareUrl ? "Copy link" : `Copy ${label.toLowerCase()}`}
           </button>
         </div>
       </div>

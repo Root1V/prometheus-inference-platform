@@ -12,6 +12,7 @@ import type {
   Principal,
   PrincipalRole,
 } from "../types/user";
+import { ClientIdField } from "./ClientIdField";
 import { ScopePicker } from "./ScopePicker";
 
 interface CreateUserModalProps {
@@ -158,6 +159,11 @@ export function CreateUserModal({ open, onClose, onCreated, editing = null }: Cr
             <X size={18} className="text-text-muted" />
           </button>
         </div>
+        {isEditing && (
+          <div className="mb-4">
+            <ClientIdField clientId={editing.client_id} />
+          </div>
+        )}
         <form onSubmit={handleSubmit} className="space-y-4">
           {!isEditing && (
             <div className="flex gap-2 rounded-lg border border-border p-1">

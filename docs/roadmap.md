@@ -10285,3 +10285,13 @@ only), the `list_clients` description says to look a client up by either, and th
 check `list_clients` under either name before saying something does not exist or is not active.
 Measured on a parallel gateway: Argus's id 3/3, "is Argus active" 3/3, "AI for ITOps" by id 1/1.
 Out — every other page and tool keeps showing the label alone; emails, scopes and roles stay out.
+
+## PRM-280 — The user dialogs show the whole client id
+
+**Why**: creating a credential revealed the secret with a Copy button and nothing else; the client
+id, which an integration needs just as much, had to be fished out of the Users table, where it is
+shortened to `e65a0b4b…95cd` to fit a row. The edit dialog did not show it at all.
+
+**Scope**: in — `ClientIdField`, the full id with its own copy button, at the top of the edit
+dialog and above the secret in the reveal dialog (after create or rotate); the reveal dialog's
+button says what it copies now that there are two values. Out — the table keeps the short form.
