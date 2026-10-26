@@ -10256,3 +10256,18 @@ push when any guard under the admin routers asks for the parent.
 Overview carry each client's cost for the day — the Activity page needs it to show pressure against
 spend caps — and Overview's recent changes carry the acting admin's email. Left as is on purpose;
 a reader of `admin:fleet:read` should be assumed to see today's spend and who changed something.
+
+## PRM-278 — A push from a worktree does not leave the repository bare
+
+**Why**: `core.bare` turned `true` twice on 2026-10-25 (17:06 and 20:43), and every git command in
+every checkout then failed with "this operation must be run in a work tree". No session had set it.
+A push from a linked worktree hands the pre-push hook `GIT_DIR=.git/worktrees/<name>`, every test
+inherits it, and `test_scripts_023.sh`'s `git -C "$dir" init` re-initialised the real repository
+instead of `$dir` — as bare, because the cwd is not its parent. The push itself went green: the
+flip happens mid-validation and only the next command sees it.
+
+**Scope**: in — the hook unsets `GIT_DIR`, `GIT_WORK_TREE` and `GIT_INDEX_FILE` once `ROOT` is
+resolved, and `scripts/tests/test_prepush_git_env.sh` pushes from a worktree through the hook's
+real prologue plus that `init`, with a control that must flip `core.bare` without the unset. Out —
+changing `test_scripts_023.sh` itself: the hook is the one place every current and future test
+inherits from.
