@@ -208,6 +208,28 @@ class Settings(BaseSettings):
 
     admin_dashboard_enabled: bool = False
 
+    # ── Dashboard assistant — docs/roadmap.md PRM-272 ─────────────────────────
+    # Off by default, like every other surface on this class: turning an
+    # assistant on by default would give an existing deployment a new principal
+    # acting on it the first time it restarted.
+    assistant_enabled: bool = False
+    # Its OWN principal, deliberately not the signed-in admin's. The operator's
+    # decision, and the reason is traceability: PRM-157's audit trail has to be
+    # able to say whether the human or the assistant did something, and an
+    # assistant borrowing an operator's identity makes its every action look
+    # like theirs. Issued by hand like every credential here — the assistant
+    # cannot mint its own, and neither can this gateway.
+    # Needs: admin:read, inference:read.
+    assistant_client_id: str | None = None
+    assistant_client_secret: str | None = None
+    # Which model answers. Must be one that supports tool calling — gpt-oss-20b
+    # does, and PRM-257/PRM-258 fixed that round-trip on this platform.
+    assistant_model: str = "gpt-oss-20b-mxfp4"
+    # Where its tools reach this gateway. Loopback by design: the assistant
+    # talks to the same instance that is serving the operator, and that call
+    # must never leave the machine.
+    assistant_base_url: str = "http://127.0.0.1:8020"
+
     # ── Users section — docs/roadmap.md RM-11 ─────────────────────────────────
     # /admin/api/users/* proxies to auth-service's /admin/clients/* using the
     # same static X-Admin-Key auth-service itself requires — distinct from the

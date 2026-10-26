@@ -1066,7 +1066,7 @@ def create_router(registry: ModelRegistry, pool: "BackendPool") -> APIRouter:
     async def list_backends(request: Request) -> Any:
         """Admin diagnostic endpoint — list all models with backend status + CB state.
 
-        Requires admin:read scope.
+        Requires admin:fleet:read scope.
         Implements: memory/specs/006-multi-model-gateway.md — AC-14
         Implements: memory/specs/007-rate-limiting-and-throughput.md — AC-10, AC-20
         Implements: memory/specs/022-opentelemetry-sdk-instrumentation.md — G-21
@@ -1074,13 +1074,13 @@ def create_router(registry: ModelRegistry, pool: "BackendPool") -> APIRouter:
         from opentelemetry.trace import SpanKind
 
         claims = getattr(getattr(request, "state", None), "claims", None)
-        if claims is None or not claims.has_scope("admin:read"):
+        if claims is None or not claims.has_scope("admin:fleet:read"):
             return _problem(
                 request,
                 403,
                 "forbidden",
                 "Forbidden",
-                "This endpoint requires admin:read scope.",
+                "This endpoint requires admin:fleet:read scope.",
             )
 
         with _tracer.start_as_current_span("gateway.backends.list", kind=SpanKind.INTERNAL) as span:
@@ -1154,16 +1154,20 @@ def create_router(registry: ModelRegistry, pool: "BackendPool") -> APIRouter:
     async def get_usage(request: Request, date: str | None = None) -> Any:
         """Return per-client token usage (with a per-model breakdown) for one UTC day.
 
-        Requires admin:read scope. Defaults to today; pass ?date=YYYY-MM-DD for a
+        Requires admin:billing:read scope. Defaults to today; pass ?date=YYYY-MM-DD for a
         past day. Implements: docs/roadmap.md — RM-32.
         Implements: memory/specs/022-opentelemetry-sdk-instrumentation.md — G-9
         """
         from opentelemetry.trace import SpanKind
 
         claims = getattr(getattr(request, "state", None), "claims", None)
-        if claims is None or not claims.has_scope("admin:read"):
+        if claims is None or not claims.has_scope("admin:billing:read"):
             return _problem(
-                request, 403, "forbidden", "Forbidden", "This endpoint requires admin:read scope."
+                request,
+                403,
+                "forbidden",
+                "Forbidden",
+                "This endpoint requires admin:billing:read scope.",
             )
 
         if date is None:
@@ -1276,9 +1280,13 @@ def create_router(registry: ModelRegistry, pool: "BackendPool") -> APIRouter:
         omitted an unpriced model would state a confident zero.
         """
         claims = getattr(getattr(request, "state", None), "claims", None)
-        if claims is None or not claims.has_scope("admin:read"):
+        if claims is None or not claims.has_scope("admin:billing:read"):
             return _problem(
-                request, 403, "forbidden", "Forbidden", "This endpoint requires admin:read scope."
+                request,
+                403,
+                "forbidden",
+                "Forbidden",
+                "This endpoint requires admin:billing:read scope.",
             )
 
         try:
@@ -1360,12 +1368,16 @@ def create_router(registry: ModelRegistry, pool: "BackendPool") -> APIRouter:
 
         One row per request (not pre-aggregated) so a client can verify the
         exact rate applied to each request, plus a final TOTAL reconciliation
-        row. Requires admin:read scope.
+        row. Requires admin:billing:read scope.
         """
         claims = getattr(getattr(request, "state", None), "claims", None)
-        if claims is None or not claims.has_scope("admin:read"):
+        if claims is None or not claims.has_scope("admin:billing:read"):
             return _problem(
-                request, 403, "forbidden", "Forbidden", "This endpoint requires admin:read scope."
+                request,
+                403,
+                "forbidden",
+                "Forbidden",
+                "This endpoint requires admin:billing:read scope.",
             )
 
         try:
@@ -1581,7 +1593,7 @@ def create_router(registry: ModelRegistry, pool: "BackendPool") -> APIRouter:
             # export carries the rate on every line, which is better than what
             # Aeon's ledger asked for: it can verify our figure instead of
             # trusting it. Then they measured the asymmetry — the export needs
-            # `admin:read`, and this row, the one path a non-admin consumer can
+            # `admin:billing:read`, and this row, the one path a non-admin consumer can
             # actually walk, carried the cost without the rate. So the only
             # reachable path could only copy.
             #

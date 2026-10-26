@@ -1,6 +1,7 @@
 import type { ReactNode } from "react";
 import { HashRouter, Navigate, Route, Routes } from "react-router-dom";
 import { AuthProvider, useAuth } from "./context/AuthContext";
+import { AssistantPanel } from "./components/AssistantPanel";
 import { SessionExpiryBanner } from "./components/SessionExpiryBanner";
 import { ToastProvider } from "./context/ToastContext";
 import Billing from "./routes/Billing";
@@ -117,6 +118,9 @@ export default function App() {
               }
             />
           </Routes>
+          {/* PRM-272: outside the routes, so the conversation survives moving
+              between pages — which is where its links will take you. */}
+          <AssistantPanel />
         </HashRouter>
       </ToastProvider>
     </AuthProvider>

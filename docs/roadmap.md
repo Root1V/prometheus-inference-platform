@@ -10066,6 +10066,19 @@ authorization model for acting. Out — anything in the separate Web Chat UI (`u
 which is a product surface for end users and not this; creating credentials, which stays a human
 admin's action under any design; and acting on another operator's behalf.
 
+**Where it lives, decided 2026-10-24**: a side panel available on every page (⌘K), not a page of
+its own — the pattern of Copilot, Datadog's Bits AI and Grafana's assistant. The reason is the
+second capability: navigating means following a link to the row being discussed, and on a
+dedicated page that link would close the conversation that produced it. The panel is mounted
+outside the routes and is non-modal, so the page underneath changes while it stays open.
+
+**Its grant, widened 2026-10-25**: `admin:fleet:read`, `admin:policy:read`,
+`admin:billing:read`, `admin:audit:read`, `inference:read` and `model:<slug>` — four of PRM-274's
+five read families, one per kind of question its ten tools answer (the fleet, limits, spend,
+who changed what). Never `admin:read`, their parent, and never `admin:principals:read`: client
+*names* were the reason to want it, and the gateway resolves those itself and hands out only the
+name (`admin/names.py`), so every principal's email and scopes stay out of a leaked secret's reach.
+
 ## PRM-276 — Two 0.6B models do not need 11 GB each
 
 **Why**: `qwen3-embedding` (Q8_0, `--ctx-size 32768`) and `qwen3-reranker` (Q4_K_M,
@@ -10156,3 +10169,90 @@ gpt-oss's 12 GB is 9 GB of it.
 `footprint` and of oversize pairs after restart. Out — gpt-oss and the other chat models, where the
 cache does earn something and the trade is a different decision; `-np` (auto is fine at these
 sizes); the starvation, unless it survives `--ubatch-size 2048` in production.
+
+## PRM-273 — Embedding models on llama.cpp die under sustained load
+
+**Not work to do. A diagnosis to have on hand if it recurs**, written while it was reproducible
+rather than reconstructed later from a gap in the logs.
+
+**What happens**: `qwen3-embedding` (Qwen3-Embedding-0.6B Q8_0, llama.cpp, Metal) dies without
+warning under Veritium's load. The crash reports name it exactly:
+
+```
+BUG IN CLIENT OF LIBMALLOC: memory corruption of free block
+EXC_BREAKPOINT / SIGTRAP
+  libsystem_malloc   _xzm_xzone_malloc_freelist_outlined
+  libc++abi          operator new(unsigned long)
+  libggml-metal      ggml_metal_op::ggml_metal_op(...)
+  libggml-metal      ggml_metal_graph_compute
+  libllama           llama_decode
+```
+
+Heap corruption in ggml's Metal path, caught by macOS's malloc guard, which aborts immediately —
+so the instance log ends mid-task with no final line. That is how to tell it apart from a stop:
+a clean shutdown writes `cleaning up before exit...` and this does not.
+
+**Upstream has it and will not fix it.** `ggml-org/llama.cpp#28357` is the same model, the same
+macOS 26, the same backend; `#18568` is the same class with `nomic-embed` after ~400 embeddings.
+Both are closed without a fix — one by a stale bot on 2026-10-19, one by a maintainer a day after
+it opened. #28357 makes the point that matters: the crashing frame is not where the bug is, only
+where libmalloc first notices, which is why our trace (allocation during compute) and theirs
+(free during teardown) differ while the defect is one.
+
+**What this platform's own data adds, and it narrows it.** Three `llama-server` processes have
+been up 18 days here without incident — idle ones. `gpt-oss` and the llama.cpp reranker show
+`cleaning up before exit` at every restart, so they were stopped, not killed. Only the embedding
+model dies hard, and only while serving. **This is not "llama.cpp with Metal is unstable"; it is
+embedding models under sustained load**, which is exactly what both upstream issues are about.
+
+**If it happens again, in the order worth trying:**
+
+1. **Move the model to TEI.** `text-embeddings-router` is already running here for the reranker —
+   a different binary in a different language that does not share `ggml-metal` at all. 9.5 days up,
+   no crash reports. PRM-179 added it for precisely this class of model.
+2. **`--device none`** on that instance. Note that `-ngl 0` is *not* enough: #18568 reports Metal
+   initialising regardless, and only a build without Metal support helped them. `--device none` is
+   a stronger lever than what they tried, but it is untested here.
+3. **A scheduled restart** — a mitigation and not a fix; the manager can already restart an
+   instance.
+4. **Report upstream.** We hold something the two closed issues do not: a clean trace naming
+   `ggml_metal_op` in the *compute* path. That is new information and might reopen the thread.
+
+**Scope**: nothing is being built. If this is picked up, item 1 is the work.
+
+## PRM-274 — The admin read surface is split by resource family
+
+**Why**: one scope, `admin:read`, guarded all 33 admin read endpoints, so any credential that
+needed one of them got every one: the fleet, every principal's scopes and emails, and every
+client's billing settings, summaries and history. PRM-272's assistant made it concrete — it needs
+four endpoints and would have been issued a token that reaches thirty-three. The anchor is
+OWASP's Non-Human Identity Top 10: the operator's two PRM-272 decisions already answer NHI9 (no
+shared identity) and NHI10 (no human using a machine identity), and `role: agent`'s 10-minute TTL
+answers NHI7; NHI5, overprivileged NHI, was the one left open.
+
+A narrow scope for the assistant alone was considered and rejected — it scales worse, not better.
+Accepting a bespoke scope on four endpoints works for one consumer; the second arrives with a
+different subset, and endpoints accumulate unrelated accept-lists nobody can read back. Naming by
+resource rather than by consumer is also what this repo already chose twice: `model:<id>` (RM-07)
+and `fleet:heartbeat` + `node:<id>` (PRM-152) are both capability-per-object.
+
+**Scope**: five scopes — `admin:fleet:read` (nodes, instances, models, activity, instance logs,
+`/v1/backends`), `admin:billing:read` (billing, usage, pricing, tiers), `admin:principals:read`
+(users, sessions), `admin:policy:read` (limits, circuit breaker, traffic splits, config) and
+`admin:audit:read` (the audit trail, `/metrics`). `admin:read` is kept as the parent that implies
+all five, which is what makes the split free to adopt: no credential is reissued, the dashboard
+still logs in with `admin:read admin:write`, and auth-service needs no migration. The implication
+is three lines in `Claims.has_scope` — the one place all 33 checks already went through.
+
+Out: `admin:write`, left whole. A write surface split by family is a separate decision with a
+separate blast radius, and nothing yet needs it.
+
+The parent scope is also this item's one failure mode, and it is the reason for a test rather
+than a comment: an endpoint written against `admin:read` still works, raises nothing and returns
+no wrong answer — it just quietly grants all five families again. `test_admin_scopes.py` fails the
+push when any guard under the admin routers asks for the parent.
+
+**Known overlap, found 2026-10-25**: `fleet` is not as clean as the names say. Activity and
+Overview carry each client's cost for the day — the Activity page needs it to show pressure against
+spend caps — and Overview's recent changes carry the acting admin's email. Left as is on purpose;
+a reader of `admin:fleet:read` should be assumed to see today's spend and who changed something.
