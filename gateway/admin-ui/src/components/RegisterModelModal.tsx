@@ -185,8 +185,10 @@ function FormButtons({
  * PRM-281: picking the model is the whole form. Everything else either
  * describes the file (path, family, quantization, modality — from the catalog)
  * or has an answer the node can work out (id, port, context, engine — from
- * `instance-defaults`). The three that are genuinely a choice stay one click
- * away under "Adjust"; left blank, the node's answer is what gets registered.
+ * `instance-defaults`). The three that are genuinely a choice — port, context,
+ * engine — are shown as optional fields with the node's answer as their
+ * placeholder; left blank, that answer is what gets registered. They used to
+ * hide behind an "Adjust" link, which nobody read as the place to set a port.
  */
 function NewInstanceForm({
   nodes,
@@ -200,7 +202,6 @@ function NewInstanceForm({
   const { showToast } = useToast();
   const registerModel = useRegisterModel();
   const [selectedKey, setSelectedKey] = useState("");
-  const [adjusting, setAdjusting] = useState(false);
   const [port, setPort] = useState("");
   const [contextLength, setContextLength] = useState("");
   const [backendChoice, setBackendChoice] = useState<Backend | "">("");
@@ -260,20 +261,8 @@ function NewInstanceForm({
     );
   };
 
-  // A node without PRM-281 answers 404 here and still defaults a blank context
-  // to 4096 on registration, so the copy must not promise the model's.
-  const contextSummary = contextLength
-    ? Number(contextLength).toLocaleString("en-US")
-    : defaults
-      ? `${defaults.context_length.toLocaleString("en-US")} ${
-          defaults.context_from_model ? "(the model's)" : "(the model declares none)"
-        }`
-      : defaultsFailed
-        ? "chosen on save"
-        : "…";
-
   return (
-    <ModalShell title="Register model" onClose={onClose}>
+    <ModalShell title="Register instance" onClose={onClose}>
       <form onSubmit={handleSubmit} className="space-y-4">
         <Field label="Model" required>
           {downloadedModels.length === 0 ? (
@@ -307,38 +296,15 @@ function NewInstanceForm({
         </Field>
 
         {source && (
-          <div className="rounded-lg border border-border bg-background p-3">
-            {defaultsFailed && (
-              <p className="mb-2 text-xs text-text-muted">
-                No preview from {node}: it fills these in when you register.
-              </p>
-            )}
-            <dl className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-1.5 text-xs">
-              <SummaryRow label="ID">{defaults?.id ?? (defaultsFailed ? "chosen on save" : "…")}</SummaryRow>
-              <SummaryRow label="Node">{node}</SummaryRow>
-              <SummaryRow label="Port">
-                {port || defaults?.port || (defaultsFailed ? "chosen on save" : "…")}
-              </SummaryRow>
-              <SummaryRow label="Context">{contextSummary}</SummaryRow>
-              <SummaryRow label="Engine">{engine ? ENGINE_LABELS[engine] : "none declared"}</SummaryRow>
-              <SummaryRow label="Modality">{source.modality}</SummaryRow>
-              <SummaryRow label="Quantization">{source.quantization || "—"}</SummaryRow>
-              <SummaryRow label="File">{source.path || "—"}</SummaryRow>
-            </dl>
-            <button
-              type="button"
-              onClick={() => setAdjusting((v) => !v)}
-              aria-expanded={adjusting}
-              className="mt-3 text-xs font-medium text-primary hover:underline"
-            >
-              {adjusting ? "Hide port, context and engine" : "Adjust port, context or engine"}
-            </button>
-          </div>
-        )}
-
-        {source && adjusting && (
           <div className="grid grid-cols-2 gap-3">
-            <Field label="Port" hint="Blank lets the node pick a free one.">
+            <Field
+              label="Port (optional)"
+              hint={
+                defaults
+                  ? `Blank uses ${defaults.port}, free on ${node} right now.`
+                  : "Blank lets the node pick a free one."
+              }
+            >
               <input
                 type="number"
                 min={1024}
@@ -350,18 +316,20 @@ function NewInstanceForm({
               />
             </Field>
             <Field
-              label="Context length"
+              label="Context length (optional)"
               hint={
                 defaults
-                  ? `Blank uses ${defaults.context_from_model ? "the model's" : "the default"} ${defaults.context_length.toLocaleString("en-US")}.`
-                  : "Blank lets the node choose."
+                  ? defaults.context_from_model
+                    ? `Blank uses the model's ${defaults.context_length.toLocaleString("en-US")}.`
+                    : `The model declares none: blank uses ${defaults.context_length.toLocaleString("en-US")}.`
+                  : "Blank uses the model's."
               }
             >
               <input
                 type="number"
                 min={1}
                 value={contextLength}
-                placeholder={defaults ? String(defaults.context_length) : undefined}
+                placeholder={defaults ? String(defaults.context_length) : "auto"}
                 onChange={(e) => setContextLength(e.target.value)}
                 className={inputClass}
               />
@@ -385,6 +353,23 @@ function NewInstanceForm({
                 </select>
               )}
             </Field>
+          </div>
+        )}
+
+        {source && (
+          <div className="rounded-lg border border-border bg-background p-3">
+            {defaultsFailed && (
+              <p className="mb-2 text-xs text-text-muted">
+                No preview from {node}: it fills in what you leave blank when you register.
+              </p>
+            )}
+            <dl className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-1.5 text-xs">
+              <SummaryRow label="ID">{defaults?.id ?? (defaultsFailed ? "chosen on save" : "…")}</SummaryRow>
+              <SummaryRow label="Node">{node}</SummaryRow>
+              <SummaryRow label="Modality">{source.modality}</SummaryRow>
+              <SummaryRow label="Quantization">{source.quantization || "—"}</SummaryRow>
+              <SummaryRow label="File">{source.path || "—"}</SummaryRow>
+            </dl>
           </div>
         )}
 
