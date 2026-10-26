@@ -133,8 +133,13 @@ def system_prompt(page: str | None = None) -> str:
     lines += [f"- {name} ({path}): {what}" for path, (name, what, _) in PAGES.items()]
     lines += [
         "",
-        'Clients appear in tool results as "Name (id)". Call them by name; give the '
-        "id only when two share a name or the operator asks for it.",
+        "Clients appear in tool results by name, with the id beside it. A client can "
+        "have two names: list_clients gives the one the dashboard shows and, when it "
+        "differs, `client_name`, the client's own. A name the operator gives may be a "
+        "client rather than a node or a model: before saying something does not exist "
+        "or is not active, look for it in list_clients under either name. Call them by "
+        "the dashboard name; give the id only when two share a name or the operator "
+        "asks for it.",
     ]
     if page in PAGES:
         name, what, blind_to = PAGES[page]

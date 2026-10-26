@@ -10271,3 +10271,17 @@ resolved, and `scripts/tests/test_prepush_git_env.sh` pushes from a worktree thr
 real prologue plus that `init`, with a control that must flip `core.bare` without the unset. Out —
 changing `test_scripts_023.sh` itself: the hook is the one place every current and future test
 inherits from.
+
+## PRM-279 — The assistant finds a client by either of its names
+
+**Why**: Argus was created with the label "AI for ITOps". `admin/names.py` resolves a client to its
+label, else its client name, so the directory carried only "AI for ITOps" and "Argus" never reached
+the model: asked for Argus's id, the live assistant answered that no such client existed, 2 of 2.
+The label is what the dashboard shows; the client name is what its team calls it, and operators
+use both.
+
+**Scope**: in — the directory carries `client_name` beside `name` when they differ (not in case
+only), the `list_clients` description says to look a client up by either, and the prompt says to
+check `list_clients` under either name before saying something does not exist or is not active.
+Measured on a parallel gateway: Argus's id 3/3, "is Argus active" 3/3, "AI for ITOps" by id 1/1.
+Out — every other page and tool keeps showing the label alone; emails, scopes and roles stay out.
