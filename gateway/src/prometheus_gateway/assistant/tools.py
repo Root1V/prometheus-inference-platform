@@ -473,9 +473,11 @@ DEFINITIONS: list[dict[str, Any]] = [
             "name": "list_clients",
             "description": (
                 "Every client the platform knows — API credentials and dashboard users — "
-                "by name, with its id and whether it is active. Use for 'who are the "
-                "users', 'what are the clients called', 'is client X active', or to turn "
-                "an id into a name. It has no emails, scopes or roles."
+                "by name, with its id and whether it is active. `name` is what the "
+                "dashboard shows; `client_name`, when present, is the client's own name — "
+                "look a client up by either. Use for 'who are the users', 'what are the "
+                "clients called', 'is client X active', 'what is X's id', or to turn an id "
+                "into a name. It has no emails, scopes or roles."
             ),
             "parameters": {"type": "object", "properties": {}},
         },

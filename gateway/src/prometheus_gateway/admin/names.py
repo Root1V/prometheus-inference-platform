@@ -33,7 +33,8 @@ _TTL_S = 60.0
 
 
 async def client_directory(request: Request) -> list[dict[str, Any]]:
-    """Every principal auth-service knows, as `{client_id, name, active}`.
+    """Every principal auth-service knows, as `{client_id, name, active}`, plus
+    `client_name` when the label hides it.
 
     The roster behind `client_names`, and the answer to "who are the clients"
     for a reader that cannot have the principal list. Whether a client is
@@ -62,15 +63,21 @@ async def client_directory(request: Request) -> list[dict[str, Any]]:
         for row in resp.json():
             # Stripped: labels are typed by hand, and one measured here ended
             # in a space that every answer then carried.
-            name = (row.get("label") or "").strip() or (row.get("client_name") or "").strip()
+            label = (row.get("label") or "").strip()
+            own = (row.get("client_name") or "").strip()
+            name = label or own
             if row.get("client_id") and name:
-                directory.append(
-                    {
-                        "client_id": row["client_id"],
-                        "name": name,
-                        "active": bool(row.get("is_active", True)),
-                    }
-                )
+                entry: dict[str, Any] = {
+                    "client_id": row["client_id"],
+                    "name": name,
+                    "active": bool(row.get("is_active", True)),
+                }
+                # The label is what the dashboard shows, the client's own name
+                # what its team calls it. Holding only "AI for ITOps", the
+                # assistant answered that Argus did not exist (PRM-279).
+                if label and own and own.casefold() != label.casefold():
+                    entry["client_name"] = own
+                directory.append(entry)
     except Exception as exc:
         logger.warning("admin.client_names_unavailable", error=str(exc))
         return []

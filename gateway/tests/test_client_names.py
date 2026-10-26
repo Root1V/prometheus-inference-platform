@@ -113,3 +113,27 @@ async def test_the_directory_carries_whether_active_and_nothing_else(respx_mock)
     assert await client_directory(_request()) == [
         {"client_id": "a", "name": "Veritium", "active": False}
     ]
+
+
+async def test_a_label_does_not_hide_the_clients_own_name(respx_mock):
+    """PRM-279: Argus was created with the label "AI for ITOps". The directory
+    carried only the label, so asked for Argus's id the assistant answered that
+    no such client existed. Both names travel when they differ; one that
+    differs only in case, or a client with no label, carries one."""
+    respx_mock.get(f"{_AUTH}/clients").mock(
+        return_value=httpx.Response(
+            200,
+            json=[
+                {"client_id": "e", "client_name": "Argus", "label": "AI for ITOps "},
+                {"client_id": "v", "client_name": "veritium", "label": "Veritium"},
+                {"client_id": "b", "client_name": "Video Vigilancia", "label": None},
+            ],
+        )
+    )
+    assert await client_directory(_request()) == [
+        {"client_id": "e", "name": "AI for ITOps", "client_name": "Argus", "active": True},
+        {"client_id": "v", "name": "Veritium", "active": True},
+        {"client_id": "b", "name": "Video Vigilancia", "active": True},
+    ]
+    # The pages that only decorate an id keep showing the label.
+    assert (await client_names(_request()))["e"] == "AI for ITOps"
