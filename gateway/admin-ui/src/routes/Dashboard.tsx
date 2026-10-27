@@ -125,6 +125,7 @@ export default function Dashboard() {
         nodes={nodes}
         editing={modal?.mode === "edit" ? modal.instance : null}
         downloadedModels={downloadedModels}
+        unreachableNodes={catalogQuery.data?.unreachable_nodes ?? EMPTY_NODES}
         onClose={() => setModal(null)}
       />
     </div>
