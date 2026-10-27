@@ -32,6 +32,9 @@ interface RegisterModelModalProps {
    * manager-api pull those fields from the catalog server-side rather than
    * copying them into the request body. Ignored while editing. */
   downloadedModels?: ModelCatalogEntry[];
+  /** Nodes whose catalog could not be read, so the picker can say whose
+   * models are missing instead of leaving the gap unexplained. */
+  unreachableNodes?: string[];
 }
 
 
@@ -116,12 +119,18 @@ export function RegisterModelModal({
   onClose,
   editing = null,
   downloadedModels = [],
+  unreachableNodes = [],
 }: RegisterModelModalProps) {
   if (!open) return null;
   return editing ? (
     <EditInstanceForm instance={editing} nodes={nodes} onClose={onClose} />
   ) : (
-    <NewInstanceForm nodes={nodes} downloadedModels={downloadedModels} onClose={onClose} />
+    <NewInstanceForm
+      nodes={nodes}
+      downloadedModels={downloadedModels}
+      unreachableNodes={unreachableNodes}
+      onClose={onClose}
+    />
   );
 }
 
@@ -193,10 +202,12 @@ function FormButtons({
 function NewInstanceForm({
   nodes,
   downloadedModels,
+  unreachableNodes,
   onClose,
 }: {
   nodes: Node[];
   downloadedModels: ModelCatalogEntry[];
+  unreachableNodes: string[];
   onClose: () => void;
 }) {
   const { showToast } = useToast();
@@ -224,6 +235,18 @@ function NewInstanceForm({
   // Without a preview (a node not yet running PRM-281, or an error) nothing
   // is asked for anyway: whatever is left blank, the node chooses on save.
   const defaultsFailed = defaultsQuery.isError;
+
+  // One group per node, so a node's models read as that node's rather than
+  // as the start of one long list. A node that is down is missing from the
+  // catalog altogether — the coordinator drops inactive ones before asking —
+  // so it is named here instead, or its absence looks like an empty node.
+  const modelsByNode = new Map<string, ModelCatalogEntry[]>();
+  for (const m of downloadedModels) {
+    modelsByNode.set(m.node, [...(modelsByNode.get(m.node) ?? []), m]);
+  }
+  const silentNodes = nodes
+    .filter((n) => n.enabled && (!n.is_active || unreachableNodes.includes(n.name)))
+    .map((n) => n.name);
 
   const handleSubmit = (event: FormEvent) => {
     event.preventDefault();
@@ -286,12 +309,22 @@ function NewInstanceForm({
               <option value="" disabled>
                 Select a downloaded model
               </option>
-              {downloadedModels.map((m) => (
-                <option key={sourceKey(m)} value={sourceKey(m)}>
-                  {m.id} · {m.node} — {m.family || "?"} · {m.quantization || "?"}
-                </option>
+              {[...modelsByNode].map(([nodeName, models]) => (
+                <optgroup key={nodeName} label={nodeName}>
+                  {models.map((m) => (
+                    <option key={sourceKey(m)} value={sourceKey(m)}>
+                      {m.id} — {m.family || "?"} · {m.quantization || "?"}
+                    </option>
+                  ))}
+                </optgroup>
               ))}
             </select>
+          )}
+          {silentNodes.length > 0 && (
+            <p className="mt-1.5 text-xs text-text-muted">
+              {silentNodes.join(", ")} {silentNodes.length === 1 ? "isn't" : "aren't"} answering:{" "}
+              {silentNodes.length === 1 ? "its" : "their"} models aren't listed.
+            </p>
           )}
         </Field>
 
