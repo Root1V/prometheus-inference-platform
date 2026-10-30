@@ -10331,3 +10331,21 @@ PRM-194 found nine of ten rows stuck on. Picking the model should be the whole f
 - Out: capping the context — the operator chose the model's own value, so a model declaring 10M
   tokens gets 10M unless someone types less.
 
+## PRM-283 — A non-streamed abandon is recorded
+
+**Why**: when the caller leaves before a non-streamed chat answer, the `ClientGone` branch
+(PRM-196) records metrics, sets the span and returns 499 — but writes no `usage_events` row and
+never settles the spend-cap reservation, so the caller's monthly cap stays debited until the
+period rolls over. Its comment says the work "is billed and metered"; only the second is true.
+From 2026-10-25 to 10-30: 20 such abandons in the gateway log (13 Veritium, 7 Argus, some after
+600 s of generation), 0 in `usage_events`. Streamed abandons do write a row (179 so far), and
+the images route already settles its reservation at zero.
+
+**Scope**:
+- Decide first: what a non-streamed abandon costs. RM-88 bills what reached the caller, which
+  here is nothing; whether the processed prompt is still charged is the open question.
+- In: a `usage_events` row with `termination_reason = client_disconnected`, the request id,
+  duration and estimated prompt tokens; the reservation settled at the decided cost.
+- In: a test that abandons a non-streamed call and asserts the row and the released reservation.
+- Out: images abandons getting a usage row — same question, separate decision.
+
