@@ -10331,3 +10331,20 @@ PRM-194 found nine of ten rows stuck on. Picking the model should be the whole f
 - Out: capping the context — the operator chose the model's own value, so a model declaring 10M
   tokens gets 10M unless someone types less.
 
+## PRM-282 — `finish_reasons` says why the model stopped
+
+**Why**: OpenTelemetry defines `gen_ai.response.finish_reasons` as why the model stopped
+generating (`["stop"]` in its own example). We put our termination reason there instead
+(`router.py`, the chat span and the streaming span), because Argus's A-10 mapped it that way;
+Argus now reports it against the standard. In the non-streaming path the backend's own reason
+is already parsed for the `inference.complete` log line and then replaced by `complete`.
+
+**Scope**:
+- In: `finish_reasons` carries the model's reasons — `choices[].finish_reason` without
+  streaming, the last chunk that carries one with streaming; absent when the model never
+  finished (abandoned or broken stream).
+- In: our termination reason moves to an attribute of its own, named from Argus's vocabulary
+  (asked in P-43). `client_disconnected` must stay visible: A-10 called it the most valuable
+  signal we emit.
+- Out: `usage_events.termination_reason` and its three values — a billing column, unchanged.
+
