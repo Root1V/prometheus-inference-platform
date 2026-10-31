@@ -519,6 +519,7 @@ def _genai_response_attrs(
     input_tokens: int | None = None,
     output_tokens: int | None = None,
     finish_reason: str | None = None,
+    outcome: str | None = None,
     backend_id: str | None = None,
     ttft_ms: int | None = None,
     first_token_ms: int | None = None,
@@ -527,9 +528,13 @@ def _genai_response_attrs(
 
     `gen_ai.response.model` is not redundant with the request's: when a caller
     asks for one name and another is served, that difference is the first thing
-    worth seeing. `finish_reason` carries our own termination reason, including
-    `client_disconnected` — the distinction between failing and being abandoned,
-    which are different problems with different fixes.
+    worth seeing. `finish_reason` is the model's own (`stop`, `length`), as the
+    convention defines it, and absent when the model never finished.
+
+    PRM-282: `outcome` is ours — `complete`, `upstream_error` or
+    `client_disconnected`, the distinction between failing and being abandoned.
+    It rode in `finish_reasons` until 2026-10-31 because A-10 mapped it there;
+    Argus named its own attribute in A-53.
     """
     attrs: dict[str, Any] = {}
     if response_model is not None:
@@ -540,6 +545,8 @@ def _genai_response_attrs(
         attrs["gen_ai.usage.output_tokens"] = output_tokens
     if finish_reason is not None:
         attrs["gen_ai.response.finish_reasons"] = [finish_reason]
+    if outcome is not None:
+        attrs["argus.inference.outcome"] = outcome
     # Ours, not OpenTelemetry's: which replica answered, and how long the caller
     # waited to see anything. No standard attribute covers either.
     if backend_id is not None:
@@ -2009,9 +2016,26 @@ def create_router(registry: ModelRegistry, pool: "BackendPool") -> APIRouter:
                             latency_ms=abandoned_ms,
                             client_id=claims.client_id if claims else "unknown",
                         )
-                        inf_span.set_attribute(
-                            "gen_ai.response.finish_reasons", ["client_disconnected"]
+                        # PRM-282: the call to the model gets its CLIENT span
+                        # like any other, bounded by when it started and when
+                        # the caller left. This used to put `finish_reasons` on
+                        # `inference.request` instead — the internal span, which
+                        # carries no gen_ai attributes — and emit no `chat` span.
+                        abandoned_span = _tracer.start_span(
+                            f"chat {body.model}",
+                            kind=SpanKind.CLIENT,
+                            start_time=backend_start_ns,
                         )
+                        abandoned_span.set_attributes(
+                            _genai_request_attrs("chat", body.model, entry.backend)
+                        )
+                        abandoned_span.set_attributes(
+                            _genai_response_attrs(
+                                outcome=db.TERMINATION_CLIENT_DISCONNECTED,
+                                backend_id=entry.id,
+                            )
+                        )
+                        abandoned_span.end()
                         abandoned_messages: list[dict[str, Any]] = body.model_dump(
                             exclude_none=True
                         )["messages"]
@@ -2176,7 +2200,8 @@ def create_router(registry: ModelRegistry, pool: "BackendPool") -> APIRouter:
                             response_model=resolution.model_key,
                             input_tokens=prompt_tokens,
                             output_tokens=completion_tokens,
-                            finish_reason=db.TERMINATION_COMPLETE,
+                            finish_reason=None if finish_reason == "unknown" else finish_reason,
+                            outcome=db.TERMINATION_COMPLETE,
                             backend_id=entry.id,
                         )
                     )
@@ -4004,6 +4029,11 @@ async def _stream_response(
     # RM-95: taken now, while the request's span is still current.
     _request_context = otel_context.get_current()
     backend_start = time.monotonic()
+    # PRM-282: the span for a streamed answer is only built once the stream has
+    # ended, so it needs its start as an epoch from now. Without it the span
+    # began and ended at the same instant: every streamed call reached Argus
+    # lasting 0 s, the 10-minute ones included.
+    backend_start_ns = time.time_ns()
     cb = pool.get_circuit_breaker(backend_id)
     # Falls back to the backend id when called without a served name, so this
     # function still behaves as it did when used on its own.
@@ -4178,6 +4208,9 @@ async def _stream_response(
         inter_token_ms: float | None = None
         # RM-62: same prefill-throughput extraction as the non-streaming path.
         prompt_tps: float | None = None
+        # PRM-282: the model's own reason, from the chunk that carries one —
+        # usually the last before `[DONE]`. None if it never got that far.
+        model_finish_reason: str | None = None
         try:
             # PRM-143: the connection was opened and its status checked before
             # `StreamingResponse` was constructed, so this consumes the response
@@ -4231,7 +4264,10 @@ async def _stream_response(
                                         prompt_n = timings.get("prompt_n")
                                         if prompt_ms and prompt_n:
                                             prompt_tps = prompt_n / (prompt_ms / 1000)
-                                delta = (chunk.get("choices") or [{}])[0].get("delta") or {}
+                                choice = (chunk.get("choices") or [{}])[0]
+                                if choice.get("finish_reason"):
+                                    model_finish_reason = choice["finish_reason"]
+                                delta = choice.get("delta") or {}
                                 delta_content = delta.get("content")
                                 if delta_content or delta.get("reasoning_content"):
                                     # RM-83: llama.cpp reports token counts only
@@ -4446,6 +4482,7 @@ async def _stream_response(
                     f"{genai_request_attrs['gen_ai.request.model']}",
                     context=_request_context,
                     kind=SpanKind.CLIENT,
+                    start_time=backend_start_ns,
                 )
                 genai_span.set_attributes(genai_request_attrs)
                 genai_span.set_attributes(
@@ -4453,7 +4490,8 @@ async def _stream_response(
                         response_model=billed_name,
                         input_tokens=prompt_tokens,
                         output_tokens=completion_tokens,
-                        finish_reason=termination_reason,
+                        finish_reason=model_finish_reason,
+                        outcome=termination_reason,
                         backend_id=backend_id,
                         ttft_ms=ttft_ms,
                         first_token_ms=first_token_ms,

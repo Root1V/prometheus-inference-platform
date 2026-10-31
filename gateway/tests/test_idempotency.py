@@ -693,22 +693,27 @@ def test_genai_request_attributes_use_the_conventional_names():
     }
 
 
-def test_a_stream_the_caller_abandoned_says_so_in_finish_reasons():
+def test_a_stream_the_caller_abandoned_says_so_in_its_outcome():
     """Argus called this the most valuable attribute we have and said almost
     nobody measures it: it separates "we failed" from "they stopped waiting",
-    which are different problems with different fixes."""
+    which are different problems with different fixes.
+
+    PRM-282: it travels in `argus.inference.outcome`, the name Argus gave it in
+    A-53. `finish_reasons` is the model's, and a model cut off mid-answer has
+    none to give."""
     from prometheus_gateway.router import _genai_response_attrs
 
     attrs = _genai_response_attrs(
         response_model="qwen3-0.6b",
         input_tokens=10,
         output_tokens=5,
-        finish_reason=db.TERMINATION_CLIENT_DISCONNECTED,
+        outcome=db.TERMINATION_CLIENT_DISCONNECTED,
         backend_id="qwen3-0-6b-1",
         ttft_ms=180,
     )
 
-    assert attrs["gen_ai.response.finish_reasons"] == ["client_disconnected"]
+    assert attrs["argus.inference.outcome"] == "client_disconnected"
+    assert "gen_ai.response.finish_reasons" not in attrs
     assert attrs["gen_ai.usage.output_tokens"] == 5
     assert attrs["argus.inference.backend_id"] == "qwen3-0-6b-1"
     assert attrs["argus.inference.ttft_ms"] == 180
@@ -749,7 +754,12 @@ async def test_the_genai_attributes_actually_reach_a_span(gw, rsa_keys):
                 200,
                 json={
                     "model": "solo",
-                    "choices": [{"message": {"role": "assistant", "content": "hi"}}],
+                    "choices": [
+                        {
+                            "message": {"role": "assistant", "content": "hi"},
+                            "finish_reason": "length",
+                        }
+                    ],
                     "usage": {"prompt_tokens": 3, "completion_tokens": 1},
                 },
             )
@@ -767,7 +777,10 @@ async def test_the_genai_attributes_actually_reach_a_span(gw, rsa_keys):
         assert attrs, "no span carried the GenAI attributes"
         assert attrs["gen_ai.operation.name"] == "chat"
         assert attrs["gen_ai.usage.output_tokens"] == 1
-        assert attrs["gen_ai.response.finish_reasons"] == ("complete",)
+        # PRM-282: the model's reason, not ours. It used to say "complete"
+        # whatever the model said, which is not what the convention defines.
+        assert attrs["gen_ai.response.finish_reasons"] == ("length",)
+        assert attrs["argus.inference.outcome"] == "complete"
     finally:
         trace._TRACER_PROVIDER = previous  # type: ignore[attr-defined]
         router_module._tracer = trace.get_tracer("prometheus_gateway")
@@ -891,6 +904,131 @@ async def test_the_internal_span_no_longer_carries_genai_attributes(gw, rsa_keys
     finally:
         trace._TRACER_PROVIDER = previous  # type: ignore[attr-defined]
         router_module._tracer = trace.get_tracer("prometheus_gateway")
+
+
+# ── PRM-282: what the model said, what happened, and how long it took ──────
+
+
+def _capture_spans():
+    from opentelemetry import trace
+    from opentelemetry.sdk.trace import TracerProvider
+    from opentelemetry.sdk.trace.export import SimpleSpanProcessor
+    from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
+
+    import prometheus_gateway.router as router_module
+
+    exporter = InMemorySpanExporter()
+    provider = TracerProvider()
+    provider.add_span_processor(SimpleSpanProcessor(exporter))
+    previous = trace.get_tracer_provider()
+    trace._TRACER_PROVIDER = provider  # type: ignore[attr-defined]
+    router_module._tracer = trace.get_tracer("test")
+
+    def restore() -> None:
+        trace._TRACER_PROVIDER = previous  # type: ignore[attr-defined]
+        router_module._tracer = trace.get_tracer("prometheus_gateway")
+
+    return exporter, restore
+
+
+@respx.mock
+async def test_a_streamed_span_lasts_as_long_as_the_stream(gw, rsa_keys):
+    """The streamed span is built after the stream ends, and was started then
+    too: it began and ended at the same instant. Argus saw four abandoned calls
+    of 56 s to 10 min as lasting 0 s. Every streamed call did the same."""
+    import asyncio
+
+    async def slow_stream(request):
+        async def body():
+            yield b'data: {"choices":[{"delta":{"content":"hi"}}]}\n\n'
+            await asyncio.sleep(0.2)
+            yield (
+                b'data: {"choices":[{"delta":{},"finish_reason":"stop"}],'
+                b'"timings":{"prompt_n":3,"predicted_n":1}}\n\n'
+            )
+            yield b"data: [DONE]\n\n"
+
+        return Response(200, stream=body(), headers={"Content-Type": "text/event-stream"})
+
+    respx.post(f"{BACKEND_URL}/v1/chat/completions").mock(side_effect=slow_stream)
+    exporter, restore = _capture_spans()
+    try:
+        headers = {
+            "Authorization": f"Bearer {make_token(rsa_keys['private'], scope='inference:stream model:solo')}",
+        }
+        await gw.post("/v1/chat/completions", json=_chat(stream=True), headers=headers)
+        await _drain_detached()
+
+        span = _genai_span(exporter)
+        assert span is not None
+        assert span.end_time - span.start_time >= 200_000_000, "shorter than the stream"
+        attrs = dict(span.attributes or {})
+        assert attrs["gen_ai.response.finish_reasons"] == ("stop",)
+        assert attrs["argus.inference.outcome"] == "complete"
+    finally:
+        restore()
+
+
+@respx.mock
+async def test_a_broken_stream_has_an_outcome_and_no_finish_reason(gw, rsa_keys):
+    """A model cut off mid-answer never said why it stopped — it didn't. What
+    happened is ours to say, in the outcome."""
+
+    async def breaks(request):
+        async def body():
+            yield b'data: {"choices":[{"delta":{"content":"hi"}}]}\n\n'
+            raise httpx.ReadError("gone")
+
+        return Response(200, stream=body(), headers={"Content-Type": "text/event-stream"})
+
+    respx.post(f"{BACKEND_URL}/v1/chat/completions").mock(side_effect=breaks)
+    exporter, restore = _capture_spans()
+    try:
+        headers = {
+            "Authorization": f"Bearer {make_token(rsa_keys['private'], scope='inference:stream model:solo')}",
+        }
+        await gw.post("/v1/chat/completions", json=_chat(stream=True), headers=headers)
+        await _drain_detached()
+
+        attrs = dict(_genai_span(exporter).attributes or {})
+        assert "gen_ai.response.finish_reasons" not in attrs
+        assert attrs["argus.inference.outcome"] == "upstream_error"
+    finally:
+        restore()
+
+
+@respx.mock
+async def test_a_non_streamed_abandon_gets_its_own_client_span(gw, rsa_keys, monkeypatch):
+    """The non-streamed abandon put `finish_reasons` on `inference.request` —
+    the internal span, which carries no gen_ai attributes — and emitted no
+    `chat` span at all, so the call to the model was missing from anything
+    aggregating client spans."""
+    import prometheus_gateway.router as router_module
+
+    async def caller_leaves(request, coro):
+        coro.close()
+        raise router_module.ClientGone()
+
+    monkeypatch.setattr(router_module, "_forward_or_abandon", caller_leaves)
+    exporter, restore = _capture_spans()
+    try:
+        headers = {
+            "Authorization": f"Bearer {make_token(rsa_keys['private'], scope='inference:read model:solo')}",
+        }
+        resp = await gw.post("/v1/chat/completions", json=_chat(), headers=headers)
+        await _drain_detached()
+
+        assert resp.status_code == 499
+        span = _genai_span(exporter)
+        assert span is not None, "no chat span for the abandoned call"
+        assert span.kind.name == "CLIENT"
+        attrs = dict(span.attributes or {})
+        assert attrs["argus.inference.outcome"] == "client_disconnected"
+        assert "gen_ai.response.finish_reasons" not in attrs
+        internal = [s for s in exporter.get_finished_spans() if s.name == "inference.request"]
+        assert not any(k.startswith("gen_ai.") for k in dict(internal[0].attributes or {}))
+    finally:
+        restore()
 
 
 # ── PRM-105: the two things 30 minutes of traffic showed Argus would never see ──
