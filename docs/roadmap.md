@@ -10345,7 +10345,10 @@ is already parsed for the `inference.complete` log line and then replaced by `co
   finished (abandoned or broken stream).
 - In: our termination reason moves to an attribute of its own, named from Argus's vocabulary
   (asked in P-43). `client_disconnected` must stay visible: A-10 called it the most valuable
-  signal we emit.
+  signal we emit. Named `argus.inference.outcome` in A-53.
+- In (found on the way, A-53): the streamed span starts when the call did. It was started after
+  the stream ended, so every streamed call reached Argus lasting 0 s. And a non-streamed abandon
+  gets its own `chat` CLIENT span instead of a gen_ai attribute on `inference.request`.
 - Out: `usage_events.termination_reason` and its three values — a billing column, unchanged.
 
 ## PRM-283 — A non-streamed abandon is recorded
