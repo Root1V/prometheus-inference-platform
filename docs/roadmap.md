@@ -10347,6 +10347,7 @@ is already parsed for the `inference.complete` log line and then replaced by `co
   (asked in P-43). `client_disconnected` must stay visible: A-10 called it the most valuable
   signal we emit.
 - Out: `usage_events.termination_reason` and its three values — a billing column, unchanged.
+
 ## PRM-283 — A non-streamed abandon is recorded
 
 **Why**: when the caller leaves before a non-streamed chat answer, the `ClientGone` branch
@@ -10364,4 +10365,24 @@ the images route already settles its reservation at zero.
   duration and estimated prompt tokens; the reservation settled at the decided cost.
 - In: a test that abandons a non-streamed call and asserts the row and the released reservation.
 - Out: images abandons getting a usage row — same question, separate decision.
+
+## PRM-284 — A stopped model says it is stopped
+
+**Why**: asking for a stopped model answers `400` "Model … is not registered. Use GET /v1/models",
+which is false. Stopping an instance sets `discovery = false` (`lifecycle.py`, spec 010 AC-9), the
+manager's `/v1/backends` lists only discoverable instances, so the gateway's registry loses the
+name and `resolve()` returns None — the path for a typo. Its "registered but not loaded" `503`,
+documented in `registry.resolve`, is reached only in the seconds before the next sync. On
+2026-10-31 Sentinel read this as the gateway failing (`qwen3-8b-q6`, `qwen3-vl-8b`, both stopped
+from the panel), Argus has 315 refusals of the kind on `qwen3-30b-a3b-q4-k-m-local`, and it is
+the open §4 of the P-06 draft to Apeiron.
+
+**Scope**:
+- In: a name the fleet knows but does not serve — an instance with discovery off, or a catalog
+  entry with no running instance — answers `503` "registered but not running", on the five
+  routes that refuse `unknown_model` today; a name nobody knows keeps the `400`.
+- In: a test that stops an instance, syncs, asks for it and gets the `503`.
+- Decide first: how the gateway learns those names — `/v1/backends?include_all` (RM-10) or the
+  catalog snapshot it already keeps (PRM-123) — without stopped instances becoming routable.
+- Out: listing stopped models in `GET /v1/models`; discovery stays the gate for what is offered.
 
