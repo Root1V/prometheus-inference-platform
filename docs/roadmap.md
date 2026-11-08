@@ -10389,3 +10389,56 @@ the open §4 of the P-06 draft to Apeiron.
   catalog snapshot it already keeps (PRM-123) — without stopped instances becoming routable.
 - Out: listing stopped models in `GET /v1/models`; discovery stays the gate for what is offered.
 
+## PRM-285 — A half-open circuit does not get stuck
+
+**Why**: the breaker's `half-open` state is written to Redis with no expiry, while `allow_request`
+lets a half-open circuit through only while the probe lock exists — and that lock expires after
+`recovery_timeout` (30 s). Closing needs `success_threshold` (2) successes, counted in process. If
+they do not land inside those 30 s the circuit is half-open forever, refuses every request, and a
+gateway restart does not help because the state is in Redis. `gpt-oss-20b-mxfp4` was refused from
+2026-10-26 14:29 to 2026-10-31 — five days, no request served — until its keys were deleted by hand.
+
+**Scope**:
+- In: a half-open circuit whose probe lock is gone goes back to trying — re-opens, or takes a new
+  probe — so recovery is retried instead of stopping; a test that opens a circuit, lets the lock
+  expire before the successes and asserts that requests are let through again.
+- In: a way for the operator to reset one breaker. `DELETE /admin/api/circuit-breaker` resets the
+  thresholds only; today the state can be cleared only in Redis.
+- Out: retuning the thresholds themselves.
+
+## PRM-286 — A download takes the modality its file declares
+
+**Why**: `embeddinggemma-2-ud-q4-k-xl-local`, downloaded 2026-10-27, was catalogued as `text`
+although its GGUF carries `pooling_type` — the evidence `read_gguf_modality_evidence` (PRM-107)
+already reads as `embedding`. Started that way it would have run without `--embedding` and been
+served as a chat model. Separately, the PRM-281 defaults gave it the trained context, 262,144,
+where PRM-276 set 4,096–8,192 for embedding and rerank models because of memory.
+
+**Scope**:
+- In: the download's catalog registration takes the modality the file asserts when it asserts
+  one; silence keeps today's behaviour, as PRM-107 decided.
+- In: `instance-defaults` proposes the PRM-276 context for embedding and rerank models instead of
+  the trained one; tests for both.
+- Out: chat models keep the trained context — the operator chose that in PRM-281.
+
+## PRM-287 — Tell Argus PRM-282 is deployed
+
+**Why**: P-44 told Argus the change was not deployed and that we would write back with the
+commit. It was deployed 2026-10-31 (`66c5610`, gateway restarted at 12:03).
+
+**Scope**:
+- In: an entry in the Argus channel with the commit and the three changes P-44 §5 listed —
+  `client_disconnected` moves to `argus.inference.outcome`, streamed `chat` durations stop being
+  0, and non-streamed abandons appear as `chat` spans — and a request to check them in their store.
+
+## PRM-288 — Sentinel gets its models back
+
+**Why**: both models Sentinel uses are stopped from the panel: `qwen3vl-8b-q4` (public name
+`qwen3-vl-8b`, 3,193 calls, its main load) since 2026-10-25 15:39 and `qwen3-8b-q6` since
+2026-10-05. Sentinel read the resulting 400s as the gateway failing (PRM-284).
+
+**Scope**:
+- In: the operator decides whether to start them, given memory; then Sentinel is told in its
+  channel which models it has.
+- Out: the misleading 400 itself — that is PRM-284.
+
