@@ -484,7 +484,13 @@ export default function Playground() {
   const [systemPrompt, setSystemPrompt] = useState("");
   const [temperature, setTemperature] = useState(1.0);
   const [topP, setTopP] = useState(1.0);
-  const [maxTokens, setMaxTokens] = useState(512);
+  // PRM-291: 512 ran out on a reasoning model before it said a word —
+  // Inkling 2 Mini spent all 1024 on reasoning for one ordinary question.
+  const [maxTokens, setMaxTokens] = useState(2048);
+  // "" sends nothing, so the model's template picks its own default.
+  const [reasoningEffort, setReasoningEffort] = useState<
+    "" | "low" | "medium" | "high"
+  >("");
   const [stopInput, setStopInput] = useState("");
   const [toolsInput, setToolsInput] = useState("");
   const [toolChoice, setToolChoice] = useState<"auto" | "required" | "none">(
@@ -887,6 +893,9 @@ export default function Playground() {
       max_tokens: maxTokens,
       ...(stop.length > 0 ? { stop } : {}),
       ...(tools ? { tools, tool_choice: toolChoice } : {}),
+      ...(reasoningEffort
+        ? { chat_template_kwargs: { reasoning_effort: reasoningEffort } }
+        : {}),
     };
   }
 
@@ -2202,6 +2211,34 @@ export default function Playground() {
                   onChange={(e) => setTopP(Number(e.target.value))}
                   className="w-full accent-primary"
                 />
+              </div>
+
+              <div>
+                <label
+                  htmlFor="playground-reasoning-effort"
+                  className="mb-1.5 block text-sm text-text"
+                >
+                  Reasoning effort
+                </label>
+                <select
+                  id="playground-reasoning-effort"
+                  value={reasoningEffort}
+                  onChange={(e) =>
+                    setReasoningEffort(
+                      e.target.value as "" | "low" | "medium" | "high",
+                    )
+                  }
+                  className={inputClass}
+                >
+                  <option value="">Model default</option>
+                  <option value="low">Low</option>
+                  <option value="medium">Medium</option>
+                  <option value="high">High</option>
+                </select>
+                <p className="mt-1 text-xs text-text-muted">
+                  How long the model thinks before it answers. Models that
+                  don't read it (most besides gpt-oss and Inkling) ignore it.
+                </p>
               </div>
 
               <div>
