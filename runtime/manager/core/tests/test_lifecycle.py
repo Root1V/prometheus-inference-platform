@@ -5,6 +5,7 @@ AC-4, AC-5, AC-6, AC-6b, AC-6c, AC-6d, AC-7, AC-8, AC-9, AC-10.
 
 from __future__ import annotations
 
+import json
 import signal
 import subprocess
 import sys
@@ -55,6 +56,22 @@ class TestBackendCommandBuilders:
         assert "--alias" in cmd and "test-model" in cmd
         assert "--ctx-size" in cmd and "8192" in cmd
         assert "--port" in cmd and "9090" in cmd
+
+    def test_llama_cpp_cmd_passes_the_instances_template_defaults(self):
+        """PRM-292: as one JSON argument, which is how llama-server reads it."""
+        cmd = _build_llama_cpp_cmd(
+            "llama-server",
+            self._entry(chat_template_kwargs={"reasoning_effort": "low"}),
+            9090,
+            "127.0.0.1",
+        )
+        i = cmd.index("--chat-template-kwargs")
+        assert json.loads(cmd[i + 1]) == {"reasoning_effort": "low"}
+
+    def test_llama_cpp_cmd_without_template_defaults_is_unchanged(self):
+        """An instance nobody configured launches exactly as it did before."""
+        cmd = _build_llama_cpp_cmd("llama-server", self._entry(), 9090, "127.0.0.1")
+        assert "--chat-template-kwargs" not in cmd
 
     def test_mlx_cmd_has_no_alias_or_ctx_size_flags(self):
         """mlx_lm.server (verified via --help) has neither flag."""

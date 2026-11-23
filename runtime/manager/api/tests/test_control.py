@@ -307,6 +307,37 @@ class TestUpdate:
         # persisted, not just returned in the response
         assert app.state.registry.get("llama3-test").context_length == 16384
 
+    def test_update_chat_template_kwargs_persists(self, tmp_path: Path):
+        """PRM-292: an instance's chat template defaults, as a JSON object."""
+        client = _authed(_make_client(tmp_path))
+        try:
+            resp = client.patch(
+                "/v1/backends/llama3-test",
+                json={"chat_template_kwargs": {"reasoning_effort": "low"}},
+                headers={"Authorization": "Bearer dummy"},
+            )
+        finally:
+            _clear_override()
+        assert resp.status_code == 200
+        assert resp.json()["chat_template_kwargs"] == {"reasoning_effort": "low"}
+        stored = app.state.registry.get("llama3-test").chat_template_kwargs
+        assert stored == {"reasoning_effort": "low"}
+
+    def test_update_chat_template_kwargs_refuses_anything_but_an_object(self, tmp_path: Path):
+        """llama-server refuses to start on anything else; here is a better place
+        to find out than a launch that fails."""
+        client = _authed(_make_client(tmp_path))
+        try:
+            resp = client.patch(
+                "/v1/backends/llama3-test",
+                json={"chat_template_kwargs": ["low"]},
+                headers={"Authorization": "Bearer dummy"},
+            )
+        finally:
+            _clear_override()
+        assert resp.status_code == 400
+        assert app.state.registry.get("llama3-test").chat_template_kwargs == {}
+
     def test_update_split_file_fields_persists_and_validates(self, tmp_path: Path):
         """RM-52: vae_path/clip_l_path/t5xxl_path are PATCH-able and path-
         traversal-validated the same way `path` already is."""

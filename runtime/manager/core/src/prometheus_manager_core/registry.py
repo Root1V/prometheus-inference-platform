@@ -149,6 +149,9 @@ CREATE TABLE IF NOT EXISTS instances (
     discovery INTEGER NOT NULL DEFAULT 0,
     rss_estimate_mb INTEGER,
     cfg_scale REAL,
+    -- PRM-292: JSON object handed to llama-server as --chat-template-kwargs;
+    -- '' for none. Migration 2 adds it to databases that predate it.
+    chat_template_kwargs TEXT NOT NULL DEFAULT '',
     created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 CREATE INDEX IF NOT EXISTS idx_instances_model_id ON instances(model_id);
@@ -189,6 +192,7 @@ _INSTANCE_COLUMNS = (
     "discovery",
     "rss_estimate_mb",
     "cfg_scale",
+    "chat_template_kwargs",
 )
 
 # Pre-RM-51 single-table column order — used only by the structural migration
@@ -325,6 +329,13 @@ class RegistryEntry:
     # image). None means "let sd-server use its own default" — needed for
     # backends/models that DO want it (unchanged SD-Turbo behavior).
     cfg_scale: float | None = None
+    # PRM-292: defaults for the model's chat template, passed to llama-server as
+    # --chat-template-kwargs. A request's own `chat_template_kwargs` still wins,
+    # key by key — llama-server merges them — so this is a default, not a cap.
+    # The keys belong to each model's template (`reasoning_effort` for gpt-oss
+    # and Inkling, `enable_thinking` for Qwen3), which is why it is a mapping
+    # and not one field per knob. Empty means the flag is not passed at all.
+    chat_template_kwargs: dict[str, Any] = field(default_factory=dict)
     # RM-51: which catalog (models) row this instance belongs to. Populated
     # correctly by Registry._load()'s join for every real loaded entry —
     # callers constructing a transient RegistryEntry before Registry.add()
@@ -372,14 +383,26 @@ class RegistryEntry:
             "clip_l_path": self.clip_l_path,
             "t5xxl_path": self.t5xxl_path,
             "cfg_scale": self.cfg_scale,
+            "chat_template_kwargs": self.chat_template_kwargs,
         }
 
 
-# PRM-155: numbered schema changes for registry.db. Empty today — the columns the
-# existing PRAGMA-guarded backfills add are the baseline, and nothing in this
-# schema is dead yet. New changes come here rather than being added to those
-# backfills, which cannot express a drop, a rename or a type change.
-_MIGRATIONS: tuple[schema.Migration, ...] = ()
+# PRM-155: numbered schema changes for registry.db. The columns the existing
+# PRAGMA-guarded backfills add are the baseline (version 1). New changes come
+# here rather than being added to those backfills, which cannot express a drop,
+# a rename or a type change.
+_MIGRATIONS: tuple[schema.Migration, ...] = (
+    # PRM-292: the first change this chain carries. Instance-level because two
+    # replicas of one model may reasonably serve different defaults — a cheap,
+    # quick one and a careful one behind the same weights.
+    schema.Migration(
+        version=2,
+        name="PRM-292: per-instance chat template defaults",
+        statements=(
+            "ALTER TABLE instances ADD COLUMN chat_template_kwargs TEXT NOT NULL DEFAULT ''",
+        ),
+    ),
+)
 
 
 class Registry:
@@ -599,6 +622,7 @@ class Registry:
         discovery: bool = False,
         rss_estimate_mb: int | None = None,
         cfg_scale: float | None = None,
+        chat_template_kwargs: dict[str, Any] | None = None,
     ) -> None:
         """Create a new instance referencing an *existing* catalog entry —
         the "create instance from a downloaded model" flow (RM-51).
@@ -620,6 +644,7 @@ class Registry:
         _validate_path(catalog.clip_l_path, backend)
         _validate_path(catalog.t5xxl_path, backend)
         _validate_port(port)
+        kwargs = validate_chat_template_kwargs(chat_template_kwargs)
         entry = RegistryEntry(
             id=id,
             model_id=model_id,
@@ -631,6 +656,7 @@ class Registry:
             discovery=discovery,
             rss_estimate_mb=rss_estimate_mb,
             cfg_scale=cfg_scale,
+            chat_template_kwargs=kwargs,
         )
         with self._lock:
             self._conn.execute(
@@ -901,6 +927,7 @@ class Registry:
                 discovery=bool(inst_raw["discovery"]),
                 rss_estimate_mb=inst_raw["rss_estimate_mb"],
                 cfg_scale=inst_raw["cfg_scale"],
+                chat_template_kwargs=_decode_template_kwargs(inst_raw["chat_template_kwargs"]),
                 model_slug=catalog.slug if catalog else "",
                 path=catalog.path if catalog else "",
                 family=catalog.family if catalog else "",
@@ -941,6 +968,11 @@ class Registry:
         conn = sqlite3.connect(str(tmp))
         try:
             conn.executescript(_SCHEMA_SQL)
+            # PRM-292: the script just built this file at head shape, so it is
+            # stamped at head. Left unstamped it would look like a pre-PRM-155
+            # database on open, be stamped at the baseline, and migration 2
+            # would try to add a column the script already created.
+            schema.apply(conn, "registry", _MIGRATIONS, had_existing_tables=False)
             data = yaml.safe_load(legacy.read_text()) or {}
             for raw in data.get("models", []):
                 entry = _entry_from_legacy_yaml(raw)
@@ -1011,6 +1043,8 @@ class Registry:
         conn = sqlite3.connect(str(tmp))
         try:
             conn.executescript(_SCHEMA_SQL)
+            # PRM-292: same as the YAML import above — built at head, stamped there.
+            schema.apply(conn, "registry", _MIGRATIONS, had_existing_tables=False)
             for row in rows:
                 raw: dict[str, Any] = dict(zip(_LEGACY_COLUMNS, row, strict=True))
                 entry = _entry_from_legacy_row(raw)
@@ -1183,6 +1217,7 @@ def _instance_row_params(entry: RegistryEntry, *, model_id: str) -> tuple[Any, .
         "discovery": int(entry.discovery),
         "rss_estimate_mb": entry.rss_estimate_mb,
         "cfg_scale": entry.cfg_scale,
+        "chat_template_kwargs": _encode_template_kwargs(entry.chat_template_kwargs),
     }
     return tuple(values[c] for c in _INSTANCE_COLUMNS)
 
@@ -1202,9 +1237,20 @@ def _encode_instance_values(fields: dict[str, Any]) -> tuple[Any, ...]:
     def encode(name: str, value: Any) -> Any:
         if name == "discovery":
             return int(value)
+        if name == "chat_template_kwargs":
+            return _encode_template_kwargs(value)
         return value
 
     return tuple(encode(k, v) for k, v in fields.items())
+
+
+def _encode_template_kwargs(kwargs: dict[str, Any] | None) -> str:
+    return json.dumps(kwargs, sort_keys=True) if kwargs else ""
+
+
+def _decode_template_kwargs(raw: str | None) -> dict[str, Any]:
+    decoded = json.loads(raw) if raw else {}
+    return decoded if isinstance(decoded, dict) else {}
 
 
 def _entry_from_legacy_yaml(raw: dict[str, Any]) -> RegistryEntry:
@@ -1338,3 +1384,24 @@ def _validate_path_traversal(path: str) -> None:
 def _validate_port(port: int) -> None:
     if not (1024 <= port <= 65535):
         raise ValueError(f"Port must be in range 1024–65535, got: {port}")
+
+
+def validate_chat_template_kwargs(value: Any) -> dict[str, Any]:
+    """PRM-292: a JSON object, or nothing. Returns the mapping to store.
+
+    The keys are not checked against the model's template — they belong to
+    it, and a list here would be a second copy of someone else's Jinja that
+    goes stale (PRM-195's reasoning). Only the shape is: llama-server parses
+    the flag as an object and refuses to start on anything else, which is a
+    worse place to find out.
+    """
+    if value is None or value == "" or value == {}:
+        return {}
+    if isinstance(value, str):
+        try:
+            value = json.loads(value)
+        except json.JSONDecodeError as exc:
+            raise ValueError(f"chat_template_kwargs is not valid JSON: {exc}") from exc
+    if not isinstance(value, dict):
+        raise ValueError(f"chat_template_kwargs must be a JSON object, got {type(value).__name__}")
+    return value

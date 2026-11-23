@@ -53,6 +53,8 @@ interface FormState {
   discovery: boolean;
   hf_repo: string;
   hf_sha256: string;
+  /** PRM-292: the JSON as typed, parsed only on save. */
+  template_kwargs: string;
 }
 
 function stateFromInstance(instance: InstanceEntry): FormState {
@@ -71,6 +73,10 @@ function stateFromInstance(instance: InstanceEntry): FormState {
     discovery: instance.discovery,
     hf_repo: instance.hf_repo,
     hf_sha256: instance.hf_sha256,
+    template_kwargs:
+      instance.chat_template_kwargs && Object.keys(instance.chat_template_kwargs).length > 0
+        ? JSON.stringify(instance.chat_template_kwargs)
+        : "",
   };
 }
 
@@ -468,6 +474,19 @@ function EditInstanceForm({
       showToast(`${form.node} has no inference engine declared.`, "error");
       return;
     }
+    let templateKwargs: Record<string, unknown> = {};
+    if (form.template_kwargs.trim()) {
+      try {
+        templateKwargs = JSON.parse(form.template_kwargs);
+      } catch {
+        showToast("Template arguments must be valid JSON.", "error");
+        return;
+      }
+      if (typeof templateKwargs !== "object" || templateKwargs === null || Array.isArray(templateKwargs)) {
+        showToast('Template arguments must be a JSON object, like {"reasoning_effort": "low"}.', "error");
+        return;
+      }
+    }
     const body: UpdateModelRequest = {
       port: Number(form.port),
       backend: engine,
@@ -480,6 +499,7 @@ function EditInstanceForm({
       mmproj_path: form.modality === "vision" ? form.mmproj_path : "",
       hf_repo: form.hf_repo,
       hf_sha256: form.hf_sha256,
+      chat_template_kwargs: templateKwargs,
     };
     updateModel.mutate(
       { node: form.node, modelId: form.id, data: body },
@@ -597,6 +617,20 @@ function EditInstanceForm({
             </Field>
           )}
         </div>
+        {/* PRM-292: a flag on llama-server, so it reaches the model on the
+            instance's next start, not on save. */}
+        <Field
+          label="Template arguments (JSON)"
+          hint="Defaults for the model's chat template, used when a request sends none of its own. Takes effect the next time the instance starts."
+        >
+          <textarea
+            rows={2}
+            value={form.template_kwargs}
+            onChange={(e) => update("template_kwargs", e.target.value)}
+            placeholder='{"reasoning_effort": "low"}'
+            className={cn(inputClass, "font-mono")}
+          />
+        </Field>
         <label className="flex items-center gap-2 text-sm text-text">
           <input
             type="checkbox"

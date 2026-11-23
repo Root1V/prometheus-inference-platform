@@ -7,6 +7,7 @@ Implements: memory/specs/018-observability-telemetry.md — AC-3
 
 from __future__ import annotations
 
+import json
 import os
 import platform
 import shutil
@@ -133,6 +134,11 @@ def _build_llama_cpp_cmd(binary: str, entry: RegistryEntry, port: int, bind_host
         # to reuse prefixes that one-off chunks and pairs never repeat: it was
         # 8 of the 11 GB each of these 0.6B models held.
         cmd.extend(["--batch-size", "2048", "--ubatch-size", "2048", "--cache-ram", "0"])
+
+    # PRM-292: the instance's template defaults. Omitted when empty, so an
+    # instance nobody configured launches exactly as it did before.
+    if entry.chat_template_kwargs:
+        cmd.extend(["--chat-template-kwargs", json.dumps(entry.chat_template_kwargs)])
 
     return cmd
 

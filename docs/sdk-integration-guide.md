@@ -606,11 +606,15 @@ through unexamined and the set differs per model — `enable_thinking` for the Q
 `reasoning_effort` for gpt-oss. Check the model card; a key the template does not read is
 ignored by the template, silently, and the gateway cannot tell you that.
 
-**Do not send `reasoning_effort` or `reasoning_budget` at the top level.** They look like they
-should work and they do nothing — measured against a running server, byte-identical output with
-and without. They stay outside the accepted set deliberately, so they keep appearing in
-`X-Prometheus-Ignored-Parameters` rather than being quietly accepted and quietly dropped.
-`reasoning_effort` goes *inside* `chat_template_kwargs`, where the template reads it.
+**`reasoning_effort` also works at the top level**, the way OpenAI-style SDKs send it — the
+engine maps it into the template itself and refuses, with its own error, a level the template
+does not declare. Measured on llama-server build 12642: `"none"` took Qwen3-0.6B from 1,656
+characters of reasoning to 0. **`reasoning_budget` does nothing** at the top level — byte-identical
+output with and without, against a running server — so it stays outside the accepted set and
+keeps appearing in `X-Prometheus-Ignored-Parameters` rather than being quietly dropped.
+
+An instance can also carry its own defaults for these keys, set by the operator. They apply only
+when your request does not send the key: **what you send always wins**, key by key.
 
 Reasoning that does happen comes back in `choices[0].message.reasoning_content`, separate from
 `content`. **It is billed in `completion_tokens` and there is no separate count** — the engine
