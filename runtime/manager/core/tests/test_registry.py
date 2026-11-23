@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import shutil
 from pathlib import Path
 
 import pytest
@@ -727,17 +728,26 @@ class TestSeedCatalogRM86:
         # tests/ -> core/ -> manager/
         return Path(__file__).resolve().parents[2] / "registry.db.example"
 
-    def test_the_seed_catalog_is_committed_and_loadable(self):
+    @classmethod
+    def _open_a_copy(cls, tmp_path: Path) -> Registry:
+        """Opening the seed itself migrates it in place — PRM-292's column — and
+        leaves a tracked file modified after every test run. A copy is what a
+        fresh checkout would open anyway."""
+        copy = tmp_path / "registry.db"
+        shutil.copy2(cls._example_path(), copy)
+        return Registry(copy)
+
+    def test_the_seed_catalog_is_committed_and_loadable(self, tmp_path: Path):
         example = self._example_path()
         assert example.exists(), "registry.db.example is the committed seed — it must be there"
 
-        reg = Registry(example)
+        reg = self._open_a_copy(tmp_path)
         assert reg.list_catalog(), "the seed is meant to contain a starting catalog"
 
-    def test_the_seed_carries_no_paths_from_anyone_s_machine(self):
+    def test_the_seed_carries_no_paths_from_anyone_s_machine(self, tmp_path: Path):
         """The tracked registry.db ended up holding 26 absolute paths under one
         developer's home directory, in a public repo. Relative paths only."""
-        reg = Registry(self._example_path())
+        reg = self._open_a_copy(tmp_path)
 
         absolute = [c.path for c in reg.list_catalog() if c.path.startswith("/")]
         assert absolute == []
