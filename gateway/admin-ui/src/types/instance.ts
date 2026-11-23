@@ -37,6 +37,9 @@ export interface InstanceEntry {
   hf_repo: string;
   hf_sha256: string;
   hf_filenames: string[];
+  /** PRM-292: defaults for the model's chat template, passed to llama-server
+   * as --chat-template-kwargs. Empty when none were set. */
+  chat_template_kwargs: Record<string, unknown>;
   pid: number | null;
   state: InstanceState;
   /** Why the last start attempt failed — set only when state is "error". */
@@ -80,6 +83,7 @@ export interface RegisterModelRequest {
   modality?: Modality;
   mmproj_path?: string;
   discovery?: boolean;
+  chat_template_kwargs?: Record<string, unknown>;
   hf_repo?: string;
   hf_sha256?: string;
   /** RM-51: create a new instance of this already-catalogued model instead

@@ -264,8 +264,8 @@ def test_an_empty_chain_is_valid():
 
 
 def test_the_registry_and_fleet_chains_are_valid():
-    """The guard has to pass on an empty chain as well as on whatever they grow
-    into — `registry` is still empty, `fleet` carries PRM-154's drop."""
+    """The guard has to pass on whatever the chains grow into — `registry`
+    carries PRM-292's column, `fleet` PRM-154's drop and what followed."""
     from prometheus_manager_core import fleet, registry
 
     schema.validate(registry._MIGRATIONS)
@@ -295,9 +295,9 @@ def test_the_two_chains_are_recorded_separately(tmp_path):
             finally:
                 conn.close()
             # PRM-154: at that chain's head, not the baseline. A new database is
-            # created at head shape by its schema script, and `fleet` now has a
-            # migration above the baseline while `registry` does not — so the two
-            # numbers differ, which is exactly why they are recorded per chain.
+            # created at head shape by its schema script, and the two chains
+            # have grown separately — so their numbers differ, which is exactly
+            # why they are recorded per chain.
             assert rows == [(chain, schema.head(expected_chain))]
     finally:
         fleet_reg.close()

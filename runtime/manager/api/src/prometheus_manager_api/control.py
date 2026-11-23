@@ -40,6 +40,7 @@ from prometheus_manager_core.registry import (
     _validate_modality,
     _validate_path,
     _validate_port,
+    validate_chat_template_kwargs,
 )
 from prometheus_manager_core.scanner import scan
 from prometheus_manager_core.telemetry import get_tracer
@@ -70,6 +71,8 @@ _UPDATABLE_FIELDS = frozenset(
         "clip_l_path",
         "t5xxl_path",
         "cfg_scale",
+        # PRM-292: the instance's chat template defaults, validated below.
+        "chat_template_kwargs",
         # RM-70: display label only. `slug` is deliberately NOT here — it goes
         # through registry.set_slug(), which enforces the once-only rule that a
         # plain column update would bypass.
@@ -210,6 +213,7 @@ async def register_backend(
                     discovery=bool(body.get("discovery", False)),
                     rss_estimate_mb=body.get("rss_estimate_mb"),
                     cfg_scale=body.get("cfg_scale"),
+                    chat_template_kwargs=body.get("chat_template_kwargs"),
                 )
             except (ValueError, TypeError) as exc:
                 span.set_attribute("http.status_code", 400)
@@ -241,6 +245,9 @@ async def register_backend(
                 clip_l_path=body.get("clip_l_path", ""),
                 t5xxl_path=body.get("t5xxl_path", ""),
                 cfg_scale=body.get("cfg_scale"),
+                chat_template_kwargs=validate_chat_template_kwargs(
+                    body.get("chat_template_kwargs")
+                ),
             )
             # RM-70: both default to the instance id inside add(), matching
             # every registration made before slugs existed.
@@ -328,6 +335,10 @@ async def update_backend(
             _validate_path(merged_clip_l_path, merged_backend)
             _validate_path(merged_t5xxl_path, merged_backend)
             _validate_port(int(merged_port))
+            if "chat_template_kwargs" in updates:
+                updates["chat_template_kwargs"] = validate_chat_template_kwargs(
+                    updates["chat_template_kwargs"]
+                )
         except (ValueError, TypeError) as exc:
             span.set_attribute("http.status_code", 400)
             raise _problem(400, "invalid-update", "Invalid Update", str(exc)) from exc

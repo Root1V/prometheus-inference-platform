@@ -10458,18 +10458,19 @@ manager on start.
 - In: a test that holds a port on `0.0.0.0` and asserts it is not proposed.
 - Out: reserving ports across nodes — each node still answers for its own host.
 
-## PRM-290 — A downloaded vision model can carry its projector
+## PRM-290 — The panel can fetch a vision model's projector
 
-**Why**: `mmproj_path` is set only by direct registration by path. The download flow takes no
-projector, and the catalog PATCH edits `name`, `family`, `modality` and `slug` only — so a vision
-model downloaded from the panel can be served only as text. `inkling-2-mini` read an image
-correctly with its `mmproj` in an isolated test on 2026-11-22, and runs in Prometheus as `text`.
+**Why**: a downloaded model *can* be served as vision today — change its modality to `vision` on
+the Models page, then the instance dialog shows "mmproj path" and the instance PATCH writes it to
+the catalog row. What the panel cannot do is fetch the file: a download takes one repository file
+and catalogues it as a model, so a projector has to be pulled by hand (`hf download`) before
+there is a path to type. The first version of this item said the PATCH refused `mmproj_path`; it
+does not — corrected 2026-11-22.
 
 **Scope**:
-- In: a download can fetch the projector file from the same repository and record it as
-  `mmproj_path`, with the modality set to `vision`; the catalog PATCH accepts `mmproj_path`,
-  refused unless the file exists (PRM-190's rule).
-- In: tests for both paths, and that a `vision` instance still refuses to start without one.
+- In: a download can fetch the projector from the same repository and record it as the model's
+  `mmproj_path`, instead of cataloguing it as a model of its own.
+- In: a test, and that a `vision` instance still refuses to start without one (PRM-190).
 - Out: choosing among projector precisions automatically — the operator names the file.
 
 ## PRM-291 — The Playground lets you choose how long the model reasons
@@ -10483,4 +10484,21 @@ tokens before producing a visible answer" four times in a row, at 512 and at 1,0
   `chat_template_kwargs.reasoning_effort` — the one switch PRM-195 measured as working; "model
   default" sends nothing. Max tokens defaults to 2,048.
 - Out: a default for every client, not only the Playground — that is PRM-292.
+
+## PRM-292 — Each instance sets how long its model reasons by default
+
+**Why**: PRM-291 gave the Playground a reasoning-effort control, but any other client that sends
+no `chat_template_kwargs` gets the template's own default — 0.9 for Inkling 2 Mini, whose model
+card warns of reasoning loops. llama-server takes `--chat-template-kwargs` at launch and merges a
+request's own over it key by key, so a per-instance default works and a caller still overrides it.
+
+**Scope**:
+- In: `chat_template_kwargs` on the instance — a JSON object, the first migration in the registry
+  chain (version 2) — passed to llama-server at launch and omitted when empty; set from the
+  instance dialog, effective on the next start. A mapping rather than one field per knob, because
+  the keys are each template's (`reasoning_effort`, `enable_thinking`), as PRM-195 decided.
+- In: top-level `reasoning_effort` is forwarded. Re-measured on build 12642, `"none"` took
+  Qwen3-0.6B from 1,656 characters of reasoning to 0; PRM-195 had measured it doing nothing on an
+  older engine. `reasoning_budget` was not re-measured and stays ignored. The SDK guide says so.
+- Out: non-llama.cpp engines — no equivalent flag today.
 

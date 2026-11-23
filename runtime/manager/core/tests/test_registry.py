@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import shutil
 from pathlib import Path
 
 import pytest
@@ -640,10 +641,16 @@ class TestDiscoveryField:
         DB pre-exists with a row Registry itself never wrote."""
         import sqlite3
 
-        from prometheus_manager_core.registry import _SCHEMA_SQL
+        from prometheus_manager_core import schema
+        from prometheus_manager_core.registry import _MIGRATIONS, _SCHEMA_SQL
 
         conn = sqlite3.connect(str(registry_path))
         conn.executescript(_SCHEMA_SQL)
+        # PRM-292: stamped the way Registry stamps a database it creates. The
+        # script builds head shape, and left unstamped the file would be read
+        # as one that predates PRM-155 — whose migrations then re-add columns
+        # the script already made. No real database is ever in that state.
+        schema.apply(conn, "registry", _MIGRATIONS, had_existing_tables=False)
         conn.execute(
             "INSERT INTO models (id, family, quantization, downloaded) "
             "VALUES ('no-discovery-model', 'llama3', 'Q4_0', 0)"
@@ -721,17 +728,26 @@ class TestSeedCatalogRM86:
         # tests/ -> core/ -> manager/
         return Path(__file__).resolve().parents[2] / "registry.db.example"
 
-    def test_the_seed_catalog_is_committed_and_loadable(self):
+    @classmethod
+    def _open_a_copy(cls, tmp_path: Path) -> Registry:
+        """Opening the seed itself migrates it in place — PRM-292's column — and
+        leaves a tracked file modified after every test run. A copy is what a
+        fresh checkout would open anyway."""
+        copy = tmp_path / "registry.db"
+        shutil.copy2(cls._example_path(), copy)
+        return Registry(copy)
+
+    def test_the_seed_catalog_is_committed_and_loadable(self, tmp_path: Path):
         example = self._example_path()
         assert example.exists(), "registry.db.example is the committed seed — it must be there"
 
-        reg = Registry(example)
+        reg = self._open_a_copy(tmp_path)
         assert reg.list_catalog(), "the seed is meant to contain a starting catalog"
 
-    def test_the_seed_carries_no_paths_from_anyone_s_machine(self):
+    def test_the_seed_carries_no_paths_from_anyone_s_machine(self, tmp_path: Path):
         """The tracked registry.db ended up holding 26 absolute paths under one
         developer's home directory, in a public repo. Relative paths only."""
-        reg = Registry(self._example_path())
+        reg = self._open_a_copy(tmp_path)
 
         absolute = [c.path for c in reg.list_catalog() if c.path.startswith("/")]
         assert absolute == []
@@ -833,3 +849,82 @@ class TestRegistryIndexRM97:
         reg.add_instance("model-a-1", "model-a", port=8080, discovery=True)
 
         assert reg.index() != before
+
+
+class TestChatTemplateKwargs:
+    """PRM-292: an instance carries defaults for its model's chat template."""
+
+    def _registry_with_model(self, registry_path: Path, tmp_path: Path) -> Registry:
+        model_file = tmp_path / "m.gguf"
+        model_file.write_bytes(b"GGUF")
+        reg = Registry(registry_path)
+        reg.add(
+            RegistryEntry(id="gemma-test", port=9101, context_length=4096, path=str(model_file))
+        )
+        return reg
+
+    def test_an_instance_without_them_has_none(self, registry_path: Path, tmp_path: Path):
+        reg = self._registry_with_model(registry_path, tmp_path)
+        assert reg.get("gemma-test").chat_template_kwargs == {}
+
+    def test_they_survive_a_reload(self, registry_path: Path, tmp_path: Path):
+        reg = self._registry_with_model(registry_path, tmp_path)
+        reg.add_instance(
+            "gemma-test-low",
+            "gemma-test",
+            port=9102,
+            chat_template_kwargs={"reasoning_effort": "low"},
+        )
+        reg.update("gemma-test", chat_template_kwargs={"enable_thinking": False})
+
+        reopened = Registry(registry_path)
+        assert reopened.get("gemma-test-low").chat_template_kwargs == {"reasoning_effort": "low"}
+        assert reopened.get("gemma-test").chat_template_kwargs == {"enable_thinking": False}
+
+    def test_clearing_them_stores_nothing(self, registry_path: Path, tmp_path: Path):
+        reg = self._registry_with_model(registry_path, tmp_path)
+        reg.update("gemma-test", chat_template_kwargs={"reasoning_effort": "low"})
+        reg.update("gemma-test", chat_template_kwargs={})
+        assert Registry(registry_path).get("gemma-test").chat_template_kwargs == {}
+
+    def test_a_database_from_before_gets_the_column_and_keeps_its_rows(
+        self, registry_path: Path, tmp_path: Path
+    ):
+        """Migration 2 on a file shaped like every registry.db in the field:
+        tables present, no schema_version, no chat_template_kwargs column."""
+        import sqlite3
+
+        self._registry_with_model(registry_path, tmp_path)
+        conn = sqlite3.connect(str(registry_path))
+        conn.execute("DROP TABLE schema_version")
+        conn.execute("ALTER TABLE instances DROP COLUMN chat_template_kwargs")
+        conn.commit()
+        conn.close()
+
+        reg = Registry(registry_path)
+        assert reg.get("gemma-test") is not None
+        assert reg.get("gemma-test").chat_template_kwargs == {}
+        conn = sqlite3.connect(str(registry_path))
+        try:
+            assert conn.execute("SELECT version FROM schema_version").fetchone() == (2,)
+        finally:
+            conn.close()
+
+
+class TestValidateChatTemplateKwargs:
+    def test_an_object_or_nothing(self):
+        from prometheus_manager_core.registry import validate_chat_template_kwargs
+
+        assert validate_chat_template_kwargs(None) == {}
+        assert validate_chat_template_kwargs("") == {}
+        assert validate_chat_template_kwargs({"a": 1}) == {"a": 1}
+        assert validate_chat_template_kwargs('{"reasoning_effort": "low"}') == {
+            "reasoning_effort": "low"
+        }
+
+    def test_anything_else_is_refused(self):
+        from prometheus_manager_core.registry import validate_chat_template_kwargs
+
+        for bad in ("[1, 2]", '"low"', "{not json", ["low"], 3):
+            with pytest.raises(ValueError):
+                validate_chat_template_kwargs(bad)

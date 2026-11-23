@@ -195,17 +195,36 @@ async def test_require_parameters_no_longer_refuses_it(gw, rsa_keys):
     assert resp.status_code == 200
 
 
-# ── and the two that do nothing stay dropped ───────────────────────────────
+# ── top-level reasoning_effort reaches the engine now ──────────────────────
 
 
-@pytest.mark.parametrize("field", ["reasoning_effort", "reasoning_budget"])
+@respx.mock
+async def test_top_level_reasoning_effort_is_forwarded(gw, rsa_keys):
+    """PRM-292: llama-server build 12642 reads it — `"none"` took Qwen3-0.6B
+    from 1,656 characters of reasoning to 0. PRM-195 measured it doing nothing
+    on an older engine and dropped it; the engine moved, so the answer did."""
+    route = respx.post(f"{BACKEND_URL}/v1/chat/completions").mock(
+        return_value=Response(200, json=LLAMA_RESPONSE)
+    )
+    resp = await gw.post(
+        "/v1/chat/completions", json=_body(reasoning_effort="low"), headers=_headers(rsa_keys)
+    )
+
+    assert json.loads(route.calls[0].request.content)["reasoning_effort"] == "low"
+    assert "reasoning_effort" not in resp.headers.get("x-prometheus-ignored-parameters", "")
+
+
+# ── and the one that does nothing stays dropped ────────────────────────────
+
+
+@pytest.mark.parametrize("field", ["reasoning_budget"])
 @respx.mock
 async def test_the_fields_the_engine_ignores_are_still_reported_as_dropped(gw, rsa_keys, field):
-    """Measured, not assumed: at the top level these changed nothing against a
+    """Measured, not assumed: at the top level this changed nothing against a
     running server — same output, same reasoning length, with and without.
-    Declaring them would report as honoured what the engine discards, which is
-    the inverse of the bug this fixes and harder to spot. `reasoning_effort`
-    belongs *inside* `chat_template_kwargs`, where the template reads it."""
+    Declaring it would report as honoured what the engine discards, which is
+    the inverse of the bug this fixes and harder to spot. `reasoning_effort` was
+    in this list until PRM-292 re-measured it on a newer engine."""
     respx.post(f"{BACKEND_URL}/v1/chat/completions").mock(
         return_value=Response(200, json=LLAMA_RESPONSE)
     )

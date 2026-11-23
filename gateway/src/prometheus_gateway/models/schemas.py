@@ -210,6 +210,14 @@ class ChatCompletionRequest(EndUserFields):
     # `reasoning_effort` *does* work, inside this mapping, where the template
     # reads it: 414 -> 23 characters of reasoning on `low`, 583 on `high`.
     chat_template_kwargs: dict[str, object] | None = None
+    # PRM-292: the measurement above was against the engine of its day, and the
+    # engine moved. llama-server now maps top-level `reasoning_effort` into the
+    # template itself, checked against the levels the template declares —
+    # re-measured on build 12642: `"none"` took Qwen3-0.6B from 1,656 characters
+    # of reasoning to 0. It is what OpenAI-style SDKs send, so it is forwarded
+    # as is; an engine that does not know it answers for itself.
+    # `reasoning_budget` was not re-measured and stays reported as ignored.
+    reasoning_effort: str | None = None
 
     # PRM-127: accepted and reported, not refused — OpenRouter's model rather
     # than OpenAI's. A gateway in front of engines that differ in what they
@@ -284,6 +292,8 @@ class ChatCompletionRequest(EndUserFields):
             payload["top_logprobs"] = self.top_logprobs
         if self.chat_template_kwargs is not None:
             payload["chat_template_kwargs"] = self.chat_template_kwargs
+        if self.reasoning_effort is not None:
+            payload["reasoning_effort"] = self.reasoning_effort
         return payload
 
 
