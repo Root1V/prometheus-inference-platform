@@ -44,6 +44,9 @@ export interface PlaygroundParams {
   stop?: string[];
   tools?: ToolDefinition[];
   tool_choice?: string;
+  /** PRM-291: read by the model's own template — `reasoning_effort` for
+   * gpt-oss and Inkling. The gateway forwards it as is (PRM-195). */
+  chat_template_kwargs?: Record<string, unknown>;
 }
 
 interface ChatCompletionResponse {

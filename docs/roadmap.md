@@ -10472,3 +10472,15 @@ correctly with its `mmproj` in an isolated test on 2026-11-22, and runs in Prome
 - In: tests for both paths, and that a `vision` instance still refuses to start without one.
 - Out: choosing among projector precisions automatically — the operator names the file.
 
+## PRM-291 — The Playground lets you choose how long the model reasons
+
+**Why**: Inkling 2 Mini's template reasons at effort 0.9 unless told otherwise, and the Playground
+asked for 512 tokens and offered no way to tell it. On 2026-11-22 the operator got "ran out of max
+tokens before producing a visible answer" four times in a row, at 512 and at 1,024.
+
+**Scope**:
+- In: a "Reasoning effort" select (model default, low, medium, high) sent as
+  `chat_template_kwargs.reasoning_effort` — the one switch PRM-195 measured as working; "model
+  default" sends nothing. Max tokens defaults to 2,048.
+- Out: a default for every client, not only the Playground — that is PRM-292.
+
