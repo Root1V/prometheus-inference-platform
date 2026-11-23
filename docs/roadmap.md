@@ -10396,7 +10396,9 @@ lets a half-open circuit through only while the probe lock exists — and that l
 `recovery_timeout` (30 s). Closing needs `success_threshold` (2) successes, counted in process. If
 they do not land inside those 30 s the circuit is half-open forever, refuses every request, and a
 gateway restart does not help because the state is in Redis. `gpt-oss-20b-mxfp4` was refused from
-2026-10-26 14:29 to 2026-10-31 — five days, no request served — until its keys were deleted by hand.
+2026-10-26 14:29 to 2026-10-31 — five days, no request served — until its keys were deleted by hand. It recurred
+on 2026-11-22 for `qwen3-8-27b-ud-iq4-xs-local`: live traffic hit a planned restart, six failures
+opened the circuit, and it was half-open with no probe lock minutes later.
 
 **Scope**:
 - In: a half-open circuit whose probe lock is gone goes back to trying — re-opens, or takes a new
@@ -10441,4 +10443,32 @@ commit. It was deployed 2026-10-31 (`66c5610`, gateway restarted at 12:03).
 - In: the operator decides whether to start them, given memory; then Sentinel is told in its
   channel which models it has.
 - Out: the misleading 400 itself — that is PRM-284.
+
+## PRM-289 — The port the node proposes is really free
+
+**Why**: `_instance_defaults` (PRM-281) checks a candidate port with `_find_free_port`, which binds
+`127.0.0.1`. On macOS that bind succeeds even when another process holds the same port on the
+wildcard address, so on 2026-11-22 it proposed 8090 for `inkling-2-mini` — the `local` manager's
+own port, held on `*:8090`. Registered with a blank port, the instance would have collided with its
+manager on start.
+
+**Scope**:
+- In: the probe binds the wildcard address (or whatever address the instance will bind), so a port
+  held on any interface is skipped; the managers' own ports are never proposed.
+- In: a test that holds a port on `0.0.0.0` and asserts it is not proposed.
+- Out: reserving ports across nodes — each node still answers for its own host.
+
+## PRM-290 — A downloaded vision model can carry its projector
+
+**Why**: `mmproj_path` is set only by direct registration by path. The download flow takes no
+projector, and the catalog PATCH edits `name`, `family`, `modality` and `slug` only — so a vision
+model downloaded from the panel can be served only as text. `inkling-2-mini` read an image
+correctly with its `mmproj` in an isolated test on 2026-11-22, and runs in Prometheus as `text`.
+
+**Scope**:
+- In: a download can fetch the projector file from the same repository and record it as
+  `mmproj_path`, with the modality set to `vision`; the catalog PATCH accepts `mmproj_path`,
+  refused unless the file exists (PRM-190's rule).
+- In: tests for both paths, and that a `vision` instance still refuses to start without one.
+- Out: choosing among projector precisions automatically — the operator names the file.
 
